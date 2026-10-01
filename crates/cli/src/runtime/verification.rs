@@ -77,7 +77,7 @@ impl Agent {
         &mut self,
         turn: TurnId,
     ) -> Result<(), KernelError> {
-        if self.verification_state.policy.restore.mode
+        if self.verification_state.policy().restore.mode
             == iteron_verify::VerificationRollbackMode::Off
         {
             return Ok(());
@@ -89,7 +89,7 @@ impl Agent {
         self.workspace_checkpoints.interval_elapsed(
             turn,
             self.verification_state
-                .policy
+                .policy()
                 .checkpoint
                 .minimum_turn_interval,
         )

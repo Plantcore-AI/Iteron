@@ -79,9 +79,9 @@ impl StrongVerificationGate<'_> {
             Some(turn),
             LifecyclePayload::default(),
         );
-        let attempt = self.state.attempts.saturating_add(1);
-        let limit = self.state.policy.retry.max_attempts;
-        let timeout = Duration::from_secs(self.state.policy.verifier_timeout_secs);
+        let attempt = self.state.attempts().saturating_add(1);
+        let limit = self.state.policy().retry.max_attempts;
+        let timeout = Duration::from_secs(self.state.policy().verifier_timeout_secs);
         let verification_activity = self.scope.activity.span_attempt(
             turn_activity::ActivityStage::Verification,
             turn,
@@ -179,7 +179,7 @@ impl StrongVerificationGate<'_> {
                 .await;
         }
 
-        let attempt = self.state.attempts.saturating_add(1);
+        let attempt = self.state.attempts().saturating_add(1);
         let command_identity = format!("verify:{}", &verification_command_digest(command)[..16]);
         let (output_observer, output_receiver) = iteron_sandbox::OutputObserver::bounded(
             command_identity,
@@ -193,8 +193,8 @@ impl StrongVerificationGate<'_> {
             command.to_string(),
         )
         .with_sensitive_env_names(self.scope.sensitive_env_names.to_vec())
-        .with_output_tail_bytes(self.state.policy.feedback.oracle_output_bytes)
-        .with_timeout_secs(self.state.policy.verifier_timeout_secs)
+        .with_output_tail_bytes(self.state.policy().feedback.oracle_output_bytes)
+        .with_timeout_secs(self.state.policy().verifier_timeout_secs)
         .with_output_observer(output_observer.clone());
         if self.scope.preconfined {
             oracle = oracle.with_preconfined_outer_sandbox();
@@ -209,7 +209,7 @@ impl StrongVerificationGate<'_> {
                 .saturating_add(u64::from(remaining.subsec_nanos() != 0))
                 .max(1);
             oracle = oracle
-                .with_timeout_secs(rounded_up_secs.min(self.state.policy.verifier_timeout_secs));
+                .with_timeout_secs(rounded_up_secs.min(self.state.policy().verifier_timeout_secs));
         }
         self.run_bounded_verify_observed(
             std::sync::Arc::new(oracle),
@@ -248,7 +248,9 @@ impl StrongVerificationGate<'_> {
 
         let verification_started = Instant::now();
         let verifier_deadline = verification_started
-            .checked_add(Duration::from_secs(self.state.policy.verifier_timeout_secs))
+            .checked_add(Duration::from_secs(
+                self.state.policy().verifier_timeout_secs,
+            ))
             .unwrap_or_else(Instant::now);
 
         // Whether the oracle future has ever been polled, which is exactly whether a sandboxed
@@ -260,7 +262,7 @@ impl StrongVerificationGate<'_> {
         let mut visible_output_bytes = [0_usize; 2];
         let output_limit = self
             .state
-            .policy
+            .policy()
             .feedback
             .command_output_bytes
             .min(1_048_576);
@@ -380,14 +382,15 @@ impl StrongVerificationGate<'_> {
                         };
                         self.ui(UiEvent::Notice(format!(
                             "verify {stream} · attempt {}/{}: {bounded}",
-                            chunk.attempt, self.state.policy.retry.max_attempts,
+                            chunk.attempt,
+                            self.state.policy().retry.max_attempts,
                         )));
                         let elapsed = verification_started.elapsed();
                         self.scope.activity.heartbeat(
                             turn_activity::ActivityStage::Verification,
                             self.scope.turn,
                             elapsed.as_secs().max(1),
-                            self.state.policy.verifier_timeout_secs.max(1),
+                            self.state.policy().verifier_timeout_secs.max(1),
                             remaining,
                         );
                         last_output_notice = Instant::now();
@@ -410,7 +413,7 @@ impl StrongVerificationGate<'_> {
                         && last_output_notice.elapsed() >= Duration::from_secs(1)
                     {
                         let elapsed_secs = elapsed.as_secs().max(1);
-                        let total_secs = self.state.policy.verifier_timeout_secs.max(1);
+                        let total_secs = self.state.policy().verifier_timeout_secs.max(1);
                         self.scope.activity.heartbeat(
                             turn_activity::ActivityStage::Verification,
                             self.scope.turn,
@@ -420,8 +423,8 @@ impl StrongVerificationGate<'_> {
                         );
                         self.ui(UiEvent::Notice(format!(
                             "verify: attempt {}/{} · {}s elapsed · {}s remaining",
-                            self.state.attempts.saturating_add(1),
-                            self.state.policy.retry.max_attempts,
+                            self.state.attempts().saturating_add(1),
+                            self.state.policy().retry.max_attempts,
                             elapsed_secs,
                             remaining.as_secs()
                         )));

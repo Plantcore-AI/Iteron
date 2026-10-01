@@ -11,17 +11,17 @@ impl StrongVerificationGate<'_> {
     ) -> Result<bool, KernelError> {
         use iteron_verify::VerificationRollbackMode;
 
-        let mode = self.state.policy.restore.mode;
+        let mode = self.state.policy().restore.mode;
         if mode == VerificationRollbackMode::Off {
             return Ok(false);
         }
-        if !self.state.policy.restore.require_operator_confirmation {
+        if !self.state.policy().restore.require_operator_confirmation {
             return Err(KernelError::ContextResolution(
                 "verification rollback policy attempted to disable its operator confirmation invariant"
                     .into(),
             ));
         }
-        let snapshot = self.state.rollback_point.clone().ok_or_else(|| {
+        let snapshot = self.state.rollback_snapshot().cloned().ok_or_else(|| {
             KernelError::ContextResolution(
                 "verification rollback was authorised but no pre-submission checkpoint exists"
                     .into(),
@@ -45,21 +45,21 @@ impl StrongVerificationGate<'_> {
             .clone();
         let receipt_mode = verification_rollback_evidence(mode)
             .expect("off rollback returned before receipt construction");
-        let path_count = u32::try_from(self.state.policy.restore.paths.len()).unwrap_or(u32::MAX);
+        let path_count = u32::try_from(self.state.policy().restore.paths.len()).unwrap_or(u32::MAX);
         let mode_label = match mode {
             VerificationRollbackMode::Off => "off",
             VerificationRollbackMode::SelectedPaths => "selected_paths",
             VerificationRollbackMode::Workspace => "workspace",
         };
         let policy_digest_sha256 =
-            digest_json(&("verification-runtime-policy-v1", &self.state.policy))?;
+            digest_json(&("verification-runtime-policy-v1", &self.state.policy()))?;
         let scope_digest_sha256 = digest_json(&(
             "verification-rollback-scope-v1",
             self.journal.rollout.run_id(),
             snapshot.at,
             &snapshot.tree_ref,
             mode_label,
-            &self.state.policy.restore.paths,
+            &self.state.policy().restore.paths,
         ))?;
         let approval_arguments = serde_json::json!({
             "policy_id": "verification-runtime-policy-v1",
@@ -71,7 +71,7 @@ impl StrongVerificationGate<'_> {
             "live_workspace_tree_ref": &approved_live_tree_ref,
             "mode": mode_label,
             "path_count": path_count,
-            "paths": &self.state.policy.restore.paths,
+            "paths": &self.state.policy().restore.paths,
         });
         let approval_binding =
             digest_json(&("verification-rollback-approval-v1", &approval_arguments))?;
@@ -128,13 +128,13 @@ impl StrongVerificationGate<'_> {
         match mode {
             VerificationRollbackMode::Off => return Ok(false),
             VerificationRollbackMode::Workspace => {
-                iteron_record::rewind_workspace(&snapshot, &self.scope.workspace)?;
+                iteron_record::rewind_workspace(&snapshot, self.scope.workspace)?;
             }
             VerificationRollbackMode::SelectedPaths => {
                 iteron_record::checkpoint::rewind_workspace_paths(
                     &snapshot,
-                    &self.scope.workspace,
-                    &self.state.policy.restore.paths,
+                    self.scope.workspace,
+                    &self.state.policy().restore.paths,
                 )?;
             }
         }
@@ -155,7 +155,7 @@ impl StrongVerificationGate<'_> {
             LifecyclePayload {
                 reason_code: Some("verification_rollback_applied".into()),
                 count: Some(
-                    u64::try_from(self.state.policy.restore.paths.len()).unwrap_or(u64::MAX),
+                    u64::try_from(self.state.policy().restore.paths.len()).unwrap_or(u64::MAX),
                 ),
                 ..LifecyclePayload::default()
             },

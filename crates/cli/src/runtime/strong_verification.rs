@@ -104,8 +104,8 @@ impl StrongVerificationGate<'_> {
             }
         }
         self.journal.effects.note_workspace_mutation();
-        let max_verify_attempts = self.state.policy.retry.max_attempts;
-        if self.state.attempts >= max_verify_attempts {
+        let max_verify_attempts = self.state.policy().retry.max_attempts;
+        if self.state.attempts() >= max_verify_attempts {
             self.verification_repair_exhausted(turn);
             let notice = format!(
                 "verify gate: `{command}` did not pass within {max_verify_attempts} attempts; stopping"
@@ -169,7 +169,7 @@ impl StrongVerificationGate<'_> {
                 )));
             }
         };
-        if verify_plan.attempts > self.state.policy.verifier_strategy_max_attempts {
+        if verify_plan.attempts > self.state.policy().verifier_strategy_max_attempts {
             return Err(KernelError::ContextResolution(
                 "verifier strategy exceeded the pinned verifier_attempts ceiling".into(),
             ));
@@ -223,10 +223,10 @@ impl StrongVerificationGate<'_> {
                 let failure_class = failure_classification
                     .expect("every non-pass oracle outcome has a taxonomy entry")
                     .class();
-                let recovery = self.state.policy.recovery_escalation.decide(
-                    &self.state.policy.retry,
+                let recovery = self.state.policy().recovery_escalation.decide(
+                    &self.state.policy().retry,
                     failure_class,
-                    self.state.attempts,
+                    self.state.attempts(),
                 );
                 if recovery == iteron_verify::VerificationRecoveryAction::StopOperator {
                     self.emit(
@@ -260,12 +260,12 @@ impl StrongVerificationGate<'_> {
                 let convergence_request =
                     convergence.verification_failed(rolled_back, structural_regression);
                 // Only a real candidate/test failure consumes the bounded model-fix allowance.
-                self.state.attempts = self.state.attempts.saturating_add(1);
+                self.state.consume_test_failure();
                 if recovery == iteron_verify::VerificationRecoveryAction::StopExhausted {
                     self.verification_repair_exhausted(turn);
                     let notice = format!(
                         "verify gate: `{command}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
-                        self.state.attempts
+                        self.state.attempts()
                     );
                     self.emit(
                         turn,
@@ -310,7 +310,7 @@ impl StrongVerificationGate<'_> {
                     EventKind::Notice {
                         text: format!(
                             "verify gate: `{command}` test failure, continuing (attempt {})",
-                            self.state.attempts
+                            self.state.attempts()
                         ),
                     },
                 );
@@ -390,18 +390,18 @@ impl StrongVerificationGate<'_> {
     }
 
     pub(super) fn prepare_rollback_point(&mut self, turn: TurnId) -> Result<(), KernelError> {
-        if self.state.policy.restore.mode == iteron_verify::VerificationRollbackMode::Off {
+        if self.state.policy().restore.mode == iteron_verify::VerificationRollbackMode::Off {
             return Ok(());
         }
         self.checkpoint_at_turn_end(turn, true)?;
-        self.state.rollback_point = self.checkpoints.latest().cloned();
+        self.state.capture_pre_submission(self.checkpoints);
         Ok(())
     }
     fn checkpoint_before_verification(&mut self, turn: TurnId) -> Result<(), KernelError> {
-        if !self.state.policy.checkpoint.before_verification
+        if !self.state.policy().checkpoint.before_verification
             || !self
                 .checkpoints
-                .interval_elapsed(turn, self.state.policy.checkpoint.minimum_turn_interval)
+                .interval_elapsed(turn, self.state.policy().checkpoint.minimum_turn_interval)
         {
             return Ok(());
         }
@@ -467,7 +467,7 @@ impl StrongVerificationGate<'_> {
         self.repair_event("verification.repair_started", turn);
     }
     fn verification_repair_completed(&self, turn: TurnId) {
-        if self.state.attempts > 0 {
+        if self.state.attempts() > 0 {
             self.repair_event("verification.repair_completed", turn);
         }
     }
@@ -479,7 +479,7 @@ impl StrongVerificationGate<'_> {
             id,
             Some(turn),
             LifecyclePayload {
-                count: Some(u64::from(self.state.attempts)),
+                count: Some(u64::from(self.state.attempts())),
                 ..Default::default()
             },
         );

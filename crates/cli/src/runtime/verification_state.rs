@@ -6,13 +6,104 @@ use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(super) struct VerificationStateOwner {
-    pub(super) policy: iteron_verify::VerificationRuntimePolicy,
-    pub(super) quarantine: BTreeMap<String, u64>,
-    pub(super) quarantine_restored: bool,
-    pub(super) rollback_point: Option<Snapshot>,
-    pub(super) attempts: u32,
+    policy: iteron_verify::VerificationRuntimePolicy,
+    quarantine: BTreeMap<String, u64>,
+    quarantine_restored: bool,
+    rollback_point: Option<Snapshot>,
+    attempts: u32,
 }
 impl VerificationStateOwner {
+    pub(super) fn policy(&self) -> &iteron_verify::VerificationRuntimePolicy {
+        &self.policy
+    }
+    pub(super) fn attempts(&self) -> u32 {
+        self.attempts
+    }
+    pub(super) fn reset_attempts(&mut self) {
+        self.attempts = 0;
+    }
+    /// Only a real graded test failure consumes the model's repair allowance.
+    pub(super) fn consume_test_failure(&mut self) {
+        self.attempts = self.attempts.saturating_add(1);
+    }
+    pub(super) fn rollback_snapshot(&self) -> Option<&Snapshot> {
+        self.rollback_point.as_ref()
+    }
+    pub(super) fn capture_pre_submission(
+        &mut self,
+        checkpoints: &super::workspace_checkpoint::WorkspaceCheckpointOwner,
+    ) {
+        self.rollback_point = checkpoints.latest().cloned();
+    }
+    pub(super) fn apply_feedback(
+        &mut self,
+        feedback: iteron_verify::VerificationFeedbackTailPolicy,
+    ) -> Result<(), KernelError> {
+        let mut policy = self.policy.clone();
+        policy.feedback = feedback;
+        policy.validate().map_err(|error| {
+            KernelError::ContextResolution(format!("verification feedback refused: {error}"))
+        })?;
+        self.policy = policy;
+        Ok(())
+    }
+    /// Trusted genesis recovery supplies its already resolved immutable policy through this port.
+    pub(super) fn install_resolved_policy(
+        &mut self,
+        policy: iteron_verify::VerificationRuntimePolicy,
+    ) -> Result<(), KernelError> {
+        policy.validate().map_err(|error| {
+            KernelError::ContextResolution(format!("resolved verification policy refused: {error}"))
+        })?;
+        self.policy = policy;
+        Ok(())
+    }
+    pub(super) fn prune_quarantine(&mut self, now: u64) {
+        self.quarantine.retain(|_, expires| *expires > now);
+    }
+    pub(super) fn quarantined_until(&self, digest: &str) -> Option<u64> {
+        self.quarantine.get(digest).copied()
+    }
+    /// Called only after the actual Quarantined receipt has crossed the writer barrier.
+    pub(super) fn publish_quarantine(
+        &mut self,
+        digests: &[String],
+        expires: u64,
+    ) -> Result<(), KernelError> {
+        // The receipt is already durable. Any refusal must force a fresh validated fold rather
+        // than leaving a stale live map that would allow contradictory evidence to rerun.
+        self.quarantine_restored = false;
+        if digests.len() > iteron_verify::MAX_VERIFICATION_COMMANDS
+            || digests.iter().any(|digest| !is_sha256_digest(digest))
+        {
+            return Err(KernelError::ContextResolution(
+                "verification quarantine publication exceeds its closed receipt bound".into(),
+            ));
+        }
+        let missing = digests
+            .iter()
+            .filter(|digest| !self.quarantine.contains_key(*digest))
+            .count();
+        if self.quarantine.len().saturating_add(missing) > iteron_verify::MAX_VERIFICATION_COMMANDS
+        {
+            return Err(KernelError::ContextResolution(
+                "verification quarantine exceeds its retained command bound".into(),
+            ));
+        }
+        for digest in digests {
+            self.quarantine.insert(digest.clone(), expires);
+        }
+        self.quarantine_restored = true;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn policy_for_test_mut(&mut self) -> &mut iteron_verify::VerificationRuntimePolicy {
+        &mut self.policy
+    }
+    #[cfg(test)]
+    pub(super) fn set_attempts_for_test(&mut self, attempts: u32) {
+        self.attempts = attempts;
+    }
     pub(super) fn set_policy(
         &mut self,
         policy: iteron_verify::VerificationRuntimePolicy,

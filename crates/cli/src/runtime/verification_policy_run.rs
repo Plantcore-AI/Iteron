@@ -14,13 +14,11 @@ impl StrongVerificationGate<'_> {
     ) -> Result<iteron_verify::Verdict, KernelError> {
         self.state.restore_quarantine(self.journal.rollout)?;
         let now = unix_now_secs();
-        self.state
-            .quarantine
-            .retain(|_, expires_at| *expires_at > now);
-        let configured = if self.state.policy.required_commands.is_empty() {
+        self.state.prune_quarantine(now);
+        let configured = if self.state.policy().required_commands.is_empty() {
             vec![fallback_command.to_owned()]
         } else {
-            self.state.policy.selected_commands().to_vec()
+            self.state.policy().selected_commands().to_vec()
         };
         if configured.is_empty() {
             return Err(KernelError::ContextResolution(
@@ -32,7 +30,7 @@ impl StrongVerificationGate<'_> {
             .map(|command| verification_command_digest(command))
             .collect::<Vec<_>>();
         for digest in &command_digests {
-            if let Some(expires_at_unix_secs) = self.state.quarantine.get(digest).copied() {
+            if let Some(expires_at_unix_secs) = self.state.quarantined_until(digest) {
                 self.emit_durable(
                     self.scope.turn,
                     EventKind::VerificationPolicy {
@@ -55,12 +53,12 @@ impl StrongVerificationGate<'_> {
 
         let repeat_limit = usize::from(
             self.state
-                .policy
+                .policy()
                 .flaky
                 .repeat_count
                 .max(u8::try_from(plan.attempts).unwrap_or(u8::MAX)),
         );
-        let verifier_count = usize::from(self.state.policy.quorum.verifiers);
+        let verifier_count = usize::from(self.state.policy().quorum.verifiers);
         let physical_run_limit = configured
             .len()
             .saturating_mul(repeat_limit)
@@ -103,7 +101,7 @@ impl StrongVerificationGate<'_> {
                     }
                     last_details[verifier_index][command_index] = truncate_tail(
                         &verdict.detail,
-                        self.state.policy.feedback.command_output_bytes,
+                        self.state.policy().feedback.command_output_bytes,
                     );
                     if repeat_index == 0
                         && verdict.outcome != iteron_verify::VerificationOutcome::Pass
@@ -131,7 +129,7 @@ impl StrongVerificationGate<'_> {
                     .filter(|outcome| **outcome != first)
                     .count();
                 observed_disagreements = observed_disagreements.saturating_add(disagreements);
-                if disagreements >= usize::from(self.state.policy.flaky.minimum_disagreements) {
+                if disagreements >= usize::from(self.state.policy().flaky.minimum_disagreements) {
                     observed_flake = true;
                 }
                 // Repeats below the configured quarantine threshold still may not disappear. A
@@ -174,27 +172,27 @@ impl StrongVerificationGate<'_> {
                 .filter(|outcome| **outcome != first)
                 .count();
             observed_disagreements = observed_disagreements.saturating_add(lane_disagreements);
-            if lane_disagreements >= usize::from(self.state.policy.flaky.minimum_disagreements) {
+            if lane_disagreements >= usize::from(self.state.policy().flaky.minimum_disagreements) {
                 observed_flake = true;
             }
         }
 
         if observed_flake {
             let expires_at_unix_secs = unix_now_secs()
-                .saturating_add(u64::from(self.state.policy.flaky.quarantine_seconds));
+                .saturating_add(u64::from(self.state.policy().flaky.quarantine_seconds));
             self.emit_durable(
                 self.scope.turn,
                 EventKind::VerificationPolicy {
                     version: iteron_protocol::VerificationPolicyEventVersion::V1,
                     event: iteron_protocol::VerificationPolicyEvent::Quarantined {
-                        selection: verification_selection_evidence(self.state.policy.selection),
+                        selection: verification_selection_evidence(self.state.policy().selection),
                         command_digests_sha256: command_digests.clone(),
                         repeat_count: u8::try_from(repeat_count).map_err(|_| {
                             KernelError::ContextResolution(
                                 "verification repeat count exceeded its receipt bound".into(),
                             )
                         })?,
-                        verifier_count: self.state.policy.quorum.verifiers,
+                        verifier_count: self.state.policy().quorum.verifiers,
                         physical_runs: u16::try_from(physical_runs).map_err(|_| {
                             KernelError::ContextResolution(
                                 "verification physical-run count exceeded its receipt bound".into(),
@@ -205,15 +203,9 @@ impl StrongVerificationGate<'_> {
                     },
                 },
             )?;
-            if self.state.policy.flaky.quarantine_seconds > 0 {
-                for digest in &command_digests {
-                    if self.state.quarantine.len() >= iteron_verify::MAX_VERIFICATION_COMMANDS {
-                        break;
-                    }
-                    self.state
-                        .quarantine
-                        .insert(digest.clone(), expires_at_unix_secs);
-                }
+            if self.state.policy().flaky.quarantine_seconds > 0 {
+                self.state
+                    .publish_quarantine(&command_digests, expires_at_unix_secs)?;
             }
             self.lifecycle_event(
                 "verification.check_failed",
@@ -227,10 +219,10 @@ impl StrongVerificationGate<'_> {
             return Ok(iteron_verify::Verdict::new(
                 plan.strength,
                 iteron_verify::VerificationOutcome::InfrastructureFailure,
-                if self.state.policy.flaky.report_disagreement {
+                if self.state.policy().flaky.report_disagreement {
                     format!(
                         "verification attempts disagreed; evidence is quarantined for {} seconds",
-                        self.state.policy.flaky.quarantine_seconds
+                        self.state.policy().flaky.quarantine_seconds
                     )
                 } else {
                     "verification evidence was quarantined by policy".into()
@@ -239,8 +231,8 @@ impl StrongVerificationGate<'_> {
         }
 
         let consensus = iteron_verify::verification_consensus(
-            self.state.policy.quorum,
-            self.state.policy.flaky.minimum_disagreements,
+            self.state.policy().quorum,
+            self.state.policy().flaky.minimum_disagreements,
             &representative_outcomes,
         );
         let outcome = match consensus {
@@ -272,14 +264,14 @@ impl StrongVerificationGate<'_> {
             EventKind::VerificationPolicy {
                 version: iteron_protocol::VerificationPolicyEventVersion::V1,
                 event: iteron_protocol::VerificationPolicyEvent::Reduced {
-                    selection: verification_selection_evidence(self.state.policy.selection),
+                    selection: verification_selection_evidence(self.state.policy().selection),
                     command_digests_sha256: command_digests,
                     repeat_count: u8::try_from(repeat_count).map_err(|_| {
                         KernelError::ContextResolution(
                             "verification repeat count exceeded its receipt bound".into(),
                         )
                     })?,
-                    verifier_count: self.state.policy.quorum.verifiers,
+                    verifier_count: self.state.policy().quorum.verifiers,
                     physical_runs: u16::try_from(physical_runs).map_err(|_| {
                         KernelError::ContextResolution(
                             "verification physical-run count exceeded its receipt bound".into(),
@@ -295,7 +287,7 @@ impl StrongVerificationGate<'_> {
         )?;
         let detail = truncate_tail(
             &details.join("\n--- verifier ---\n"),
-            self.state.policy.feedback.total_bytes,
+            self.state.policy().feedback.total_bytes,
         );
         Ok(iteron_verify::Verdict::new(plan.strength, outcome, detail))
     }

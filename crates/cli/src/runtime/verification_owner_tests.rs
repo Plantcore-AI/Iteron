@@ -67,11 +67,19 @@ fn agent(root: &Path) -> Agent {
     agent.verify_command = Some("operator workspace command".into());
     agent
         .verification_state
-        .policy
+        .policy_for_test_mut()
         .checkpoint
         .before_verification = false;
-    agent.verification_state.policy.checkpoint.turn_boundary = false;
-    agent.verification_state.policy.flaky.repeat_count = 1;
+    agent
+        .verification_state
+        .policy_for_test_mut()
+        .checkpoint
+        .turn_boundary = false;
+    agent
+        .verification_state
+        .policy_for_test_mut()
+        .flaky
+        .repeat_count = 1;
     agent
 }
 fn oracle(outcome: VerificationOutcome) -> Arc<ControlledOracle> {
@@ -102,7 +110,7 @@ async fn disjoint_gate_pass_commits_one_physical_task_and_preserves_retry_state(
         .unwrap();
     assert!(matches!(disposition, VerificationGateDisposition::Passed));
     assert_eq!(oracle.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(agent.verification_state.attempts, 0);
+    assert_eq!(agent.verification_state.attempts(), 0);
     let events = iteron_record::replay(agent.rollout.path()).unwrap();
     assert_eq!(
         events
@@ -130,7 +138,11 @@ async fn disjoint_gate_pass_commits_one_physical_task_and_preserves_retry_state(
 async fn verify_drains_only_current_oracle_and_keeps_resident_steer_receiver() {
     let root = gate_integration_tests::temp_ws("verification-independent-drain");
     let mut agent = agent(&root);
-    agent.verification_state.policy.quorum.verifiers = 2;
+    agent
+        .verification_state
+        .policy_for_test_mut()
+        .quorum
+        .verifiers = 2;
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     agent.set_approvals(rx);
     let oracle = oracle(VerificationOutcome::TestFailure);
@@ -176,7 +188,8 @@ async fn verify_drains_only_current_oracle_and_keeps_resident_steer_receiver() {
         "drain does not admit remaining quorum lane"
     );
     assert_eq!(
-        agent.verification_state.attempts, 0,
+        agent.verification_state.attempts(),
+        0,
         "drain does not consume failure repair allowance"
     );
     assert!(agent.inbox.has_receiver());
@@ -226,7 +239,7 @@ async fn future_drop_retains_task_quarantine_and_receiver_recovery_never_reruns_
         tasks["tasks"][0]["observed_outcome"],
         serde_json::Value::Null
     );
-    assert_eq!(agent.verification_state.attempts, 0);
+    assert_eq!(agent.verification_state.attempts(), 0);
     agent.effect_journal.adopt_journal();
     assert!(
         agent
