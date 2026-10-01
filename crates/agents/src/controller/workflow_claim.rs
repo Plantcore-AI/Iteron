@@ -85,8 +85,16 @@ pub struct AgentWorkflowCompletion {
     pub summary: String,
     pub usage: AgentUsageV1,
     pub effects_known: bool,
+    /// Older producer versions reported physical-known only when their accounting was complete.
+    /// New receipts retain this separate field and quarantine budget admission when false.
+    #[serde(default = "legacy_complete_accounting")]
+    pub accounting_known: bool,
     pub terminal: AgentWorkflowTerminal,
 }
+fn legacy_complete_accounting() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkflowReceipt {
@@ -558,6 +566,7 @@ pub(super) fn record_completion(
     summary: &str,
     usage: AgentUsageV1,
     effects_known: bool,
+    accounting_known: bool,
     terminal: AgentWorkflowTerminal,
 ) {
     for receipt in snapshot
@@ -574,6 +583,7 @@ pub(super) fn record_completion(
                 ..usage
             },
             effects_known,
+            accounting_known,
             terminal,
         });
     }
@@ -599,6 +609,7 @@ pub(super) fn recover_completion(
                 ..AgentUsageV1::default()
             },
             effects_known: false,
+            accounting_known: false,
             terminal: AgentWorkflowTerminal::StoppedRecovery,
         });
         completion.usage.turns = completion
@@ -627,6 +638,7 @@ pub(super) fn recover_completion(
             .checked_add(additional.wall_ms)
             .ok_or(ControllerError::Budget)?;
         completion.effects_known = true;
+        completion.accounting_known = true;
         completion.terminal = AgentWorkflowTerminal::StoppedRecovery;
     }
     Ok(())
@@ -676,6 +688,8 @@ pub(super) fn validate_claims(snapshot: &AgentControllerSnapshot) -> Result<(), 
                 || completion.summary.len() > MAX_AGENT_TEXT_BYTES
                 || completion.summary.contains('\0')
                 || completion.usage.turns == 0
+                || (!completion.accounting_known
+                    && !matches!(record.view.state, AgentStateV1::RecoveryRequired { .. }))
             {
                 return Err(ControllerError::Invalid(
                     "invalid durable workflow completion",

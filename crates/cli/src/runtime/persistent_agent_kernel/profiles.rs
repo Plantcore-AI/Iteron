@@ -35,6 +35,7 @@ pub(super) fn refused(reason: &str) -> AgentSettlement {
         tokens: 0,
         cost_microusd: 0,
         effects_known: true,
+        accounting_known: true,
         terminal: iteron_agents::AgentWorkflowTerminal::Failed,
     }
 }

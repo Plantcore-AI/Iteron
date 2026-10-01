@@ -345,6 +345,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: false,
+                    accounting_known: false,
                     terminal: iteron_agents::AgentWorkflowTerminal::Failed,
                 };
             }
@@ -388,6 +389,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: false,
+                    accounting_known: false,
                     terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
                 };
             }
@@ -544,7 +546,6 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             && child.parent_effects_known()
             && finalized
             && writer_known
-            && cost.is_some()
             && !matches!(
                 result,
                 Err(KernelError::UnknownEffects { .. }
@@ -567,6 +568,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             tokens,
             cost_microusd: cost.unwrap_or(0),
             effects_known,
+            accounting_known: cost.is_some() && child.ledger.child_accounting_complete(),
         }
     }
 }
@@ -588,6 +590,7 @@ fn unknown_settlement(summary: &str) -> AgentSettlement {
         tokens: 0,
         cost_microusd: 0,
         effects_known: false,
+        accounting_known: false,
         terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
     }
 }

@@ -69,6 +69,7 @@ impl PersistentAgentRuntime for Runtime {
             tokens: 0,
             cost_microusd: 0,
             effects_known: true,
+            accounting_known: true,
             terminal: AgentWorkflowTerminal::Succeeded,
         }
     }

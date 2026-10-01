@@ -96,6 +96,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: false,
+                    accounting_known: false,
                     terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
                 };
                 let wall = u64::try_from(started.elapsed().as_millis())

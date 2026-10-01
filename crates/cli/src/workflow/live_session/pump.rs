@@ -98,7 +98,8 @@ pub(super) fn reconcile(
         cost_microusd: proof.usage.cost_microusd,
         wall_ms: proof.usage.wall_ms,
     };
-    if !proof.effects_known
+    let settlement_known = proof.effects_known && proof.accounting_known;
+    if !settlement_known
         && matches!(record.state, State::RecoveryRequired { .. })
         && record.attempt_usage == usage
     {
@@ -128,16 +129,9 @@ pub(super) fn reconcile(
         .attempt()
         .ok_or(LiveWorkflowError::Controller)?;
     if record.state.lease().is_some() {
-        graph.settle(
-            node_id,
-            attempt,
-            lease,
-            completion,
-            usage,
-            proof.effects_known,
-        )?;
+        graph.settle(node_id, attempt, lease, completion, usage, settlement_known)?;
     } else {
-        graph.reconcile_stopped(node_id, attempt, completion, usage, proof.effects_known)?;
+        graph.reconcile_stopped(node_id, attempt, completion, usage, settlement_known)?;
     }
     Ok(true)
 }

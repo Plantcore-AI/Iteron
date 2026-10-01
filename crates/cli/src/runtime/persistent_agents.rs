@@ -179,8 +179,8 @@ pub(crate) struct AgentObservation {
     pub timed_out: bool,
 }
 
-/// Every runtime result follows actual settlement. Unknown provider cost or unfinished process
-/// cleanup is effects_known=false and leaves durable ownership quarantined.
+/// Physical cleanup and accounting are separate observations. Either uncertainty leaves
+/// admission quarantined, while known physical proof remains available to observers.
 #[derive(Clone)]
 pub(crate) struct AgentSettlement {
     pub turns: u32,
@@ -188,6 +188,7 @@ pub(crate) struct AgentSettlement {
     pub tokens: u64,
     pub cost_microusd: u64,
     pub effects_known: bool,
+    pub accounting_known: bool,
     pub terminal: iteron_agents::AgentWorkflowTerminal,
 }
 
@@ -584,7 +585,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         {
             return Ok(());
         }
-        let settled = controller.finish_turn_with_terminal(
+        let settled = controller.finish_turn_with_observation(
             id,
             epoch,
             &result.summary,
@@ -595,6 +596,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 wall_ms,
             },
             result.effects_known,
+            result.accounting_known,
             result.terminal,
         );
         self.notify(controller.revision());
@@ -669,6 +671,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                         tokens: 0,
                         cost_microusd: 0,
                         effects_known: false,
+                        accounting_known: false,
                         terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
                     },
                 }
@@ -681,6 +684,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: true,
+                    accounting_known: true,
                     terminal: iteron_agents::AgentWorkflowTerminal::Failed,
                 }
             };
@@ -749,6 +753,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                                     tokens: 0,
                                     cost_microusd: 0,
                                     effects_known: true,
+                                    accounting_known: true,
                                     terminal: iteron_agents::AgentWorkflowTerminal::Failed,
                                 };
                                 self.shared

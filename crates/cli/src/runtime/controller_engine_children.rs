@@ -162,6 +162,11 @@ impl ControllerEngineChildren {
             if !done.effects_known {
                 return Err(super::KernelError::UnknownEffects { count: 1 });
             }
+            if !done.accounting_known {
+                return Err(super::KernelError::ContextResolution(
+                    "child physical cleanup is known; accounting requires reconciliation".into(),
+                ));
+            }
             let receipt = self
                 .control
                 .engine_child_ledger(claim)
