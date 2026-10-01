@@ -19,12 +19,12 @@ pub(super) fn apply_live_event<T: notification::NotificationTransport + ?Sized>(
 pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
     match ev {
         UiEvent::Text(t) => {
-            if !app.product_stream_active {
+            if !app.product.stream_active() {
                 app.stream_text(&t);
             }
         }
         UiEvent::Thinking(t) => {
-            if !app.product_stream_active {
+            if !app.product.stream_active() {
                 app.stream_think(&t);
             }
         }
@@ -90,7 +90,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             arguments,
             workspace,
         } => {
-            if app.product_stream_active {
+            if app.product.stream_active() {
                 return;
             }
             app.flush_text();

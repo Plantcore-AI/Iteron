@@ -94,6 +94,7 @@ mod persistent_agents;
 mod picker_catalog;
 mod picker_owner;
 mod plugins;
+mod product_presentation;
 mod product_projection;
 mod session_adoption;
 mod session_inspection;
@@ -689,9 +690,7 @@ struct App {
     input_lanes: input_lanes::InputLanes,
     /// Ordinary TUI content follows the same bounded Product V1 cursor as headless clients.
     /// Legacy EQ remains for richer tool cards, metrics, and compatibility on older servers.
-    product_stream_active: bool,
-    product_terminal_answer: Option<String>,
-    product_turn_status: Option<String>,
+    product: product_presentation::ProductPresentation,
     /// Dropped image paths this session has already refused out loud.
     ///
     /// Bare-path admission runs only at paste/drop/submit boundaries, but an unreadable path may be

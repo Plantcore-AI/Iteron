@@ -1,23 +1,19 @@
 //! The ordinary terminal's bounded Product V1 cursor. Headless and TUI read the same resident
 //! Thread/Turn/Item projection; EQ still carries rich local metrics and legacy tool cards.
 
-use super::*;
+use super::{App, Pending, app_server, block, ui_safe_json, ui_safe_text};
 use iteron_protocol::product_contract::{
     ItemContentChannelV1, PRODUCT_CONTRACT_VERSION, ProductEventKindV1, ProductEventsPageV1,
     ProductEventsReadErrorV1, TurnStateV1,
 };
 
 const MAX_PAGES_PER_EQ_EVENT: usize = 8;
-const MAX_TERMINAL_TEXT_BYTES: usize = 256 * 1024;
 
 #[derive(Default)]
 pub(super) struct ProductProjection {
     cursor: u64,
     thread_id: Option<iteron_protocol::SessionId>,
     run_id: Option<iteron_protocol::RunId>,
-    final_answer: String,
-    final_seen: bool,
-    final_complete: bool,
 }
 
 impl ProductProjection {
@@ -30,13 +26,11 @@ impl ProductProjection {
         source_seq: u64,
     ) {
         let Some(snapshot) = client.thread_snapshot_v1() else {
-            app.product_stream_active = false;
-            app.product_turn_status = None;
+            app.product.unavailable();
             return;
         };
         if snapshot.contract_version != PRODUCT_CONTRACT_VERSION {
-            app.product_stream_active = false;
-            app.product_turn_status = None;
+            app.product.unavailable();
             return;
         }
         if self.thread_id.as_ref() != Some(&snapshot.thread_id) {
@@ -45,27 +39,14 @@ impl ProductProjection {
             self.run_id = None;
         }
         self.select_run(app, snapshot.run_id.clone());
-        app.product_stream_active = true;
-        app.product_turn_status = snapshot.turn.as_ref().map(|turn| {
-            format!(
-                "turn {} · {} item{}{}",
-                turn.turn_id.0,
-                turn.items.len(),
-                if turn.items.len() == 1 { "" } else { "s" },
-                if turn.omitted_items > 0 {
-                    format!(" · {} omitted", turn.omitted_items)
-                } else {
-                    String::new()
-                }
-            )
-        });
+        app.product.observe_snapshot(&snapshot);
 
         for _ in 0..iteron_tunables::param_integer(
             "cli.tui.product_projection.max_pages_per_eq_event",
             MAX_PAGES_PER_EQ_EVENT,
         ) {
             let Some(page) = client.product_events_read_v1(self.cursor) else {
-                app.product_stream_active = false;
+                app.product.unavailable();
                 return;
             };
             let page = match page {
@@ -79,7 +60,7 @@ impl ProductProjection {
             if page.contract_version != PRODUCT_CONTRACT_VERSION
                 || self.thread_id.as_ref() != Some(&page.thread_id)
             {
-                app.product_stream_active = false;
+                app.product.unavailable();
                 app.note(
                     block::NoticeLevel::Err,
                     "product event identity changed during terminal projection",
@@ -100,11 +81,8 @@ impl ProductProjection {
         if self.run_id.as_ref() == Some(&run_id) {
             return;
         }
+        app.product.select_run(&run_id);
         self.run_id = Some(run_id);
-        self.final_answer.clear();
-        self.final_seen = false;
-        self.final_complete = true;
-        app.product_terminal_answer = None;
     }
 
     pub(super) fn ingest_page(
@@ -113,6 +91,27 @@ impl ProductProjection {
         page: ProductEventsPageV1,
         source_seq: u64,
     ) -> bool {
+        if page.contract_version != PRODUCT_CONTRACT_VERSION {
+            app.product.unavailable();
+            return false;
+        }
+        if let Some(thread) = &self.thread_id {
+            if thread != &page.thread_id {
+                app.product.unavailable();
+                return false;
+            }
+        } else {
+            self.thread_id = Some(page.thread_id.clone());
+        }
+        if self.run_id.is_none() {
+            if let Some(first) = page
+                .events
+                .iter()
+                .find(|event| event.thread_id == page.thread_id)
+            {
+                self.select_run(app, first.run_id.clone());
+            }
+        }
         if let Some(gap) = page.gap
             && gap.oldest_available > self.cursor.saturating_add(1)
         {
@@ -124,7 +123,7 @@ impl ProductProjection {
                 ),
             );
             self.cursor = gap.oldest_available - 1;
-            self.final_complete = false;
+            app.product.mark_incomplete();
         }
         for event in page.events {
             if event.event_seq <= self.cursor {
@@ -135,7 +134,7 @@ impl ProductProjection {
             }
             if event.event_seq != self.cursor.saturating_add(1) {
                 app.note(block::NoticeLevel::Warn, "product event sequence skipped; final answer will require terminal reconciliation");
-                self.final_complete = false;
+                app.product.mark_incomplete();
             }
             self.cursor = event.event_seq;
             if self
@@ -143,6 +142,10 @@ impl ProductProjection {
                 .as_ref()
                 .is_some_and(|run_id| run_id != &event.run_id)
             {
+                continue;
+            }
+            if self.thread_id.as_ref() != Some(&event.thread_id) {
+                app.product.mark_incomplete();
                 continue;
             }
             let reached_terminal = matches!(&event.event, ProductEventKindV1::TurnEnded { .. });
@@ -160,26 +163,13 @@ impl ProductProjection {
     fn apply_event(&mut self, app: &mut App, event: ProductEventKindV1) {
         match event {
             ProductEventKindV1::TurnStarted { .. } => {
-                self.final_answer.clear();
-                self.final_seen = false;
-                self.final_complete = true;
-                app.product_terminal_answer = None;
+                app.product.begin_turn();
             }
             ProductEventKindV1::ItemContent { channel, content } => match channel {
                 ItemContentChannelV1::Assistant => app.stream_text(&content),
                 ItemContentChannelV1::Reasoning => app.stream_think(&content),
                 ItemContentChannelV1::FinalAnswer => {
-                    self.final_seen = true;
-                    if self.final_answer.len().saturating_add(content.len())
-                        <= iteron_tunables::param_integer(
-                            "cli.tui.product_projection.max_terminal_text_bytes",
-                            MAX_TERMINAL_TEXT_BYTES,
-                        )
-                    {
-                        self.final_answer.push_str(&content);
-                    } else {
-                        self.final_complete = false;
-                    }
+                    app.product.append_final(&content);
                 }
                 ItemContentChannelV1::ToolInputJson | ItemContentChannelV1::ToolOutput => {}
             },
@@ -188,7 +178,7 @@ impl ProductProjection {
                     channel,
                     ItemContentChannelV1::Assistant | ItemContentChannelV1::FinalAnswer
                 ) {
-                    self.final_complete = false;
+                    app.product.mark_incomplete();
                     app.note(block::NoticeLevel::Warn, "product answer exceeded the resident content bound; terminal text requires reconciliation");
                 }
             }
@@ -257,7 +247,7 @@ impl ProductProjection {
                 }
             }
             ProductEventKindV1::SourceGap { dropped } => {
-                self.final_complete = false;
+                app.product.mark_incomplete();
                 app.note(
                     block::NoticeLevel::Warn,
                     format!(
@@ -270,18 +260,17 @@ impl ProductProjection {
                 terminal_text_exact,
                 ..
             } => {
-                if terminal_text_exact && self.final_seen && self.final_complete {
-                    let answer = self.final_answer.clone();
+                if let Some(answer) = app.product.finish_terminal(terminal_text_exact) {
                     app.finish_text_boundary();
-                    app.reconcile_terminal_assistant(&answer);
-                    app.product_terminal_answer = Some(answer);
+                    app.reconcile_terminal_assistant(answer.text());
+                    app.product.retain_terminal(answer);
                 }
                 if state == TurnStateV1::Failed {
                     app.status = "turn failed · finalizing".into();
                 }
             }
             ProductEventKindV1::TerminalTextUnavailable { .. } => {
-                self.final_complete = false;
+                app.product.mark_incomplete();
             }
             ProductEventKindV1::ItemStarted { .. } | ProductEventKindV1::ItemEnded { .. } => {}
         }

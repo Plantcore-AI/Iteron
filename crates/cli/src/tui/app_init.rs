@@ -72,9 +72,7 @@ impl App {
             view_h: 0,
             mouse_capture: mouse_capture::State::default(),
             input_lanes: super::input_lanes::InputLanes::default(),
-            product_stream_active: false,
-            product_terminal_answer: None,
-            product_turn_status: None,
+            product: super::product_presentation::ProductPresentation::default(),
             #[cfg(test)]
             refused_image_paths: HashSet::new(),
         }

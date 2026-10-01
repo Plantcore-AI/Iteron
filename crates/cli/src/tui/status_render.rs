@@ -401,7 +401,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
                 spans.push(Span::styled(format!(" +{}", count - 1), muted));
             }
         }
-        if let Some(product_turn) = &app.product_turn_status {
+        if let Some(product_turn) = app.product.turn_status() {
             spans.push(Span::styled(format!(" · {product_turn}"), muted));
         }
         if let Some(started) = app.run.started() {

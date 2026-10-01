@@ -447,6 +447,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.assistant.reset();
     app.activity_observations.retire_run_observations();
     app.run.select_verified_run();
+    app.product.clear_selected_run();
     app.resume_handoff = None;
     app.follow_latest();
 }

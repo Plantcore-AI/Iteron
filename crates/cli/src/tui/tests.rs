@@ -7940,7 +7940,6 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
     };
     let mut app = App::new();
     app.run.submission_accepted(SubmissionId(1), Instant::now());
-    app.product_stream_active = true;
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
@@ -8000,10 +7999,7 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
         },
         12,
     );
-    assert_eq!(
-        app.product_terminal_answer.as_deref(),
-        Some("exact terminal answer")
-    );
+    assert_eq!(app.product.terminal_answer(), Some("exact terminal answer"));
     let screen = tests::render_text(&mut app, 100, 24);
     assert!(screen.contains("exact terminal answer"), "{screen}");
     assert!(!screen.contains("partial answer"), "{screen}");
@@ -8064,7 +8060,7 @@ fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
         },
         3,
     );
-    assert!(app.product_terminal_answer.is_none());
+    assert!(app.product.terminal_answer().is_none());
     assert!(tests::render_text(&mut app, 100, 24).contains("product content gap"));
 }
 
@@ -8104,7 +8100,6 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
     let thread_id = iteron_protocol::SessionId("approval-thread".into());
     let mut app = App::new();
     app.run.submission_accepted(SubmissionId(1), Instant::now());
-    app.product_stream_active = true;
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,

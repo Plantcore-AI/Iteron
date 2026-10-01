@@ -127,8 +127,8 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.flush_think();
             app.finish_text_boundary();
             let terminal_answer = app
-                .product_terminal_answer
-                .take()
+                .product
+                .take_terminal()
                 .unwrap_or_else(|| iteron_record::redact::scrub(&summary.assistant_text));
             if app.reconcile_terminal_assistant(&terminal_answer) {
                 app.note(
