@@ -1,8 +1,8 @@
 //! Mailbox callbacks retain no strong host/runtime/resident cycle across cancellation or restart.
 use super::{
-    AgentControllerJournal, AgentEpochV1, AgentIdV1, AgentMailboxMessage, AgentMessageIdV1,
-    AgentStateV1, ControllerError, MailboxPort, PersistentAgentHost, RuntimeProviderBudgetPort,
-    Shared,
+    AgentControlPort, AgentControllerJournal, AgentEpochV1, AgentIdV1, AgentMailboxMessage,
+    AgentMessageIdV1, AgentStateV1, ControllerError, MailboxPort, PersistentAgentHost,
+    RuntimeProviderBudgetPort, Shared,
 };
 use std::sync::{Arc, Weak};
 
@@ -25,6 +25,10 @@ impl<J> WeakMailbox<J> {
     }
 }
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for WeakMailbox<J> {
+    fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError> {
+        Ok(Arc::new(self.host()?))
+    }
+
     fn provider_budget_port(
         &self,
         id: AgentIdV1,

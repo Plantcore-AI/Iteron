@@ -5,7 +5,7 @@
 
 use super::run_state::AgentEnv;
 use crate::events::ProgressEvent;
-use crate::spawner::{AgentActivityReporter, AgentCall, AgentOutcome};
+use crate::spawner::{AgentActivityReporter, AgentCall, AgentInvocationIdentity, AgentOutcome};
 use crate::task_dag::runtime::{AttemptRetryLink, AttemptTerminal, digest_bytes};
 use crate::task_dag::{
     AttemptAssignment, AttemptDisposition, AttemptId, AttemptRetryCause, TaskId,
@@ -124,7 +124,14 @@ async fn spawn_child(
     let call = call.clone();
     let call_cancel = call.cancel.clone();
     let (activity, activity_rx) = AgentActivityReporter::channel();
-    let mut child = tokio::spawn(async move { spawner.spawn_with_activity(call, activity).await });
+    let mut child = tokio::spawn(async move {
+        let Some(identity) = AgentInvocationIdentity::admitted(idx, attempt_id) else {
+            return AgentOutcome::null(
+                "actual engine attempt identity exceeds its bounded envelope",
+            );
+        };
+        spawner.spawn_with_identity(call, identity, activity).await
+    });
     let started = Instant::now();
     let mut interval = tokio::time::interval_at(
         tokio::time::Instant::now()

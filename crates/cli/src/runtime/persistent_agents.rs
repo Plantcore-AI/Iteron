@@ -26,6 +26,8 @@ pub(super) mod prepared_mailbox;
 #[path = "persistent_agents/weak_mailbox.rs"]
 mod weak_mailbox;
 pub(crate) use parent_turn::ParentRuntimeTurn;
+#[path = "persistent_agents/engine_children.rs"]
+mod engine_children;
 #[path = "persistent_agents/provider_budget.rs"]
 mod provider_budget;
 #[path = "persistent_agents/workflow.rs"]
@@ -40,6 +42,36 @@ const MAX_INPUT_BATCH: usize = 128;
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn spawn_engine_child(
+        &self,
+        _actor: AgentActor,
+        _request_id: &str,
+        _spawn: AgentCommandV1,
+        _binding: iteron_agents::AgentWorkflowChildBinding,
+    ) -> Result<iteron_agents::AgentWorkflowChildLease, ControllerError> {
+        Err(ControllerError::Permission)
+    }
+    fn engine_child_completion(
+        &self,
+        claim: &iteron_agents::AgentWorkflowClaim,
+    ) -> Result<Option<iteron_agents::AgentWorkflowCompletion>, ControllerError> {
+        self.workflow_completion(&iteron_workflow::live_scheduler::ScheduledTaskV1 {
+            workflow_id: claim.workflow_id.clone(),
+            node_id: claim.node_id,
+            attempt: claim.attempt,
+            input_digest: claim.input_digest.clone(),
+            assigned_agent: claim.assigned_agent.0,
+            task: claim.task.clone(),
+            deadline_unix_ms: claim.deadline_unix_ms,
+            budget: iteron_workflow::task_dag::TaskBudget {
+                max_turns: claim.budget.turns,
+                max_tokens: claim.budget.tokens,
+                max_cost_microusd: claim.budget.cost_microusd,
+                max_wall_ms: claim.budget.wall_ms,
+            },
+        })
+    }
+
     fn begin_parent_turn(
         &self,
         _source: String,
@@ -143,6 +175,7 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 }
 
 trait MailboxPort: Send + Sync {
+    fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError>;
     fn provider_budget_port(
         &self,
         id: AgentIdV1,
@@ -176,6 +209,15 @@ pub(crate) struct LiveAgentMailbox {
 }
 
 impl LiveAgentMailbox {
+    pub(super) fn child_controller(
+        &self,
+    ) -> Result<(Arc<dyn AgentControlPort>, AgentIdV1), ControllerError> {
+        if self.stop_requested() {
+            return Err(ControllerError::StaleEpoch);
+        }
+        Ok((self.port.controller_port()?, self.id))
+    }
+
     pub(super) fn provider_budget_port(
         &self,
     ) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
@@ -602,6 +644,16 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn spawn_engine_child(
+        &self,
+        actor: AgentActor,
+        request_id: &str,
+        spawn: AgentCommandV1,
+        binding: iteron_agents::AgentWorkflowChildBinding,
+    ) -> Result<iteron_agents::AgentWorkflowChildLease, ControllerError> {
+        PersistentAgentHost::spawn_engine_child(self, actor, request_id, spawn, binding)
+    }
+
     fn begin_parent_turn(
         &self,
         source: String,
@@ -825,6 +877,10 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
 }
 
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for PersistentAgentHost<J> {
+    fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError> {
+        Ok(Arc::new(self.clone()))
+    }
+
     fn provider_budget_port(
         &self,
         id: AgentIdV1,
