@@ -17,8 +17,7 @@ impl App {
                 thinking_chars,
             } => {
                 if output_chars > 0 || thinking_chars > 0 {
-                    self.awaiting_first_token_since = None;
-                    self.provider_accepted = false;
+                    self.activity_observations.finish_provider_wait();
                 }
                 self.status = match (output_chars, thinking_chars) {
                     (0, 0) => kind.label().to_string(),

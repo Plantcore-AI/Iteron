@@ -108,6 +108,9 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
         app.mouse_capture.status_label(),
         Accent::Metadata,
     )];
+    if app.activity_observations.has_presentation_gap() {
+        groups.push(Group::single("activity gap · /activity", Accent::Warning));
+    }
     if app.keymap_status != "keys:standard" {
         groups.push(Group::single(app.keymap_status.clone(), Accent::Mode));
     }
@@ -267,10 +270,10 @@ pub(super) fn visible_activity(app: &App) -> Option<(&PresentedActivity, Duratio
         return None;
     }
     let activity = app
-        .activities
+        .activity_observations
         .values()
-        .max_by_key(|activity| activity.event.updated_at_unix_ms)?;
-    let elapsed = activity.observed_at.elapsed();
+        .max_by_key(|activity| activity.event().updated_at_unix_ms)?;
+    let elapsed = activity.observed_at().elapsed();
     (elapsed >= Duration::from_millis(250)).then_some((activity, elapsed))
 }
 
@@ -321,18 +324,20 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             Style::default().fg(th.warn),
         )]
     } else if let Some((activity, elapsed)) = visible_activity(app) {
-        let mut label = activity_label(&activity.event).to_owned();
+        let mut label = activity_label(activity.event()).to_owned();
         if elapsed >= Duration::from_secs(1) {
             label.push_str(&format!(" · {}", fmt_mmss(elapsed)));
         }
-        if activity.event.limit > 1 {
+        if activity.event().limit > 1 {
             label.push_str(&format!(
                 " · attempt {}/{}",
-                activity.event.attempt, activity.event.limit
+                activity.event().attempt,
+                activity.event().limit
             ));
         }
-        if let Some(progress) = activity.event.progress {
-            if activity.event.detail_code == Some(iteron_protocol::ActivityDetailCode::ToolQueued) {
+        if let Some(progress) = activity.event().progress {
+            if activity.event().detail_code == Some(iteron_protocol::ActivityDetailCode::ToolQueued)
+            {
                 label.push_str(&format!(
                     " · {}/{} permits",
                     progress.completed, progress.total
@@ -342,7 +347,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             }
         }
         if elapsed >= Duration::from_secs(2) {
-            label.push_str(match activity.event.cancelability {
+            label.push_str(match activity.event().cancelability {
                 iteron_protocol::ActivityCancelability::None => " · /status for remedy",
                 _ => " · Esc to cancel",
             });

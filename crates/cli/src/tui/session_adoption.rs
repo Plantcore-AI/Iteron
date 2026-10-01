@@ -445,6 +445,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.workflows_panel.reset();
     app.geometry.clear();
     app.assistant.reset();
+    app.activity_observations.retire_run_observations();
     app.last_result = None;
     app.retryable_task = None;
     app.resume_handoff = None;

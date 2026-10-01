@@ -462,8 +462,7 @@ pub(super) fn submit_operation(
             app.run_started = Some(Instant::now());
             // A new run must not inherit provider authority. The request-sent activity starts the
             // clock; only the later accepted activity changes its semantic label.
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
+            app.activity_observations.finish_provider_wait();
             app.completions.dismiss();
             Some(submission_id)
         }

@@ -1,21 +1,5 @@
 use super::*;
 
-fn max_presented_activity_age() -> Duration {
-    Duration::from_secs(24 * 60 * 60)
-}
-
-fn activity_started_at(event: &iteron_protocol::ActivityEvent) -> Instant {
-    let now = Instant::now();
-    let unix_now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let unix_now_ms = u64::try_from(unix_now_ms).unwrap_or(u64::MAX);
-    let age = Duration::from_millis(unix_now_ms.saturating_sub(event.started_at_unix_ms))
-        .min(max_presented_activity_age());
-    now.checked_sub(age).unwrap_or(now)
-}
-
 /// Apply one EQ envelope.
 ///
 /// The frontend's whole view of the runtime arrives through here. `RunEnded` carries what the
@@ -51,67 +35,19 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
         }
         app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Activity(event) => {
-            if event.validate().is_err() {
-                app.note(
+            match app.activity_observations.observe(event, app.running) {
+                super::activity_presentation::ActivityReaction::None => {}
+                super::activity_presentation::ActivityReaction::Status(status) => {
+                    app.status = status.into()
+                }
+                super::activity_presentation::ActivityReaction::Invalid => app.note(
                     block::NoticeLevel::Err,
                     "runtime emitted an invalid bounded activity event; it was not rendered",
-                );
-            } else if app
-                .retired_activity_ids
-                .iter()
-                .any(|retired| retired == &event.id)
-            {
-                // Best-effort activity delivery may trail the authoritative run terminal. Never
-                // re-open a retired id, including after the next submission has started.
-            } else if event.state.is_terminal() {
-                match event.detail_code {
-                    Some(iteron_protocol::ActivityDetailCode::AnswerComplete) if app.running => {
-                        app.status = "answer complete · finalizing…".into();
-                    }
-                    Some(iteron_protocol::ActivityDetailCode::InputReady) if !app.running => {
-                        app.status = "idle · input ready".into();
-                    }
-                    _ => {}
-                }
-                app.activities.remove(&event.id);
-                app.retired_activity_ids.push_back(event.id);
-                while app.retired_activity_ids.len() > 256 {
-                    app.retired_activity_ids.pop_front();
-                }
-            } else {
-                if !app.running
-                    && matches!(
-                        event.owner,
-                        iteron_protocol::ActivityOwner::Runtime
-                            | iteron_protocol::ActivityOwner::Provider
-                            | iteron_protocol::ActivityOwner::Tool
-                            | iteron_protocol::ActivityOwner::Workflow
-                    )
-                {
-                    return;
-                }
-                if event.detail_code == Some(iteron_protocol::ActivityDetailCode::Finalizing) {
-                    app.status = "answer complete · finalizing…".into();
-                }
-                let started_at = activity_started_at(&event);
-                match event.detail_code {
-                    Some(iteron_protocol::ActivityDetailCode::RequestSent) => {
-                        app.awaiting_first_token_since = Some(started_at);
-                        app.provider_accepted = false;
-                    }
-                    Some(iteron_protocol::ActivityDetailCode::WaitingFirstToken) => {
-                        app.awaiting_first_token_since.get_or_insert(started_at);
-                        app.provider_accepted = true;
-                    }
-                    _ => {}
-                }
-                app.activities
-                    .entry(event.id.clone())
-                    .and_modify(|presented| presented.event = event.clone())
-                    .or_insert(PresentedActivity {
-                        event,
-                        observed_at: started_at,
-                    });
+                ),
+                super::activity_presentation::ActivityReaction::Saturated => app.note(
+                    block::NoticeLevel::Warn,
+                    "activity display is incomplete; /activity reads the actual owners",
+                ),
             }
         }
         app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
@@ -204,18 +140,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.ctrl_c_quit_deadline = None;
             app.draining = false;
             app.last_run_latency = app.run_started.take().map(|started| started.elapsed());
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
-            // Activity snapshots are deliberately best-effort. The authoritative run boundary
-            // retires every remaining live projection so a saturated activity bridge cannot
-            // leave a stale spinner after the run has terminalized.
-            for id in app.activities.keys() {
-                app.retired_activity_ids.push_back(id.clone());
-            }
-            while app.retired_activity_ids.len() > 256 {
-                app.retired_activity_ids.pop_front();
-            }
-            app.activities.clear();
+            app.activity_observations.retire_run_observations();
             app.flush_think();
             app.finish_text_boundary();
             let terminal_answer = app

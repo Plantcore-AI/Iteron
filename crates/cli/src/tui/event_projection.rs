@@ -39,8 +39,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         UiEvent::Phase(p) => {
             // Durable Phase is not transport authority. Local request assembly and admission also
             // happen under Model, so TTFT begins only when the RequestSent activity arrives.
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
+            app.activity_observations.finish_provider_wait();
             if p == iteron_protocol::Phase::Model {
                 app.assistant.begin_model_turn();
             }

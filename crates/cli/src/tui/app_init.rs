@@ -5,7 +5,6 @@ use super::{
 use ratatui::style::{Color, Style};
 #[cfg(test)]
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 impl App {
@@ -68,15 +67,12 @@ impl App {
             navigation: super::session_navigation::SessionNavigationOwner::default(),
             workspace_commands: super::workspace_command::WorkspaceCommands::default(),
             attachments: super::attachment_owner::AttachmentOwner::default(),
-            activities: std::collections::BTreeMap::new(),
-            retired_activity_ids: VecDeque::new(),
+            activity_observations: super::activity_presentation::ActivityPresentation::default(),
             resume_handoff: None,
             run_started: None,
             last_run_latency: None,
             workspace_dirty: None,
             retryable_task: None,
-            awaiting_first_token_since: None,
-            provider_accepted: false,
             spin: 0,
             row_map: Vec::new(),
             view_top: 0,

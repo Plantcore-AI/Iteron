@@ -505,8 +505,8 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         app.completions.dismiss();
                         app.resume_handoff = None;
                     } else {
-                        app.force_quit_requested =
-                            app.workflow_monitor.live_count() > 0 || !app.activities.is_empty();
+                        app.force_quit_requested = app.workflow_monitor.live_count() > 0
+                            || app.activity_observations.has_active();
                         app.quit = true;
                     }
                 }

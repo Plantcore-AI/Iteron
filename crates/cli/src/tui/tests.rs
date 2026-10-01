@@ -4901,7 +4901,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.assistant.fixture_text("visible answer".into());
         app.assistant.fixture_thinking("visible reasoning".into());
-        app.awaiting_first_token_since = Some(Instant::now());
+        app.activity_observations
+            .observe_request_sent(Instant::now());
         let transcript_len = app.history.blocks().len();
 
         app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::KernelActivity {
@@ -4911,7 +4912,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
 
         assert_eq!(app.status, "planning · 1.2k chars · 320 reasoning");
-        assert!(app.awaiting_first_token_since.is_none());
+        assert!(app.activity_observations.provider_wait().is_none());
         assert_eq!(app.assistant.text(), "visible answer");
         assert_eq!(app.assistant.thinking(), "visible reasoning");
         assert_eq!(app.history.blocks().len(), transcript_len);
@@ -6934,8 +6935,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // An ordinary wait says nothing at all; the phase label already covers it.
         assert!(app.first_token_stall().is_none());
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
-        app.provider_accepted = false;
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
         let slow = app
             .first_token_stall()
             .expect("a slow prefill is described");
@@ -6943,13 +6944,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(slow.label().contains("request sent"));
         assert!(!slow.label().contains("accepted"));
 
-        app.provider_accepted = true;
+        app.activity_observations
+            .observe_provider_response(Instant::now());
         let accepted = app
             .first_token_stall()
             .expect("accepted prefill retains the request-sent clock");
         assert!(accepted.label().contains("accepted · model generating"));
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         let stalled = app
             .first_token_stall()
             .expect("a stalled stream is described");
@@ -6970,13 +6973,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         apply_event(&mut app, UiEvent::Thinking("reasoning".into()));
         assert!(app.first_token_stall().is_none());
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         apply_event(&mut app, UiEvent::Text("answer".into()));
         assert!(app.first_token_stall().is_none());
 
         // Leaving the model phase stops the clock: only a provider request can be waiting on one.
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Tools));
         assert!(app.first_token_stall().is_none());
     }
@@ -7780,11 +7785,9 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &drain,
         None,
     );
-    assert!(app.activities.contains_key("turn-1-finalizing"));
+    assert!(app.activity_observations.contains("turn-1-finalizing"));
 
-    app.retired_activity_ids
-        .push_back("turn-1-finalizing".into());
-    app.activities.clear();
+    app.activity_observations.retire_run_observations();
     app.running = false;
     apply_server_event(
         &mut app,
@@ -7801,7 +7804,7 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         None,
     );
     assert!(
-        app.activities.is_empty(),
+        !app.activity_observations.has_active(),
         "late old-turn activity stayed retired"
     );
 
@@ -7867,12 +7870,14 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
     );
 
     assert!(
-        !app.provider_accepted,
+        !app.activity_observations.provider_wait().unwrap().accepted,
         "request sent is not provider acceptance"
     );
     assert!(
-        app.awaiting_first_token_since
+        app.activity_observations
+            .provider_wait()
             .expect("request sent starts TTFT")
+            .started
             .elapsed()
             >= Duration::from_millis(400),
         "queue delay must not reset the TTFT clock"
@@ -7880,11 +7885,11 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
     let (presented, elapsed) = visible_activity(&app).expect("delayed activity is visible now");
     assert!(elapsed >= Duration::from_millis(400));
     assert_eq!(
-        activity_label(&presented.event),
+        activity_label(presented.event()),
         "request sent · waiting for provider"
     );
 
-    let mut accepted = presented.event.clone();
+    let mut accepted = presented.event().clone();
     accepted.id = "turn-2-first-token".into();
     accepted.started_at_unix_ms = now;
     accepted.updated_at_unix_ms = now;
@@ -7900,7 +7905,7 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         None,
     );
     assert!(
-        app.provider_accepted,
+        app.activity_observations.provider_wait().unwrap().accepted,
         "only Accepted advances the presentation label"
     );
 }

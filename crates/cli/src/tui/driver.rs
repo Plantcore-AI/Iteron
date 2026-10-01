@@ -615,8 +615,8 @@ pub async fn run(
         // waiting state feel live, then 80 ms while streaming. Event-driven redraws remain
         // immediate; idle schedules no animation wake at all.
         let now = Instant::now();
-        let activity_animation = app.running || !app.activities.is_empty();
-        let spinner_tick = if app.awaiting_first_token_since.is_some() {
+        let activity_animation = app.running || app.activity_observations.has_active();
+        let spinner_tick = if app.activity_observations.provider_wait().is_some() {
             iteron_tunables::param_duration(
                 "cli.tui.driver_support.first_token_spinner_tick",
                 FIRST_TOKEN_SPINNER_TICK,

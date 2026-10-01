@@ -46,6 +46,8 @@ use composer_render::{format_attachment_size, render_composer, render_pending_la
 #[cfg(test)]
 use composer_render::approval_action_line;
 
+mod activity_presentation;
+use activity_presentation::PresentedActivity;
 mod activity_center;
 mod advisory_maintenance;
 mod app_init;
@@ -404,11 +406,6 @@ fn command_token(line: &str, theme: &theme::Theme) -> Option<(String, String, Co
     Some((line[..end].to_string(), line[end..].to_string(), color))
 }
 
-struct PresentedActivity {
-    event: iteron_protocol::ActivityEvent,
-    observed_at: Instant,
-}
-
 /// The semantic destination of Enter for the current draft. Dispatch, composer title and footer
 /// all consult this one reducer so the UI cannot promise “steer” while routing the same bytes to a
 /// post-turn command lane (or vice versa).
@@ -682,10 +679,7 @@ struct App {
     /// the key/render loop never awaits Git, record traversal, or workspace mutation.
     workspace_commands: workspace_command::WorkspaceCommands,
     attachments: attachment_owner::AttachmentOwner,
-    activities: std::collections::BTreeMap<String, PresentedActivity>,
-    /// Recently terminalized activity ids. A late cosmetic event cannot resurrect an old-turn
-    /// spinner after the authoritative RunEnded boundary, even if a new turn has already started.
-    retired_activity_ids: VecDeque<String>,
+    activity_observations: activity_presentation::ActivityPresentation,
     /// Exact restart command prepared by a session selection. It is display/copy state only: an
     /// unchanged handoff is never submitted to the model or executed inside this process.
     resume_handoff: Option<String>,
@@ -700,13 +694,6 @@ struct App {
     /// transport error says nothing about whether the provider already billed the request — so
     /// the operator is the idempotency key, and this makes saying yes one keystroke (I-39).
     retryable_task: Option<String>,
-    /// When the model phase began without a token yet arriving, and `None` again the instant one
-    /// does. The provider inactivity deadline is 45s, so without
-    /// this a dead connection and a slow prefill looked identical for a full minute (I-64). It is
-    /// the frontend end of the same first-token instrumentation `TurnEnd.ttft_ms` records.
-    awaiting_first_token_since: Option<Instant>,
-    /// True only after provider response authority, never merely because a request was sent.
-    provider_accepted: bool,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
     spin: usize,

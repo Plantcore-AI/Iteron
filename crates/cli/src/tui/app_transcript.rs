@@ -28,7 +28,8 @@ impl App {
         if !self.running {
             return None;
         }
-        let waited = self.awaiting_first_token_since?.elapsed();
+        let wait = self.activity_observations.provider_wait()?;
+        let waited = wait.started.elapsed();
         let state = if waited
             >= iteron_tunables::param_duration(
                 "cli.tui.first_token_stall_after",
@@ -48,21 +49,19 @@ impl App {
         Some(FirstTokenStall {
             state,
             waited,
-            accepted: self.provider_accepted,
+            accepted: wait.accepted,
         })
     }
 
     pub(super) fn stream_text(&mut self, delta: &str) {
-        self.awaiting_first_token_since = None;
-        self.provider_accepted = false;
+        self.activity_observations.finish_provider_wait();
         self.flush_think();
         if self.assistant.append_text(delta) {
             self.autoscroll();
         }
     }
     pub(super) fn stream_think(&mut self, delta: &str) {
-        self.awaiting_first_token_since = None;
-        self.provider_accepted = false;
+        self.activity_observations.finish_provider_wait();
         if self.assistant.append_thinking(delta) {
             self.autoscroll();
         }
