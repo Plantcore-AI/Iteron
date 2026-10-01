@@ -46,6 +46,26 @@ pub(super) enum ExportError {
     OutcomeUnknown(String),
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) enum ExclusivePublication {
+    Created,
+    Exists,
+    NotPublished,
+    OutcomeUnknown,
+}
+
+/// A native owner already retains/revalidates the exact parent. Reuse the actual anonymous
+/// inode publisher; there is no second pathname lookup or named temporary-file fallback.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn publish_at(parent: &std::fs::File, leaf: &str, bytes: &[u8]) -> ExclusivePublication {
+    match unix::write_exclusive(parent, leaf, bytes, &mut || {}) {
+        Ok(()) => ExclusivePublication::Created,
+        Err(unix::WriteError::Exists) => ExclusivePublication::Exists,
+        Err(unix::WriteError::Known) => ExclusivePublication::NotPublished,
+        Err(unix::WriteError::OutcomeUnknown) => ExclusivePublication::OutcomeUnknown,
+    }
+}
+
 impl fmt::Display for ExportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

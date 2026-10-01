@@ -869,43 +869,24 @@ pub(super) fn handle_registered_command(
             schedule_slash_export(app, session, transcript_effects, requested, collision);
         }
         SlashCommand::Init => {
-            let dir = match ensure_real_workspace_dir(session.workspace(), ".iteron") {
-                Ok(dir) => dir,
-                Err(error) => {
-                    app.push(fg(Color::Red), format!("init refused: {error}"));
-                    return;
-                }
-            };
-            let cfg = dir.join("config.json");
-            if cfg.exists() {
-                app.push(
-                    dim(),
-                    format!("{} already exists — not overwritten", cfg.display()),
+            let Some(scope) = session.client.thread_snapshot_v1() else {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "project initialization has no current host scope",
                 );
-            } else {
-                // Repository config can only choose a bare model and tighten ceilings. Provider,
-                // MCP, hooks, effort, and grants belong in trusted ~/.iteron/config.json.
-                let starter = crate::config::starter_project_config();
-                match write_new_synced(&cfg, starter.as_bytes()) {
-                    Ok(_) => app.push(fg(Color::Green), format!("wrote {}", cfg.display())),
-                    Err(e) => app.push(fg(Color::Red), format!("init failed: {e}")),
-                }
-            }
-            let agents_md = session.workspace().join("AGENTS.md");
-            if !agents_md.exists() {
-                match write_new_synced(
-                    &agents_md,
-                    b"# Project instructions for coding agents\n\n- (describe build/test commands, conventions, and gotchas here)\n",
-                ) {
-                    Ok(()) => app.push(
-                        fg(Color::Green),
-                        format!("wrote {}", agents_md.display()),
-                    ),
-                    Err(error) => {
-                        app.push(fg(Color::Red), format!("init failed: {error}"));
-                    }
-                }
-            }
+                return;
+            };
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::ProjectInit(Box::new(app_server::ProjectInitV1 {
+                    thread_id: scope.thread_id,
+                    run_id: scope.run_id,
+                })),
+                transcript_effect::ControlKind::ProjectInit,
+            );
         }
         SlashCommand::Rewind => {
             workspace_command::queue_rewind(app, session, arg.to_owned());

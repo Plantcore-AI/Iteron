@@ -191,11 +191,16 @@ impl Agent {
             name: "bash".into(),
             input: serde_json::json!({"command":command}),
         };
-        let Some(effects) = self.registry.operation_effects(&call) else {
+        self.admit_operator_tool_call(&call)
+    }
+
+    /// Actual authenticated operator intent, consumed only by host-native scoped factories.
+    pub(crate) fn admit_operator_tool_call(&self, call: &iteron_protocol::ToolUse) -> bool {
+        let Some(effects) = self.registry.operation_effects(call) else {
             return false;
         };
         let decision = super::permission_policy::evaluate_operation(
-            "bash",
+            &call.name,
             &effects,
             super::permission_policy::OperationPolicy {
                 mode: self.permission_mode,

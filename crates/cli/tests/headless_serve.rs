@@ -1555,3 +1555,7 @@ mod artifact_journey;
 #[cfg(unix)]
 #[path = "headless_serve/operator_shell_journey.rs"]
 mod operator_shell_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/operator_project_init_journey.rs"]
+mod operator_project_init_journey;

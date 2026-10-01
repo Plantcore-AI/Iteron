@@ -351,7 +351,7 @@ async fn execute(
     if !cleanup_confirmed {
         body.insert_str(
             0,
-            "[descendant cleanup remains unobserved; host admission retained]\n",
+            "[owned process-group cleanup remains unobserved; host admission retained]\n",
         );
     }
     let ok = !timed_out && cleanup_confirmed && status.is_some_and(|status| status.success());

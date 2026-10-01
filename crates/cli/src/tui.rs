@@ -146,13 +146,15 @@ use attachment_owner::{
     AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
 };
 use block::spinner;
+#[cfg(all(test, target_os = "linux"))]
+use command_surfaces::export_transcript;
 use command_surfaces::{
-    apply_transcript_effect_event, clear_conversation, ensure_real_workspace_dir,
-    expand_selection_ancestors, export_transcript, initial_picker_selection, open_picker,
-    open_transcript_viewer, open_tunables_picker, schedule_slash_export,
-    schedule_transcript_viewer_effect, show_agent_catalog, transcript_export_body,
-    write_new_synced,
+    apply_transcript_effect_event, clear_conversation, expand_selection_ancestors,
+    initial_picker_selection, open_picker, open_transcript_viewer, open_tunables_picker,
+    schedule_slash_export, schedule_transcript_viewer_effect, show_agent_catalog,
 };
+#[cfg(test)]
+use command_surfaces::{ensure_real_workspace_dir, transcript_export_body};
 #[cfg(test)]
 use completion_owner::Completion;
 use composer_images::{

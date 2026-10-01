@@ -36,6 +36,47 @@ impl WindowsWorkspacePublisher {
             identity: Identity::current()?,
         })
     }
+
+    /// Retain one actual child beneath this same held namespace. Existing directory ACLs are
+    /// unchanged; a newly created component receives the current user's private descriptor.
+    /// Both real directory and parent-link barriers precede a confirmed creation receipt.
+    pub fn open_or_create_child(&self, name: &str) -> Result<(Self, bool), WindowsStateError> {
+        let _ = super::filename_units(OsStr::new(name))?;
+        let parent = self
+            .directories
+            .last()
+            .ok_or(WindowsStateError::Unavailable)?;
+        let identity = Identity::current()?;
+        let (child, created) =
+            super::open_directory_relative(parent, OsStr::new(name), Some(&identity))?;
+        if created {
+            identity
+                .validate_handle(&child, true)
+                .map_err(|_| WindowsStateError::OutcomeUnknown)?;
+            flush_directory(&child).map_err(|_| WindowsStateError::OutcomeUnknown)?;
+            flush_directory(parent).map_err(|_| WindowsStateError::OutcomeUnknown)?;
+        }
+        let mut directories = self
+            .directories
+            .iter()
+            .map(File::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|_| {
+                if created {
+                    WindowsStateError::OutcomeUnknown
+                } else {
+                    WindowsStateError::Unavailable
+                }
+            })?;
+        directories.push(child);
+        Ok((
+            Self {
+                directories,
+                identity,
+            },
+            created,
+        ))
+    }
     pub fn publish(
         &self,
         leaf: &str,

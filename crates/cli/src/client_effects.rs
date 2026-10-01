@@ -5,6 +5,7 @@ pub(crate) mod capability_fs;
 mod export;
 mod payload;
 mod process;
+pub(crate) mod project_init;
 pub(crate) mod shell;
 pub(crate) mod worker;
 

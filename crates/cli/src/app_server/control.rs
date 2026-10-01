@@ -673,6 +673,16 @@ pub(super) async fn apply_control(
             super::client_export::dispatch(events.contract.clone(), *command, request.reply);
             return;
         }
+        Control::ProjectInit(command) => {
+            super::project_init::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                *command,
+                request.reply,
+            );
+            return;
+        }
         Control::OperatorShell { command, cancel } => {
             super::client_shell::dispatch(
                 agent,

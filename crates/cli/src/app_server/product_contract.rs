@@ -138,6 +138,7 @@ struct Projection {
     export: Option<super::client_export::ExportBinding>,
     submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
     shell: Option<Arc<super::client_shell::ShellService>>,
+    project_init: Option<Arc<super::project_init::ProjectInitService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -225,6 +226,30 @@ impl ContractReader {
         exclusion: super::session_factory::SubmissionExclusion,
     ) {
         self.with_mut(|projection| projection.submission_exclusion = Some(Arc::new(exclusion)));
+    }
+    pub(super) fn project_init_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::project_init::ProjectInitService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .project_init
+                    .get_or_insert_with(|| {
+                        Arc::new(super::project_init::ProjectInitService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_project_init(&self) -> bool {
+        match self.with_mut(|projection| projection.project_init.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
     }
     pub(super) fn shell_admission(
         &self,

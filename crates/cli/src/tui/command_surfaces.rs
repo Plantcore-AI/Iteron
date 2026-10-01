@@ -214,6 +214,7 @@ pub(super) fn expand_selection_ancestors(items: &mut [PickItem], selection: usiz
     }
 }
 
+#[cfg(test)]
 pub(super) fn ensure_real_workspace_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
     if Path::new(name).components().count() != 1 {
         return Err("directory name must be one workspace component".into());
@@ -686,6 +687,44 @@ pub(super) fn apply_transcript_effect_event(
                     format!("tool rule {tool}: {verdict:?}"),
                 );
             }
+            (
+                transcript_effect::ControlKind::ProjectInit,
+                Some(app_server::ControlReply::ProjectInit(receipt)),
+            ) => {
+                if session
+                    .client
+                    .thread_snapshot_v1()
+                    .is_none_or(|scope| scope.run_id != receipt.source_run)
+                {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "project initialization receipt belongs to a prior host run",
+                    );
+                    return;
+                }
+                let mut rows = Vec::new();
+                for entry in receipt.entries {
+                    let status = match entry.status {
+                        crate::client_effects::project_init::InitStatus::Created => {
+                            "created and native publication confirmed"
+                        }
+                        crate::client_effects::project_init::InitStatus::Existing => {
+                            "already exists; preserved"
+                        }
+                        crate::client_effects::project_init::InitStatus::NotPublished => {
+                            "not published"
+                        }
+                        crate::client_effects::project_init::InitStatus::PublicationUnknown => {
+                            "publication unknown; host admission retained"
+                        }
+                    };
+                    rows.push(kv(entry.name, status));
+                }
+                if let Some(refusal) = receipt.refusal {
+                    rows.push(block::PanelRow::Note(refusal.into()));
+                }
+                app.panel("+", "project initialization", rows);
+            }
             (kind, Some(app_server::ControlReply::Refused(reason))) => {
                 let action = kind.label();
                 let prefix = if control.cancellation_requested {
@@ -722,21 +761,6 @@ pub(super) fn apply_transcript_effect_event(
         | transcript_effect::Disposition::OutcomeUnknown => block::NoticeLevel::Warn,
     };
     app.note(level, message);
-}
-
-/// Create an initialization file without a check/write race and make its contents durable before
-/// reporting success. Existing files are never overwritten.
-pub(super) fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
 }
 
 /// Render the catalog the resident runtime can actually execute. The session fact is captured once
