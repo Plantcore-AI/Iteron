@@ -4,9 +4,7 @@
 use super::KernelError;
 use super::agent_loop::AgentLoopGuard;
 use super::coding_provider_execution::CodingProviderExecution;
-use super::context_runtime::{
-    ContextBudgetInspection, ContextBudgetRecoveryGuard, TurnResultProjectionBudget,
-};
+use super::context_runtime::{ContextBudgetInspection, TurnResultProjectionBudget};
 use super::early_tool_collection::EarlyToolWindow;
 use super::investigation_convergence::{
     CandidateDiffState, CandidateWorkspaceBaseline, InvestigationConvergence,
@@ -60,15 +58,6 @@ pub(super) struct CodingRequestEvidence {
     pub(super) inspection: ContextBudgetInspection,
     pub(super) effort: EffortApplication,
 }
-/// A single borrowed request projection. It exposes only the independent inputs the actual
-/// request factory needs; consuming the cycle returns the same loop guard at final admission.
-pub(super) struct CodingRequestInput<'a> {
-    pub(super) messages: &'a mut Vec<Message>,
-    pub(super) convergence: &'a InvestigationConvergence,
-    pub(super) recovery: &'a mut ContextBudgetRecoveryGuard,
-    pub(super) loop_state: AgentLoopGuard,
-    pub(super) error_streak: u32,
-}
 struct ResponseState {
     accepted: AcceptedProviderResponse,
     elapsed: Duration,
@@ -99,6 +88,7 @@ pub(super) struct CodingRunDriver {
     baseline: CandidateWorkspaceBaseline,
     phase: RunPhase,
     loop_state: Option<AgentLoopGuard>,
+    request: Option<super::coding_request_execution::CodingRequestExecution>,
     evidence: Option<CodingRequestEvidence>,
     provider: Option<CodingProviderExecution>,
     committing: Option<ProviderResponseCommit>,
@@ -115,6 +105,7 @@ impl CodingRunDriver {
             baseline: CandidateWorkspaceBaseline::default(),
             phase: RunPhase::Boundary,
             loop_state: None,
+            request: None,
             evidence: None,
             provider: None,
             committing: None,
@@ -140,17 +131,52 @@ impl CodingRunDriver {
         self.phase = RunPhase::Iteration;
         Ok(())
     }
-    pub(super) fn begin_request(&mut self) -> Result<CodingRequestInput<'_>, KernelError> {
+    pub(super) fn convergence(&self) -> &InvestigationConvergence {
+        &self.convergence
+    }
+    pub(super) fn prepare_request(
+        &mut self,
+        seed: super::request_cycle::RequestCycleRecipe<'static>,
+        estimator: &mut iteron_ctx::RequestEstimator,
+    ) -> Result<(), KernelError> {
         self.require(RunPhase::Iteration)?;
+        let loop_state = self.loop_state.take().ok_or_else(boundary)?;
         self.phase = RunPhase::Preparing;
-        let error_streak = self.submitted.error_streak();
-        Ok(CodingRequestInput {
-            messages: &mut self.messages,
-            convergence: &self.convergence,
-            recovery: self.submitted.context_recovery(),
-            loop_state: self.loop_state.take().ok_or_else(boundary)?,
-            error_streak,
-        })
+        self.request = Some(
+            super::coding_request_execution::CodingRequestExecution::new(
+                seed,
+                std::mem::take(&mut self.messages),
+                self.submitted.take_context_recovery(),
+                loop_state,
+                self.submitted.error_streak(),
+                estimator,
+            ),
+        );
+        Ok(())
+    }
+    pub(super) fn request(
+        &self,
+    ) -> Result<&super::coding_request_execution::CodingRequestExecution, KernelError> {
+        self.require(RunPhase::Preparing)?;
+        self.request.as_ref().ok_or_else(boundary)
+    }
+    pub(super) fn request_mut(
+        &mut self,
+    ) -> Result<&mut super::coding_request_execution::CodingRequestExecution, KernelError> {
+        self.require(RunPhase::Preparing)?;
+        self.request.as_mut().ok_or_else(boundary)
+    }
+    pub(super) fn complete_request(
+        &mut self,
+        configuration: super::request_preparation::RequestConfiguration,
+        publication: super::request_context_publication::RequestContextPublication<'_>,
+    ) -> Result<PreparedModelTurn, KernelError> {
+        let (prepared, messages, recovery) =
+            self.request_mut()?.complete(configuration, publication)?;
+        self.messages = messages;
+        self.submitted.replace_context_recovery(recovery);
+        self.request = None;
+        Ok(prepared)
     }
     #[cfg(feature = "legacy-plantcore")]
     pub(super) fn error_streak(&self) -> u32 {
@@ -538,8 +564,11 @@ impl CodingRunDriver {
             .result
             .blocks)
     }
-    pub(super) fn into_messages(self) -> Vec<Message> {
-        self.messages
+    pub(super) fn into_messages(self) -> Result<Vec<Message>, KernelError> {
+        match self.request {
+            Some(request) => request.into_messages(),
+            None => Ok(self.messages),
+        }
     }
     fn accept_completion(
         &mut self,

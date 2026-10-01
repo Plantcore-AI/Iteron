@@ -16,9 +16,45 @@ use sha2::{Digest, Sha256};
 #[path = "request_preparation_tests.rs"]
 mod tests;
 
+/// Ordinary execution moves the real working set into the request phase. Legacy borrowed
+/// fixture preparation keeps its existing observation seam without adding a runtime mutex.
+pub(super) enum RequestMessages<'a> {
+    Owned(Vec<Message>),
+    Borrowed(&'a mut Vec<Message>),
+}
+impl std::ops::Deref for RequestMessages<'_> {
+    type Target = Vec<Message>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(messages) => messages,
+            Self::Borrowed(messages) => messages,
+        }
+    }
+}
+impl std::ops::DerefMut for RequestMessages<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Owned(messages) => messages,
+            Self::Borrowed(messages) => messages,
+        }
+    }
+}
+impl serde::Serialize for RequestMessages<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(std::ops::Deref::deref(self), serializer)
+    }
+}
+impl RequestMessages<'_> {
+    fn into_owned(self) -> Option<Vec<Message>> {
+        match self {
+            Self::Owned(messages) => Some(messages),
+            Self::Borrowed(_) => None,
+        }
+    }
+}
 pub(super) struct RequestContent<'a> {
     pub(super) system: String,
-    pub(super) messages: &'a mut Vec<Message>,
+    pub(super) messages: RequestMessages<'a>,
     pub(super) input_images: Vec<ImageContent>,
     pub(super) tools: PreparedToolSchemas,
     pub(super) max_tokens: u32,
@@ -39,6 +75,7 @@ enum PreparationPhase {
     Assessed,
     RecoverySettled,
     Validated,
+    DispatchedProjection,
 }
 struct Recovery {
     window_overflow: bool,
@@ -371,6 +408,39 @@ impl<'a> RequestPreparation<'a> {
         self.phase = PreparationPhase::Validated;
         Ok(())
     }
+    /// Build the transport value while the real working set remains retained by this owner.
+    /// The existing immutable request projection is the only message clone; errors keep the
+    /// original working set available to the resident invocation epilogue.
+    pub(super) fn project_request(
+        &mut self,
+        config: RequestConfiguration,
+    ) -> Result<(TurnRequest, u32), KernelError> {
+        if self.phase != PreparationPhase::Validated {
+            return Err(KernelError::ContextResolution(
+                "request preparation is unadmitted".into(),
+            ));
+        }
+        self.phase = PreparationPhase::DispatchedProjection;
+        Ok((
+            TurnRequest {
+                model: config.model,
+                system: std::mem::take(&mut self.request.system),
+                messages: self.request.messages.to_vec(),
+                input_images: std::mem::take(&mut self.request.input_images),
+                tools: self.request.tools.clone(),
+                max_tokens: self.request.max_tokens,
+                cache_system: config.cache_system,
+                thinking_budget: config.thinking_budget,
+                reasoning_effort: config.reasoning_effort,
+                controls: config.controls,
+            },
+            self.requested_output,
+        ))
+    }
+    pub(super) fn into_messages(self) -> Option<Vec<Message>> {
+        self.request.messages.into_owned()
+    }
+    #[cfg(test)]
     pub(super) fn into_request(
         self,
         config: RequestConfiguration,
@@ -384,7 +454,7 @@ impl<'a> RequestPreparation<'a> {
             TurnRequest {
                 model: config.model,
                 system: self.request.system,
-                messages: self.request.messages.clone(),
+                messages: self.request.messages.to_vec(),
                 input_images: self.request.input_images,
                 tools: self.request.tools,
                 max_tokens: self.request.max_tokens,

@@ -20,6 +20,18 @@ pub(super) struct SubmittedTurnState {
 }
 
 impl SubmittedTurnState {
+    pub(super) fn take_context_recovery(
+        &mut self,
+    ) -> super::context_runtime::ContextBudgetRecoveryGuard {
+        std::mem::take(&mut self.context_recovery)
+    }
+    pub(super) fn replace_context_recovery(
+        &mut self,
+        guard: super::context_runtime::ContextBudgetRecoveryGuard,
+    ) {
+        self.context_recovery = guard;
+    }
+
     pub fn error_streak(&self) -> u32 {
         self.consecutive_errors
     }
@@ -48,9 +60,6 @@ impl SubmittedTurnState {
             self.immediate_candidate_recovery_used = true;
             true
         }
-    }
-    pub(super) fn context_recovery(&mut self) -> &mut ContextBudgetRecoveryGuard {
-        &mut self.context_recovery
     }
     pub fn recovered_tool(&self, id: &str) -> Option<&(ToolUse, ToolResult)> {
         self.recovered.get(id)

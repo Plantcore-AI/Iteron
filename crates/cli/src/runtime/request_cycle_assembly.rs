@@ -11,6 +11,56 @@ use iteron_provider::output_ceiling::ProviderOutputBudget;
 use std::time::Instant;
 
 impl Agent {
+    /// Capture fallible host evidence before moving the invocation working transcript.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn request_cycle_seed(
+        &mut self,
+        turn: TurnId,
+        images: &[ImageContent],
+        relevance: &str,
+        convergence: &InvestigationConvergence,
+        started: Instant,
+    ) -> Result<RequestCycleRecipe<'static>, KernelError> {
+        let mut placeholder = Vec::new();
+        let recipe = self.request_cycle_recipe(
+            turn,
+            &mut placeholder,
+            images,
+            relevance,
+            convergence,
+            started,
+        )?;
+        let RequestCycleRecipe {
+            content,
+            requested_output,
+            window,
+            accounting,
+            recovery,
+            started,
+        } = recipe;
+        let RequestContent {
+            system,
+            messages: _,
+            input_images,
+            tools,
+            max_tokens,
+        } = content;
+        Ok(RequestCycleRecipe {
+            content: RequestContent {
+                system,
+                messages: super::request_preparation::RequestMessages::Owned(Vec::new()),
+                input_images,
+                tools,
+                max_tokens,
+            },
+            requested_output,
+            window,
+            accounting,
+            recovery,
+            started,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn request_cycle_recipe<'a>(
         &mut self,
@@ -52,7 +102,7 @@ impl Agent {
         Ok(RequestCycleRecipe {
             content: RequestContent {
                 system,
-                messages,
+                messages: super::request_preparation::RequestMessages::Borrowed(messages),
                 input_images: images.to_vec(),
                 tools,
                 max_tokens,

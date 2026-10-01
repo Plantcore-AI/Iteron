@@ -48,6 +48,7 @@ pub(super) struct PreparedModelTurn {
 }
 
 impl<'a, 'g> RequestCycle<'a, 'g> {
+    #[cfg(test)]
     pub(super) fn new(
         recipe: RequestCycleRecipe<'a>,
         guard: &'g mut ContextBudgetRecoveryGuard,
@@ -128,6 +129,7 @@ impl<'a, 'g> RequestCycle<'a, 'g> {
     }
     /// Auxiliary work and the real post-summary control barrier have completed. Their current
     /// physical identity and signed route bounds replace the initial request only once.
+    #[cfg(test)]
     pub(super) fn bind_after_recovery(
         self,
         current_turn: TurnId,
@@ -182,20 +184,6 @@ impl<'a> AdmittingRequestCycle<'a> {
     pub(super) fn messages(&self) -> &[Message] {
         self.admission.messages()
     }
-    pub(super) fn complete(
-        self,
-        configuration: RequestConfiguration,
-        publication: RequestContextPublication<'_>,
-    ) -> Result<PreparedModelTurn, KernelError> {
-        let elapsed_us = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        Ok(PreparedModelTurn {
-            turn: self.turn,
-            request: self
-                .admission
-                .complete(configuration, publication, elapsed_us)?,
-            loop_state: self.loop_state,
-        })
-    }
 }
 fn boundary() -> KernelError {
     KernelError::ContextResolution(
@@ -206,3 +194,140 @@ fn boundary() -> KernelError {
 #[cfg(all(test, unix))]
 #[path = "request_cycle_tests.rs"]
 mod tests;
+
+impl RequestCycle<'static, 'static> {
+    pub(super) fn owned(
+        recipe: RequestCycleRecipe<'static>,
+        guard: ContextBudgetRecoveryGuard,
+        estimator: &mut RequestEstimator,
+        loop_state: AgentLoopGuard,
+    ) -> Self {
+        let turn = recipe.recovery.turn;
+        let requested_output = recipe.requested_output;
+        recipe.recovery.events.emit(
+            turn,
+            "context.tokenizer.estimate_started",
+            LifecyclePayload::default(),
+        );
+        let preparation = RequestPreparation::new(
+            recipe.content,
+            requested_output,
+            recipe.window,
+            recipe.accounting,
+            estimator,
+        );
+        recipe.recovery.events.emit(
+            turn,
+            "context.tokenizer.estimate_completed",
+            LifecyclePayload {
+                magnitude: Some(
+                    u64::try_from(preparation.estimate().total_tokens).unwrap_or(u64::MAX),
+                ),
+                ..Default::default()
+            },
+        );
+        Self {
+            recovery: RequestRecoveryDriver::owned(preparation, guard, recipe.recovery),
+            loop_state,
+            turn,
+            started: recipe.started,
+            requested_output,
+        }
+    }
+    pub(super) fn prepare_owned_admission(
+        &mut self,
+        current_turn: TurnId,
+        window: Option<u64>,
+        output: u32,
+    ) -> Result<(), KernelError> {
+        if current_turn.0 < self.turn.0 {
+            return Err(boundary());
+        }
+        self.recovery.prepare_owned_admission(window, output)
+    }
+    pub(super) fn bind_owned_after_recovery(
+        self,
+        current_turn: TurnId,
+    ) -> Result<
+        (
+            AdmittingRequestCycle<'static>,
+            ReboundRequest,
+            ContextBudgetRecoveryGuard,
+        ),
+        Box<Self>,
+    > {
+        if current_turn.0 < self.turn.0 {
+            return Err(Box::new(self));
+        }
+        let Self {
+            recovery,
+            loop_state,
+            turn,
+            started,
+            requested_output,
+        } = self;
+        let (preparation, guard) = match recovery.into_owned_parts() {
+            Ok(parts) => parts,
+            Err(recovery) => {
+                return Err(Box::new(Self {
+                    recovery: *recovery,
+                    loop_state,
+                    turn,
+                    started,
+                    requested_output,
+                }));
+            }
+        };
+        let admission = RequestAdmission::from_bound(preparation, current_turn);
+        let rebound = ReboundRequest {
+            turn_changed: current_turn != turn,
+            baseline: admission.baseline(),
+        };
+        let loop_state = if rebound.turn_changed {
+            AgentLoopGuard::begin(current_turn)
+        } else {
+            loop_state
+        };
+        Ok((
+            AdmittingRequestCycle {
+                admission,
+                loop_state,
+                turn: current_turn,
+                started,
+            },
+            rebound,
+            guard,
+        ))
+    }
+    pub(super) fn into_owned_messages(self) -> Result<Vec<Message>, KernelError> {
+        self.recovery.into_messages().ok_or_else(boundary)
+    }
+}
+impl AdmittingRequestCycle<'static> {
+    pub(super) fn project_owned(
+        &mut self,
+        configuration: RequestConfiguration,
+        publication: RequestContextPublication<'_>,
+    ) -> Result<AdmittedModelRequest, KernelError> {
+        let elapsed_us = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.admission
+            .complete_retained(configuration, publication, elapsed_us)
+    }
+    pub(super) fn release_owned(
+        self,
+        request: AdmittedModelRequest,
+    ) -> Result<(PreparedModelTurn, Vec<Message>), KernelError> {
+        let messages = self.admission.into_messages().ok_or_else(boundary)?;
+        Ok((
+            PreparedModelTurn {
+                turn: self.turn,
+                request,
+                loop_state: self.loop_state,
+            },
+            messages,
+        ))
+    }
+    pub(super) fn into_owned_messages(self) -> Result<Vec<Message>, KernelError> {
+        self.admission.into_messages().ok_or_else(boundary)
+    }
+}

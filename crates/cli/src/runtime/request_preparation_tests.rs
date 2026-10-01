@@ -82,7 +82,7 @@ fn preparation<'a>(agent: &mut Agent, messages: &'a mut Vec<Message>) -> Request
     RequestPreparation::new(
         RequestContent {
             system: "system".into(),
-            messages,
+            messages: super::RequestMessages::Borrowed(messages),
             input_images: Vec::new(),
             tools: Vec::new().into(),
             max_tokens: 64,

@@ -49,9 +49,31 @@ pub(super) struct RequestRecoveryScope {
     pub(super) events: ContextPreparationEvents,
 }
 
+pub(super) enum RequestRecoveryGuard<'g> {
+    Owned(ContextBudgetRecoveryGuard),
+    #[cfg_attr(not(test), allow(dead_code))]
+    Borrowed(&'g mut ContextBudgetRecoveryGuard),
+}
+impl std::ops::Deref for RequestRecoveryGuard<'_> {
+    type Target = ContextBudgetRecoveryGuard;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(guard) => guard,
+            Self::Borrowed(guard) => guard,
+        }
+    }
+}
+impl std::ops::DerefMut for RequestRecoveryGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Owned(guard) => guard,
+            Self::Borrowed(guard) => guard,
+        }
+    }
+}
 pub(super) struct RequestRecoveryDriver<'a, 'g> {
     preparation: RequestPreparation<'a>,
-    guard: &'g mut ContextBudgetRecoveryGuard,
+    guard: RequestRecoveryGuard<'g>,
     scope: RequestRecoveryScope,
     phase: RecoveryPhase,
     current_turn: TurnId,
@@ -60,6 +82,7 @@ pub(super) struct RequestRecoveryDriver<'a, 'g> {
 }
 
 impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
+    #[cfg(test)]
     pub(super) fn new(
         preparation: RequestPreparation<'a>,
         guard: &'g mut ContextBudgetRecoveryGuard,
@@ -68,7 +91,7 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
         let current_turn = scope.turn;
         Self {
             preparation,
-            guard,
+            guard: RequestRecoveryGuard::Borrowed(guard),
             scope,
             phase: RecoveryPhase::Fresh,
             current_turn,
@@ -85,7 +108,7 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
                 if let Some(payload) = self.preparation.recovery_request(
                     &self.scope.policy,
                     self.scope.compacted,
-                    self.guard,
+                    &mut self.guard,
                 ) {
                     self.phase = RecoveryPhase::GatePending;
                     return Ok(RequestRecoveryWork::Gate(payload));
@@ -120,7 +143,8 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
                 Ok(RequestRecoveryWork::AssessAndCommit)
             }
             RecoveryPhase::Settling => {
-                if let Some((violation, after)) = self.preparation.settle_recovery(self.guard) {
+                if let Some((violation, after)) = self.preparation.settle_recovery(&mut self.guard)
+                {
                     self.component_event(
                         TurnId(self.current_turn.0.saturating_sub(1).max(self.scope.turn.0)),
                         ContextBudgetRecoveryStage::Failed,
@@ -278,6 +302,10 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
         Ok(committed)
     }
 
+    pub(super) fn into_messages(self) -> Option<Vec<Message>> {
+        self.preparation.into_messages()
+    }
+    #[cfg(test)]
     pub(super) fn into_preparation(self) -> Result<RequestPreparation<'a>, KernelError> {
         self.require(RecoveryPhase::Complete)?;
         Ok(self.preparation)
@@ -311,4 +339,47 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
 
 fn refused() -> KernelError {
     KernelError::ContextResolution("request recovery work lacks its preceding receipt".into())
+}
+
+impl RequestRecoveryDriver<'static, 'static> {
+    pub(super) fn owned(
+        preparation: RequestPreparation<'static>,
+        guard: ContextBudgetRecoveryGuard,
+        scope: RequestRecoveryScope,
+    ) -> Self {
+        let current_turn = scope.turn;
+        Self {
+            preparation,
+            guard: RequestRecoveryGuard::Owned(guard),
+            scope,
+            phase: RecoveryPhase::Fresh,
+            current_turn,
+            summary: None,
+            covered: false,
+        }
+    }
+    pub(super) fn prepare_owned_admission(
+        &mut self,
+        window: Option<u64>,
+        output: u32,
+    ) -> Result<(), KernelError> {
+        self.require(RecoveryPhase::Complete)?;
+        if !matches!(self.guard, RequestRecoveryGuard::Owned(_)) {
+            return Err(refused());
+        }
+        self.preparation.bind_route_budget(window, output)
+    }
+    pub(super) fn into_owned_parts(
+        self,
+    ) -> Result<(RequestPreparation<'static>, ContextBudgetRecoveryGuard), Box<Self>> {
+        if self.phase != RecoveryPhase::Complete
+            || !matches!(self.guard, RequestRecoveryGuard::Owned(_))
+        {
+            return Err(Box::new(self));
+        }
+        let RequestRecoveryGuard::Owned(guard) = self.guard else {
+            unreachable!("owned recovery guard was checked before consumption")
+        };
+        Ok((self.preparation, guard))
+    }
 }

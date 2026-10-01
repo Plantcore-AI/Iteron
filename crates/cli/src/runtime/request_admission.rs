@@ -19,6 +19,7 @@ enum AdmissionPhase {
     GatePending,
     GatePassed,
     ControlPassed,
+    Complete,
     Failed,
 }
 
@@ -38,6 +39,7 @@ pub(super) struct AdmittedModelRequest {
 }
 
 impl<'a> RequestAdmission<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         mut preparation: RequestPreparation<'a>,
         turn: TurnId,
@@ -54,12 +56,21 @@ impl<'a> RequestAdmission<'a> {
         })
     }
 
+    pub(super) fn from_bound(preparation: RequestPreparation<'a>, turn: TurnId) -> Self {
+        Self {
+            estimate: preparation.estimate(),
+            inspection: preparation.inspection(),
+            preparation,
+            turn,
+            phase: AdmissionPhase::Prepared,
+        }
+    }
     pub(super) fn baseline(&self) -> usize {
         self.preparation.baseline()
     }
 
     pub(super) fn messages(&self) -> &[Message] {
-        self.preparation.request().messages
+        &self.preparation.request().messages
     }
 
     pub(super) fn validate(
@@ -136,18 +147,30 @@ impl<'a> RequestAdmission<'a> {
         Ok(())
     }
 
-    pub(super) fn complete(
-        self,
+    pub(super) fn complete_retained(
+        &mut self,
         configuration: RequestConfiguration,
         publication: RequestContextPublication<'_>,
         elapsed_us: u64,
     ) -> Result<AdmittedModelRequest, KernelError> {
         self.require(AdmissionPhase::ControlPassed)?;
+        self.phase = AdmissionPhase::Failed;
+        self.publish(&publication, elapsed_us);
+        let (request, requested_max_tokens) = self.preparation.project_request(configuration)?;
+        self.phase = AdmissionPhase::Complete;
+        Ok(AdmittedModelRequest {
+            request,
+            requested_max_tokens,
+            estimate: self.estimate,
+            inspection: self.inspection,
+        })
+    }
+    fn publish(&self, publication: &RequestContextPublication<'_>, elapsed_us: u64) {
         publication.publish(
             self.turn,
             super::request_context_evidence::ContextRequestObservation {
                 system: &self.preparation.request().system,
-                messages: self.preparation.request().messages,
+                messages: &self.preparation.request().messages,
                 tools: &self.preparation.request().tools,
                 images: &self.preparation.request().input_images,
                 estimate: self.estimate,
@@ -169,13 +192,9 @@ impl<'a> RequestAdmission<'a> {
                 ..LifecyclePayload::default()
             },
         );
-        let (request, requested_max_tokens) = self.preparation.into_request(configuration)?;
-        Ok(AdmittedModelRequest {
-            request,
-            requested_max_tokens,
-            estimate: self.estimate,
-            inspection: self.inspection,
-        })
+    }
+    pub(super) fn into_messages(self) -> Option<Vec<Message>> {
+        self.preparation.into_messages()
     }
 
     fn require(&self, phase: AdmissionPhase) -> Result<(), KernelError> {
