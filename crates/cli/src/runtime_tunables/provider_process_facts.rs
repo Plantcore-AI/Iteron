@@ -114,6 +114,35 @@ pub(crate) struct ProviderProcessFactsInput<'a> {
     pub binary_media_policy: &'a crate::image_input::BinaryMediaInspectionPolicy,
 }
 
+/// Only composition-validated configured native routes can enter the role-map commitment.
+/// Runtime child selection separately requires the matching held provider object and governor.
+fn admitted_role_routes(
+    input: &ProviderProcessFactsInput<'_>,
+) -> Result<std::collections::BTreeMap<String, String>, ProviderProcessFactError> {
+    if input.provider_governor.fallback_routes.len()
+        >= iteron_provider::catalog::MAX_RESOLVED_ROUTES
+    {
+        return Err(ProviderProcessFactError::InvalidFallbackRoute);
+    }
+    let routes = input
+        .provider_governor
+        .fallback_routes
+        .iter()
+        .map(|route| {
+            route
+                .split_once(':')
+                .ok_or(ProviderProcessFactError::InvalidFallbackRoute)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    super::execution_policy::admitted_role_model_routes_with_routes(
+        input.agent_catalog,
+        &input.selection.provider_id,
+        &input.selection.model_id,
+        &routes,
+    )
+    .map_err(|_| ProviderProcessFactError::EvidenceEncoding)
+}
+
 /// Add every representable owner fact for ordinals 86..=132. A successful return means the facts
 /// were well-formed and accepted by the builder, not that every family resolved: `report.gaps`
 /// remains the authoritative inventory of missing owners and schema mismatches.

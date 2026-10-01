@@ -42,14 +42,30 @@ pub(super) fn resolve(
         .per_agent_tool_profile
         .validate_owner(&cx.permission_rules)
         .map_err(safe_agent_refusal)?;
+    if cx.fallback_provider_routes.len() >= iteron_provider::catalog::MAX_RESOLVED_ROUTES {
+        return Err("native child route set exceeds its bound".into());
+    }
+    let native_routes: Vec<_> = cx
+        .fallback_provider_routes
+        .iter()
+        .map(|route| {
+            (
+                route.route.provider_id.as_str(),
+                route.route.model_id.as_str(),
+            )
+        })
+        .collect();
     let roles = cx
         .execution_policy
         .role_specific_models
-        .validate_owner(&cx.agent_catalog, &cx.provider_id, &cx.model)
+        .validate_owner_with_routes(
+            &cx.agent_catalog,
+            &cx.provider_id,
+            &cx.model,
+            &native_routes,
+        )
         .map_err(safe_agent_refusal)?;
-    if definition.model.is_some()
-        && roles.get(requested) != Some(&format!("{}:{}", cx.provider_id, cx.model))
-    {
+    if definition.model.is_some() && !roles.contains_key(requested) {
         return Err("agent definition model has no admitted native role route".into());
     }
     let effort = cx

@@ -288,10 +288,9 @@ fn digest_parts<'a>(domain: &[u8], parts: impl IntoIterator<Item = &'a [u8]>) ->
 
 /// Content-free getter for the exact role-specific model overrides admitted by this run.
 ///
-/// Inherited roles are intentionally absent: `None` on an `AgentDef` means the already-bound
-/// parent model. An explicit override is admitted only when it names that same resolved model;
-/// the current spawner owns one provider instance and therefore has no evidence for any other
-/// route. Unsupported overrides remain in the catalog for diagnostics but fail closed at spawn.
+/// Inherited roles are absent: `None` on an `AgentDef` means the bound parent model. Explicit
+/// models require an unambiguous route in the composition's resolved native route set. The child
+/// revalidates this commitment against actual held provider identities before physical selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RoleSpecificModelMapIdentity {
     digest_sha256: [u8; 32],
@@ -327,13 +326,15 @@ impl RoleSpecificModelMapIdentity {
         })
     }
 
-    pub(crate) fn validate_owner(
+    pub(crate) fn validate_owner_with_routes(
         self,
         catalog: &iteron_agents::AgentCatalog,
         provider_id: &str,
         model_id: &str,
+        native_routes: &[(&str, &str)],
     ) -> Result<BTreeMap<String, String>, &'static str> {
-        let routes = admitted_role_model_routes(catalog, provider_id, model_id)?;
+        let routes =
+            admitted_role_model_routes_with_routes(catalog, provider_id, model_id, native_routes)?;
         if self != Self::from_routes(&routes)? {
             return Err("pinned role-specific model map differs from the executable agent catalog");
         }
@@ -341,26 +342,52 @@ impl RoleSpecificModelMapIdentity {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn admitted_role_model_routes(
     catalog: &iteron_agents::AgentCatalog,
     provider_id: &str,
     model_id: &str,
 ) -> Result<BTreeMap<String, String>, &'static str> {
-    let mut routes = BTreeMap::new();
-    for definition in catalog.defs() {
-        let Some(requested_model) = definition.model.as_deref() else {
-            continue;
-        };
-        // A definition may name an unavailable model. It remains diagnosable in the exact catalog,
-        // but it is not an admitted role route until composition owns a matching provider instance.
-        if requested_model != model_id {
+    admitted_role_model_routes_with_routes(catalog, provider_id, model_id, &[])
+}
+
+pub(crate) fn admitted_role_model_routes_with_routes(
+    catalog: &iteron_agents::AgentCatalog,
+    provider_id: &str,
+    model_id: &str,
+    native_routes: &[(&str, &str)],
+) -> Result<BTreeMap<String, String>, &'static str> {
+    if native_routes.len() >= iteron_provider::catalog::MAX_RESOLVED_ROUTES {
+        return Err("role model routes exceed the bounded native route set");
+    }
+    let primary = format!("{provider_id}:{model_id}");
+    PerAgentModelIdentity::from_route(&primary)?;
+    let mut models = BTreeMap::from([(model_id, Some(primary))]);
+    for &(provider, model) in native_routes {
+        if provider.is_empty() || model.is_empty() {
+            return Err("native role model route identity is incomplete");
+        }
+        let route = format!("{provider}:{model}");
+        PerAgentModelIdentity::from_route(&route)?;
+        if model == model_id {
             continue;
         }
+        // An unqualified model cannot select between multiple actual provider bindings.
+        models
+            .entry(model)
+            .and_modify(|value| *value = None)
+            .or_insert(Some(route));
+    }
+    let mut routes = BTreeMap::new();
+    for definition in catalog.defs() {
+        let Some(model) = definition.model.as_deref() else {
+            continue;
+        };
+        let Some(Some(route)) = models.get(model) else {
+            continue;
+        };
         if routes
-            .insert(
-                definition.name.clone(),
-                format!("{provider_id}:{requested_model}"),
-            )
+            .insert(definition.name.clone(), route.clone())
             .is_some()
         {
             return Err("agent catalog contains duplicate role names");
@@ -645,3 +672,7 @@ impl ExecutionRuntimePolicy {
         Ok(requested)
     }
 }
+
+#[cfg(test)]
+#[path = "execution_policy_tests.rs"]
+mod role_route_tests;
