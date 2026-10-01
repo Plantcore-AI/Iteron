@@ -747,7 +747,7 @@ pub async fn run(
                 )) = hydrated {
                     startup.mark_duration(startup::StartupPhase::HistoryHydrate, history_elapsed);
                     startup.mark_duration(startup::StartupPhase::Title, title_elapsed);
-                    if let Ok(hydrated) = hydrated {
+                    if let Ok(hydrated) = hydrated.and_then(|draft| draft.install()) {
                     let current_scope=session.client.thread_snapshot_v1();
                     let same_run=current_scope.as_ref().is_some_and(|scope|scope.run_id==hydrated.source_run);
                     if let Some(state) = hydrated.state.filter(|_|same_run) {

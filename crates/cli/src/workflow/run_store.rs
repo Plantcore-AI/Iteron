@@ -171,13 +171,15 @@ const MAX_RECENT_JOURNAL_BYTES: u64 = 256 * 1024;
 /// Strict summary used by restart rehydration. Unlike the human-invoked full listing, the first
 /// frame must never publish a partial count from a killed writer or spend unbounded time on one
 /// historical journal.
-fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, usize)> {
+fn recent_journal_summary(
+    directory: &super::restart_read::RestartDirectory,
+) -> Option<(bool, usize)> {
     let maximum = iteron_tunables::param_integer(
         "cli.workflow.max_recent_journal_bytes",
         MAX_RECENT_JOURNAL_BYTES,
     )
     .min(MAX_RECENT_JOURNAL_BYTES) as usize;
-    let bytes = match super::restart_read::read(workflows_dir, run_id, "journal.jsonl", maximum) {
+    let bytes = match directory.read("journal.jsonl", maximum) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some((false, 0)),
         Err(_) => return None,
@@ -194,26 +196,32 @@ fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, u
 
 /// Load one restart-safe listing through the same manifest/script/result readers used by
 /// `iteron workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
+#[cfg(test)]
 pub(crate) fn load_run_listing(workflows_dir: &Path, run_id: String) -> Option<RunListing> {
-    let manifest: RunManifest = serde_json::from_slice(
-        &super::restart_read::read(workflows_dir, &run_id, "run.json", 64 * 1024).ok()?,
+    load_held_run_listing(
+        &super::restart_read::RestartDirectory::open(workflows_dir).ok()?,
+        run_id,
     )
-    .ok()?;
+}
+
+pub(super) fn load_held_run_listing(
+    root: &super::restart_read::RestartDirectory,
+    run_id: String,
+) -> Option<RunListing> {
+    let directory = root.child(&run_id).ok()?;
+    let manifest: RunManifest =
+        serde_json::from_slice(&directory.read("run.json", 64 * 1024).ok()?).ok()?;
     if manifest.run_id != run_id {
         return None;
     }
     // A restart row is resumable only when the actual finite stored script remains readable.
-    String::from_utf8(
-        super::restart_read::read(workflows_dir, &run_id, "script.js", 1024 * 1024).ok()?,
-    )
-    .ok()?;
-    let result = match super::restart_read::read(workflows_dir, &run_id, "result.json", 128 * 1024)
-    {
+    String::from_utf8(directory.read("script.js", 1024 * 1024).ok()?).ok()?;
+    let result = match directory.read("result.json", 128 * 1024) {
         Ok(bytes) => Some(serde_json::from_slice::<RunResult>(&bytes).ok()?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return None,
     };
-    let (has_journal, agents) = recent_journal_summary(workflows_dir, &run_id)?;
+    let (has_journal, agents) = recent_journal_summary(&directory)?;
     Some(RunListing {
         run_id,
         name: manifest.name,

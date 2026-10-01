@@ -26,7 +26,9 @@ mod tests {
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch workflows directory");
-            Self { dir }
+            Self {
+                dir: std::fs::canonicalize(dir).expect("actual scratch directory"),
+            }
         }
 
         fn path(&self) -> &Path {

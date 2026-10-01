@@ -1,6 +1,7 @@
 //! Finite restart-sidecar observations. A sidecar status is recorded history, never proof that
 //! a process/controller is currently live. No frontend constructs a native sidecar reader.
-use super::run_store::load_run_listing;
+use super::restart_read::RestartDirectory;
+use super::run_store::load_held_run_listing;
 use super::{RunListing, valid_run_id};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -20,7 +21,7 @@ pub(crate) fn restored_inventory(root: &Path, limit: usize) -> RestoredWorkflowI
     if limit == 0 {
         return observation;
     }
-    let root = match std::fs::canonicalize(root) {
+    let root = match RestartDirectory::open(root) {
         Ok(root) => root,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return observation,
         Err(_) => {
@@ -28,9 +29,8 @@ pub(crate) fn restored_inventory(root: &Path, limit: usize) -> RestoredWorkflowI
             return observation;
         }
     };
-    let entries = match std::fs::read_dir(&root) {
+    let entries = match root.entries() {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return observation,
         Err(_) => {
             observation.incomplete = true;
             return observation;
@@ -43,21 +43,20 @@ pub(crate) fn restored_inventory(root: &Path, limit: usize) -> RestoredWorkflowI
             observation.incomplete = true;
             break;
         }
-        let Ok(entry) = entry else {
+        let Ok(name) = entry else {
             observation.incomplete = true;
             continue;
         };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Some(run_id) = entry
-            .file_name()
+        let Some(run_id) = name
             .to_str()
             .filter(|id| valid_run_id(id))
             .map(str::to_owned)
         else {
             continue;
         };
+        if root.child(&run_id).is_err() {
+            continue;
+        }
         newest.push(Reverse((run_timestamp(&run_id), run_id)));
         if newest.len() > limit {
             newest.pop();
@@ -74,7 +73,7 @@ pub(crate) fn restored_inventory(root: &Path, limit: usize) -> RestoredWorkflowI
             observation.omitted += known_candidates - index;
             break;
         }
-        match load_run_listing(&root, run_id) {
+        match load_held_run_listing(&root, run_id) {
             Some(row) => {
                 let charge = row
                     .run_id

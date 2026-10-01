@@ -212,6 +212,23 @@ impl ContractReader {
         action(&mut guard)
     }
 
+    /// Serializes a small host installation with identity replacement. The callback must not
+    /// perform filesystem I/O, await, or re-enter this reader.
+    pub(super) fn with_current_identity<R>(
+        &self,
+        thread_id: &SessionId,
+        run_id: &RunId,
+        install: impl FnOnce() -> R,
+    ) -> Option<R> {
+        self.with_mut(|projection| {
+            projection
+                .snapshot
+                .as_ref()
+                .filter(|snapshot| &snapshot.thread_id == thread_id && &snapshot.run_id == run_id)
+                .map(|_| install())
+        })
+    }
+
     pub(super) fn bind_identity(&self, thread_id: SessionId, run_id: RunId) {
         self.with_mut(|projection| {
             if projection

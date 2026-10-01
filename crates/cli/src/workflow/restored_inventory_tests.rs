@@ -12,7 +12,9 @@ impl Scratch {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        // Fixture creation may use macOS's /var alias; production admission never canonicalizes
+        // a supplied root. This scratch owner records its actual newly created ordinary path.
+        Self(std::fs::canonicalize(path).unwrap())
     }
     fn row(&self, id: &str, name: &str) {
         crate::workflow::persist_inputs(
@@ -123,4 +125,85 @@ fn symlink_and_special_sidecars_cannot_redirect_or_block_native_history() {
     assert_eq!(observation.rows.len(), 1);
     assert_eq!(observation.rows[0].name, "healthy");
     assert!(observation.incomplete);
+}
+
+#[cfg(unix)]
+#[test]
+fn root_or_ancestor_symlink_is_refused_even_when_target_has_valid_sidecars() {
+    use std::os::unix::fs::symlink;
+    let scratch = Scratch::new("root-redirect");
+    let foreign = Scratch::new("foreign-root");
+    foreign.row("wf_2000_0", "foreign retained bytes");
+    let redirected = scratch.0.join("redirected");
+    symlink(&foreign.0, &redirected).unwrap();
+    let observation = restored_inventory(&redirected, 16);
+    assert!(observation.incomplete);
+    assert!(observation.rows.is_empty());
+    let ancestor = scratch.0.join("ancestor");
+    symlink(foreign.0.parent().unwrap(), &ancestor).unwrap();
+    let observation = restored_inventory(&ancestor.join(foreign.0.file_name().unwrap()), 16);
+    assert!(observation.incomplete);
+    assert!(observation.rows.is_empty());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn retained_root_enumeration_and_reads_survive_namespace_replacement_without_redirect() {
+    let scratch = Scratch::new("retained-root");
+    let actual = scratch.0.join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    let original = Scratch(actual.clone());
+    original.row("wf_1000_0", "original namespace");
+    // Scratch's destructor would remove the replacement; the outer owner cleans up both names.
+    let held = RestartDirectory::open(&actual).unwrap();
+    let displaced = scratch.0.join("displaced");
+    std::fs::rename(&actual, &displaced).unwrap();
+    std::fs::create_dir(&actual).unwrap();
+    let replacement = Scratch(actual);
+    replacement.row("wf_2000_0", "replacement namespace");
+    for _ in 0..2 {
+        let names = held
+            .entries()
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert!(names.iter().any(|name| name == "wf_1000_0"));
+        assert!(!names.iter().any(|name| name == "wf_2000_0"));
+    }
+    let row = load_held_run_listing(&held, "wf_1000_0".into()).unwrap();
+    assert_eq!(row.name, "original namespace");
+    assert!(load_held_run_listing(&held, "wf_2000_0".into()).is_none());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn retained_child_cannot_mix_sidecars_with_replacement_child() {
+    let scratch = Scratch::new("retained-child");
+    scratch.row("wf_1000_0", "original child");
+    let held = RestartDirectory::open(&scratch.0).unwrap();
+    let child = held.child("wf_1000_0").unwrap();
+    std::fs::rename(scratch.0.join("wf_1000_0"), scratch.0.join("displaced")).unwrap();
+    scratch.row("wf_1000_0", "replacement child");
+    let manifest: crate::workflow::RunManifest =
+        serde_json::from_slice(&child.read("run.json", 64 * 1024).unwrap()).unwrap();
+    assert_eq!(manifest.name, "original child");
+    assert_eq!(
+        load_held_run_listing(&held, "wf_1000_0".into())
+            .unwrap()
+            .name,
+        "replacement child"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn retained_root_and_ancestors_deny_namespace_replacement_until_release() {
+    let scratch = Scratch::new("retained-root-windows");
+    let actual = scratch.0.join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    let held = RestartDirectory::open(&actual).unwrap();
+    assert!(std::fs::rename(&actual, scratch.0.join("replacement")).is_err());
+    assert!(std::fs::rename(&scratch.0, scratch.0.with_extension("replacement")).is_err());
+    drop(held);
+    std::fs::rename(&actual, scratch.0.join("replacement")).unwrap();
 }

@@ -415,15 +415,15 @@ enum WriterCommand {
 }
 
 impl Writer {
-    pub(crate) fn new(store: Option<Store>) -> Self {
+    pub(crate) fn new(store: Option<Store>) -> std::io::Result<Self> {
         let Some(store) = store else {
-            return Self {
+            return Ok(Self {
                 sender: None,
                 task: None,
-            };
+            });
         };
         let (sender, receiver) = std::sync::mpsc::sync_channel::<WriterCommand>(1);
-        let task = std::thread::spawn(move || {
+        let task = std::thread::Builder::new().spawn(move || {
             while let Ok(command) = receiver.recv() {
                 match command {
                     WriterCommand::Save(mut state, mut active_run) => {
@@ -460,11 +460,11 @@ impl Writer {
                     }
                 }
             }
-        });
-        Self {
+        })?;
+        Ok(Self {
             sender: Some(sender),
             task: Some(task),
-        }
+        })
     }
 
     pub(crate) fn schedule(&self, state: State, active_run: RunId) {
@@ -769,7 +769,7 @@ mod tests {
         let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
             .unwrap()
             .unwrap();
-        let writer = Writer::new(Some(store.clone()));
+        let writer = Writer::new(Some(store.clone())).unwrap();
         writer.schedule(
             State::new(vec!["first".into()], Some("stale".into())),
             source_run("writer"),

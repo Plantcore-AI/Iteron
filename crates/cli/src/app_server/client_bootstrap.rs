@@ -2,9 +2,9 @@
 //! record paths, a prompt-history Store constructor, or permission to choose source-run lineage.
 use super::product_contract::ContractReader;
 use crate::config::PromptHistoryMode;
-use crate::prompt_history::{self, State, Writer};
+use crate::prompt_history::{self, State, Store, Writer};
 use crate::runtime::Agent;
-use iteron_protocol::RunId;
+use iteron_protocol::{RunId, SessionId};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -28,6 +28,16 @@ pub(crate) struct ClientBootstrapFactory {
 }
 
 pub(crate) struct PreparedClientBootstrap {
+    owner: Arc<ClientBootstrapFactory>,
+    thread_id: SessionId,
+    source_run: RunId,
+    state: Option<State>,
+    store: Option<Store>,
+    workflows: crate::workflow::RestoredWorkflowInventory,
+    warning: Option<String>,
+}
+
+pub(crate) struct InstalledClientBootstrap {
     pub(crate) source_run: RunId,
     pub(crate) state: Option<State>,
     pub(crate) writer: PromptHistoryWriterPort,
@@ -112,20 +122,67 @@ impl ClientBootstrapFactory {
                     "session changed during startup hydration; restored state was not adopted",
                 );
             }
-            owner.published.store(true, Ordering::Release);
             Ok(PreparedClientBootstrap {
+                owner: owner.clone(),
+                thread_id: scope.thread_id,
                 source_run: scope.run_id,
                 state: hydrated.state,
-                writer: PromptHistoryWriterPort {
-                    writer: Some(Writer::new(hydrated.store)),
-                    reader: Some(owner.reader.clone()),
-                },
+                store: hydrated.store,
                 workflows,
                 warning: hydrated.warning,
             })
         })
         .await
         .map_err(|_| "session startup worker ended without a receipt")?
+    }
+}
+
+impl PreparedClientBootstrap {
+    /// Installation consumes an actually observed draft. A lost observer drops only read state;
+    /// it neither starts a writer nor prevents a later hydration attempt. The projection lock
+    /// serializes the final identity check with adoption and the one installation decision.
+    pub(crate) fn install(self) -> Result<InstalledClientBootstrap, &'static str> {
+        let Self {
+            owner,
+            thread_id,
+            source_run,
+            state,
+            store,
+            workflows,
+            warning,
+        } = self;
+        let expected_run = source_run.clone();
+        owner
+            .reader
+            .with_current_identity(&thread_id, &expected_run, || {
+                if owner
+                    .published
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return Err("session startup writer was already installed");
+                }
+                let writer = match Writer::new(store) {
+                    Ok(writer) => writer,
+                    Err(_) => {
+                        owner.published.store(false, Ordering::Release);
+                        return Err("session startup writer could not be installed");
+                    }
+                };
+                Ok(InstalledClientBootstrap {
+                    source_run,
+                    state,
+                    writer: PromptHistoryWriterPort {
+                        writer: Some(writer),
+                        reader: Some(owner.reader.clone()),
+                    },
+                    workflows,
+                    warning,
+                })
+            })
+            .unwrap_or(Err(
+                "session changed before startup installation; restored state was not adopted",
+            ))
     }
 }
 
