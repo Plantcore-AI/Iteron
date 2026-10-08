@@ -11,6 +11,7 @@ const MEMBERS: &[(&str, &str)] = &[
     ("crates/ctx", "iteron-ctx"),
     ("crates/eval", "iteron-eval"),
     ("crates/evolve", "iteron-evolve"),
+    ("crates/extension-sdk", "iteron-extension-sdk"),
     ("crates/kernel", "iteron-kernel"),
     ("crates/lsp", "iteron-lsp"),
     ("crates/marketplace", "iteron-marketplace"),
@@ -214,12 +215,7 @@ fn workspace_member_identities(root: &Path) -> Result<Vec<(String, String)>> {
             .and_then(|package| package.get("name"))
             .and_then(toml::Value::as_str)
             .with_context(|| format!("added member '{manifest}' lacks a package name"))?;
-        let Some(suffix) = package_name.strip_prefix("core-") else {
-            bail!("added workspace member '{member}' is not an internal `core-` package");
-        };
-        if !is_canonical_slug(suffix) {
-            bail!("added workspace member '{member}' has a non-canonical package name");
-        }
+        validate_added_package_name(member, package_name)?;
         if names
             .insert(package_name.to_owned(), member.to_owned())
             .is_some()
@@ -230,6 +226,16 @@ fn workspace_member_identities(root: &Path) -> Result<Vec<(String, String)>> {
     }
     identities.sort();
     Ok(identities)
+}
+
+fn validate_added_package_name(member: &str, package_name: &str) -> Result<()> {
+    let Some(suffix) = package_name.strip_prefix("iteron-") else {
+        bail!("added workspace member '{member}' is not an internal `iteron-` package");
+    };
+    if !is_canonical_slug(suffix) {
+        bail!("added workspace member '{member}' has a non-canonical package name");
+    }
+    Ok(())
 }
 
 fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
@@ -248,37 +254,78 @@ fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
         if package.get("name").and_then(toml::Value::as_str) != Some(package_name.as_str()) {
             bail!("workspace member '{member}' changed its canonical package identity");
         }
-        for dependencies in dependency_tables(&value) {
-            for (dependency_name, dependency) in dependencies {
-                let claimed_package = dependency
+        validate_internal_dependencies(&member, &value, &names)?;
+    }
+    Ok(())
+}
+
+fn validate_internal_dependencies(
+    member: &str,
+    manifest: &toml::Value,
+    names: &BTreeMap<String, String>,
+) -> Result<()> {
+    for section in dependency_tables(manifest)? {
+        for (dependency_name, dependency) in section.values {
+            let claimed_package = dependency
+                .as_table()
+                .and_then(|table| table.get("package"))
+                .and_then(toml::Value::as_str);
+            if claimed_package
+                .is_some_and(|name| name.starts_with("iteron-") || name.starts_with("iteron_"))
+            {
+                bail!("workspace member '{member}' aliases internal package '{claimed_package:?}'");
+            }
+            if dependency_name.starts_with("iteron_") {
+                bail!(
+                    "workspace member '{member}' uses non-canonical internal dependency key '{dependency_name}'"
+                );
+            }
+            if !dependency_name.starts_with("iteron-") {
+                // Every current local package has one canonical iteron identity. Do not let an
+                // underscore/foreign key evade internal authority by pointing into that graph,
+                // or move its implementation to an unreviewed external path. Registry-based
+                // external dependencies remain governed by their existing separate Cargo policy.
+                if dependency
                     .as_table()
-                    .and_then(|table| table.get("package"))
-                    .and_then(toml::Value::as_str);
-                if claimed_package.is_some_and(|name| name.starts_with("core-")) {
+                    .is_some_and(|table| table.contains_key("path"))
+                {
                     bail!(
-                        "workspace member '{member}' aliases internal package '{claimed_package:?}'"
+                        "workspace member '{member}' introduces non-canonical local dependency '{dependency_name}'"
                     );
                 }
-                if !dependency_name.starts_with("core-") {
-                    continue;
-                }
-                let target = names.get(dependency_name).with_context(|| {
+                continue;
+            }
+            let target = names.get(dependency_name).with_context(|| {
                     format!(
                         "workspace member '{member}' names unknown internal dependency '{dependency_name}'"
                     )
                 })?;
-                let table = dependency.as_table().with_context(|| {
+            let table = dependency.as_table().with_context(|| {
                     format!(
                         "workspace member '{member}' internal dependency '{dependency_name}' is not a path table"
                     )
                 })?;
-                let expected_path = relative_member_path(&member, target)?;
-                if table.len() != 1
-                    || table.get("path").and_then(toml::Value::as_str)
-                        != Some(expected_path.as_str())
-                {
+            let expected_path = relative_member_path(member, target)?;
+            if table.get("path").and_then(toml::Value::as_str) != Some(expected_path.as_str())
+                || table.keys().any(|key| key != "path" && key != "features")
+            {
+                bail!(
+                    "workspace member '{member}' redirects internal dependency '{dependency_name}'"
+                );
+            }
+            if let Some(features) = table.get("features") {
+                let permitted = if section.kind == "dev-dependencies" && !section.target_specific {
+                    fixture_dependency_feature(member, dependency_name)
+                } else {
+                    None
+                };
+                let feature = features
+                    .as_array()
+                    .filter(|features| features.len() == 1)
+                    .and_then(|features| features[0].as_str());
+                if permitted.is_none() || feature != permitted {
                     bail!(
-                        "workspace member '{member}' redirects internal dependency '{dependency_name}'"
+                        "workspace member '{member}' changes internal dependency '{dependency_name}' fixture feature authority"
                     );
                 }
             }
@@ -287,21 +334,58 @@ fn validate_member_identities_and_paths(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn dependency_tables(manifest: &toml::Value) -> Vec<&toml::value::Table> {
-    let mut tables = ["dependencies", "dev-dependencies", "build-dependencies"]
-        .iter()
-        .filter_map(|kind| manifest.get(*kind).and_then(toml::Value::as_table))
-        .collect::<Vec<_>>();
-    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values().filter_map(toml::Value::as_table) {
-            tables.extend(
-                ["dependencies", "dev-dependencies", "build-dependencies"]
-                    .iter()
-                    .filter_map(|kind| target.get(*kind).and_then(toml::Value::as_table)),
-            );
+/// These four development edges are the existing isolated native fixture capabilities. Production
+/// and target-specific dependencies retain exact path-only authority; there is no general feature
+/// or optional/version/git/package override allowance for internal dependencies.
+fn fixture_dependency_feature(member: &str, dependency: &str) -> Option<&'static str> {
+    match (member, dependency) {
+        ("crates/extension-sdk" | "crates/cli", "iteron-tools") => Some("test-helper"),
+        ("crates/record", "iteron-tunables") | ("crates/cli", "iteron-record") => {
+            Some("test-fixtures")
+        }
+        _ => None,
+    }
+}
+
+struct DependencyTable<'a> {
+    kind: &'static str,
+    target_specific: bool,
+    values: &'a toml::value::Table,
+}
+
+fn dependency_tables(manifest: &toml::Value) -> Result<Vec<DependencyTable<'_>>> {
+    let mut tables = Vec::new();
+    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(value) = manifest.get(kind) {
+            tables.push(DependencyTable {
+                kind,
+                target_specific: false,
+                values: value
+                    .as_table()
+                    .with_context(|| format!("'{kind}' must be a table"))?,
+            });
         }
     }
-    tables
+    if let Some(value) = manifest.get("target") {
+        let targets = value.as_table().context("'target' must be a table")?;
+        for target in targets.values() {
+            let target = target
+                .as_table()
+                .context("target dependency scope must be a table")?;
+            for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                if let Some(value) = target.get(kind) {
+                    tables.push(DependencyTable {
+                        kind,
+                        target_specific: true,
+                        values: value
+                            .as_table()
+                            .with_context(|| format!("target '{kind}' must be a table"))?,
+                    });
+                }
+            }
+        }
+    }
+    Ok(tables)
 }
 
 fn relative_member_path(from: &str, to: &str) -> Result<String> {
