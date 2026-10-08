@@ -36,10 +36,6 @@ impl KernelChildCompletion {
     pub(super) fn into_parts(self) -> (Result<String, String>, Option<ChildAccountingSource>) {
         (self.result, self.accounting)
     }
-    #[cfg(test)]
-    pub(super) fn into_result(self) -> Result<String, String> {
-        self.result
-    }
 }
 pub(super) enum ChildAccountingSource {
     DirectNative {
