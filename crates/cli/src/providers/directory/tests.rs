@@ -1894,7 +1894,7 @@ async fn refreshed_static_metadata_updates_catalog_capability_adapter_and_run_no
     let now = current_unix_secs().unwrap();
     let captured = now.saturating_sub(42 * 24 * 60 * 60);
     let mut document: serde_json::Value = serde_json::from_str(include_str!(
-        "../../provider/static-provider-metadata-v1.json"
+        "../../../../provider/static-provider-metadata-v1.json"
     ))
     .unwrap();
     document["bundle_revision"] = serde_json::json!("operator-refresh@test-v2");

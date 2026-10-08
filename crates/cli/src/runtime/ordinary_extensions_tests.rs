@@ -1,7 +1,7 @@
 //! Actual ordinary SDK Agent/native-route/record/observer journeys; final unified gate pending.
 use super::*;
 use crate::plugin_runtime::ordinary::{OrdinaryBinding, OrdinaryDescriptor};
-use crate::runtime::{Agent, Outcome, gate_integration_tests};
+use crate::runtime::{Agent, KernelError, Outcome, gate_integration_tests};
 use iteron_extension_sdk::UiStatusV1;
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{
