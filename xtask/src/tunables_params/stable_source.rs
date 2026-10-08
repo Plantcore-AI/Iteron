@@ -16,7 +16,9 @@ pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str
             | "MAX_MEMORY_CANDIDATES"
             | "MAX_MEMORY_TASK_BYTES"
             | "MAX_MEMORY_CANDIDATE_TEXT_BYTES"
-            | "MAX_MEMORY_SLUG_BYTES",
+            | "MAX_MEMORY_SLUG_BYTES"
+            | "CACHE_LIMIT"
+            | "CACHE",
         ) => Some("crates/ctx/src/memory.rs"),
         _ => None,
     }
