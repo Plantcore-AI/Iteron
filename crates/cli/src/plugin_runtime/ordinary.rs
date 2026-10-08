@@ -89,7 +89,7 @@ impl RuntimePlugins {
                 self.note("ordinary SDK binding capacity exceeded".into());
                 break;
             }
-            match descriptor(&slot, binding) {
+            match descriptor(slot, binding) {
                 Ok(descriptor) => {
                     let mask = std::sync::Arc::get_mut(
                         self.dispatch_mask

@@ -43,6 +43,8 @@ pub(crate) struct InitialRoute {
     pub(crate) recording_provider_transport: Option<iteron_provider::RecordingProviderTransport>,
     pub(crate) credential_env_names: Vec<String>,
 }
+// Keep trusted inputs and the two disjoint mutable assembly owners explicit at startup.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn assemble(
     cli: &Cli,
     repo: &Path,
@@ -172,7 +174,7 @@ pub(crate) async fn assemble(
     // nothing about it. The one place a tool, a child agent, or a hook can reach a file is the
     // workspace, so a credential file inside it is refused outright rather than trusted to stay
     // unread. Credential files outside the workspace remain unreachable by construction.
-    let exposed_credentials = provider_directory.credential_files_inside(&repo);
+    let exposed_credentials = provider_directory.credential_files_inside(repo);
     if let Some(path) = exposed_credentials.first() {
         anyhow::bail!(
             "credential file {} is inside the workspace, where tools, subagents, and hooks can read it; move it outside {} (for example under ~/.iteron/credentials)",

@@ -150,7 +150,7 @@ pub(crate) fn assemble(
             command: route.command,
         })
         .collect();
-    let mut registry = Registry::coding_agent_with_lsp_routes(&repo, lsp_routes)?;
+    let mut registry = Registry::coding_agent_with_lsp_routes(repo, lsp_routes)?;
     install_desktop(
         &mut registry,
         cli.desktop_webdriver.as_deref(),

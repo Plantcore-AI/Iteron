@@ -362,7 +362,6 @@ use provider_accounting::{
 use route_validation::{
     replay_logical_rollout, replay_scoped_rollout, validate_route_digest, validate_route_identifier,
 };
-use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
 #[cfg(test)]
@@ -749,13 +748,6 @@ fn detached_workflow_receipt(run: &crate::workflow::DetachedRun) -> String {
         id = run.run_id,
         ownership = run.ownership,
     )
-}
-
-fn sha256_hex(content: &str) -> String {
-    Sha256::digest(content.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// Bind every workflow control from the run's immutable execution policy.  This tiny composition
@@ -1717,7 +1709,7 @@ impl Agent {
 
     /// Assemble real independent execution observations and physical settlement owners. The
     /// coordinator retains handles itself and never receives mutable Agent state.
-    pub(super) fn early_tool_collection(
+    fn early_tool_collection(
         &mut self,
         turn: TurnId,
     ) -> early_tool_collection::EarlyToolCollection<'_> {

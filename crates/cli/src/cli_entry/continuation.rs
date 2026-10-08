@@ -46,7 +46,7 @@ pub(crate) fn admit(
     // defaults do not silently reinterpret an existing session.
     let resume_id = cli.resume.clone().or_else(|| {
         if cli.continue_recent {
-            match iteron_record::most_recent(&runs_dir, &repo, &tenant).map(|run| run.0) {
+            match iteron_record::most_recent(runs_dir, repo, tenant).map(|run| run.0) {
                 Some(id) => {
                     eprintln!("continuing most recent session in this repo: {id}");
                     Some(id)
@@ -66,7 +66,7 @@ pub(crate) fn admit(
     let resumed_run = resume_id.as_ref().map(|id| RunId(id.clone()));
     let locked_resume = match &resumed_run {
         Some(run) => Some(
-            Rollout::open_existing(&runs_dir, run, tenant.clone())
+            Rollout::open_existing(runs_dir, run, tenant.clone())
                 .map_err(|error| anyhow::anyhow!("cannot resume {run}: {error}"))?,
         ),
         None => None,
@@ -84,7 +84,7 @@ pub(crate) fn admit(
     let mut resumed_transcript_events = None;
     if let Some(resume) = &resume_id {
         let scoped = iteron_record::bounded_replay::load_forked_scoped_bounded(
-            &runs_dir,
+            runs_dir,
             &RunId(resume.clone()),
             iteron_record::bounded_replay::ReplayReadLimits {
                 physical_bytes: 64 * 1024 * 1024,

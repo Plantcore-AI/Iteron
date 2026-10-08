@@ -8,7 +8,7 @@ use crate::{config, maintenance, mcp, output, plugin, session_view, setup, tunab
 use iteron_protocol::{RunId, TenantId};
 
 pub(crate) async fn machine(cli: &Cli) -> anyhow::Result<Option<u8>> {
-    let code = match &cli.command {
+    let code = match cli.command {
         Some(LocalCommand::Setup {
             plan,
             byok,
@@ -63,12 +63,12 @@ pub(crate) async fn workspace(
     repo: &std::path::Path,
     runs_dir: &std::path::Path,
 ) -> anyhow::Result<Option<u8>> {
-    if let Some(LocalCommand::Record { action }) = &cli.command {
-        return run_record_command(&runs_dir, action).map(Some);
+    if let Some(LocalCommand::Record { action }) = cli.command {
+        return run_record_command(runs_dir, action).map(Some);
     }
 
     if matches!(cli.command, Some(LocalCommand::Reindex)) {
-        let count = iteron_record::reindex(&runs_dir)?;
+        let count = iteron_record::reindex(runs_dir)?;
         println!(
             "reindexed {count} session{} in {}",
             if count == 1 { "" } else { "s" },
@@ -81,33 +81,31 @@ pub(crate) async fn workspace(
         older_than_days,
         keep_last,
         dry_run,
-    }) = &cli.command
+    }) = cli.command
     {
-        return run_prune_command(&runs_dir, *older_than_days, *keep_last, *dry_run).map(Some);
+        return run_prune_command(runs_dir, *older_than_days, *keep_last, *dry_run).map(Some);
     }
 
     // `iteron workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
     // provider but none of the rollout/agent/genesis machinery, so it branches out before that setup.
-    if let Some(LocalCommand::Workflow { action }) = &cli.command {
+    if let Some(LocalCommand::Workflow { action }) = cli.command {
         let user_file = FileConfig::load_user()?;
-        return run_workflow_command(&cli, &repo, &user_file, action)
+        return run_workflow_command(cli, repo, &user_file, action)
             .await
             .map(Some);
     }
 
     // `iteron pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
     // it branches out before the agent machinery exactly like `workflow` does.
-    if let Some(LocalCommand::Pricing { action }) = &cli.command {
+    if let Some(LocalCommand::Pricing { action }) = cli.command {
         let user_file = FileConfig::load_user()?;
-        return run_pricing_command(&cli, &user_file, action)
-            .await
-            .map(Some);
+        return run_pricing_command(cli, &user_file, action).await.map(Some);
     }
 
     if matches!(cli.command, Some(LocalCommand::Doctor)) {
         return maintenance::run_doctor(
-            &repo,
-            &runs_dir,
+            repo,
+            runs_dir,
             iteron_tunables::param_str("cli.main.build_commit", BUILD_COMMIT),
             iteron_tunables::param_str("cli.main.build_date", BUILD_DATE),
         )
@@ -115,11 +113,11 @@ pub(crate) async fn workspace(
     }
     if let Some(LocalCommand::Support {
         output: support_output,
-    }) = &cli.command
+    }) = cli.command
     {
         return maintenance::run_support(
-            &repo,
-            &runs_dir,
+            repo,
+            runs_dir,
             support_output.as_deref(),
             iteron_tunables::param_str("cli.main.build_commit", BUILD_COMMIT),
             iteron_tunables::param_str("cli.main.build_date", BUILD_DATE),
@@ -157,7 +155,7 @@ pub(crate) fn history(
 
     if let Some(run) = cli.timeline.clone() {
         let run = iteron_protocol::RunId(run);
-        let timed = iteron_record::replay_run_timed(&runs_dir, &run)?;
+        let timed = iteron_record::replay_run_timed(runs_dir, &run)?;
         let report = iteron_obs::timeline::fold(timed.iter().map(|t| (t.ts_us, &t.event)));
         if cli.output_format.is_machine() {
             println!("{}", serde_json::to_string(&report)?);
@@ -171,7 +169,7 @@ pub(crate) fn history(
         let run = iteron_protocol::RunId(run);
         if cli.output_schema_version.is_some() {
             let page = session_view::read_transcript_page(
-                &runs_dir,
+                runs_dir,
                 &run,
                 cli.transcript_cursor.as_deref(),
                 machine_schema_version,
@@ -182,7 +180,7 @@ pub(crate) fn history(
         // Name the run AND the file the read failed on, the way `--fork` already does. Propagating
         // the `RecordError` unchanged printed `io: <errno text>: <errno text>` — the `#[from]` source
         // repeated by anyhow's alternate Display — with nothing a reader could act on.
-        let document = session_view::read_transcript(&runs_dir, &run).map_err(|error| {
+        let document = session_view::read_transcript(runs_dir, &run).map_err(|error| {
             anyhow::anyhow!(
                 "cannot read run {run} at {}: {error}",
                 runs_dir.join(format!("{run}.jsonl")).display()
@@ -210,8 +208,8 @@ pub(crate) fn history(
     if cli.sessions {
         if cli.output_schema_version.is_some() {
             let page = session_view::list_sessions_page(
-                &runs_dir,
-                &tenant,
+                runs_dir,
+                tenant,
                 cli.agent_definition_tag.as_deref(),
                 cli.session_limit,
                 cli.session_cursor.as_deref(),
@@ -225,11 +223,11 @@ pub(crate) fn history(
         // grows without bound and had no ceiling on this path at all.
         let limit = cli.limit.unwrap_or(session_view::MAX_SESSIONS_PER_PAGE);
         if cli.output_format.is_machine() {
-            let document = session_view::list_sessions(&runs_dir, &tenant, Some(&repo), limit)?;
+            let document = session_view::list_sessions(runs_dir, tenant, Some(repo), limit)?;
             println!("{}", serde_json::to_string(&document)?);
             return Ok(Some(output::EXIT_SUCCESS));
         }
-        let page = session_view::list_session_metas(&runs_dir, &tenant, Some(&repo), limit)?;
+        let page = session_view::list_session_metas(runs_dir, tenant, Some(repo), limit)?;
         if page.sessions.is_empty() {
             eprintln!(
                 "no sessions for {} in {}",
@@ -269,7 +267,7 @@ pub(crate) fn history(
             .last()
             .map(|e| e.seq)
             .ok_or_else(|| anyhow::anyhow!("run {pid} has no events to fork from"))?;
-        let child = iteron_record::fork(&runs_dir, &parent, at, &tenant)?;
+        let child = iteron_record::fork(runs_dir, &parent, at, tenant)?;
         if cli.output_format.is_machine() {
             println!(
                 "{}",

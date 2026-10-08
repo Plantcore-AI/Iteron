@@ -65,9 +65,9 @@ pub(crate) fn assemble(input: ViewAdmissionInput<'_>) -> anyhow::Result<Admitted
         }
     } else {
         assemble_system_prompt(
-            home_core.as_deref(),
-            &repo,
-            &repo,
+            home_core,
+            repo,
+            repo,
             effective_settings
                 .context_materialization
                 .instruction_discovery,
@@ -100,8 +100,8 @@ pub(crate) fn assemble(input: ViewAdmissionInput<'_>) -> anyhow::Result<Admitted
     )?;
     let budget = effective_settings.budget.clone();
     let mut route = route::RouteView::resolve(
-        &provider_directory,
-        &selection,
+        provider_directory,
+        selection,
         route::RouteLimits {
             max_turns: budget.max_turns,
             max_usd: budget.max_usd,

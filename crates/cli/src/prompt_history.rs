@@ -30,13 +30,6 @@ const UNLINEAGED_STATE_VERSION: u32 = 2;
 const STATE_VERSION: u32 = 3;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn source_run_from_rollout(path: &Path) -> Option<RunId> {
-    path.file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .filter(|run| !run.is_empty())
-        .map(|run| RunId(run.to_owned()))
-}
-
 /// Result of the cancel-safe startup hydration worker. Moving this whole value through one bounded
 /// channel keeps filesystem and content-store locks out of the first-frame/input path.
 pub(crate) struct Bootstrap {

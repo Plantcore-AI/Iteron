@@ -216,7 +216,7 @@ impl RuntimePlugins {
                 .into_iter()
                 .filter(|slot| slot.surface == Surface::Implementation)
             {
-                if let Some(binding) = binding_for(&composition.wiring, &slot) {
+                if let Some(binding) = binding_for(&composition.wiring, slot) {
                     runtime.record_binding(&binding.plugin, slot.surface, &slot.key);
                 }
             }
