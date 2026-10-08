@@ -1223,7 +1223,7 @@ fn validate_runtime_budget_binding(source: &str) -> Result<()> {
         ("turns", "self.remaining_inference_turns()"),
         (
             "remaining_wall",
-            "self.run_time_remaining().map(|duration| duration.as_secs().max(1)).unwrap_or(300)",
+            "self.run_time_remaining().map(|duration| duration.as_secs().max(1)).unwrap_or_else(deadline_free_parent_remaining_wall_secs)",
         ),
     ] {
         let values = budget_local(&body, name);

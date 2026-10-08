@@ -6,6 +6,8 @@ use iteron_ctx::{MemoryTraceStore, MemoryVisibilityEvidence, MemoryVisibilitySta
 use iteron_protocol::{LifecyclePayload, TurnId};
 use std::collections::VecDeque;
 
+const NO_RECALLED_FACTS: u64 = 0;
+
 #[derive(Default)]
 pub(super) struct MemoryVisibilityOwner {
     entries: VecDeque<MemoryVisibilityEvidence>,
@@ -177,7 +179,7 @@ impl MemoryRequestExposure<'_> {
             .map(|injection| u64::from(injection.fact_count))
             .unwrap_or(iteron_tunables::param_integer(
                 "cli.runtime.decision_observability.no_recalled_facts",
-                0_u64,
+                NO_RECALLED_FACTS,
             ));
         count = count.saturating_add(recalled);
         if count > 0 {

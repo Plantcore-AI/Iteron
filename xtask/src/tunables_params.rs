@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use syn::spanned::Spanned as _;
 use syn::visit::{self, Visit};
 
+mod cfg;
+pub(crate) use cfg::has_cfg_test;
+
 mod fixed_client;
 mod fixed_core;
 mod fixed_runtime;
@@ -317,15 +320,6 @@ pub(crate) fn census(root: &Path) -> Result<()> {
     }
     println!("\nmodules covered by tier-2: {}/28", modules.len());
     Ok(())
-}
-
-/// Production calls which actually resolve an id through the installed override table. Parsed
-/// from the AST so comments, strings, and test-only code cannot make an inert setting look applied.
-fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    use quote::ToTokens as _;
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg") && attr.meta.to_token_stream().to_string().contains("test")
-    })
 }
 
 fn source_offset(source: &str, location: proc_macro2::LineColumn) -> usize {

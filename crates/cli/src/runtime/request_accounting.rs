@@ -8,6 +8,10 @@ use iteron_ctx::{
 };
 use iteron_protocol::{Block, Message, Role};
 
+// Compiled fallbacks keep their existing profile addresses at this actual accounting owner.
+const NO_ACTIVE_TASK_TOKENS: usize = 0;
+const NO_ATTACHMENT_TOKENS: usize = 0;
+
 #[derive(Default)]
 struct SourcePartition {
     instructions: usize,
@@ -141,14 +145,14 @@ impl RequestAccounting {
             })
             .unwrap_or(iteron_tunables::param_integer(
                 "cli.runtime.context_runtime.no_active_task_tokens",
-                0usize,
+                NO_ACTIVE_TASK_TOKENS,
             ));
         let file = self
             .file
             .map(|file| usize::try_from(file.estimated_tokens).unwrap_or(usize::MAX))
             .unwrap_or(iteron_tunables::param_integer(
                 "cli.runtime.context_runtime.no_attachment_tokens",
-                0usize,
+                NO_ATTACHMENT_TOKENS,
             ))
             .min(active);
         let images = self

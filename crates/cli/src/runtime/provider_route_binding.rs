@@ -19,6 +19,8 @@ use std::time::Instant;
 
 use super::route_state::MODEL_ROUTE_FEATURE_SCHEMA;
 
+const GOVERNOR_ROUTE_BOUND_ABSENT: bool = false;
+
 pub(super) struct ProviderRouteBindingScope<'a> {
     pub(super) turn: TurnId,
     pub(super) router: &'a dyn StrategySlot,
@@ -70,7 +72,7 @@ impl ProviderRouteBindingOwner<'_> {
         {
             Ok(inserted) => inserted.unwrap_or(iteron_tunables::param_bool(
                 "cli.runtime.route_state.governor_route_bound_absent",
-                false,
+                GOVERNOR_ROUTE_BOUND_ABSENT,
             )),
             Err(_) => {
                 self.abstain(decision_turn, source, "governor_route_refused")?;

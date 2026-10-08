@@ -25,6 +25,16 @@ use std::{
     time::Duration,
 };
 
+const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
+fn execution_control_poll() -> Duration {
+    // Preserve the old live address while retaining this owner's finite cancellation cadence.
+    iteron_tunables::param_duration(
+        "cli.runtime.subagent_control.child_control_poll",
+        CHILD_CONTROL_POLL,
+    )
+    .clamp(Duration::from_millis(1), CHILD_CONTROL_POLL)
+}
+
 pub(super) enum DirectChildWork {
     Native {
         context: Box<KernelSpawnerContext>,
@@ -141,7 +151,7 @@ impl DirectChildExecution {
             child.inherit_interrupt(stop.clone());
             let mut execution = Box::pin(child.run_leaf(&prompt));
             let outcome = loop {
-                match tokio::time::timeout(Duration::from_millis(25), &mut execution).await {
+                match tokio::time::timeout(execution_control_poll(), &mut execution).await {
                     Ok(outcome) => break outcome,
                     Err(_) => control.child_stop(journal, turn, &stop),
                 }
@@ -176,7 +186,7 @@ impl DirectChildExecution {
                 ))?;
             let mut execution = Box::pin(children.direct(prompt, node));
             let outcome = loop {
-                match tokio::time::timeout(Duration::from_millis(25), &mut execution).await {
+                match tokio::time::timeout(execution_control_poll(), &mut execution).await {
                     Ok(outcome) => break outcome,
                     Err(_) => {
                         if control.poll(journal, turn).interrupts() {

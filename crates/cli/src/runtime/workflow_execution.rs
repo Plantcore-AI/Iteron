@@ -10,6 +10,16 @@ use iteron_protocol::{
 };
 use std::{sync::Arc, time::Duration};
 
+const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
+fn execution_control_poll() -> Duration {
+    // Preserve the old live address while retaining this owner's finite cancellation cadence.
+    iteron_tunables::param_duration(
+        "cli.runtime.workflow_prepare.workflow_control_poll",
+        WORKFLOW_CONTROL_POLL,
+    )
+    .clamp(Duration::from_millis(1), WORKFLOW_CONTROL_POLL)
+}
+
 pub(super) struct WorkflowExecution {
     pub(super) deadline: Option<std::time::Instant>,
     pub(super) preparation: Result<WorkflowPreparation, String>,
@@ -157,7 +167,7 @@ impl WorkflowExecution {
                 if cancelled_at.is_some_and(|start| start.elapsed() >= Duration::from_secs(5)) {
                     return Err(KernelError::UnknownEffects { count: 1 });
                 }
-                match tokio::time::timeout(Duration::from_millis(25), &mut joined).await {
+                match tokio::time::timeout(execution_control_poll(), &mut joined).await {
                     Ok(report) => break report,
                     Err(_) => {
                         if control.poll(journal, turn).interrupts() {

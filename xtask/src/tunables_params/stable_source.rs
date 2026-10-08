@@ -128,6 +128,26 @@ pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str
             | "OWNERSHIP"
             | "SHUTDOWN_GRACE",
         ) => Some("crates/cli/src/workflow.rs"),
+        (
+            "crates/cli/src/runtime/request_accounting.rs",
+            "NO_ACTIVE_TASK_TOKENS" | "NO_ATTACHMENT_TOKENS",
+        ) => Some("crates/cli/src/runtime/context_runtime.rs"),
+        ("crates/cli/src/runtime/memory_request_exposure.rs", "NO_RECALLED_FACTS") => {
+            Some("crates/cli/src/runtime/decision_observability.rs")
+        }
+        ("crates/cli/src/runtime/provider_route_binding.rs", "GOVERNOR_ROUTE_BOUND_ABSENT") => {
+            Some("crates/cli/src/runtime/route_state.rs")
+        }
+        ("crates/cli/src/runtime/direct_child_execution.rs", "CHILD_CONTROL_POLL") => {
+            Some("crates/cli/src/runtime/subagent_control.rs")
+        }
+        ("crates/cli/src/runtime/workflow_execution.rs", "WORKFLOW_CONTROL_POLL") => {
+            Some("crates/cli/src/runtime/workflow_prepare.rs")
+        }
+        (
+            "crates/cli/src/runtime/kernel_special_assembly.rs",
+            "DEADLINE_FREE_PARENT_REMAINING_WALL_SECS",
+        ) => Some("crates/cli/src/runtime/workflow_collect.rs"),
         ("crates/cli/src/runtime/request_context_evidence.rs", "DOMAIN") => {
             Some("crates/cli/src/runtime/decision_observability.rs")
         }
@@ -562,6 +582,71 @@ mod tests {
         );
         assert_eq!(
             super::original_source("crates/cli/src/other.rs", "HUNK_DEFAULT_START_LINE"),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod runtime_control_migration_tests {
+    #[test]
+    fn seven_live_runtime_control_addresses_follow_only_their_actual_owned_declarations() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let evidence = super::super::applied_evidence(root).unwrap();
+        for (path, name, expected) in [
+            (
+                "request_accounting.rs",
+                "NO_ACTIVE_TASK_TOKENS",
+                "cli.runtime.context_runtime.no_active_task_tokens",
+            ),
+            (
+                "request_accounting.rs",
+                "NO_ATTACHMENT_TOKENS",
+                "cli.runtime.context_runtime.no_attachment_tokens",
+            ),
+            (
+                "memory_request_exposure.rs",
+                "NO_RECALLED_FACTS",
+                "cli.runtime.decision_observability.no_recalled_facts",
+            ),
+            (
+                "provider_route_binding.rs",
+                "GOVERNOR_ROUTE_BOUND_ABSENT",
+                "cli.runtime.route_state.governor_route_bound_absent",
+            ),
+            (
+                "direct_child_execution.rs",
+                "CHILD_CONTROL_POLL",
+                "cli.runtime.subagent_control.child_control_poll",
+            ),
+            (
+                "workflow_execution.rs",
+                "WORKFLOW_CONTROL_POLL",
+                "cli.runtime.workflow_prepare.workflow_control_poll",
+            ),
+            (
+                "kernel_special_assembly.rs",
+                "DEADLINE_FREE_PARENT_REMAINING_WALL_SECS",
+                "cli.runtime.workflow_collect.deadline_free_parent_remaining_wall_secs",
+            ),
+        ] {
+            let relative = format!("crates/cli/src/runtime/{path}");
+            assert_eq!(
+                super::super::base_param_id("cli", &relative, name),
+                expected
+            );
+            assert!(
+                evidence
+                    .get(expected)
+                    .is_some_and(|sites| sites.iter().any(|site| site.path == relative)),
+                "actual runtime resolution disappeared: {expected}"
+            );
+            assert_eq!(super::original_source(&relative, "UNRELATED_BOUND"), None);
+        }
+        assert_eq!(
+            super::original_source("crates/cli/src/foreign.rs", "CHILD_CONTROL_POLL"),
             None
         );
     }

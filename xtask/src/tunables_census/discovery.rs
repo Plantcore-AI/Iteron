@@ -1082,11 +1082,7 @@ fn clap_argument(field: &syn::Field, rust_name: &str) -> Option<String> {
 }
 
 fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("test")
-            || ((attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
-                && attr.meta.to_token_stream().to_string().contains("test"))
-    })
+    crate::tunables_params::has_cfg_test(attrs)
 }
 
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {

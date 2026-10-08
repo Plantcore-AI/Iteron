@@ -16,6 +16,15 @@ use super::{Agent, KernelError, MAX_DELEGATION_DEPTH};
 use iteron_protocol::TurnId;
 use std::time::Instant;
 
+const DEADLINE_FREE_PARENT_REMAINING_WALL_SECS: u64 = 300;
+fn deadline_free_parent_remaining_wall_secs() -> u64 {
+    iteron_tunables::param_integer(
+        "cli.runtime.workflow_collect.deadline_free_parent_remaining_wall_secs",
+        DEADLINE_FREE_PARENT_REMAINING_WALL_SECS,
+    )
+    .min(DEADLINE_FREE_PARENT_REMAINING_WALL_SECS)
+}
+
 impl Agent {
     pub(super) fn kernel_controller_scope(
         &mut self,
@@ -119,7 +128,7 @@ impl Agent {
         let remaining_wall = self
             .run_time_remaining()
             .map(|duration| duration.as_secs().max(1))
-            .unwrap_or(300);
+            .unwrap_or_else(deadline_free_parent_remaining_wall_secs);
         let turns = self.remaining_inference_turns();
         if turns < self.execution_policy.admission.minimum_remaining_turns
             || remaining_wall
