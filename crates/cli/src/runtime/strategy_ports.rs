@@ -304,10 +304,6 @@ impl Agent {
         Ok(())
     }
 
-    pub(crate) fn dependency_skill_dirs(&self) -> &[(std::path::PathBuf, std::path::PathBuf)] {
-        &self.dependency_skill_dirs
-    }
-
     /// Atomically install one compiler-validated nine-slot policy generation before turn zero.
     /// Validation happens before the first assignment, so an invalid checkpoint or a late caller
     /// cannot leave a mixture of old and new strategy Arcs on the agent.

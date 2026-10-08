@@ -489,7 +489,7 @@ fn named_use_leaves(
 ) -> bool {
     match tree {
         syn::UseTree::Path(path) => {
-            prefix.push((path.ident.clone(), path.colon2));
+            prefix.push((path.ident.clone(), path.colon2_token));
             let complete = named_use_leaves(&path.tree, prefix, emit);
             prefix.pop();
             complete
@@ -519,7 +519,7 @@ fn named_use_leaves(
             for (ident, colon2) in parts.iter().rev() {
                 leaf = syn::UseTree::Path(syn::UsePath {
                     ident: ident.clone(),
-                    colon2: *colon2,
+                    colon2_token: *colon2,
                     tree: Box::new(leaf),
                 });
             }
