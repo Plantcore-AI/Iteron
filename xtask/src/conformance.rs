@@ -12,7 +12,7 @@ use syn::visit::{self, Visit};
 mod frozen_model;
 mod research_distribution;
 
-const RUNTIME_SOURCE: &str = "crates/cli/src/runtime/workflow_collect.rs";
+const RUNTIME_SOURCE: &str = "crates/cli/src/runtime/kernel_special_assembly.rs";
 const KERNEL_MANIFEST: &str = "crates/kernel/Cargo.toml";
 const KERNEL_SOURCE_DIR: &str = "crates/kernel/src";
 const MAX_RUNTIME_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -21,8 +21,8 @@ const MAX_EVIDENCE_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_READ_ONLY_TOOLS: usize = 256;
 const MAX_POLICY_TOOLS: usize = 256;
 const MAX_W1_PLACEMENT_ROWS: usize = 16;
-const SPAWN_SIGNATURE: &str = "    pub(super) async fn spawn_subagent(";
-const BUDGET_BINDING: &str = "let Some(budget) = iteron_agents::subagent_budget(";
+const SPAWN_SIGNATURE: &str = "kernel_direct_work";
+const BUDGET_BINDING: &str = "iteron_agents::subagent_budget";
 /// The kernel's trusted computing base, stated as an exact set so a new dependency cannot arrive
 /// unnoticed. `iteron-obs` was in it and unused: the only mention left in the kernel was a comment.
 const REQUIRED_KERNEL_PATH_DEPENDENCIES: [&str; 2] = ["iteron-protocol", "iteron-record"];
@@ -231,7 +231,12 @@ pub fn validate(root: &Path) -> Result<()> {
     frozen_model::validate(root)?;
     research_distribution::validate(root)?;
     let runtime = read_bounded_utf8(root, RUNTIME_SOURCE, MAX_RUNTIME_SOURCE_BYTES)?;
-    validate_runtime_budget_binding(&runtime)
+    validate_runtime_budget_binding(&runtime)?;
+    validate_direct_child_allocation(&read_bounded_utf8(
+        root,
+        "crates/cli/src/runtime_tunables/execution_policy.rs",
+        MAX_RUNTIME_SOURCE_BYTES,
+    )?)
 }
 
 /// Emit the Sept-1 conformance matrix after proving every row has executable evidence and the
@@ -979,48 +984,387 @@ fn production_source_violations(source: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn validate_runtime_budget_binding(source: &str) -> Result<()> {
-    let body = runtime_spawn_body(source)?;
-    let bindings = body
-        .lines()
-        .filter(|line| line.trim() == BUDGET_BINDING)
-        .count();
-    if bindings != 1 {
-        bail!(
-            "CLI runtime spawn_subagent must bind its budget exactly once through def.rs::subagent_budget()"
-        );
+// The production direct path owns the allocation before either native construction or
+// controller admission. A fixture wrapper, comments or a same-named foreign impl cannot prove it.
+fn runtime_method(source: &str, owner: &str, name: &str) -> Result<syn::Block> {
+    let file = syn::parse_file(source)?;
+    let mut bodies = Vec::new();
+    for item in file.items {
+        let syn::Item::Impl(item) = item else {
+            continue;
+        };
+        if item.trait_.is_some() || item.self_ty.to_token_stream().to_string() != owner {
+            continue;
+        }
+        for member in item.items {
+            let syn::ImplItem::Fn(method) = member else {
+                continue;
+            };
+            if method.sig.ident != name {
+                continue;
+            }
+            if item
+                .attrs
+                .iter()
+                .chain(&method.attrs)
+                .any(|attr| !attr.path().is_ident("doc"))
+            {
+                bail!("budget owner {owner}::{name} has conditional or active attributes");
+            }
+            bodies.push(method.block);
+        }
     }
-    if body.contains("Budget {") || body.contains("budget.max_") {
-        bail!(
-            "CLI runtime spawn_subagent must not construct or mutate a second subagent budget policy"
-        );
+    if bodies.len() != 1 {
+        bail!("budget owner {owner}::{name} must have exactly one production definition");
+    }
+    Ok(bodies.remove(0))
+}
+
+fn budget_tokens(value: &impl ToTokens) -> String {
+    // Trailing separators are syntax formatting, not a different budget expression.
+    value
+        .to_token_stream()
+        .to_string()
+        .replace(", }", "}")
+        .replace(", )", ")")
+}
+fn budget_expr(source: &str) -> Result<String> {
+    Ok(budget_tokens(&syn::parse_str::<syn::Expr>(source)?))
+}
+
+fn budget_local<'a>(body: &'a syn::Block, name: &str) -> Vec<&'a syn::Expr> {
+    body.stmts
+        .iter()
+        .filter_map(|stmt| {
+            let syn::Stmt::Local(local) = stmt else {
+                return None;
+            };
+            let syn::Pat::Ident(pattern) = &local.pat else {
+                return None;
+            };
+            if pattern.ident == name {
+                local.init.as_ref().map(|init| init.expr.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn budget_option_receiver(expression: &syn::Expr) -> Result<&syn::Expr> {
+    let syn::Expr::Try(tried) = expression else {
+        bail!("budget allocation must refuse None")
+    };
+    let syn::Expr::MethodCall(call) = tried.expr.as_ref() else {
+        bail!("budget allocation lacks refusal")
+    };
+    if call.method != "ok_or" || call.args.len() != 1 {
+        bail!("budget allocation must preserve its explicit prelaunch refusal");
+    }
+    Ok(&call.receiver)
+}
+
+#[derive(Default)]
+struct DirectBudgetVisitor {
+    bindings: usize,
+    mutations: usize,
+    inline_budgets: usize,
+    unbounded_returns: usize,
+    expressions: BTreeMap<String, usize>,
+}
+impl DirectBudgetVisitor {
+    fn for_expressions(expressions: &[&str]) -> Result<Self> {
+        Ok(Self {
+            expressions: expressions
+                .iter()
+                .map(|expression| Ok((budget_expr(expression)?, 0)))
+                .collect::<Result<_>>()?,
+            ..Self::default()
+        })
+    }
+}
+impl<'ast> Visit<'ast> for DirectBudgetVisitor {
+    fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+        // Retain only the small exact contract set, never all nested source serializations.
+        if let Some(count) = self.expressions.get_mut(&budget_tokens(expression)) {
+            *count += 1;
+        }
+        visit::visit_expr(self, expression);
+    }
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref()
+            && path.path.to_token_stream().to_string() == BUDGET_BINDING.replace("::", " :: ")
+        {
+            self.bindings += 1;
+        }
+        visit::visit_expr_call(self, call);
+    }
+    fn visit_expr_assign(&mut self, assignment: &'ast syn::ExprAssign) {
+        let left = assignment.left.to_token_stream().to_string();
+        // Every allowed context write is checked separately as the exact minted value.
+        if left == "context"
+            || left == "budget"
+            || left.starts_with("budget .")
+            || (left.starts_with("context . budget")
+                && (left != "context . budget"
+                    || budget_tokens(assignment.right.as_ref()) != "budget"))
+        {
+            self.mutations += 1;
+        }
+        visit::visit_expr_assign(self, assignment);
+    }
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        let left = expression.left.to_token_stream().to_string();
+        if matches!(
+            expression.op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        ) && (left == "budget"
+            || left.starts_with("budget .")
+            || left.starts_with("context . budget"))
+        {
+            self.mutations += 1;
+        }
+        visit::visit_expr_binary(self, expression);
+    }
+    fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
+        if expression
+            .expr
+            .as_ref()
+            .is_none_or(|value| budget_tokens(value.as_ref()) != "None")
+        {
+            self.unbounded_returns += 1;
+        }
+        visit::visit_expr_return(self, expression);
+    }
+    fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
+        let value = budget_tokens(expression.expr.as_ref());
+        if expression.mutability.is_some()
+            && (value == "context"
+                || value == "budget"
+                || value.starts_with("budget .")
+                || value.starts_with("context . budget"))
+        {
+            self.mutations += 1;
+        }
+        visit::visit_expr_reference(self, expression);
+    }
+    fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+        if expression
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Budget")
+        {
+            self.inline_budgets += 1;
+        }
+        visit::visit_expr_struct(self, expression);
+    }
+}
+fn require_budget_expression(visitor: &DirectBudgetVisitor, expression: &str) -> Result<()> {
+    if visitor.expressions.get(&budget_expr(expression)?).copied() != Some(1) {
+        bail!("direct budget call chain must retain exactly one `{expression}`");
     }
     Ok(())
 }
 
-fn runtime_spawn_body(source: &str) -> Result<&str> {
-    let mut starts = source.match_indices(SPAWN_SIGNATURE);
-    let (start, _) = starts
-        .next()
-        .context("CLI runtime source lacks spawn_subagent")?;
-    if starts.next().is_some() {
-        bail!("CLI runtime source repeats spawn_subagent");
+fn validate_runtime_budget_binding(source: &str) -> Result<()> {
+    let body = runtime_method(source, "Agent", SPAWN_SIGNATURE)?;
+    let expressions = [
+        "context.budget = budget",
+        "self.child_run_deadline(&budget)",
+        "scope.children(&context, &run.0)",
+        "DirectChildWork::Native { context: Box::new(context), identity: DirectChildIdentity { run, directory: self.subagent_directory(), depth: self.delegation_depth.checked_add(1).ok_or(\"child depth overflow\")?, effort: self.execution_policy.subagent_effort, deadline, diagnostics: self.diagnostics.clone() } }",
+    ];
+    let mut visitor = DirectBudgetVisitor::for_expressions(&expressions)?;
+    visitor.visit_block(&body);
+    for (name, expected) in [
+        ("turns", "self.remaining_inference_turns()"),
+        (
+            "remaining_wall",
+            "self.run_time_remaining().map(|duration| duration.as_secs().max(1)).unwrap_or(300)",
+        ),
+    ] {
+        let values = budget_local(&body, name);
+        if values.len() != 1 || budget_tokens(values[0]) != budget_expr(expected)? {
+            bail!("direct child allocation must bind actual parent remaining {name}");
+        }
     }
-    let after_start = &source[start + SPAWN_SIGNATURE.len()..];
-    let end = [
-        "\n    fn ",
-        "\n    async fn ",
-        "\n    pub fn ",
-        "\n    pub async fn ",
-        "\n    pub(super) fn ",
-        "\n    pub(super) async fn ",
-        "\n}",
-    ]
-    .into_iter()
-    .filter_map(|signature| after_start.find(signature))
-    .min()
-    .context("CLI runtime spawn_subagent has no following method boundary")?;
-    Ok(&after_start[..end])
+    if visitor.bindings != 1 || visitor.mutations != 0 || visitor.inline_budgets != 0 {
+        bail!(
+            "CLI direct allocation must mint exactly once through def.rs::subagent_budget without a second or mutated budget"
+        );
+    }
+    let bindings = budget_local(&body, "budget");
+    if bindings.len() != 2
+        || budget_tokens(budget_option_receiver(bindings[0])?)
+            != budget_expr(
+                "iteron_agents::subagent_budget(turns, remaining_wall, self.remaining_provider_tokens())",
+            )?
+        || budget_tokens(budget_option_receiver(bindings[1])?)
+            != budget_expr(
+                "self.execution_policy.direct_child_allocation.allocate(turns, remaining_wall, self.remaining_provider_tokens(), &budget)",
+            )?
+    {
+        bail!("direct child budget must narrow the unique parent-remaining allocation");
+    }
+    for expression in expressions {
+        require_budget_expression(&visitor, expression)?;
+    }
+    let context: Vec<_> = body
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| {
+            let syn::Stmt::Local(local) = stmt else {
+                return None;
+            };
+            let syn::Pat::Ident(name) = &local.pat else {
+                return None;
+            };
+            if name.ident == "context" {
+                Some((index, local))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let assignment: Vec<_> = body
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| {
+            let syn::Stmt::Expr(value, Some(_)) = stmt else {
+                return None;
+            };
+            if budget_tokens(value)
+                == budget_expr("context.budget = budget").expect("fixed valid expression")
+            {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let budget_indices: Vec<_> = body
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| {
+            let syn::Stmt::Local(local) = stmt else {
+                return None;
+            };
+            let syn::Pat::Ident(name) = &local.pat else {
+                return None;
+            };
+            if name.ident == "budget" {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let handoff = budget_expr(
+        "if let Some(scope) = self.kernel_controller_scope(turn, deadline)? { return scope.children(&context, &run.0).map(DirectChildWork::Controller); }",
+    )?;
+    let controller: Vec<_> = body
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stmt)| {
+            let syn::Stmt::Expr(value, _) = stmt else {
+                return None;
+            };
+            if budget_tokens(value) == handoff {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let Some(syn::Stmt::Expr(syn::Expr::Call(native), None)) = body.stmts.last() else {
+        bail!("direct native handoff must be the actual work return");
+    };
+    if context.len() != 1
+        || assignment.len() != 1
+        || controller.len() != 1
+        || budget_indices.len() != 2
+        || budget_indices[1] >= context[0].0
+        || context[0].0 >= assignment[0]
+        || assignment[0] >= controller[0]
+        || context[0].1.init.as_ref().is_none_or(|value| {
+            budget_tokens(value.expr.as_ref())
+                != budget_expr("self.kernel_spawner_context(&route, &run.0)")
+                    .expect("fixed valid expression")
+        })
+        || budget_tokens(native.func.as_ref()) != "Ok"
+        || native.args.len() != 1
+        || budget_tokens(&native.args[0]) != budget_expr(expressions[3])?
+    {
+        bail!("minted budget must be installed once before both real child handoffs");
+    }
+    // The real dispatch factory must invoke this owner, rather than retaining a dead proof helper.
+    let factory = runtime_method(source, "Agent", "kernel_special_execution")?;
+    let dispatch = "KernelDispatchWork::Direct(DirectChildExecution { work: self.kernel_direct_work(turn, index).unwrap_or_else(DirectChildWork::Refused) })";
+    let work = budget_local(&factory, "work");
+    let [syn::Expr::Match(branches)] = work.as_slice() else {
+        bail!("direct budget owner must be invoked by the actual dispatch work match");
+    };
+    let direct: Vec<_> = branches
+        .arms
+        .iter()
+        .filter(|arm| arm.pat.to_token_stream().to_string() == "KernelSpecialKind :: Direct")
+        .collect();
+    if budget_tokens(branches.expr.as_ref()) != "kind"
+        || direct.len() != 1
+        || direct[0].guard.is_some()
+        || !direct[0].attrs.is_empty()
+        || budget_tokens(direct[0].body.as_ref()) != budget_expr(dispatch)?
+    {
+        bail!("direct budget proof cannot replace the executable Direct work branch");
+    }
+    let mut factory_calls = DirectBudgetVisitor::for_expressions(&[dispatch])?;
+    factory_calls.visit_block(&factory);
+    require_budget_expression(&factory_calls, dispatch)
+}
+
+fn validate_direct_child_allocation(source: &str) -> Result<()> {
+    let body = runtime_method(source, "DirectChildAllocationPolicy", "allocate")?;
+    // Pin the actual output expressions, not a nearby comment or unrelated min(). Both monetary
+    // and token optional ceilings preserve the parent's finite bound. Remaining arithmetic can
+    // only reduce the single ceiling minted by def.rs.
+    let expressions = [
+        "if remaining_turns == Budget::UNLIMITED_TURNS { ceiling.max_turns } else { remaining_turns.saturating_sub(writer.max(2).min(remaining_turns)).min(ceiling.max_turns) }",
+        "Budget { max_turns: child_turns, max_usd: ceiling.max_usd, max_tokens: match (remaining_tokens, ceiling.max_tokens) { (Some(tokens), Some(limit)) => { Some(self.child_token_share.floor_u64(tokens).min(limit)) }, (Some(tokens), None) => Some(self.child_token_share.floor_u64(tokens)), (None, limit) => limit }, max_wall_secs: self.child_wall_share.floor_u64(remaining_wall_seconds).clamp(1, ceiling.max_wall_secs), max_consecutive_tool_errors: ceiling.max_consecutive_tool_errors }",
+    ];
+    let child_turns = budget_local(&body, "child_turns");
+    let Some(syn::Stmt::Expr(returned, None)) = body.stmts.last() else {
+        bail!("direct child narrowing must return its bounded output");
+    };
+    if child_turns.len() != 1
+        || budget_tokens(child_turns[0]) != budget_expr(expressions[0])?
+        || budget_tokens(returned) != budget_expr(&format!("Some({})", expressions[1]))?
+        || !budget_local(&body, "ceiling").is_empty()
+    {
+        bail!("direct child narrowing cannot replace its actual input ceiling or return");
+    }
+    let mut visitor = DirectBudgetVisitor::for_expressions(&expressions)?;
+    visitor.visit_block(&body);
+    for expression in expressions {
+        require_budget_expression(&visitor, expression)?;
+    }
+    if visitor.inline_budgets != 1 || visitor.unbounded_returns != 0 {
+        bail!("direct child narrowing must have one bounded result and only None refusals");
+    }
+    Ok(())
 }
 
 fn read_bounded_utf8(root: &Path, relative: &str, max_bytes: u64) -> Result<String> {
@@ -1191,20 +1535,65 @@ mod tests {
 
     #[test]
     fn d11_10_runtime_budget_drift_fails() {
-        let bound = format!(
-            "{SPAWN_SIGNATURE}&mut self) {{\n        {BUDGET_BINDING}\n        }};\n    }}\n\n    fn next("
+        let source = include_str!("../../crates/cli/src/runtime/kernel_special_assembly.rs");
+        validate_runtime_budget_binding(source).unwrap();
+        for changed in [
+            source.replace("iteron_agents::subagent_budget(turns,", "iteron_agents::subagent_budget(u32::MAX,"),
+            source.replace("context.budget = budget;", "context.budget = Budget { max_turns: 99 };"),
+            source.replace("context.budget = budget;", "budget.max_turns = 99; context.budget = budget;"),
+            source.replace("context.budget = budget;", "if false { context.budget = budget; }"),
+            source.replace("context.budget = budget;", "let _ = iteron_agents::subagent_budget(turns, remaining_wall, None); context.budget = budget;"),
+            source.replace("&budget,", "&unbounded,"),
+            source.replace(".children(&context,", ".children(&unbounded,"),
+            source.replace("Box::new(context)", "Box::new(unbounded)"),
+            source.replace(".kernel_direct_work(turn, index)", ".unbounded_direct_work(turn, index)"),
+            source.replace("    fn kernel_direct_work(", "    #[cfg(test)]\n    fn kernel_direct_work("),
+        ] { assert!(validate_runtime_budget_binding(&changed).is_err()); }
+        assert!(validate_runtime_budget_binding(
+            "#[cfg(test)] impl Agent { fn kernel_direct_work() { iteron_agents::subagent_budget(); } }"
+        ).is_err());
+        assert!(
+            validate_runtime_budget_binding(
+                "impl Other { fn kernel_direct_work() { iteron_agents::subagent_budget(); } }"
+            )
+            .is_err()
         );
-        assert!(validate_runtime_budget_binding(&bound).is_ok());
+    }
 
-        let inline = format!(
-            "{SPAWN_SIGNATURE}&mut self) {{\n        let budget = Budget {{ max_turns: 16 }};\n    }}\n\n    fn next("
-        );
-        assert!(validate_runtime_budget_binding(&inline).is_err());
-
-        let widened = format!(
-            "{SPAWN_SIGNATURE}&mut self) {{\n        {BUDGET_BINDING}\n        }};\n        budget.max_turns = 16;\n    }}\n\n    fn next("
-        );
-        assert!(validate_runtime_budget_binding(&widened).is_err());
+    #[test]
+    fn direct_child_narrowing_cannot_widen_any_parent_ceiling() {
+        let source = include_str!("../../crates/cli/src/runtime_tunables/execution_policy.rs");
+        validate_direct_child_allocation(source).unwrap();
+        for changed in [
+            source.replace(".min(ceiling.max_turns)", ".max(ceiling.max_turns)"),
+            source.replace("max_usd: ceiling.max_usd", "max_usd: None"),
+            source.replace(
+                ".floor_u64(tokens).min(limit)",
+                ".floor_u64(tokens).max(limit)",
+            ),
+            source.replace("(None, limit) => limit", "(None, limit) => None"),
+            source.replace("max_turns: child_turns", "max_turns: u32::MAX"),
+            source.replace(
+                "        Some(Budget {",
+                "        return unbounded_helper(); Some(Budget {",
+            ),
+            source.replace("        Some(Budget {", "        let _bait = Some(Budget {"),
+            source.replace(
+                ".clamp(1, ceiling.max_wall_secs)",
+                ".max(ceiling.max_wall_secs)",
+            ),
+        ] {
+            assert!(validate_direct_child_allocation(&changed).is_err());
+        }
+        // Exercise the actual authoritative allocator as well as its production source consumers.
+        for (turns, wall, tokens) in [(6, 9, Some(100)), (60, 300, Some(1000)), (120, 100, None)] {
+            let budget = iteron_agents::subagent_budget(turns, wall, tokens).unwrap();
+            assert!(budget.max_turns <= turns.saturating_sub((turns / 2 + 1).max(2)));
+            assert!(budget.max_wall_secs <= wall / 3);
+            if let Some(tokens) = tokens {
+                assert!(budget.max_tokens.unwrap() <= tokens / 2);
+            }
+        }
     }
 
     #[test]
