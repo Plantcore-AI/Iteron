@@ -4,7 +4,7 @@
 //! (ADR-006). Every field of [`SessionMeta`] is derivable by replaying the record — `title`
 //! from the first user message, `turns`/`cache_hit`/`last_outcome` from recorded events,
 //! and `cwd`/initial model/`effort`/`created_at`/`parent` from the seq-0
-//! [`EventKind::RunStart`] genesis header. Later [`EventKind::ModelSelected`] events update the
+//! [`iteron_protocol::EventKind::RunStart`] genesis header. Later [`iteron_protocol::EventKind::ModelSelected`] events update the
 //! provider/model projection. The `.meta.json` per-run file and compacted `sessions.index` are a
 //! rebuildable cache in front of that replay (R5 design §2.4): a missing or stale cache is never an
 //! error, it degrades to a replay.
@@ -16,7 +16,7 @@
 //! make that reference tamper-evident (ADR-008 §4, R5-review Risk 3), the genesis pins
 //! `parent_hash_at_seq` — the parent chain's hash at the fork point — so a child replay
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
-//! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
+//! on replay via `iteron_protocol::EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
 mod bounded_reindex;
 mod cache_receipts;

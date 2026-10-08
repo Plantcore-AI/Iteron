@@ -1,6 +1,7 @@
 //! Operator index repair with finite enumeration, verified aggregate hydration and retained metadata.
-use super::{RecordError, RunId};
+use crate::RecordError;
 use crate::bounded_replay::{ReplayReadLimits, meta_bounded};
+use iteron_protocol::RunId;
 use std::path::Path;
 use std::time::{Duration, Instant};
 const MAX_ENTRIES: usize = 4096;
