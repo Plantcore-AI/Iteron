@@ -31,17 +31,12 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
             "usage: /tunables load <workspace-relative-request.json>",
         );
         return;
-    } else if let Some(path) = argument.strip_prefix("load ") {
-        match tunables_view::load_workspace_request(session.workspace(), path.trim()) {
-            Ok(catalog) => (catalog, String::new()),
-            Err(error) => {
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("tunables simulation refused: {error}"),
-                );
-                return;
-            }
-        }
+    } else if argument.starts_with("load ") {
+        app.note(
+            block::NoticeLevel::Err,
+            "submit /tunables load through the session control",
+        );
+        return;
     } else if argument == "registry" {
         (tunables_view::registry_catalog(), String::new())
     } else {
@@ -67,6 +62,10 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
             argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
         )
     };
+    open_tunables_catalog(app, catalog, &initial_query);
+}
+
+fn open_tunables_catalog(app: &mut App, catalog: tunables_view::Catalog, initial_query: &str) {
     let (title, entries) = catalog.into_parts();
     let items = entries
         .into_iter()
@@ -86,7 +85,7 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
         query: String::new(),
         saved_theme: None,
     };
-    picker.append_query_text(&initial_query);
+    picker.append_query_text(initial_query);
     let visible = picker.visible_indices();
     picker.normalize_selection(&visible);
     app.pickers.open(picker);
@@ -428,6 +427,27 @@ pub(super) fn apply_transcript_effect_event(
     }
     if let Some(control) = event.control {
         match (control.kind, control.reply) {
+            (
+                transcript_effect::ControlKind::TunablesSimulation,
+                Some(app_server::ControlReply::TunablesSimulation(receipt)),
+            ) => {
+                if session.client.thread_snapshot_v1().is_none_or(|scope| {
+                    scope.thread_id != receipt.thread_id || scope.run_id != receipt.run_id
+                }) {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "tunables simulation belongs to a previous session",
+                    );
+                } else {
+                    match tunables_view::simulation_catalog(&receipt.view) {
+                        Ok(catalog) => open_tunables_catalog(app, catalog, ""),
+                        Err(error) => app.note(
+                            block::NoticeLevel::Err,
+                            format!("tunables simulation refused: {error}"),
+                        ),
+                    }
+                }
+            }
             (
                 transcript_effect::ControlKind::Compact,
                 Some(app_server::ControlReply::Compacted { report, snapshot }),

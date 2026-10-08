@@ -766,8 +766,30 @@ pub(super) fn handle_registered_command(
         }
         SlashCommand::Tunables => {
             let requested = arg.trim();
-            if requested == "registry" || requested == "load" || requested.starts_with("load ") {
+            if requested == "registry" || requested == "load" {
                 open_tunables_picker(app, session, arg);
+                return;
+            }
+            if let Some(path) = requested.strip_prefix("load ") {
+                let Some(scope) = session.client.thread_snapshot_v1() else {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        "tunables simulation has no current session",
+                    );
+                    return;
+                };
+                queue_command_control(
+                    app,
+                    session,
+                    transcript_effects,
+                    interrupt,
+                    app_server::Control::TunablesSimulation(app_server::TunablesLoadV1 {
+                        thread_id: scope.thread_id,
+                        run_id: scope.run_id,
+                        relative_path: path.trim().to_owned(),
+                    }),
+                    transcript_effect::ControlKind::TunablesSimulation,
+                );
                 return;
             }
             queue_command_control(

@@ -7,7 +7,9 @@ mod payload;
 mod process;
 pub(crate) mod project_init;
 pub(crate) mod shell;
+pub(crate) mod tunables_simulation;
 pub(crate) mod worker;
+pub(crate) mod workspace_read;
 
 pub(crate) use export::{CollisionPolicy, MAX_TRANSCRIPT_EXPORT_BYTES};
 pub(crate) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};

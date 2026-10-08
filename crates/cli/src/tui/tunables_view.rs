@@ -11,32 +11,21 @@ use self::format::{
     BoundedText, MAX_DETAIL_FIELD_CHARS, bounded_field, bounded_note, code, compact_json,
     constraint_summary, join_strs, row,
 };
-pub(super) use self::model::Detail;
-use self::model::{Catalog, LoadError};
-#[cfg(target_os = "linux")]
+use self::model::LoadError;
+pub(super) use self::model::{Catalog, Detail};
+use iteron_tunables::Family;
+#[cfg(test)]
 use iteron_tunables::RESOLUTION_INPUT_MAX_BYTES;
-use iteron_tunables::{Family, ResolutionFailureReport, ResolutionReport};
+#[cfg(test)]
+use iteron_tunables::{ResolutionFailureReport, ResolutionReport};
 use serde_json::Value;
-#[cfg(target_os = "linux")]
-use std::io::Read as _;
-use std::path::{Component, Path};
-
-const MAX_REQUEST_PATH_BYTES: usize = 4_096;
-const MAX_REQUEST_COMPONENTS: usize = 128;
-const SAFE_LOAD_REFUSAL: &str = "request could not be loaded safely from this workspace";
-/// Rebinding verdict when the identity check itself errors. Fail-closed: an unprovable match keeps
-/// the loaded bytes from crossing the resolver boundary. Not a tunable.
-#[cfg(target_os = "linux")]
-const REBIND_UNPROVEN: bool = false;
+#[cfg(test)]
+use std::path::Path;
+#[cfg(all(test, not(windows)))]
+const SAFE_LOAD_REFUSAL: &str = crate::client_effects::workspace_read::SAFE_READ_REFUSAL;
 /// Leading hex characters of a digest shown in a detail row. Twelve separate every digest a single
 /// registry projection actually carries, while leaving the row wide enough for its label.
 const DIGEST_PREFIX_CHARS: usize = 12;
-/// Ceiling on the buffer reserved before the first byte of a request file is read. The resolver's
-/// input cap is 1 MiB, but almost every request is far smaller, so reserving the whole cap up
-/// front would charge every load for a size no real request reaches.
-#[cfg(target_os = "linux")]
-const REQUEST_READ_RESERVE_BYTES: usize = 64 * 1024;
-
 pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
         format_args!(
@@ -277,143 +266,63 @@ fn short_digest(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-/// Load one explicit request from inside the selected workspace. Linux retains directory and leaf
-/// capabilities, rejects symlinks and non-regular leaves, and rebinds the complete pathname before
-/// delivering exactly 1 MiB + 1 byte at most to R2. Other platforms fail closed.
-pub(super) fn load_workspace_request(
-    workspace: &Path,
-    requested_path: &str,
+/// Presentation only: the host supplies canonical redacted explain documents, never raw input.
+pub(super) fn simulation_catalog(
+    view: &crate::client_effects::tunables_simulation::TunablesSimulationV1,
 ) -> Result<Catalog, LoadError> {
-    let bytes = read_workspace_request(workspace, requested_path)?;
+    if view.version != 1
+        || view.registry_digest != iteron_tunables::REGISTRY_DIGEST_SHA256
+        || view.entries.len() != iteron_tunables::families().len()
+        || !matches!(view.status, "resolved" | "active resolution failed")
+    {
+        return Err(LoadError("simulation view identity is invalid"));
+    }
+    let entries = iteron_tunables::families()
+        .iter()
+        .zip(&view.entries)
+        .map(|(family, entry)| {
+            if family.id != entry.family_id {
+                return Err(LoadError("simulation view family identity is invalid"));
+            }
+            explanation_detail(&entry.explanation, family, view.status)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Catalog::new(
+        format_args!(
+            "tunables · {} · {} families · {} failures · simulation only",
+            view.status,
+            entries.len(),
+            view.failure_count
+        ),
+        entries,
+    ))
+}
+
+// Native loader compatibility belongs only to existing source fixtures. Production presentation
+// neither opens a file nor executes the resolver; both are actual host-owned work.
+#[cfg(test)]
+fn load_workspace_request(workspace: &Path, request: &str) -> Result<Catalog, LoadError> {
+    let bytes =
+        crate::client_effects::workspace_read::read(workspace, request, RESOLUTION_INPUT_MAX_BYTES)
+            .map_err(LoadError)?;
     catalog_from_bytes(&bytes)
 }
-
-fn parse_request_path(requested_path: &str) -> Result<(Vec<String>, String), LoadError> {
-    if requested_path.is_empty()
-        || requested_path.len()
-            > iteron_tunables::param_integer(
-                "cli.tui.tunables_view.max_request_path_bytes",
-                MAX_REQUEST_PATH_BYTES,
-            )
-        || requested_path.chars().any(char::is_control)
-    {
-        return Err(LoadError(
-            "expected one bounded workspace-relative JSON request path",
-        ));
-    }
-    let relative = Path::new(requested_path);
-    let mut components = Vec::new();
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            return Err(LoadError("request path must stay inside the workspace"));
-        };
-        let component = component
-            .to_str()
-            .ok_or(LoadError("request path must be valid UTF-8"))?;
-        components.push(component.to_owned());
-        if components.len()
-            > iteron_tunables::param_integer(
-                "cli.tui.tunables_view.max_request_components",
-                MAX_REQUEST_COMPONENTS,
-            )
-        {
-            return Err(LoadError("request path contains too many components"));
-        }
-    }
-    let leaf = components
-        .pop()
-        .ok_or(LoadError("request path must name a file"))?;
-    Ok((components, leaf))
-}
-
-#[cfg(target_os = "linux")]
-fn read_workspace_request(workspace: &Path, requested_path: &str) -> Result<Vec<u8>, LoadError> {
-    read_workspace_request_with_hook(workspace, requested_path, || {})
-}
-
-#[cfg(target_os = "linux")]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 fn read_workspace_request_with_hook(
     workspace: &Path,
-    requested_path: &str,
+    request: &str,
     acquired: impl FnOnce(),
 ) -> Result<Vec<u8>, LoadError> {
-    use super::capability_fs;
-
-    let (parents, leaf) = parse_request_path(requested_path)?;
-    let binding = capability_fs::RootBinding::open(workspace).map_err(|_| {
-        LoadError(iteron_tunables::param_str(
-            "cli.tui.tunables_view.safe_load_refusal",
-            SAFE_LOAD_REFUSAL,
-        ))
-    })?;
-    let parent = capability_fs::traverse(binding.root(), &parents).map_err(|_| {
-        LoadError(iteron_tunables::param_str(
-            "cli.tui.tunables_view.safe_load_refusal",
-            SAFE_LOAD_REFUSAL,
-        ))
-    })?;
-    let mut file = capability_fs::open_regular_nonblocking(&parent, &leaf).map_err(|_| {
-        LoadError(iteron_tunables::param_str(
-            "cli.tui.tunables_view.safe_load_refusal",
-            SAFE_LOAD_REFUSAL,
-        ))
-    })?;
-    acquired();
-
-    let mut bytes = Vec::with_capacity(RESOLUTION_INPUT_MAX_BYTES.min(
-        iteron_tunables::param_integer(
-            "cli.tui.tunables_view.request_read_reserve_bytes",
-            REQUEST_READ_RESERVE_BYTES,
-        ),
-    ));
-    (&mut file)
-        .take((RESOLUTION_INPUT_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| {
-            LoadError(iteron_tunables::param_str(
-                "cli.tui.tunables_view.safe_load_refusal",
-                SAFE_LOAD_REFUSAL,
-            ))
-        })?;
-    if bytes.len() > RESOLUTION_INPUT_MAX_BYTES {
-        return Err(LoadError("request exceeds the resolver's 1 MiB input cap"));
-    }
-
-    // Reopen the complete root/parent/leaf path after the read. Both the retained parent and the
-    // retained leaf must still name the same inodes at the operator-visible workspace path before
-    // these bytes can cross the resolver boundary.
-    let rebound = binding.still_bound()
-        && capability_fs::traverse(binding.root(), &parents)
-            .and_then(|current_parent| {
-                if !capability_fs::same_file(&parent, &current_parent)? {
-                    return Ok(false);
-                }
-                let current_leaf = capability_fs::open_regular_nonblocking(&current_parent, &leaf)?;
-                capability_fs::same_file(&file, &current_leaf)
-            })
-            .unwrap_or(iteron_tunables::param_bool(
-                "cli.tui.tunables_view.rebind_unproven",
-                REBIND_UNPROVEN,
-            ))
-        && binding.still_bound();
-    if !rebound {
-        return Err(LoadError(iteron_tunables::param_str(
-            "cli.tui.tunables_view.safe_load_refusal",
-            SAFE_LOAD_REFUSAL,
-        )));
-    }
-    Ok(bytes)
+    crate::client_effects::workspace_read::read_unix_with_hook(
+        workspace,
+        request,
+        RESOLUTION_INPUT_MAX_BYTES,
+        acquired,
+    )
+    .map_err(LoadError)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn read_workspace_request(_workspace: &Path, requested_path: &str) -> Result<Vec<u8>, LoadError> {
-    let _ = parse_request_path(requested_path)?;
-    Err(LoadError(iteron_tunables::param_str(
-        "cli.tui.tunables_view.safe_load_refusal",
-        SAFE_LOAD_REFUSAL,
-    )))
-}
-
+#[cfg(test)]
 fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     match iteron_tunables::resolve_json(bytes) {
         Ok(resolved) => report_catalog(resolved.report(), "resolved", 0),
@@ -421,6 +330,7 @@ fn catalog_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     }
 }
 
+#[cfg(test)]
 fn failed_report_catalog(failure: &ResolutionFailureReport) -> Result<Catalog, LoadError> {
     let Some(report) = failure.report.as_ref() else {
         return Err(LoadError(
@@ -430,6 +340,7 @@ fn failed_report_catalog(failure: &ResolutionFailureReport) -> Result<Catalog, L
     report_catalog(report, "active resolution failed", failure.failures.len())
 }
 
+#[cfg(test)]
 fn report_catalog(
     report: &ResolutionReport,
     atomic_status: &str,
@@ -470,6 +381,7 @@ fn catalog_detail(family: &Family) -> Detail {
     detail
 }
 
+#[cfg(test)]
 fn report_detail(
     report: &ResolutionReport,
     family: &Family,
@@ -483,8 +395,25 @@ fn report_detail(
         .map_err(|_| LoadError("resolver explain returned an unreadable document"))?;
     let explanation = document
         .get("entry")
-        .and_then(Value::as_object)
         .ok_or(LoadError("resolver explain omitted the selected entry"))?;
+    explanation_detail(explanation, family, atomic_status)
+}
+fn explanation_detail(
+    document: &Value,
+    family: &Family,
+    atomic_status: &str,
+) -> Result<Detail, LoadError> {
+    let explanation = document
+        .as_object()
+        .ok_or(LoadError("resolver explain omitted the selected entry"))?;
+    if explanation.get("family_id").and_then(Value::as_str) != Some(family.id)
+        || explanation.get("ordinal").and_then(Value::as_u64) != Some(u64::from(family.ordinal))
+        || explanation.get("semantic_key").and_then(Value::as_str) != Some(family.semantic_key)
+    {
+        return Err(LoadError(
+            "simulation explanation family identity is invalid",
+        ));
+    }
     let state = string_field(explanation, "state")?;
     let reason = string_field(explanation, "reason_code")?;
     let source = string_field(explanation, "source_code")?;

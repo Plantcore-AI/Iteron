@@ -140,6 +140,7 @@ struct Projection {
     shell: Option<Arc<super::client_shell::ShellService>>,
     project_init: Option<Arc<super::project_init::ProjectInitService>>,
     model_preferences: Option<Arc<super::model_preferences::PreferenceService>>,
+    workspace_reads: Option<Arc<super::tunables_simulation::WorkspaceReadService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -183,6 +184,30 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn workspace_read_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::tunables_simulation::WorkspaceReadService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .workspace_reads
+                    .get_or_insert_with(|| {
+                        Arc::new(super::tunables_simulation::WorkspaceReadService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_workspace_reads(&self) -> bool {
+        match self.with_mut(|projection| projection.workspace_reads.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
     pub(super) fn bind_artifact_owner(&self, agent: &crate::runtime::Agent) {
         let scope = agent.rollout.path().parent().map(|runs| {
             crate::artifacts::ArtifactReadScope::capture(

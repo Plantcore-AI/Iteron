@@ -65,6 +65,7 @@ pub(crate) enum ControlKind {
     TurnBudget {
         set: Option<u32>,
     },
+    TunablesSimulation,
     Memory,
     ThreadLifecycle,
     ProjectInit,
@@ -97,6 +98,7 @@ impl ControlKind {
             Self::Model { .. } => "model change",
             Self::ModelRetry { .. } => "model retry",
             Self::OperatorStatus { .. } => "runtime status",
+            Self::TunablesSimulation => "tunables simulation",
             Self::TurnBudget { .. } => "turn budget",
             Self::Memory => "memory control",
             Self::ThreadLifecycle => "thread history control",

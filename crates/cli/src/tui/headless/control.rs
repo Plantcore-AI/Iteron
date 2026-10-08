@@ -88,6 +88,9 @@ pub(super) enum WireControl {
     SelectModelDefaultV1 {
         selection: iteron_protocol::client_inventory::ClientModelSelectionV1,
     },
+    TunablesSimulationV1 {
+        command: crate::app_server::TunablesLoadV1,
+    },
     ModelPreferenceReadV1 {
         command: crate::app_server::ModelPreferenceReadV1,
     },
@@ -360,6 +363,7 @@ impl WireControl {
             Self::InventoryV1 { query } => Control::Inventory(query),
             Self::SelectModelDefaultV1 { selection } => Control::SelectModelDefaultV1(selection),
             Self::ModelPreferenceReadV1 { command } => Control::ModelPreferenceRead(command),
+            Self::TunablesSimulationV1 { command } => Control::TunablesSimulation(command),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
             Self::ProjectInitV1 { command } => Control::ProjectInit(Box::new(command)),
@@ -617,6 +621,9 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::TranscriptExport(value) => value,
         ControlReply::ModelPreference(value) => {
             json!({"type":"model_preference_v1","receipt":value,"source":"actual_host_config_writer","delivery":"bounded_last_receipt_not_config_replay"})
+        }
+        ControlReply::TunablesSimulation(value) => {
+            json!({"type":"tunables_simulation_v1","receipt":value,"source":"host_workspace_request","runtime_bound":false})
         }
         ControlReply::ProjectInit(value) => json!({"type":"project_init_v1","receipt":value}),
         ControlReply::OperatorShell(value) => json!({"type":"operator_shell_v1","receipt":value}),
