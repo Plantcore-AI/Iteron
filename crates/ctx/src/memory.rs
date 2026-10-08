@@ -170,19 +170,20 @@ impl Fact {
     ) -> Self {
         // Durable records retain their full admitted body. Every model-visible fact uses the
         // same existing head ceiling as a legacy file, without altering conflict/source evidence.
-        let source_bytes = raw_body.len();
-        let body = if material.is_memory_record() {
-            iteron_protocol::text::head(
-                &raw_body,
-                iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
+        let (body, truncated) = if material.is_memory_record() {
+            let head_bytes =
+                iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES);
+            (
+                iteron_protocol::text::head(&raw_body, head_bytes),
+                raw_body.len() > head_bytes,
             )
         } else {
             // The file owner has already projected and cached its bounded head. Applying the
             // marker-producing UTF-8 helper twice can change a partially aligned final line.
-            raw_body
+            (raw_body, false)
         };
         Self {
-            material: material.mark_truncated(body.len() < source_bytes),
+            material: material.mark_truncated(truncated),
             index_material,
             slug,
             title,
@@ -2695,6 +2696,54 @@ mod tests {
             first_projection,
             "an already bounded legacy head must not be projected a second time"
         );
+    }
+
+    #[test]
+    fn actual_record_and_file_head_decisions_disclose_marker_expansion_at_the_boundary() {
+        let bodies = [
+            ("exact", format!("cache {}", "x".repeat(MAX_FACT_BYTES - 6))),
+            (
+                "ascii",
+                format!("cache {}", "x".repeat(MAX_FACT_BYTES + 1 - 6)),
+            ),
+            (
+                "unicode",
+                format!("cache {}", "猫".repeat((MAX_FACT_BYTES + 1 - 6) / 3)),
+            ),
+        ];
+        for (label, body) in bodies {
+            let root = tmp(label).join("mem");
+            let store = MemStore::new(root.clone(), MemTier::Project, false);
+            let id = FileMemory.add(&store, &body).unwrap();
+            let record_fact = FileMemory
+                .read_fact(std::slice::from_ref(&store), &id)
+                .unwrap();
+            write_fact(&root, "legacy", &body);
+            let legacy_fact = FileMemory.read_fact(&[store], "legacy").unwrap();
+            let expected = iteron_protocol::text::head(&body, MAX_FACT_BYTES);
+            let truncated = body.len() > MAX_FACT_BYTES;
+            if truncated {
+                assert!(
+                    expected.len() > body.len(),
+                    "the marker expands this boundary case"
+                );
+            }
+            for (is_record, fact) in [(true, record_fact), (false, legacy_fact)] {
+                assert_eq!(fact.body(), expected);
+                let render = fact.render_materialized();
+                let captures = render.admit(1, &render.text, render.text.len(), Trust::Untrusted);
+                let capture = &captures[0];
+                assert_eq!(capture.view().source_truncated, truncated);
+                let retained = capture.source_bytes().unwrap();
+                if is_record {
+                    let source: crate::memory_records::MemoryRecord =
+                        serde_json::from_str(retained).unwrap();
+                    assert_eq!(source.body, body);
+                } else {
+                    assert_eq!(retained, body);
+                }
+            }
+        }
     }
 
     #[test]

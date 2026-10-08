@@ -369,10 +369,8 @@ impl MemStore {
         if suspicious_unicode(&raw) {
             return None;
         }
-        let body = iteron_protocol::text::head(
-            raw.trim(),
-            iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
-        );
+        let head_bytes = iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES);
+        let body = iteron_protocol::text::head(raw.trim(), head_bytes);
         let mut material = MaterialSource::file(
             ContextSourceClass::WorkspaceMemory,
             self.material_root(),
@@ -381,7 +379,7 @@ impl MemStore {
             &raw,
             false,
         )
-        .mark_truncated(body.len() < raw.trim().len());
+        .mark_truncated(raw.trim().len() > head_bytes);
         if let Some(indexed) = indexed {
             let mut cache = self
                 .body_cache
