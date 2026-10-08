@@ -1,6 +1,7 @@
 //! Bounded platform clipboard process and sanitized helper environment owner.
 
 use super::{CLIPBOARD_CAPTURE_TIMEOUT, OsString, Stdio};
+use crate::image_input;
 #[cfg(windows)]
 use std::path::Component;
 #[cfg(any(windows, test))]

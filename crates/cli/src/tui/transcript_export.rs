@@ -32,3 +32,24 @@ pub(crate) fn body(
     }
     Ok(body.into_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::body;
+    use crate::block;
+    use std::sync::Arc;
+
+    fn user(id: u64, text: &str) -> Arc<block::Block> {
+        Arc::new(block::Block::new(id, block::BlockKind::User(text.into())))
+    }
+
+    #[test]
+    fn filtered_and_all_snapshots_share_exact_bounded_bytes() {
+        let blocks = vec![user(1, "first"), user(2, "second needle")];
+        let all = String::from_utf8(body(&blocks, None).unwrap()).unwrap();
+        let filtered = String::from_utf8(body(&blocks, Some(&[2])).unwrap()).unwrap();
+        assert!(all.contains("first") && all.contains("second needle"));
+        assert!(!filtered.contains("first"));
+        assert!(filtered.contains("second needle"));
+    }
+}

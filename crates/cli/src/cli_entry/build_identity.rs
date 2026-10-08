@@ -1,7 +1,5 @@
 //! Build identity and local staleness presentation; no network authority.
 
-use super::clocks::UNIX_SECS_ON_UNUSABLE_CLOCK;
-
 pub(crate) const BUILD_COMMIT: &str = match option_env!("ITERON_BUILD_COMMIT") {
     Some(commit) => commit,
     None => "unknown",

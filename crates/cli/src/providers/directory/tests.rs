@@ -1,8 +1,9 @@
 use super::super::cache_storage::prepare_private_cache_directory;
+use super::super::discovery::ProviderRefreshActivity;
 use super::super::instance_factory::catalog_configuration;
 use super::super::*;
 use iteron_provider::catalog::glm_standard_schema_catalog;
-use iteron_provider::{ApiRoot, CredentialSource};
+use iteron_provider::{ApiRoot, BalanceAvailability, CredentialSource, ProviderHealth};
 use iteron_provider::{ModelDescriptor, ModelFamily, RawModel};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -222,47 +223,6 @@ async fn an_uncredentialed_machine_is_told_it_is_a_setup_step() {
         message.contains("--stdin"),
         "the terminal-free form must be reachable from the error: {message}"
     );
-}
-
-#[test]
-fn builtin_roots_and_adapters_are_exact() {
-    let expected = [
-        (
-            "anthropic",
-            "https://api.anthropic.com/v1",
-            AdapterKind::AnthropicMessages,
-        ),
-        (
-            "openai",
-            "https://api.openai.com/v1",
-            AdapterKind::OpenAiResponses,
-        ),
-        (
-            "deepseek",
-            "https://api.deepseek.com",
-            AdapterKind::OpenAiCompatibleChat,
-        ),
-        (
-            "glm",
-            "https://open.bigmodel.cn/api/paas/v4",
-            AdapterKind::OpenAiCompatibleChat,
-        ),
-        (
-            "minimax",
-            MINIMAX_API_ROOT,
-            AdapterKind::OpenAiCompatibleChat,
-        ),
-        (
-            "fireworks",
-            "https://api.fireworks.ai/inference/v1",
-            AdapterKind::OpenAiCompatibleChat,
-        ),
-    ];
-    for (actual, expected) in BUILTINS.iter().zip(expected) {
-        assert_eq!(actual.id, expected.0);
-        assert_eq!(actual.api_root, expected.1);
-        assert_eq!(actual.adapter, expected.2);
-    }
 }
 
 fn policy_entry_with_credential(
@@ -2089,31 +2049,6 @@ async fn i05_each_unresolvable_state_produces_a_distinguishable_message() {
     let unknown = unreachable.resolution_error("nope");
     assert!(unknown.contains("not configured"), "{unknown}");
     assert!(unknown.contains("gw"), "{unknown}");
-}
-
-/// I-22 — a built-in provider could only ever read an environment variable, so the wizard had
-/// nowhere to put a credential (a built-in id may not be redeclared under `providers`). The
-/// environment still wins; the setup-written file is the fallback.
-#[test]
-fn i22_a_builtin_falls_back_to_the_setup_credential_file_only_without_the_variable() {
-    let scratch = std::env::temp_dir().join(format!(
-        "core-builtin-credential-{}-{}",
-        std::process::id(),
-        CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&scratch).unwrap();
-    // Without a config root there is nothing to fall back TO, so the variable is still named.
-    assert_eq!(
-        builtin_credential("no-such-provider-id", "SOME_KEY"),
-        ProviderCredential::Env {
-            name: "SOME_KEY".into()
-        },
-        "a missing credential must still name the variable an operator would export"
-    );
-    // A name outside the provider-instance alphabet never becomes a filesystem path.
-    assert_eq!(crate::config::credential_file_path("../escape"), None);
-    assert_eq!(crate::config::credential_file_path(""), None);
-    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 /// A credential file inside the workspace is reachable by `read_file`, `bash`, a child agent

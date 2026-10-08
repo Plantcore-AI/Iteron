@@ -86,10 +86,10 @@ pub(crate) use crate::model_route::HostModelSelection as ModelSelection;
 mod messages;
 use messages::event_heap_bytes;
 pub(crate) use messages::{
-    AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
-    McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession,
-    ProviderCatalogControl, ServerEvent, SessionSnapshot, SideRequest, TerminalAuthority,
-    TerminalSummary, WorkflowControl, WorkflowControlReply, WorkspaceRewound,
+    AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, JobControl, McpControl,
+    McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession, ProviderCatalogControl,
+    ServerEvent, SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
+    WorkflowControlReply, WorkspaceRewound,
 };
 mod text_spill;
 mod turn_pump;
@@ -130,10 +130,10 @@ mod event_publisher;
 pub(crate) use event_publisher::EventPublisher;
 
 mod queue_wiring;
+pub(crate) use queue_wiring::ServerEnds;
 #[cfg(test)]
 pub(crate) use queue_wiring::wire;
 use queue_wiring::wire_with_queue_policy;
-pub(crate) use queue_wiring::{ServerEnds, advertised_version};
 
 mod advisory_maintenance;
 mod agent_control;
@@ -186,7 +186,7 @@ use self::plantcore::PlantcoreAdmission;
 pub(crate) use self::recording_fault::RecordingAppServerFault;
 use crate::runtime::{Agent, TurnSubmission, UiEvent};
 use iteron_protocol::{
-    Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
+    Capability, ContentSegments, LifecyclePayload, Op, Outcome, PROTOCOL_VERSION,
     ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SubmissionId,
     SubmissionLifecycleState, TurnId, TurnLifecycleState,
 };
@@ -220,7 +220,7 @@ fn dispatch_lifecycle_hook(
     }
 }
 
-use crate::queue_policy::{SQ_BYTE_CAPACITY, SQ_ENTRY_OVERHEAD_BYTES, sq_control_reserve_bytes};
+use crate::queue_policy::{SQ_BYTE_CAPACITY, SQ_ENTRY_OVERHEAD_BYTES};
 #[cfg(test)]
 use crate::queue_policy::{SQ_CAPACITY, SQ_CONTROL_RESERVE_BYTES, SQ_PRIORITY_CAPACITY};
 #[cfg(test)]

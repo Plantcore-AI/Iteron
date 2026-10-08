@@ -1,7 +1,7 @@
 //! Trusted launch policy resolution and frontend/profile validation before record creation.
 use super::{Cli, LocalCommand, default_permission_mode, trusted_allow_code};
 use crate::config::FileConfig;
-use crate::{config, image_input, runtime_tunables, session_isolation};
+use crate::{config, image_input, session_isolation};
 use iteron_protocol::Budget;
 
 pub(crate) fn validate_serve_listen(

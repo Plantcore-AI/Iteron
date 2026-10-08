@@ -1251,6 +1251,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     #[test]
     fn reversible_dispatch_gate_commands_are_closed_and_not_sq_operations() {
         for (wire_type, expected) in [

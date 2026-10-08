@@ -731,7 +731,7 @@ mod tests {
 
         let mut turn = 0;
         let records = vec![
-            input_attachment_event(1, iteron_protocol::ImageMediaType::Png, 12),
+            input_attachment_metadata(1, iteron_protocol::ImageMediaType::Png, 12).unwrap(),
             stream_event(UiEvent::Text("answer".into()), &mut turn),
             stream_event(UiEvent::Thinking("plan".into()), &mut turn),
             stream_event(

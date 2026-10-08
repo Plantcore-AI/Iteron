@@ -8,6 +8,6 @@ pub(super) async fn run_bash_inline(
     mode: iteron_protocol::PermissionMode,
     rules: &iteron_protocol::PermissionRules,
     cancelled: &mut tokio::sync::watch::Receiver<bool>,
-) -> ShellCompletion {
+) -> crate::client_effects::shell::ShellCompletion {
     crate::client_effects::shell::run_fixture(repo, command, mode, rules, cancelled).await
 }

@@ -2,7 +2,7 @@
 
 use super::build_identity::long_version;
 use crate::output::OutputFormat;
-use crate::{app_server, config, mcp, plugin, tunables};
+use crate::{app_server, config, mcp, plugin, session_view, tunables};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -615,7 +615,9 @@ mod standalone_tests {
             "--recording-inject-harness-error",
             "--recording-app-server-fault",
         ] {
-            let error = Cli::try_parse_from(["iteron", "serve", option]).unwrap_err();
+            let error = Cli::try_parse_from(["iteron", "serve", option])
+                .err()
+                .expect("legacy option must be absent");
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
     }

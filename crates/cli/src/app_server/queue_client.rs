@@ -1,9 +1,12 @@
 //! Versioned bounded SQ client, submission identity observations and queue accounting.
 
+#[cfg(test)]
+use super::ServerEvent;
+
 use super::{
     AppServerQueuePolicy, Arc, AtomicU64, LifecycleHookRoute, LifecyclePayload, Op, Ordering,
     OwnedSemaphorePermit, PROTOCOL_VERSION, ProtocolVersionError, RunId, SQ_ENTRY_OVERHEAD_BYTES,
-    Semaphore, ServerEvent, SessionId, SubmissionId, TurnSubmission, dispatch_lifecycle_hook, mpsc,
+    Semaphore, SessionId, SubmissionId, TurnSubmission, dispatch_lifecycle_hook, mpsc,
     product_contract,
 };
 

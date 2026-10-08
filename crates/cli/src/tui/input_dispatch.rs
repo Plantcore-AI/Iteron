@@ -1,5 +1,7 @@
 //! Physical terminal-event dispatch owns keyboard/modal routing and bounded command admission.
 
+use crate::commands;
+
 use super::{
     App, ApprovalInput, Arc, AtomicBool, AttachmentFollowup, CEvent, CTRL_C_QUIT_WINDOW, Color,
     Effort, InputDestination, InputThreadControl, Instant, KeyCode, KeyEventKind, KeyModifiers,
@@ -41,7 +43,10 @@ pub(super) struct InputContext<'a, B: ratatui::backend::Backend> {
 pub(super) async fn dispatch<B: ratatui::backend::Backend>(
     context: InputContext<'_, B>,
     input_event: CEvent,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<bool>
+where
+    B::Error: Send + Sync + 'static,
+{
     let InputContext {
         app,
         session,
@@ -459,7 +464,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 KeyCode::Char('c') if ctrl => {
                     if app.run.running() {
                         match running_ctrl_c_action(
-                            app.ctrl_c_quit_deadline,
+                            &mut app.ctrl_c_quit_deadline,
                             Instant::now(),
                             iteron_tunables::param_duration(
                                 "cli.tui.ctrl_c_quit_window",

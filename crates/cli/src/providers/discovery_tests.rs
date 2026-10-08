@@ -1,14 +1,15 @@
 //! Real native request verifies discovery admission preserves wire capture and finite output caps.
 use super::{DiscoverySettlement, ProviderDiscoveryOwner, ProviderRefreshActivity};
+use crate::providers::cache_writeback::DiscoveryPersistence;
 use crate::providers::{
-    CatalogCache, DiscoveryPersistence, ProbeCache, ProbeUpdates, ResolveContext,
+    CatalogCache, MAX_PROVIDER_INSTANCES, ProbeCache, ProbeUpdates, ResolveContext,
 };
 use iteron_protocol::{Message, ReasoningEffort};
 use iteron_provider::output_ceiling::ProviderOutputBudget;
 use iteron_provider::request_capture::{
     ProviderRequestObserver, ProviderWireRequest, RequestCaptureError,
 };
-use iteron_provider::{OpenAiCompat, Provider, ProviderHealthStore, TurnRequest};
+use iteron_provider::{OpenAiCompat, ProviderHealthStore, TurnRequest};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,19 +44,19 @@ fn owner() -> Arc<ProviderDiscoveryOwner> {
         Vec::new(),
         Vec::new(),
         ResolveContext {
-            health: ProviderHealthStore::default(),
+            health: ProviderHealthStore::new(MAX_PROVIDER_INSTANCES),
             probe_cache: probes.clone(),
             probe_updates: updates.clone(),
             cache_scope_key: None,
         },
-        DiscoveryPersistence {
-            cache: Arc::new(CatalogCache::default()),
-            cache_scope_key: None,
-            cache_path: None,
-            probe_cache: probes,
-            probe_cache_path: None,
-            probe_updates: updates,
-        },
+        DiscoveryPersistence::new(
+            Arc::new(CatalogCache::default()),
+            None,
+            None,
+            probes,
+            None,
+            updates,
+        ),
         ProviderRefreshActivity::pending(),
     ))
 }

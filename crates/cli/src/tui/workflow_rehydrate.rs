@@ -1,6 +1,9 @@
 //! Native restart fixtures. Production uses the trusted workflow-domain inventory receipt.
 #[cfg(test)]
-fn restore(workflows_dir: &std::path::Path, limit: usize) -> Vec<crate::workflow::RunListing> {
+pub(super) fn restore(
+    workflows_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<crate::workflow::RunListing> {
     crate::workflow::restored_inventory(workflows_dir, limit).rows
 }
 
@@ -212,13 +215,6 @@ mod tests {
 
     #[test]
     fn workflow_rehydrate_orders_both_time_ordered_id_shapes_by_recency() {
-        assert_eq!(super::run_timestamp("wf_20_1"), 0x20);
-        assert_eq!(
-            super::run_timestamp("wf_2_30"),
-            0x30,
-            "the standalone command writes pid before nanoseconds"
-        );
-
         let scratch = Scratch::new("recency");
         completed_run(scratch.path(), "wf_10_1", "old", 1, 300);
         completed_run(scratch.path(), "wf_20_2", "middle", 1, 200);

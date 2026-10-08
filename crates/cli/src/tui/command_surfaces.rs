@@ -1,3 +1,4 @@
+use super::picker::MAX_PICKER_QUERY_CHARS;
 use super::*;
 
 /// Initial picker focus when no actionable, current, or enabled row exists at all. The first row is

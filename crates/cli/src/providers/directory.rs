@@ -10,8 +10,8 @@ use super::instance_factory::{
 };
 use super::probe_cache::{ProbeCache, ProbeUpdates};
 use super::{
-    CatalogProvenance, FIREWORKS_IMAGE_CAPABILITY_SOURCE, FIREWORKS_IMAGE_CAPABILITY_VERSION,
-    MAX_PROVIDER_INSTANCES, ModelCapabilities, ModelSelection, OPERATOR_DECLARED_CAPABILITY_SOURCE,
+    FIREWORKS_IMAGE_CAPABILITY_SOURCE, FIREWORKS_IMAGE_CAPABILITY_VERSION, MAX_PROVIDER_INSTANCES,
+    ModelCapabilities, ModelSelection, OPERATOR_DECLARED_CAPABILITY_SOURCE,
     OPERATOR_DECLARED_CAPABILITY_VERSION, ProviderConfig, ProviderDiscoveryPolicy, ProviderEntry,
     ResolveContext, UnavailableProvider, builtin_entries_with_metadata, default_catalog_cache_path,
     entry_from_config_with_metadata, load_static_provider_metadata, ordered_entries,

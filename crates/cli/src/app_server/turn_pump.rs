@@ -277,7 +277,7 @@ impl RunningTurnPump<'_> {
                                 HookExecution {
                                     hooks: &lifecycle_gate_hooks,
                                     journal: hook_journal.as_ref(),
-                                    events: events,
+                                    events,
                                     cancel: hook_cancel.as_deref(),
                                     drain: Some(drain_signal.as_ref()),
                                 },
@@ -303,7 +303,7 @@ impl RunningTurnPump<'_> {
                                 HookExecution {
                                     hooks: &lifecycle_gate_hooks,
                                     journal: hook_journal.as_ref(),
-                                    events: events,
+                                    events,
                                     cancel: hook_cancel.as_deref(),
                                     drain: Some(drain_signal.as_ref()),
                                 },

@@ -16,7 +16,9 @@ pub(crate) use driver::{RunConfig, run};
 mod frame_render;
 #[cfg(test)]
 use frame_render::ensure_stream_doc;
-use frame_render::{draw, route_label, workflow_region_cap};
+#[cfg(test)]
+use frame_render::workflow_region_cap;
+use frame_render::{draw, route_label};
 
 mod session_client;
 mod session_telemetry;
@@ -35,11 +37,9 @@ use popup_render::{
     PopupRow, clip_spans, one_line_preview, popup_detail_lines, render_list_popup, spans_width,
 };
 mod status_render;
-use status_render::{
-    activity_label, canonical_statusline_with_tokens, render_lr_line, render_status,
-};
 #[cfg(test)]
 use status_render::{canonical_statusline, status_right_bits, visible_activity};
+use status_render::{canonical_statusline_with_tokens, render_lr_line, render_status};
 mod composer_render;
 use composer_render::{format_attachment_size, render_composer, render_pending_lanes};
 
@@ -60,8 +60,6 @@ mod app_workflow_legacy;
 mod artifacts;
 mod assistant_stream;
 mod attachment_owner;
-#[cfg(target_os = "linux")]
-use crate::client_effects::capability_fs;
 mod clipboard;
 mod command_dispatch;
 mod command_surfaces;
@@ -131,7 +129,7 @@ use crate::commands::{self, SlashCommand};
 use crate::config::PromptHistoryMode;
 use crate::editor::Editor;
 use crate::file_input;
-use crate::image_input::{self, ImageAttachments};
+use crate::image_input;
 use crate::paste_input;
 use crate::providers::{ModelSelection, ProviderCatalogView};
 use crate::route::RouteView;
@@ -149,37 +147,38 @@ use block::spinner;
 #[cfg(all(test, target_os = "linux"))]
 use command_surfaces::export_transcript;
 use command_surfaces::{
-    apply_transcript_effect_event, clear_conversation, expand_selection_ancestors,
-    initial_picker_selection, open_picker, open_transcript_viewer, open_tunables_picker,
-    schedule_slash_export, schedule_transcript_viewer_effect, show_agent_catalog,
+    apply_transcript_effect_event, clear_conversation, open_picker, open_transcript_viewer,
+    open_tunables_picker, schedule_slash_export, schedule_transcript_viewer_effect,
+    show_agent_catalog,
 };
 #[cfg(test)]
 use command_surfaces::{ensure_real_workspace_dir, transcript_export_body};
 #[cfg(test)]
 use completion_owner::Completion;
 use composer_images::{
-    attach_bare_image_paths, dropped_image_reference, finish_attachment_effect,
-    handle_composer_paste, queue_bare_image_path, queue_clipboard_image_effect,
-    queue_context_diff_effect, queue_draft_with_chips, queue_file_path_effect,
-    queue_image_path_effect,
+    finish_attachment_effect, handle_composer_paste, queue_bare_image_path,
+    queue_clipboard_image_effect, queue_context_diff_effect, queue_draft_with_chips,
+    queue_file_path_effect,
 };
 use control_submission::{
     cancel_local_effect_then_turn, dispatch_slash_command, force_cancel_turn,
     report_stopped_workflows, request_drain, request_interrupt, show_side_answer, show_side_status,
-    side_request_for, submit_operation, submit_queued_model_input, submit_turn,
-    wait_for_forced_server_shutdown, wait_for_server_shutdown,
+    submit_operation, submit_queued_model_input, submit_turn, wait_for_forced_server_shutdown,
+    wait_for_server_shutdown,
 };
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-#[cfg(test)]
-use driver_support::TOOL_REVEAL_DELAY;
 use driver_support::{
     CatchUp, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE, InputThreadControl, MAX_BLOCKS,
-    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, MAX_SUBMISSION_BYTES, RESIZE_DEBOUNCE,
-    SPINNER_TICK, TERMINAL_READ_SLICE, apply_vim_action, bold, byte_index, complete_path, dim,
-    display_col, eq_tick_slots, external_edit_round_trip, fg, grapheme_width, item, kv, next_wake,
+    MAX_SUBMISSION_BYTES, RESIZE_DEBOUNCE, SPINNER_TICK, TERMINAL_READ_SLICE, apply_vim_action,
+    bold, dim, display_col, external_edit_round_trip, fg, grapheme_width, item, kv, next_wake,
     parse_cap, reload_operator_keymap, service_input_control, update_keymap_status, wake_until,
+};
+#[cfg(test)]
+use driver_support::{
+    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, TOOL_REVEAL_DELAY, complete_path,
+    eq_tick_slots,
 };
 pub(crate) use driver_support::{char_width, text_width};
 use event_actions::{
@@ -187,7 +186,7 @@ use event_actions::{
     model_retry_selection, queue_effort, queue_model_selection, queue_permission_capability,
     queue_permission_mode, queue_workflows_panel_action, show_tunable_detail,
 };
-use event_projection::{apply_event, apply_live_event};
+use event_projection::apply_live_event;
 #[cfg(test)]
 use iteron_ctx::ContextEstimate;
 #[cfg(test)]
@@ -224,7 +223,6 @@ use session_picker::{
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::Write;
 #[cfg(windows)]
 use std::path::Component;
 use std::path::{Path, PathBuf};

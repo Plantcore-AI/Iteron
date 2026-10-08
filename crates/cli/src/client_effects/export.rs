@@ -391,14 +391,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block;
-    use crate::tui::transcript_export::body;
-    use std::sync::Arc;
-
-    fn user(id: u64, text: &str) -> Arc<block::Block> {
-        Arc::new(block::Block::new(id, block::BlockKind::User(text.into())))
-    }
-
     fn scratch(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -478,13 +470,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn export_fixture(
         workspace: &Path,
-        blocks: &[Arc<block::Block>],
-        selected_ids: Option<&[u64]>,
+        bytes: &[u8],
         requested: &str,
         collision: CollisionPolicy,
     ) -> Result<PathBuf, String> {
-        let bytes = body(blocks, selected_ids)?;
-        export_bytes(workspace, requested, &bytes, collision).map_err(|error| error.to_string())
+        export_bytes(workspace, requested, bytes, collision).map_err(|error| error.to_string())
     }
 
     #[cfg(target_os = "linux")]
@@ -492,35 +482,26 @@ mod tests {
     fn capability_export_is_exclusive_atomic_and_versions_fixed_names() {
         let root = scratch("exclusive");
         std::fs::create_dir_all(root.join("reports")).unwrap();
-        let blocks = vec![user(1, "semantic")];
+        let bytes = b"# Iteron transcript\n\nsemantic\n";
         let first = export_fixture(
             &root,
-            &blocks,
-            None,
+            bytes,
             "reports/session.md",
             CollisionPolicy::Versioned,
         )
         .unwrap();
         let second = export_fixture(
             &root,
-            &blocks,
-            None,
+            bytes,
             "reports/session.md",
             CollisionPolicy::Versioned,
         )
         .unwrap();
         assert_eq!(first, root.join("reports/session.md"));
         assert_eq!(second, root.join("reports/session-2.md"));
-        assert_eq!(std::fs::read(first).unwrap(), body(&blocks, None).unwrap());
+        assert_eq!(std::fs::read(first).unwrap(), bytes);
         assert!(
-            export_fixture(
-                &root,
-                &blocks,
-                None,
-                "reports/session.md",
-                CollisionPolicy::Refuse,
-            )
-            .is_err()
+            export_fixture(&root, bytes, "reports/session.md", CollisionPolicy::Refuse,).is_err()
         );
         std::fs::remove_dir_all(root).ok();
     }
@@ -858,15 +839,5 @@ mod tests {
         assert!(result.is_err());
         assert!(!root.join("session.md").exists());
         std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn filtered_and_all_snapshots_share_exact_bounded_bytes() {
-        let blocks = vec![user(1, "first"), user(2, "second needle")];
-        let all = String::from_utf8(body(&blocks, None).unwrap()).unwrap();
-        let filtered = String::from_utf8(body(&blocks, Some(&[2])).unwrap()).unwrap();
-        assert!(all.contains("first") && all.contains("second needle"));
-        assert!(!filtered.contains("first"));
-        assert!(filtered.contains("second needle"));
     }
 }

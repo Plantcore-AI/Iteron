@@ -151,7 +151,7 @@ pub(super) async fn select_default(
     let scope_lease = match activity.scope_lease(&reader, &scope.thread_id, &scope.run_id) {
         Ok(lease) => lease,
         Err(reason) => {
-            let _ = reply.send(ControlReply::Refused(reason));
+            let _ = reply.send(ControlReply::Refused(reason.into()));
             return;
         }
     };
@@ -183,7 +183,7 @@ pub(super) async fn select_default(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .active = false;
             service.settled.notify_waiters();
-            let _ = reply.send(ControlReply::Refused(reason));
+            let _ = reply.send(ControlReply::Refused(reason.into()));
             return;
         }
     };

@@ -41,7 +41,7 @@ pub(crate) fn assemble(input: ViewAdmissionInput<'_>) -> anyhow::Result<Admitted
         route_source,
         route_fallback_reason,
         run,
-        provider_id,
+        provider_id: _provider_id,
         runs_dir,
     } = input;
     // Discovery happens only after the fresh atomic resolver result or historical checkpoint has

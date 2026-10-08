@@ -2,9 +2,10 @@
 //! publication. The directory receives immutable entries through a typed settlement; it cannot
 //! modify pending phases or start a second network task through a shared state lock.
 
+use super::cache_writeback::DiscoveryPersistence;
 use super::{
-    DiscoveryPersistence, ProviderEntry, ResolveContext, SELECTED_PROVIDER_REFRESH_WAIT,
-    current_unix_ms, ordered_entries, resolve_entry,
+    ProviderEntry, ResolveContext, SELECTED_PROVIDER_REFRESH_WAIT, current_unix_ms,
+    ordered_entries, resolve_entry,
 };
 use futures_util::future::join_all;
 use iteron_provider::{

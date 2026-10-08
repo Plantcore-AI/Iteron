@@ -50,7 +50,7 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         recording_app_server_fault,
         diagnostic_drain,
         config_warnings,
-        mut provider_directory,
+        provider_directory,
         route,
         repo,
         refresh_agent_catalog_after_paint,

@@ -1,6 +1,5 @@
 //! Pure launch authority admission and posture selection.
 
-use super::options::Cli;
 pub(crate) const DEFAULT_ALLOW_CODE: bool = true;
 
 /// The trusted (pre-project-tightening) code-execution grant. Code starts enabled in the ordinary

@@ -3,9 +3,8 @@ use super::cache_storage::{
     CatalogCacheScopeKey, credential_scope, valid_credential_scope, write_private_file_atomic,
 };
 use super::{
-    MAX_CACHED_TEXT_BYTES, MAX_PROBE_CACHE_BYTES, MAX_PROBE_CACHE_ENTRIES,
-    MAX_PROBE_FAILURE_EXPONENT, PROBE_CACHE_FILE, PROBE_CACHE_VERSION, ProviderDiscoveryPolicy,
-    ProviderEntry, valid_cached_text,
+    MAX_PROBE_CACHE_BYTES, MAX_PROBE_CACHE_ENTRIES, MAX_PROBE_FAILURE_EXPONENT, PROBE_CACHE_FILE,
+    PROBE_CACHE_VERSION, ProviderDiscoveryPolicy, ProviderEntry, valid_cached_text,
 };
 use iteron_provider::{AccountAvailability, AccountProbe, AccountProbeResult, BalanceAvailability};
 use serde::{Deserialize, Serialize};

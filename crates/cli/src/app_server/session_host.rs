@@ -2,18 +2,19 @@
 
 use super::{
     Agent, ControlRequest, EventPublisher, HookExecution, KERNEL_INBOUND_CAPACITY,
-    LifecyclePayload, McpInputResponse, Op, Outcome, PendingKernelSubmission, PlantcoreAdmission,
-    QueuedSubmission, Routed, RunInput, RunLifecycleState, ServerEnds, ServerEvent, SessionId,
-    SessionLifecycleState, SubmissionDeduplicator, SubmissionLifecycleState, TerminalAuthority,
-    TerminalSummary, TurnLifecycleState, TurnSubmission, apply_control, clean_session_owned_tools,
-    discard_expired_product_steers, expire_pending_turns, expire_queued_after_drain,
-    first_prompt_title, forward_runtime_notifications, input_ready_activity,
-    legacy_user_prompt_context, mcp_input, mpsc, outcome_name, publish_runtime_event,
-    publish_settled, publish_stop_hook_observation, publish_submission, publish_workflow_progress,
-    queue_population, receive_stop_hook_observation, reject_replayed_submission, route,
-    run_legacy_hook, run_lifecycle_gate, session_hooks, session_services,
-    settle_kernel_submissions_at_turn_end, snapshot_of, turn_pump,
+    LifecyclePayload, McpInputResponse, Op, Outcome, PROTOCOL_VERSION, PendingKernelSubmission,
+    PlantcoreAdmission, QueuedSubmission, Routed, RunInput, RunLifecycleState, ServerEnds,
+    ServerEvent, SessionId, SessionLifecycleState, SubmissionDeduplicator,
+    SubmissionLifecycleState, TerminalAuthority, TerminalSummary, TurnLifecycleState,
+    TurnSubmission, apply_control, clean_session_owned_tools, discard_expired_product_steers,
+    expire_pending_turns, expire_queued_after_drain, first_prompt_title,
+    forward_runtime_notifications, input_ready_activity, legacy_user_prompt_context, mcp_input,
+    mpsc, outcome_name, publish_runtime_event, publish_settled, publish_stop_hook_observation,
+    publish_submission, publish_workflow_progress, queue_population, receive_stop_hook_observation,
+    reject_replayed_submission, route, run_legacy_hook, run_lifecycle_gate, session_hooks,
+    session_services, settle_kernel_submissions_at_turn_end, snapshot_of, turn_pump,
 };
+use iteron_protocol::LifecycleState;
 
 /// Owns the actual resident Agent and its bounded admission/presentation ports.
 pub(crate) struct AppServer {
@@ -676,7 +677,7 @@ impl AppServer {
                     deferred: &mut deferred,
                     priority_submissions: &mut priority_submissions,
                     submissions: &mut submissions,
-                    live_turn_id: live_turn_id,
+                    live_turn_id,
                     submission_identities: &mut submission_identities,
                     pending_kernel_submissions: &mut pending_kernel_submissions,
                     pending_turns: &mut pending_turns,

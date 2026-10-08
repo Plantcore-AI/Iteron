@@ -267,7 +267,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 configured_providers,
                 requested_model,
                 model_origin,
-                mut provider_directory,
+                provider_directory,
                 recording_provider_transport,
                 credential_env_names,
             },
@@ -286,7 +286,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     } = cli_entry::continuation::admit(&cli, &runs_dir, &repo, &tenant, initial_route)?;
 
     let cli_entry::route_launch::AdmittedLaunchRoute {
-        directory: mut provider_directory,
+        directory: provider_directory,
         selection,
         provider: provider_arc,
         capabilities: model_capabilities,
@@ -310,7 +310,6 @@ async fn run_cli() -> anyhow::Result<u8> {
         machine_output: cli.output_format.is_machine(),
     })
     .await?;
-    let model = selection.model_id.clone();
     let provider_id = selection.provider_id.clone();
 
     // Resume vs fresh run. Resuming reuses the prior run's id so its rollout continues.
@@ -1125,12 +1124,13 @@ async fn run_cli() -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "legacy-plantcore")]
+    use crate::cli_entry::validate_plantcore_provider_credentials;
     use crate::cli_entry::{
         BUILD_COMMIT, BUILD_DATE, BUILD_STALE_AFTER_DAYS, BUILTIN_DEFAULT_PROVIDER, SYSTEM_PROMPT,
         assemble_system_prompt, build_date_days, build_one_shot_submission, confined_execution,
         default_permission_mode, long_version, safe_agent_diagnostic, staleness_note,
-        submit_one_shot, trusted_allow_code, validate_plantcore_provider_credentials,
-        validate_serve_listen,
+        submit_one_shot, trusted_allow_code, validate_serve_listen,
     };
     use iteron_tools::Registry;
 

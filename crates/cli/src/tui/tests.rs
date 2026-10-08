@@ -1,5 +1,13 @@
 #[cfg(test)]
 mod tests {
+    use super::command_surfaces::{expand_selection_ancestors, initial_picker_selection};
+    use super::composer_images::{
+        attach_bare_image_paths, dropped_image_reference, queue_image_path_effect,
+    };
+    use super::control_submission::side_request_for;
+    use super::event_projection::apply_event;
+    use super::picker::{MAX_PICKER_QUERY_BYTES, MAX_PICKER_QUERY_CHARS};
+    use super::status_render::activity_label;
     use super::*;
 
     #[test]
@@ -45,6 +53,7 @@ mod tests {
                         lease: None,
                         reason: "host proof pending".into(),
                     },
+                    admitted_task: None,
                     next_attempt: 2,
                     usage: BudgetUsage::default(),
                     attempt_usage: BudgetUsage::default(),
@@ -73,7 +82,7 @@ mod tests {
     #[test]
     fn live_agent_views_render_exact_state_and_preserve_observed_epoch_for_controls() {
         use iteron_protocol::agent_control::{
-            AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1,
+            AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentUsageV1, AgentViewV1,
         };
         let view = AgentViewV1 {
             agent_id: AgentIdV1(2),
@@ -97,6 +106,8 @@ mod tests {
                 wall_ms: 1000,
             },
             write_paths: Vec::new(),
+            usage: AgentUsageV1::default(),
+            reserved: AgentUsageV1::default(),
             queued_messages: 1,
             last_summary: None,
         };

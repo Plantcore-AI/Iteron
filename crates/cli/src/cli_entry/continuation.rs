@@ -64,7 +64,7 @@ pub(crate) fn admit(
     // state. Holding this object through Agent construction makes resume one coherent snapshot:
     // another process cannot append between replay and the descriptor used for continuation.
     let resumed_run = resume_id.as_ref().map(|id| RunId(id.clone()));
-    let mut locked_resume = match &resumed_run {
+    let locked_resume = match &resumed_run {
         Some(run) => Some(
             Rollout::open_existing(&runs_dir, run, tenant.clone())
                 .map_err(|error| anyhow::anyhow!("cannot resume {run}: {error}"))?,

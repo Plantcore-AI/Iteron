@@ -1,16 +1,18 @@
 //! Standalone workflow composition through the typed runtime spawner port.
 
-use super::catalog::{discover_agent_catalog, safe_agent_diagnostic};
+use super::catalog::discover_agent_catalog;
 use super::clocks::{UNIX_NANOS_ON_UNUSABLE_CLOCK, UNIX_SECS_ON_UNUSABLE_CLOCK};
 use super::options::{Cli, WorkflowAction};
-use super::permissions::{initial_permission_rules, trusted_allow_code};
-use super::prompts::{base_system_prompt, compaction_summary_prompt};
+use super::permissions::initial_permission_rules;
+use super::provider_bootstrap::BUILTIN_DEFAULT_PROVIDER;
+use super::records::resolve_runs_dir;
 use crate::config::FileConfig;
 use crate::{
     bundle_adapter, config, output, plugin_runtime, pricing, providers, runtime, runtime_tunables,
-    workflow,
+    theme, workflow,
 };
-use iteron_protocol::{Budget, RunId, TenantId};
+use iteron_protocol::{Budget, TenantId};
+use iteron_tools::Registry;
 
 /// Build the DEFAULT workflow spawner: the real [`runtime::KernelSpawner`], so every `agent()`
 /// call runs a genuine child `Agent` (own context + read-only tool loop) via `run_leaf`. There is

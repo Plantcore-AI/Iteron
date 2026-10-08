@@ -158,7 +158,7 @@ pub(crate) async fn assemble(
     let recording_provider_transport = recording_provider_ca_file
         .map(|path| recording_provider::prepare(path, &configured_providers, &provider_name))
         .transpose()?;
-    let mut provider_directory =
+    let provider_directory =
         providers::ProviderDirectory::discover_eagerly(&configured_providers, &eager_providers)
             .await?;
     startup.mark(startup::StartupPhase::ProviderDiscover);
@@ -181,7 +181,7 @@ pub(crate) async fn assemble(
         );
     }
 
-    let (mut requested_model, mut model_origin) = match model_candidate {
+    let (requested_model, model_origin) = match model_candidate {
         Some((model, origin)) => (Some(model), Some(origin)),
         None => (None, None),
     };

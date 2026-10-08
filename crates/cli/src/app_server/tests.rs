@@ -907,11 +907,11 @@ fn parity_transcript_done_capture_matches_terminal_summary_projection() {
     for (schema_version, fixture) in [
         (
             6,
-            include_str!("../../../governance/client-conformance/client-parity-v6.json"),
+            include_str!("../../../../governance/client-conformance/client-parity-v6.json"),
         ),
         (
             crate::machine_projection::SCHEMA_VERSION,
-            include_str!("../../../governance/client-conformance/client-parity-v8.json"),
+            include_str!("../../../../governance/client-conformance/client-parity-v8.json"),
         ),
     ] {
         let transcript: serde_json::Value = serde_json::from_str(fixture).unwrap();
@@ -1140,7 +1140,10 @@ async fn a_saturated_eq_coalesces_every_delta_and_never_loses_the_terminal_event
             | ServerEvent::Submission { .. }
             | ServerEvent::WorkflowRun(_)
             | ServerEvent::Activity(_)
-            | ServerEvent::McpInputRequested(_) => {}
+            | ServerEvent::McpInputRequested(_)
+            | ServerEvent::TurnPublication(_)
+            | ServerEvent::AdvisoryMaintenance(_)
+            | ServerEvent::MaintenanceAvailability(_) => {}
         }
     }
     publish.await.expect("publisher task").expect("delivered");
@@ -1217,6 +1220,9 @@ async fn a_flooded_eq_delivers_every_authoritative_event_and_only_drops_deltas()
             | ServerEvent::WorkflowRun(_)
             | ServerEvent::Activity(_)
             | ServerEvent::McpInputRequested(_) => deltas += 1,
+            ServerEvent::TurnPublication(_)
+            | ServerEvent::AdvisoryMaintenance(_)
+            | ServerEvent::MaintenanceAvailability(_) => {}
             ServerEvent::Lagged { dropped: count } => dropped += count,
             ServerEvent::RunEnded { .. } => {
                 saw_terminal = true;

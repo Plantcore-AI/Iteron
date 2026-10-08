@@ -776,6 +776,7 @@ mod boundary_tests {
     use iteron_protocol::{
         FiveClassUsage, TurnUsage, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES,
     };
+    #[cfg(feature = "legacy-plantcore")]
     use std::cell::Cell;
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use super::{
 };
 use crate::runtime::workspace_rewind::WorkspaceRewindPermit;
 use iteron_protocol::{
-    EventKind, Seq,
+    EventKind,
     workspace_rewind::{
         RewindExecutionV1, RewindFilesV1, RewindPointV1, RewindPreviewV1, RewindScopeV1,
         RewindTargetV1, RewindUnrecordedV1, WorkspaceRewindCommandV1, WorkspaceRewindReplyV1,

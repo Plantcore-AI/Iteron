@@ -333,9 +333,11 @@ async fn send(sender: &tokio::sync::mpsc::Sender<Event>, event: Event) {
 async fn run(
     request: Request,
     sender: tokio::sync::mpsc::Sender<Event>,
-    mut cancelled: tokio::sync::watch::Receiver<bool>,
+    cancelled: tokio::sync::watch::Receiver<bool>,
     processes: ProcessRegistry,
 ) {
+    #[cfg(test)]
+    let mut cancelled = cancelled;
     match request {
         Request::Copy {
             text,

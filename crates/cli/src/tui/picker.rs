@@ -76,8 +76,8 @@ pub(super) struct Picker {
     pub(super) saved_theme: Option<theme::Theme>,
 }
 
-const MAX_PICKER_QUERY_CHARS: usize = 96;
-const MAX_PICKER_QUERY_BYTES: usize = MAX_PICKER_QUERY_CHARS * 4;
+pub(super) const MAX_PICKER_QUERY_CHARS: usize = 96;
+pub(super) const MAX_PICKER_QUERY_BYTES: usize = MAX_PICKER_QUERY_CHARS * 4;
 const MAX_PICKER_PASTE_SCAN_BYTES: usize = 4 * 1024;
 
 impl Picker {

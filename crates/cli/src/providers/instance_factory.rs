@@ -488,3 +488,80 @@ fn builtin_credential(provider_id: &str, key_env: &'static str) -> ProviderCrede
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{BUILTINS, builtin_credential};
+    use crate::config::ProviderCredential;
+    use crate::providers::MINIMAX_API_ROOT;
+    use iteron_provider::AdapterKind;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CACHE_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn builtin_roots_and_adapters_are_exact() {
+        let expected = [
+            (
+                "anthropic",
+                "https://api.anthropic.com/v1",
+                AdapterKind::AnthropicMessages,
+            ),
+            (
+                "openai",
+                "https://api.openai.com/v1",
+                AdapterKind::OpenAiResponses,
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com",
+                AdapterKind::OpenAiCompatibleChat,
+            ),
+            (
+                "glm",
+                "https://open.bigmodel.cn/api/paas/v4",
+                AdapterKind::OpenAiCompatibleChat,
+            ),
+            (
+                "minimax",
+                MINIMAX_API_ROOT,
+                AdapterKind::OpenAiCompatibleChat,
+            ),
+            (
+                "fireworks",
+                "https://api.fireworks.ai/inference/v1",
+                AdapterKind::OpenAiCompatibleChat,
+            ),
+        ];
+        for (actual, expected) in BUILTINS.iter().zip(expected) {
+            assert_eq!(actual.id, expected.0);
+            assert_eq!(actual.api_root, expected.1);
+            assert_eq!(actual.adapter, expected.2);
+        }
+    }
+
+    /// I-22 — a built-in provider could only ever read an environment variable, so the wizard had
+    /// nowhere to put a credential (a built-in id may not be redeclared under `providers`). The
+    /// environment still wins; the setup-written file is the fallback.
+    #[test]
+    fn i22_a_builtin_falls_back_to_the_setup_credential_file_only_without_the_variable() {
+        let scratch = std::env::temp_dir().join(format!(
+            "core-builtin-credential-{}-{}",
+            std::process::id(),
+            CACHE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        // Without a config root there is nothing to fall back TO, so the variable is still named.
+        assert_eq!(
+            builtin_credential("no-such-provider-id", "SOME_KEY"),
+            ProviderCredential::Env {
+                name: "SOME_KEY".into()
+            },
+            "a missing credential must still name the variable an operator would export"
+        );
+        // A name outside the provider-instance alphabet never becomes a filesystem path.
+        assert_eq!(crate::config::credential_file_path("../escape"), None);
+        assert_eq!(crate::config::credential_file_path(""), None);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}

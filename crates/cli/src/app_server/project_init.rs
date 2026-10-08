@@ -108,7 +108,7 @@ pub(super) fn dispatch(
     let scope = match activity.scope_lease(&reader, &command.thread_id, &command.run_id) {
         Ok(scope) => scope,
         Err(reason) => {
-            let _ = reply.send(ControlReply::Refused(reason));
+            let _ = reply.send(ControlReply::Refused(reason.into()));
             return;
         }
     };
@@ -131,7 +131,7 @@ pub(super) fn dispatch(
     let submissions = match exclusion.try_exclude() {
         Ok(submissions) => submissions,
         Err(reason) => {
-            let _ = reply.send(ControlReply::Refused(reason));
+            let _ = reply.send(ControlReply::Refused(reason.into()));
             return;
         }
     };
