@@ -29,28 +29,49 @@ owner; it does not remove these existing responsibilities or close their refacto
 
 ## Current integrated source checkpoint
 
-The following AST source counts were captured on 2026-10-02 after the request-cycle, complete
-provider-response, host startup and kernel special execution integrations. This is source inventory; final same-candidate
-compilation, native journeys and architecture acceptance remain pending.
+The following source snapshot was captured on 2026-10-08 after the retained coding coordinator,
+concrete execution sessions and context injection integration (`04a13705`). The existing inventory
+binary supplied these AST counts; a rebuilt inventory and final same-candidate compilation,
+native journeys and architecture checks remain pending.
 
-| Module | Production | Test |
+| Original entry module | Production | Test |
 | --- | ---: | ---: |
-| CLI runtime | 2,189 | 617 |
-| App server | 407 | 17 |
-| Main | 1,123 | 828 |
-| TUI | 692 | 47 |
+| CLI runtime | 1,165 | 620 |
+| App server | 417 | 17 |
+| Main | 1,124 | 828 |
+| TUI | 689 | 53 |
 | CLI workflow | 56 | 126 |
 | QuickJS bindings | 901 | 0 |
 
-The runtime still coordinates the coding-run driver; its independent execution owner is in
-progress. Special kernel tools now use concrete Plan, child and workflow owners. Their physical
-terminal and accounting-observation separation still needs final source settlement and evidence. The existing immutable compiled policy bundle now owns
-all nine strategy objects and its boot evidence as one generation; Agent and child construction
-retain only that shared generation. Request-cycle, provider-response and complete tool-round
-owners consume actual phases through concrete journal, control, permission and execution ports.
-The host owns startup history and retained workflow restart capabilities; frontends observe
-bounded state and receive an opaque prompt-history writer. Shared host transcript export is still
-in progress. Source module size alone does not establish those interfaces or product behavior.
+All six original entry modules are below the production-line target in this source snapshot.
+This does not establish the size of every workspace module, correctness of executable borrows,
+or final architecture/release acceptance. The maintained inventory records current source
+commitments and distinguishes production from explicit test-only code.
+
+The ordinary coding loop now runs through private `CodingRunDriver`, `CodingRunCoordinator`,
+`CodingProviderExecution` and `CodingResponsePhase` owners. The driver retains the actual working
+transcript, physical provider/USD obligation and tool leases. The coordinator retains only its
+undispatched native request, exact suspended hedge/kernel handoffs and completed action; a
+consumed or failed stage cannot be used to dispatch it again. Trusted composition captures current
+native, permission, financial and controller ports for each real IO boundary. Special kernel tools
+use concrete Plan, child and workflow execution owners. A known tool terminal settles its retained
+slot before an accounting-observation error stops the driver; absent accounting remains separately
+pending and cannot grant a fresh finite-budget admission.
+
+Context injection now owns historical reconstruction and pending live materialization through the
+actual bounded ContextPort, frozen context/memory strategies and record journal. Legacy upgrades
+and newly selected context require their actual writer receipt before cached bytes are installed.
+The existing host source observation, UI/SDK phase projection, taint, historical frontend evidence
+and optional memory behavior remain separate ports. Actual hook gates execute through the same
+physical hook/effect owner; no mandatory verifier was added.
+
+The immutable compiled policy bundle owns all nine strategy objects and boot evidence as one
+generation. Agent and child composition hold that generation rather than writable strategy
+mirrors. Request-cycle, provider-response and complete tool-round owners consume real phases
+through concrete journal, control, permission and execution ports. Startup history, retained
+workflow restart inventory and native transcript export have host owners; frontend projections
+carry no filesystem/provider construction authority. Their native parity, cancellation and
+restart fixtures are source candidates until executed on the final integrated revision.
 
 ## Executable architecture guard
 
@@ -72,12 +93,12 @@ workspace integrity and configured verification remain independent core responsi
 
 The live scheduler owns plan revisions, dependency readiness, attempt attribution and lifetime
 reservations. Agent identity/mailbox and process execution are separate state owners accessed
-through versioned ports. Product assembly still needs real CLI/TUI/API parity, controller/process
-cancellation, provider journeys and Windows restart/fault evidence. Final architecture and
-release receipts must describe the same immutable candidate; this inventory is not a production
+through versioned ports. Concrete host ports now supply CLI/TUI/API assembly. Actual parity,
+controller/process cancellation, provider journeys and Windows restart/fault evidence still require
+final execution. Final architecture and release receipts must describe the same immutable candidate; this inventory is not a production
 readiness claim.
 
-## Workflow responsibility extraction candidate
+## Workflow and script owner boundaries
 
 The CLI workflow facade now assembles explicit independent contracts and owners. The detached
 supervisor retains all live handles, cancellation/settlement and bounded summary state in
@@ -91,8 +112,9 @@ an action instead of reaching through its mutex.
 QuickJS bindings keep wire conversion, journal attribution and schema orchestration. Per-run
 admission/counters/phases live in `bindings/run_state.rs`; physical child execution, bounded cleanup
 and durable attempt settlement in `bindings/attempt_executor.rs`, which imports no JS interpreter.
-The largest extracted modules are the 901-line bindings coordinator and 875-line CLI supervisor.
-These are responsibility moves; adding their module count does not close the other giant owners.
+The bindings facade and CLI supervisor retain their actual interpreter/run and task-lifetime
+responsibilities. Their source sizes and explicit dependency edges supplement ownership review;
+adding module count does not prove physical cleanup or product correctness.
 The maintained inventory reports their source digests and remaining seams.
 
 `script-workflows` is an explicit build profile. Default builds compile the generic live scheduler

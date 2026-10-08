@@ -10,7 +10,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `providers/cache_storage.rs` / `cache_writeback.rs` | Scope secret/private atomic namespace and consumed discovery writeback | Stores receive credential-bound digests; raw key bytes have no public/serde/debug surface |
 | `providers/instance_factory.rs` / `selection_identity.rs` | Immutable exact route construction and pure captured identity | Trusted operator configuration/capability evidence → explicit instance/catalog or digest, without network or writer authority |
 | `runtime/persistent_agents/prepared_mailbox.rs` | Same-mailbox sealed prepared native input inclusion | Exact host commitments and full native user-role fields → retained manifest → durable Consumed before IO; no claim of remote processing |
-| `runtime.rs` / `Agent` | Session composition and current journal/provider turn coordinator | Owns durable admission/settlement; calls execution and projection ports |
+| `runtime.rs` / `Agent` | Resident lifetime and trusted concrete port composition | Actual owner fields → per-stage writer/execution scopes; the coding coordinator receives no mutable Agent or callback |
 | `runtime/tool_turn.rs` | Single mutable tool declaration/routing/failure/task-retention owner | Validated declaration → typed index and immutable policy draft; owned early/deferred/replayed work released once to physical settlement phase |
 | `runtime/tool_round_driver.rs` | Completed-response tool phase and execution queue owner | Privately retained real early handles/window → settled early phase → one stored concurrent prefix → exact ordered active declaration → complete same response owner; cancelled/failed waits cannot rearm a stage |
 | `runtime/tool_response.rs` | Single declaration-ordered tool-result and model-message envelope owner | Actual settled/replayed results and retained image projections → exact complete response set before recovery/optional verification; holes, substitutions and duplicate ordered results refuse without erasing physical terminal truth |
@@ -127,12 +127,14 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `coding_run_driver.rs`, `coding_provider_execution.rs` | Retain private invocation messages, response/tool phases, provider obligation and exact pending kernel call | Real provider/tool execution ports → consumed completion decisions |
 | `coding_request_execution.rs` | Retain the actual working transcript, recovery guard and admission state through host errors and a single request projection | Frozen recipe + owned transcript → concrete recovery/admission ports → native request |
 | `coding_execution_journal.rs` | Sequentially reborrow the sole invocation WAL, effects, ledger, policy and terminal owners | Real resident writer fields → concrete per-stage journals |
-| `coding_run_coordinator.rs`, `coding_response_phase.rs` | Retain finite external IO handoffs and actual post-provider clock and settled tool message | Sole coding driver → consumed concrete stage → physical handoff result |
+| `coding_run_coordinator.rs`, `coding_response_phase.rs` | Retain the undispatched request, exact suspended hedge/kernel index, completion action, post-provider clock and settled tool message | Sole coding driver → consumed concrete IO stage → exact returned handoff; known kernel result settles before unavailable accounting stops the driver |
 | `coding_run_composition.rs` | Capture actual current trusted scope and select the concrete port at each pending IO stage | Finite coordinator work → existing native owners → retained stage completion |
 | `coding_request_session.rs`, `coding_request_assembly.rs` | Run the actual hook and ordered control gate before native projection while retaining request source | Owned request → same writer and actual inbox → admitted transcript and recovery handoff |
 | `coding_provider_session.rs`, `coding_provider_assembly.rs` | Retain actual paid provider obligation and mutable native route slots through provider pump | Native request → actual resident route and shared journal → typed completion or hedge suspension |
 | `tool_image_admission.rs` | Validate confirmed tool images against the actual vision route and pinned decoder/token aggregate bounds | Tool receipt + immutable media policy → admitted request blocks |
 | `context_injection.rs`, `context_injection_gate.rs`, `context_injection_journal.rs` | Retain historical or live prefix, execute real configured source hooks and install only after required publication | Frozen source + bounded world port → actual context receipt → installable prefix |
+| `context_injection_assembly.rs` | Capture current frontend proposals, strategies, world adapter and journals without retaining Agent in the executable domain | Actual source observation and host UI/SDK projection surround the concrete materialization/commit ports |
+| `tool_result_projection.rs` | Calculate model-visible result caps from one immutable current component policy and estimate | Same admitted tool declarations and fixed partitions → bounded ordinary/LSP caps; explicit workflow callers reuse this policy |
 | `invocation_admission.rs`, `invocation_admission_assembly.rs` | Recover actual policy and effects, finish bounded control, then retain operator media or leaf deadline before execution | Real journal/funding/control ports → one retained invocation lifetime |
 | `invocation_funding.rs`, `invocation_funding_assembly.rs` | Commit monetary policy before installing shared funding and restore only actual signed physical charges | Actual scoped WAL → complete charge recovery → installed shared ceiling |
 | `invocation_cleanup.rs` | Settle private tool and MCP content before publishing the parent outcome | Actual cleanup stores → outcome with observed cleanup errors |
@@ -167,10 +169,13 @@ into an unknown tool execution or automatically replay the tool.
 
 These modules are independent owners/adapters with explicit imports, not `Agent` implementation
 text fragments. Their size/import guards and source inventory run through the maintained xtask.
-The remaining `Agent` field aggregate, request preparation and route/tool admission coordination
-are unfinished architecture work; these extractions alone do not close the giant-runtime requirement. Final
-acceptance needs the integrated default/optional profiles and actual concurrent tool, cancellation,
-raw-artifact, frontend and restart journeys.
+The ordinary request, provider-response, tool phase, injection and external IO handoffs now have
+concrete owners; trusted assembly supplies current disjoint ports. The original six entry modules
+meet the source-size target in the [recorded source snapshot](../development/state-owner-refactor.md).
+This does not accept every workspace module or executable boundary. Final acceptance requires a
+rebuilt same-candidate source inventory, default/optional profile gates and actual concurrent tool,
+cancellation, raw-artifact, frontend and restart journeys. Scoped source reviews do not replace
+compiler, process-custody or native durability evidence.
 
 
 ### Optional task plans
