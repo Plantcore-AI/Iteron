@@ -400,31 +400,12 @@ impl Agent {
             tool_output_spill::DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
             |store| store.visible_threshold_bytes(),
         );
-        let (ordinary, lsp) = calls
-            .iter()
-            .fold((0usize, 0usize), |(ordinary, lsp), call| {
-                if iteron_ctx::result_budget_class(&call.name)
-                    == iteron_ctx::ContextBudgetClass::LspResults
-                {
-                    (ordinary, lsp.saturating_add(1))
-                } else {
-                    (ordinary.saturating_add(1), lsp)
-                }
-            });
-        TurnResultProjectionBudget {
-            tool_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
-                iteron_ctx::ContextBudgetClass::ToolResults,
-                inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
-                ordinary,
-                configured_max,
-            ),
-            lsp_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
-                iteron_ctx::ContextBudgetClass::LspResults,
-                inspection.component_tokens(iteron_ctx::ContextBudgetClass::LspResults),
-                lsp,
-                configured_max,
-            ),
+        super::tool_result_projection::ToolResultProjectionPolicy {
+            budget: &self.context_budget_policy,
+            visible_bytes: configured_max,
+            inspection,
         }
+        .calculate(calls)
     }
 
     pub(super) fn observe_tool_result_projection(&self, turn: TurnId, visible_bytes: usize) {
