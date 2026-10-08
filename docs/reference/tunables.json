@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb"
+    "value": "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 27,
+    "registry_revision": 28,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -8898,7 +8898,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "161aabefd388978ed4bb4f49703130ab02446fd570f404d2f53f79a284256749"
+          "value": "739840670dcb437921bf3b38e4a2a9d89446020bf1a8d64143ecde729703e67f"
         },
         "schema_version": 3,
         "ordinal": 69,
@@ -8982,7 +8982,7 @@
             {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/cli/src/app_server/backpressure.rs",
+              "locator": "crates/cli/src/queue_policy.rs",
               "merge": "override"
             }
           ]
