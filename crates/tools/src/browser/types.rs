@@ -122,16 +122,15 @@ impl BrowserCommand {
             }
             _ => {}
         }
-        if let Self::Type { text, .. } = self {
-            if text.len() > 4096
+        if let Self::Type { text, .. } = self
+            && (text.len() > 4096
                 || text.chars().any(|c| {
                     ('\u{e000}'..='\u{f8ff}').contains(&c)
                         || c == '\0'
                         || (c.is_control() && c != '\n' && c != '\t')
-                })
-            {
-                return Err("browser_text_bounds");
-            }
+                }))
+        {
+            return Err("browser_text_bounds");
         }
         Ok(())
     }

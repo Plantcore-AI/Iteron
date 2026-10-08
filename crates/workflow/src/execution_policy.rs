@@ -112,6 +112,7 @@ impl AgentMessagingTopology {
         }
     }
 
+    #[cfg(feature = "script-workflows")]
     pub(crate) const fn durable_sender(self) -> Option<crate::task_dag::TaskId> {
         match self {
             Self::ParentMediated => None,

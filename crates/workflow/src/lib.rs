@@ -340,9 +340,11 @@ pub struct WorkflowSubmissionTooLarge {
     pub limit_bytes: usize,
 }
 
+#[cfg(feature = "script-workflows")]
 #[derive(Default)]
 struct JsonByteCounter(usize);
 
+#[cfg(feature = "script-workflows")]
 impl std::io::Write for JsonByteCounter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len());
@@ -416,6 +418,7 @@ impl RunSpec {
         self
     }
 
+    #[cfg(feature = "script-workflows")]
     fn validate_submission_size(&self) -> Result<(), WorkflowSubmissionTooLarge> {
         let script_bytes = self.script.len();
         if script_bytes > WORKFLOW_SUBMISSION_LIMITS.script_bytes {

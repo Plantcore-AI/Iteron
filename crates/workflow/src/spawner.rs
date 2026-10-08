@@ -50,6 +50,7 @@ pub enum AgentRequestMetadataError {
 }
 
 impl AgentRequestMetadataError {
+    #[cfg(feature = "script-workflows")]
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::AgentType => "invalid_agent_type",
@@ -187,6 +188,7 @@ impl std::fmt::Debug for AgentActivityReporter {
 }
 
 impl AgentActivityReporter {
+    #[cfg(feature = "script-workflows")]
     pub(crate) fn channel() -> (Self, watch::Receiver<Option<AgentActivitySnapshot>>) {
         let (tx, rx) = watch::channel(None);
         (Self { tx }, rx)

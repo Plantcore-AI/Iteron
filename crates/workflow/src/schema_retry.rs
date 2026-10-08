@@ -4,6 +4,7 @@
 //! workflow run and is pinned before QuickJS starts, so a resumed run cannot rediscover timing or
 //! attempt defaults from the current binary.
 
+#[cfg(feature = "script-workflows")]
 use iteron_sched::BackoffPolicy;
 
 /// Registry/schema ceiling.  It is intentionally independent of the provider retry ceiling.
@@ -63,6 +64,7 @@ impl SchemaRetryPolicy {
         self.cap_ms
     }
 
+    #[cfg(feature = "script-workflows")]
     pub(crate) const fn backoff(self) -> BackoffPolicy {
         BackoffPolicy {
             base_ms: self.base_ms,

@@ -80,6 +80,7 @@ pub fn agent_id(key: &str) -> String {
 /// the original wire JSON preserves deterministic negative replay without placing an oversized,
 /// control-bearing, or credential-shaped metadata value in the journal. It also avoids building a
 /// second canonical JSON value from metadata that has already exceeded its admission bound.
+#[cfg(any(feature = "script-workflows", test))]
 pub(crate) fn rejected_agent_key(raw_call_json: &str, reason_code: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"iteron-workflow-rejected-agent-v1");

@@ -85,18 +85,6 @@ impl Response {
     }
 }
 
-#[cfg(test)]
-pub(crate) async fn execute(
-    root: &Path,
-    call: ToolUse,
-    test_helper_thread: bool,
-    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
-) -> ToolExecution {
-    execute_captured(root, call, test_helper_thread, scope)
-        .await
-        .execution
-}
-
 pub(crate) async fn execute_captured(
     root: &Path,
     call: ToolUse,

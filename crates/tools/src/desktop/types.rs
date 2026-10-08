@@ -109,15 +109,14 @@ impl Command {
         )
     }
     pub(super) fn validate(&self) -> Result<(), &'static str> {
-        if let Some(reference) = self.reference() {
-            if reference.is_empty()
+        if let Some(reference) = self.reference()
+            && (reference.is_empty()
                 || reference.len() > 128
                 || !reference
                     .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            {
-                return Err("desktop_reference_bounds");
-            }
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        {
+            return Err("desktop_reference_bounds");
         }
         match self {
             Self::Click { selector, .. } | Self::Scroll { selector, .. }

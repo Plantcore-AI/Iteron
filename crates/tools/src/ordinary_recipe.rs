@@ -184,14 +184,13 @@ impl Registry {
             if recipe.write_paths.is_empty() {
                 return Err(refuse("ordinary recipe writes require a literal scope"));
             }
-            if let Some(scope) = &prior_scope {
-                if scope
+            if let Some(scope) = &prior_scope
+                && scope
                     .intersection_paths(&recipe.write_paths)
                     .map_err(ToolError::Registration)?
                     .is_empty()
-                {
-                    return Err(refuse("ordinary recipe has no inherited writable path"));
-                }
+            {
+                return Err(refuse("ordinary recipe has no inherited writable path"));
             }
         }
         let executor = primitive.run.clone();

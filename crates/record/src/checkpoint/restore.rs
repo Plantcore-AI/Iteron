@@ -125,8 +125,8 @@ fn overlaps(path: &str, protected: &str) -> bool {
     // from a historical Git tree to that same destination, so retain the broader refusal there.
     #[cfg(any(target_os = "macos", windows))]
     let (path, protected) = (path.to_lowercase(), protected.to_lowercase());
-    let path: &str = path.as_ref();
-    let protected: &str = protected.as_ref();
+    #[cfg(any(target_os = "macos", windows))]
+    let (path, protected) = (path.as_str(), protected.as_str());
     path == protected
         || path
             .strip_prefix(protected)
