@@ -1,0 +1,17 @@
+{
+  "kind": "task_plan_updated_v1",
+  "plan": {
+    "based_on_submission_seq": 1,
+    "obligations": [
+      "Preserve the actual admitted limits"
+    ],
+    "revision": 1,
+    "steps": [
+      {
+        "description": "Inspect the actual workspace",
+        "status": "in_progress"
+      }
+    ],
+    "version": 1
+  }
+}

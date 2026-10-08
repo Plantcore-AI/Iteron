@@ -1,0 +1,16 @@
+{
+  "epoch": {
+    "incarnation": 1,
+    "turn": 1
+  },
+  "projection_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "receiver": 2,
+  "sources": [
+    {
+      "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "message_id": 7,
+      "sender": 1
+    }
+  ],
+  "version": 1
+}

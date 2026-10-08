@@ -1,0 +1,26 @@
+{
+  "kind": "message_v2",
+  "message": {
+    "content": [
+      {
+        "artifact_id": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+        "height": 1,
+        "image": {
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=",
+          "media_type": "image/png"
+        },
+        "observed_unix_ms": 1,
+        "owner_run": "schema-native-child",
+        "owner_tenant": "default",
+        "scope": "isolated_browser_viewport",
+        "source_url_display": "https://example.com/",
+        "terminal_seq": 1,
+        "tool_use_id": "schema-image-call",
+        "type": "tool_image",
+        "version": 1,
+        "width": 1
+      }
+    ],
+    "role": "user"
+  }
+}

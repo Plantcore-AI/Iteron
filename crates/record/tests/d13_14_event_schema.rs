@@ -1,3 +1,10 @@
+use iteron_protocol::agent_cohort::{AgentCohortInstallationV1, AgentCohortOriginV1};
+use iteron_protocol::agent_control::AgentEpochV1;
+use iteron_protocol::agent_input::{AgentInputAdmissionV1, AgentInputSourceV1};
+use iteron_protocol::memory_reference::MemoryReferenceAdmissionV1;
+use iteron_protocol::native_child_context::NativeChildContextV1;
+use iteron_protocol::task_plan::{PlanStepV1, TaskPlanSnapshotV1};
+use iteron_protocol::tool_image::ToolImageObservationV1;
 use iteron_protocol::{
     Block, Budget, CostAttribution, CostProjection, CostProjectionIdentity,
     DurableEnvironmentContext, DurableInstructionContext, Event, EventKind, FileContent,
@@ -25,7 +32,19 @@ const MAX_CONTRACT_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_BYTES: u64 = 1024 * 1024;
 const MAX_FIXTURE_OBJECTS: usize = 4096;
 
-const WRITABLE_EVENT_TAGS: [&str; 40] = [
+const WRITABLE_EVENT_TAGS: [&str; 52] = [
+    "message_v2",
+    "compaction_v2",
+    "agent_cohort_installed_v1",
+    "ordinary_extension_bindings_v1",
+    "task_plan_updated_v1",
+    "tool_image_observed_v1",
+    "native_child_context_captured_v1",
+    "agent_input_admitted_v1",
+    "memory_reference_admitted_v1",
+    "turn_publication_v1",
+    "child_accounting_pending_v1",
+    "child_accounting_resolved_v1",
     "approval",
     "artifact_produced",
     "checkpoint",
@@ -68,7 +87,8 @@ const WRITABLE_EVENT_TAGS: [&str; 40] = [
     "workflow_v2",
 ];
 
-const BLOCK_TAGS: [&str; 5] = [
+const BLOCK_TAGS: [&str; 6] = [
+    "tool_image",
     "provider_state",
     "text",
     "thinking",
@@ -90,7 +110,17 @@ const COST_ATTRIBUTION_TAGS: [&str; 2] = ["direct_subagent", "workflow_child"];
 
 // `ArtifactRef` and its `Provenance` became durable with `artifact_produced` (#78):
 // making a type reachable from the record makes its shape a published surface.
-const NAMED_SURFACE_IDS: [&str; 36] = [
+const NAMED_SURFACE_IDS: [&str; 46] = [
+    "record.named.agent-cohort-installation-v1",
+    "record.named.agent-cohort-origin-v1",
+    "record.named.agent-epoch-v1",
+    "record.named.agent-input-admission-v1",
+    "record.named.agent-input-source-v1",
+    "record.named.memory-reference-admission-v1",
+    "record.named.native-child-context-v1",
+    "record.named.plan-step-v1",
+    "record.named.task-plan-snapshot-v1",
+    "record.named.tool-image-observation-v1",
     "record.named.artifact-ref",
     "record.named.budget",
     "record.named.cost-projection",
@@ -649,6 +679,34 @@ fn assert_named_surface_corpus(
             "record.named.cost-projection" => {
                 typed_named_fixture_wires::<CostProjection>(root, surface)
             }
+            "record.named.agent-cohort-installation-v1" => {
+                typed_named_fixture_wires::<AgentCohortInstallationV1>(root, surface)
+            }
+            "record.named.agent-cohort-origin-v1" => {
+                typed_named_fixture_wires::<AgentCohortOriginV1>(root, surface)
+            }
+            "record.named.agent-epoch-v1" => {
+                typed_named_fixture_wires::<AgentEpochV1>(root, surface)
+            }
+            "record.named.agent-input-admission-v1" => {
+                typed_named_fixture_wires::<AgentInputAdmissionV1>(root, surface)
+            }
+            "record.named.agent-input-source-v1" => {
+                typed_named_fixture_wires::<AgentInputSourceV1>(root, surface)
+            }
+            "record.named.memory-reference-admission-v1" => {
+                typed_named_fixture_wires::<MemoryReferenceAdmissionV1>(root, surface)
+            }
+            "record.named.native-child-context-v1" => {
+                typed_named_fixture_wires::<NativeChildContextV1>(root, surface)
+            }
+            "record.named.plan-step-v1" => typed_named_fixture_wires::<PlanStepV1>(root, surface),
+            "record.named.task-plan-snapshot-v1" => {
+                typed_named_fixture_wires::<TaskPlanSnapshotV1>(root, surface)
+            }
+            "record.named.tool-image-observation-v1" => {
+                typed_named_fixture_wires::<ToolImageObservationV1>(root, surface)
+            }
             unknown => panic!("named surface `{unknown}` lacks a typed dispatch"),
         };
         let reachable = reachable.get(surface.id.as_str()).unwrap_or_else(|| {
@@ -843,6 +901,8 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
         EventKind::PolicyDecision { evidence: _ } => "policy_decision",
         EventKind::PolicyOutcome { evidence: _ } => "policy_outcome",
         EventKind::Message { message: _ } => "message",
+        EventKind::MessageV2 { message: _ } => "message_v2",
+        EventKind::CompactionV2 { messages: _ } => "compaction_v2",
         EventKind::Compaction { messages: _ } => "compaction",
         EventKind::Text { delta: _ } => "text",
         EventKind::Thinking { delta: _ } => "thinking",
@@ -968,6 +1028,16 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             version: _,
             event: _,
         } => "verification_policy",
+        EventKind::AgentCohortInstalledV1 { .. } => "agent_cohort_installed_v1",
+        EventKind::OrdinaryExtensionBindingsV1 { .. } => "ordinary_extension_bindings_v1",
+        EventKind::TaskPlanUpdatedV1 { .. } => "task_plan_updated_v1",
+        EventKind::ToolImageObservedV1 { .. } => "tool_image_observed_v1",
+        EventKind::NativeChildContextCapturedV1 { .. } => "native_child_context_captured_v1",
+        EventKind::AgentInputAdmittedV1 { .. } => "agent_input_admitted_v1",
+        EventKind::MemoryReferenceAdmittedV1 { .. } => "memory_reference_admitted_v1",
+        EventKind::TurnPublicationV1 { .. } => "turn_publication_v1",
+        EventKind::ChildAccountingPendingV1 { .. } => "child_accounting_pending_v1",
+        EventKind::ChildAccountingResolvedV1 { .. } => "child_accounting_resolved_v1",
         EventKind::Done { outcome: _ } => "done",
         EventKind::Unknown => return None,
     })
@@ -998,12 +1068,17 @@ fn record_blocks(
                 "tool_result"
             }
             Block::ToolImage(image) => {
-                record_named(named, "record.named.tool-image", image);
+                record_tool_image(image, named);
                 "tool_image"
             }
         };
         seen.insert(tag);
     }
+}
+
+fn record_tool_image(image: &ToolImageObservationV1, named: &mut NamedWires) {
+    record_named(named, "record.named.tool-image-observation-v1", image);
+    record_named(named, "record.named.image-content", &image.image);
 }
 
 fn record_op_named_values(op: &Op, named: &mut NamedWires) {
@@ -1279,7 +1354,85 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                 writable_tags.insert(tag);
                 kind_wires.insert(serde_json::to_string(&encoded).unwrap());
                 match &kind {
-                    EventKind::Message { message } => {
+                    EventKind::NativeChildContextCapturedV1 { context } => {
+                        context
+                            .validate()
+                            .expect("native publication is valid evidence");
+                        record_named(
+                            &mut named_wires,
+                            "record.named.native-child-context-v1",
+                            context,
+                        );
+                        record_named(
+                            &mut named_wires,
+                            "record.named.pricing-route",
+                            &context.route,
+                        );
+                        record_named(
+                            &mut named_wires,
+                            "record.named.permission-rules",
+                            &context.permission_rules,
+                        );
+                    }
+                    EventKind::AgentCohortInstalledV1 { installation } => {
+                        installation
+                            .validate()
+                            .expect("cohort installation has bounded host scope");
+                        record_named(
+                            &mut named_wires,
+                            "record.named.agent-cohort-installation-v1",
+                            installation,
+                        );
+                        record_named(
+                            &mut named_wires,
+                            "record.named.agent-cohort-origin-v1",
+                            &installation.origin,
+                        );
+                    }
+                    EventKind::AgentInputAdmittedV1 { admission } => {
+                        admission
+                            .validate()
+                            .expect("agent input admission is bounded");
+                        record_named(
+                            &mut named_wires,
+                            "record.named.agent-input-admission-v1",
+                            admission,
+                        );
+                        record_named(
+                            &mut named_wires,
+                            "record.named.agent-epoch-v1",
+                            &admission.epoch,
+                        );
+                        for source in &admission.sources {
+                            record_named(
+                                &mut named_wires,
+                                "record.named.agent-input-source-v1",
+                                source,
+                            );
+                        }
+                    }
+                    EventKind::MemoryReferenceAdmittedV1 { admission } => {
+                        admission.validate().expect("memory reference is bounded");
+                        record_named(
+                            &mut named_wires,
+                            "record.named.memory-reference-admission-v1",
+                            admission,
+                        );
+                    }
+                    EventKind::TaskPlanUpdatedV1 { plan } => {
+                        plan.validate().expect("task plan is bounded");
+                        record_named(&mut named_wires, "record.named.task-plan-snapshot-v1", plan);
+                        for step in &plan.steps {
+                            record_named(&mut named_wires, "record.named.plan-step-v1", step);
+                        }
+                    }
+                    EventKind::ToolImageObservedV1 { observation } => {
+                        observation
+                            .validate()
+                            .expect("tool image identity and PNG dimensions match");
+                        record_tool_image(observation, &mut named_wires);
+                    }
+                    EventKind::Message { message } | EventKind::MessageV2 { message } => {
                         record_blocks(
                             message,
                             &mut block_tags,
@@ -1287,7 +1440,7 @@ fn d13_14_event_schema_corpora_are_exact_exhaustive_and_replayable() {
                             &mut named_wires,
                         );
                     }
-                    EventKind::Compaction { messages } => {
+                    EventKind::Compaction { messages } | EventKind::CompactionV2 { messages } => {
                         for message in messages {
                             record_blocks(
                                 message,

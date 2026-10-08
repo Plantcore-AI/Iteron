@@ -1,0 +1,37 @@
+{
+  "context": {
+    "authority_ceiling": [
+      "read_only"
+    ],
+    "base_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bypass_permissions": false,
+    "context_window": 100000,
+    "default_effort": "medium",
+    "generation_sha256": "sha256:80be8864fe070a704df4559dfc6ca2837e4a870c220e753cbdb43d37a93596ae",
+    "output_cap": 1000,
+    "permission_mode": "default",
+    "permission_rules": {
+      "by_cap": {
+        "code_executing": "ask"
+      },
+      "by_tool": {
+        "bash": "deny"
+      }
+    },
+    "policy_capabilities": [
+      "read_only"
+    ],
+    "publication_sequence": 3,
+    "route": {
+      "capability_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "catalog_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "model_id": "model-a",
+      "provider_id": "provider-a"
+    },
+    "run": "schema-native-child",
+    "scope_sha256": "sha256:75a18629969f1c57cdd5f2c2a4790d137c33b43753a1c14612e7d7592d1cd1a1",
+    "tenant": "default",
+    "version": 1
+  },
+  "kind": "native_child_context_captured_v1"
+}

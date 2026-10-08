@@ -284,8 +284,16 @@ fn validate_record_payload_shapes(root: &Path, contract: &Contract) -> Result<()
     ] {
         require_serde_authority(source, signature, SerdeAuthority::Both)?;
     }
+    let image_source = read_bounded(root, "crates/protocol/src/tool_image.rs", MAX_SOURCE_BYTES)?;
+    let image_text =
+        std::str::from_utf8(&image_source).context("tool image source is not UTF-8")?;
+    require_serde_authority(
+        image_text,
+        "pub struct ToolImageObservationV1 {",
+        SerdeAuthority::Both,
+    )?;
     require_serde_authority(block_text, BLOCK_SIGNATURE, SerdeAuthority::Both)?;
-    let block_newtypes = BTreeMap::from([
+    let mut block_newtypes = BTreeMap::from([
         (
             "ProviderState".to_owned(),
             named_struct_fields(block_text, "pub struct ProviderState {")?,
@@ -299,6 +307,10 @@ fn validate_record_payload_shapes(root: &Path, contract: &Contract) -> Result<()
             named_struct_fields(tool_text, "pub struct ToolResult {")?,
         ),
     ]);
+    block_newtypes.insert(
+        "ToolImageObservationV1".into(),
+        named_struct_fields(image_text, "pub struct ToolImageObservationV1 {")?,
+    );
     let blocks = tagged_enum_fields(&block_source, BLOCK_SIGNATURE, "type", 0, &block_newtypes)?;
     validate_record_tagged_family(contract, BLOCK_SURFACE_PREFIX, "type", "Block", blocks)?;
 

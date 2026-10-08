@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 11,
+  "release_ordinal": 12,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {
@@ -375,7 +375,7 @@
     },
     {
       "id": "record.rollout",
-      "current_version": 15,
+      "current_version": 16,
       "version_field": null,
       "fixtures": [
         {
@@ -457,15 +457,38 @@
           "path": "governance/schema-compat/fixtures/record/rollout-fixed-authority-v15.jsonl",
           "format": "jsonl",
           "schema_version": 15
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/rollout-native-runtime-v16.jsonl",
+          "format": "jsonl",
+          "schema_version": 16
         }
       ],
       "fields": [
-        { "name": "hash", "introduced_release": 1 },
-        { "name": "payload", "introduced_release": 1 },
-        { "name": "prev", "introduced_release": 1 },
-        { "name": "seq", "introduced_release": 1 },
-        { "name": "tenant", "introduced_release": 1 },
-        { "name": "ts_us", "introduced_release": 1 }
+        {
+          "name": "hash",
+          "introduced_release": 1
+        },
+        {
+          "name": "payload",
+          "introduced_release": 1
+        },
+        {
+          "name": "prev",
+          "introduced_release": 1
+        },
+        {
+          "name": "seq",
+          "introduced_release": 1
+        },
+        {
+          "name": "tenant",
+          "introduced_release": 1
+        },
+        {
+          "name": "ts_us",
+          "introduced_release": 1
+        }
       ],
       "compatibility_shims": []
     },
@@ -1573,7 +1596,7 @@
     },
     {
       "id": "record.event-envelope",
-      "current_version": 11,
+      "current_version": 12,
       "version_field": null,
       "fixtures": [
         {
@@ -1630,6 +1653,11 @@
           "path": "governance/schema-compat/fixtures/record/event-envelope-fixed-authority-v11.json",
           "format": "json",
           "schema_version": 11
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-envelope-native-runtime-v12.jsonl",
+          "format": "jsonl",
+          "schema_version": 12
         }
       ],
       "fields": [
@@ -1781,7 +1809,7 @@
     },
     {
       "id": "record.event-kind.message",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": null,
       "selector": {
         "field": "kind",
@@ -1792,6 +1820,11 @@
           "path": "governance/schema-compat/fixtures/record/event-kinds-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-message-v1.json",
+          "format": "json",
+          "schema_version": 2
         }
       ],
       "fields": [
@@ -4163,6 +4196,795 @@
         { "name": "producer", "introduced_release": 1 },
         { "name": "provenance", "introduced_release": 1 },
         { "name": "schema", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.native_child_context_captured_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "native_child_context_captured_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-native-child-context-captured-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "context",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.tool_image_observed_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "tool_image_observed_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-tool-image-observed-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 12
+        },
+        {
+          "name": "observation",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.agent_cohort_installed_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "agent_cohort_installed_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-agent-cohort-installed-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "installation",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.ordinary_extension_bindings_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "ordinary_extension_bindings_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-ordinary-extension-bindings-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "bindings",
+          "introduced_release": 12
+        },
+        {
+          "name": "catalog_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.task_plan_updated_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "task_plan_updated_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-task-plan-updated-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 12
+        },
+        {
+          "name": "plan",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.agent_input_admitted_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "agent_input_admitted_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-agent-input-admitted-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "admission",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.memory_reference_admitted_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "memory_reference_admitted_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-memory-reference-admitted-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "admission",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.turn_publication_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "turn_publication_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-turn-publication-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "fact",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.child_accounting_pending_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "child_accounting_pending_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-child-accounting-pending-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "effect_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.child_accounting_resolved_v1",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "child_accounting_resolved_v1"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-child-accounting-resolved-v1-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "effect_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "kind",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.native-child-context-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-native-child-context-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "authority_ceiling",
+          "introduced_release": 12
+        },
+        {
+          "name": "base_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "bypass_permissions",
+          "introduced_release": 12
+        },
+        {
+          "name": "context_window",
+          "introduced_release": 12
+        },
+        {
+          "name": "default_effort",
+          "introduced_release": 12
+        },
+        {
+          "name": "generation_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "output_cap",
+          "introduced_release": 12
+        },
+        {
+          "name": "permission_mode",
+          "introduced_release": 12
+        },
+        {
+          "name": "permission_rules",
+          "introduced_release": 12
+        },
+        {
+          "name": "policy_capabilities",
+          "introduced_release": 12
+        },
+        {
+          "name": "publication_sequence",
+          "introduced_release": 12
+        },
+        {
+          "name": "route",
+          "introduced_release": 12
+        },
+        {
+          "name": "run",
+          "introduced_release": 12
+        },
+        {
+          "name": "scope_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "tenant",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.agent-cohort-origin-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-agent-cohort-origin-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "config_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "run_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "tenant",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.agent-cohort-installation-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-agent-cohort-installation-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "installed_run",
+          "introduced_release": 12
+        },
+        {
+          "name": "origin",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.agent-epoch-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-agent-epoch-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "incarnation",
+          "introduced_release": 12
+        },
+        {
+          "name": "turn",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.agent-input-source-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-agent-input-source-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "content_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "message_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "sender",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.agent-input-admission-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-agent-input-admission-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "epoch",
+          "introduced_release": 12
+        },
+        {
+          "name": "projection_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "receiver",
+          "introduced_release": 12
+        },
+        {
+          "name": "sources",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.memory-reference-admission-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-memory-reference-admission-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "body_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "deleted",
+          "introduced_release": 12
+        },
+        {
+          "name": "message_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "record_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "record_revision",
+          "introduced_release": 12
+        },
+        {
+          "name": "record_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "source_sha256",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        },
+        {
+          "name": "workspace_sha256",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.plan-step-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-plan-step-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "description",
+          "introduced_release": 12
+        },
+        {
+          "name": "status",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.task-plan-snapshot-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-task-plan-snapshot-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "based_on_submission_seq",
+          "introduced_release": 12
+        },
+        {
+          "name": "obligations",
+          "introduced_release": 12
+        },
+        {
+          "name": "revision",
+          "introduced_release": 12
+        },
+        {
+          "name": "steps",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.named.tool-image-observation-v1",
+      "current_version": 1,
+      "version_field": null,
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/struct-tool-image-observation-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "artifact_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "height",
+          "introduced_release": 12
+        },
+        {
+          "name": "image",
+          "introduced_release": 12
+        },
+        {
+          "name": "observed_unix_ms",
+          "introduced_release": 12
+        },
+        {
+          "name": "owner_run",
+          "introduced_release": 12
+        },
+        {
+          "name": "owner_tenant",
+          "introduced_release": 12
+        },
+        {
+          "name": "scope",
+          "introduced_release": 12
+        },
+        {
+          "name": "source_url_display",
+          "introduced_release": 12
+        },
+        {
+          "name": "terminal_seq",
+          "introduced_release": 12
+        },
+        {
+          "name": "tool_use_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        },
+        {
+          "name": "width",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.block.tool_image",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "type",
+        "value": "tool_image"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/block-tool-image-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "artifact_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "height",
+          "introduced_release": 12
+        },
+        {
+          "name": "image",
+          "introduced_release": 12
+        },
+        {
+          "name": "observed_unix_ms",
+          "introduced_release": 12
+        },
+        {
+          "name": "owner_run",
+          "introduced_release": 12
+        },
+        {
+          "name": "owner_tenant",
+          "introduced_release": 12
+        },
+        {
+          "name": "scope",
+          "introduced_release": 12
+        },
+        {
+          "name": "source_url_display",
+          "introduced_release": 12
+        },
+        {
+          "name": "terminal_seq",
+          "introduced_release": 12
+        },
+        {
+          "name": "tool_use_id",
+          "introduced_release": 12
+        },
+        {
+          "name": "type",
+          "introduced_release": 12
+        },
+        {
+          "name": "version",
+          "introduced_release": 12
+        },
+        {
+          "name": "width",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.message_v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "message_v2"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-message-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 12
+        },
+        {
+          "name": "message",
+          "introduced_release": 12
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "record.event-kind.compaction_v2",
+      "current_version": 1,
+      "version_field": null,
+      "selector": {
+        "field": "kind",
+        "value": "compaction_v2"
+      },
+      "fixtures": [
+        {
+          "path": "governance/schema-compat/fixtures/record/event-kind-compaction-v2-v1.json",
+          "format": "json",
+          "schema_version": 1
+        }
+      ],
+      "fields": [
+        {
+          "name": "kind",
+          "introduced_release": 12
+        },
+        {
+          "name": "messages",
+          "introduced_release": 12
+        }
       ],
       "compatibility_shims": []
     }
