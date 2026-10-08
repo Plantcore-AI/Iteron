@@ -244,6 +244,12 @@ pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str
         ("crates/cli/src/tui/product_presentation.rs", "MAX_TERMINAL_TEXT_BYTES") => {
             Some("crates/cli/src/tui/product_projection.rs")
         }
+        ("crates/cli/src/cli_entry/permissions.rs", "DEFAULT_ALLOW_CODE") => {
+            Some("crates/cli/src/main.rs")
+        }
+        ("crates/cli/src/machine_projection.rs", "DEFAULT_SCHEMA_VERSION" | "EXIT_BUDGET") => {
+            Some("crates/cli/src/output.rs")
+        }
         _ => None,
     }
 }
@@ -267,6 +273,15 @@ mod tests {
                 "COMPLETION_DIRECTORY_CACHE_TTL"
             ),
             "cli.tui.driver_support.completion_directory_cache_ttl"
+        );
+        assert_eq!(
+            super::super::qualified_param_id(
+                "cli",
+                "crates/cli/src/workflow/supervisor.rs",
+                "WorkflowSupervisor::OWNERSHIP",
+                "OWNERSHIP",
+            ),
+            "cli.workflow.workflowsupervisor.ownership"
         );
         assert_eq!(
             super::original_source("crates/cli/src/block/diff.rs", "UNRELATED"),

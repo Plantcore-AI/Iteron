@@ -151,6 +151,14 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and maintained generation evidence remain required"],
     },
     Surface {
+        path: "xtask/src/tunables_census/source_dispositions.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "bind exact census invariant evidence to actual declaration kinds, owners and closed source reasons",
+        ],
+        next_seams: &["same-candidate compiler and maintained generation evidence remain required"],
+    },
+    Surface {
         path: "xtask/src/tunables_params.rs",
         boundary: "build-release",
         responsibilities: &[

@@ -99,13 +99,12 @@ impl ActivityControlV1 {
             }
             _ => {}
         }
-        if let Self::Stop { request_id, .. } = self {
-            if request_id.is_empty()
+        if let Self::Stop { request_id, .. } = self
+            && (request_id.is_empty()
                 || request_id.len() > 128
-                || request_id.chars().any(char::is_control)
-            {
-                return Err("activity_request_id_bounds");
-            }
+                || request_id.chars().any(char::is_control))
+        {
+            return Err("activity_request_id_bounds");
         }
         Ok(())
     }

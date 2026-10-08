@@ -810,6 +810,18 @@ fn span_text(source: &str, span: proc_macro2::Span) -> Option<&str> {
     (start < end && end <= source.len()).then(|| &source[start..end])
 }
 
+/// Exact declaration decisions shared by Tier-2 and the source-current census. Callers supply
+/// physical owner provenance; legacy lookup aliases never substitute for a source declaration.
+pub(crate) fn explicit_invariant_reason(
+    relative: &str,
+    name: &str,
+    owner: &str,
+) -> Option<InvariantReason> {
+    fixed_client::reason(relative, name, owner)
+        .or_else(|| fixed_core::reason(relative, name, owner))
+        .or_else(|| fixed_runtime::reason(relative, name, owner))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row_for(
     krate: &str,
@@ -823,9 +835,7 @@ fn row_for(
     declaration_line: usize,
 ) -> ParamRow {
     let actual_source = relative;
-    let fixed_reason = fixed_client::reason(actual_source, name, owner_symbol)
-        .or_else(|| fixed_core::reason(actual_source, name, owner_symbol))
-        .or_else(|| fixed_runtime::reason(actual_source, name, owner_symbol));
+    let fixed_reason = explicit_invariant_reason(actual_source, name, owner_symbol);
     let relative = stable_source::original_source(relative, name).unwrap_or(relative);
     let ty = param_type(ty_text, value);
     let cryptographic_shape = (krate == "record"
@@ -849,11 +859,6 @@ fn row_for(
         || (krate == "cli"
             && relative.ends_with("/output.rs")
             && name == "SENSITIVE_STREAM_PREFIXES");
-    let native_completion_ceiling = relative == "crates/cli/src/client_effects/path_completion.rs"
-        && matches!(
-            name,
-            "MAX_SCAN" | "MAX_ROW_BYTES" | "MAX_ENTRY_BYTES" | "MAX_CACHE_BYTES" | "MAX_ENTRIES"
-        );
     let runtime_state = ["OnceLock", "LazyLock", "Atomic", "Mutex", "RwLock"]
         .iter()
         .any(|marker| ty_text.contains(marker));
@@ -1111,8 +1116,7 @@ fn row_for(
         ParamClass::Structural
     } else if let Some(class) = deliberate_runtime_control {
         class
-    } else if native_completion_ceiling
-        || cryptographic_shape
+    } else if cryptographic_shape
         || runtime_state
         || custom_object
         || matches!(ty, ParamType::Enum)
@@ -1151,8 +1155,6 @@ fn row_for(
             Disposition::InvariantReadOnly,
             Some(if let Some(reason) = fixed_reason {
                 reason
-            } else if native_completion_ceiling {
-                InvariantReason::Security
             } else {
                 invariant_reason_for(
                     krate,
@@ -1318,6 +1320,7 @@ fn base_param_id(krate: &str, relative: &str, name: &str) -> String {
 }
 
 fn qualified_param_id(krate: &str, relative: &str, owner: &str, name: &str) -> String {
+    let relative = stable_source::original_source(relative, name).unwrap_or(relative);
     let owner = owner
         .strip_suffix(name)
         .unwrap_or(owner)

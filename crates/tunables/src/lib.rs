@@ -153,7 +153,9 @@ pub const REGISTRY_ID: &str = "iteron-tunables";
 /// overriding that constant through its Tier-2 handle is precisely what makes the comparison fail.
 /// Revision 19 externalized every non-Pin governed family through the universal profile seam while
 /// retaining immutable Pin admission rules.
-pub const REGISTRY_REVISION: u16 = 27;
+/// Revision 28 records the relocated shared queue-policy owner; all family IDs and runtime values
+/// remain unchanged. Published revision 27 retains its original digest and snapshot identity.
+pub const REGISTRY_REVISION: u16 = 28;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -162,6 +164,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 27; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 28; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb";
+    "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac";

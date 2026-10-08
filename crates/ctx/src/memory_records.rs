@@ -195,14 +195,13 @@ impl MemoryRecord {
         self.metadata
             .validate()
             .map_err(|_| MemoryRecordExclusion::Invalid)?;
-        if let MemoryRecordScope::Workspace { workspace_sha256 } = &self.metadata.scope {
-            if workspace
+        if let MemoryRecordScope::Workspace { workspace_sha256 } = &self.metadata.scope
+            && workspace
                 .and_then(|root| workspace_digest(root).ok())
                 .as_ref()
                 != Some(workspace_sha256)
-            {
-                return Err(MemoryRecordExclusion::ScopeDenied);
-            }
+        {
+            return Err(MemoryRecordExclusion::ScopeDenied);
         }
         if matches!(self.metadata.invalidation, MemoryInvalidation::ExpiresAt { unix_seconds } if now >= unix_seconds)
         {

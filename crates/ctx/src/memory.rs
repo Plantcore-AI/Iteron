@@ -791,13 +791,12 @@ impl FileMemory {
             if !shortlisted.contains(&index) {
                 continue;
             }
-            if candidate.body.is_none() {
-                if let Some((body, material)) =
+            if candidate.body.is_none()
+                && let Some((body, material)) =
                     stores[candidate.store_id].read_body_materialized(&candidate.fact_ref.slug)
-                {
-                    candidate.body = Some(body);
-                    candidate.material = material;
-                }
+            {
+                candidate.body = Some(body);
+                candidate.material = material;
             }
             if candidate.body.is_none() {
                 expired.push(index);

@@ -1,7 +1,7 @@
 use super::*;
 use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
 
-const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
+pub(super) const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 
 impl Agent {
     pub(crate) fn set_last_success_route_path(&mut self, path: Option<std::path::PathBuf>) {

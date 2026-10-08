@@ -155,18 +155,17 @@ impl CapturedContextMaterial {
             observation_event_seq,
             ..
         }) = &mut self.view.source_version
+            && source_event_seq > 0
         {
-            if source_event_seq > 0 {
-                *observation_event_seq = Some(source_event_seq);
-                self.view.material_id_sha256 = digest(
-                    &serde_json::to_vec(&(
-                        "iteron-context-journal-observation-v1",
-                        &self.view.material_id_sha256,
-                        source_event_seq,
-                    ))
-                    .unwrap_or_default(),
-                );
-            }
+            *observation_event_seq = Some(source_event_seq);
+            self.view.material_id_sha256 = digest(
+                &serde_json::to_vec(&(
+                    "iteron-context-journal-observation-v1",
+                    &self.view.material_id_sha256,
+                    source_event_seq,
+                ))
+                .unwrap_or_default(),
+            );
         }
         self
     }

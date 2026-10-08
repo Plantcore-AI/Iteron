@@ -12,7 +12,7 @@ fn repository_root() -> std::path::PathBuf {
 #[test]
 fn the_published_reference_matches_the_argument_parser() {
     check(&repository_root()).expect(
-        "docs/reference/cli.md drifted from crates/cli/src/main.rs; run \
+        "docs/reference/cli.md drifted from crates/cli/src/cli_entry/options.rs; run \
          `cargo run --locked -p iteron-xtask -- docs generate`",
     );
 }

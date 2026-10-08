@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 
-const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
+use super::route_state::MODEL_ROUTE_FEATURE_SCHEMA;
 
 pub(super) struct ProviderRouteBindingScope<'a> {
     pub(super) turn: TurnId,

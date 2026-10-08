@@ -59,6 +59,10 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
             "MAX_FILE_READ" | "MAX_TOTAL_READ",
         )
         | ("crates/cli/src/client_effects/experiment_lab.rs", "MAX_SCAN")
+        | (
+            "crates/cli/src/client_effects/path_completion.rs",
+            "MAX_SCAN" | "MAX_ROW_BYTES" | "MAX_ENTRY_BYTES" | "MAX_CACHE_BYTES" | "MAX_ENTRIES",
+        )
         | ("crates/cli/src/client_effects/tunables_simulation.rs", "MAX_VIEW_BYTES")
         | (
             "crates/cli/src/client_effects/workspace_read.rs",

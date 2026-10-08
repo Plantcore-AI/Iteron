@@ -597,6 +597,7 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "xtask/src/tunables_params/fixed_client.rs",
         "xtask/src/tunables_params/fixed_core.rs",
         "xtask/src/tunables_params/fixed_runtime.rs",
+        "xtask/src/tunables_census/source_dispositions.rs",
         "crates/record/src/session/model.rs",
         "crates/record/src/session/paths.rs",
         "crates/record/src/session/replay.rs",
@@ -750,10 +751,13 @@ impl<'ast> Visit<'ast> for FrontendDependencyGuard<'_> {
         syn::visit::visit_item_mod(self, node);
     }
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        self.violation |= path
-            .segments
-            .iter()
-            .any(|segment| self.forbids(&segment.ident));
+        // A bare path can be a local value (for example an output-token count), not a
+        // dependency namespace. Imports are checked independently through visit_use_tree.
+        self.violation |= path.segments.len() > 1
+            && path
+                .segments
+                .iter()
+                .any(|segment| self.forbids(&segment.ident));
         syn::visit::visit_path(self, path);
     }
     fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
@@ -1067,6 +1071,13 @@ mod tests {
             );
         }
         assert!(validate_runtime_source_direction("runtime.rs", "use crate::queue_policy::FrontendQueuePolicy; #[cfg(test)] mod tests { use crate::app_server::AppServer; }").is_ok());
+        assert!(
+            validate_runtime_source_direction(
+                "runtime.rs",
+                "fn reserve(output: u32) -> u32 { output }"
+            )
+            .is_ok()
+        );
     }
 
     #[test]

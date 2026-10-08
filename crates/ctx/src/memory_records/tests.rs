@@ -324,35 +324,49 @@ fn actual_expiry_boundary_and_stale_deleted_path_preserve_current_truth() {
     std::fs::remove_dir_all(workspace).unwrap();
 }
 
+// Own the actual paused fixture child through assertion/unwind failures as well as the
+// bounded successful kill/reap observation below. It performs no work outside this scratch store.
+#[cfg(unix)]
+struct CrashChild(std::process::Child);
+#[cfg(unix)]
+impl Drop for CrashChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn actual_process_death_after_prepared_fsync_keeps_old_committed_memory() {
     let workspace = workspace("physical-crash");
     let store = MemoryStore::at(&workspace);
     let original = store.add("old physically committed memory").unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("memory_records::tests::memory_prepared_crash_child")
-        .env("ITERON_MEMORY_V1_CRASH_ROOT", &workspace)
-        .env("ITERON_MEMORY_V1_CRASH_AT_PREPARED", "1")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = CrashChild(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("memory_records::tests::memory_prepared_crash_child")
+            .env("ITERON_MEMORY_V1_CRASH_ROOT", &workspace)
+            .env("ITERON_MEMORY_V1_CRASH_AT_PREPARED", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let ready = root(&workspace).join("crash-test-ready");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !ready.exists() && std::time::Instant::now() < deadline {
-        if child.try_wait().unwrap().is_some() {
+        if child.0.try_wait().unwrap().is_some() {
             panic!("crash fixture exited before prepare barrier");
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let prepared = ready.exists();
-    child.kill().unwrap();
+    child.0.kill().unwrap();
     let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut reaped = false;
     while std::time::Instant::now() < reap_deadline {
-        if child.try_wait().unwrap().is_some() {
+        if child.0.try_wait().unwrap().is_some() {
             reaped = true;
             break;
         }
