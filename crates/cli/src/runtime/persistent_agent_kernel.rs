@@ -464,17 +464,14 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 if owner != view.agent_id {
                     return Err(KernelError::AgentControl(ControllerError::Permission));
                 }
-                child.publish_current_native_context(
-                    &control,
-                    owner,
-                    iteron_protocol::TurnId(child.seq_turn),
-                )?;
+                let admitted_turn = iteron_protocol::TurnId(child.seq_turn);
+                child.publish_current_native_context(&control, owner, admitted_turn)?;
                 if let Some(admission) = mailbox
                     .source_admission(&initial, &task)
                     .map_err(KernelError::AgentControl)?
                 {
                     child.emit_durable(
-                        iteron_protocol::TurnId(child.seq_turn),
+                        admitted_turn,
                         EventKind::AgentInputAdmittedV1 {
                             admission: admission.clone(),
                         },
