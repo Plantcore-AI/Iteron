@@ -703,24 +703,30 @@ fn validate_tool_policy_registry(root: &Path) -> Result<()> {
     ]);
     let policy = iteron_tools::ToolPolicy::default();
     for spec in specs {
+        let call = ToolUse {
+            id: "xtask-conformance".into(),
+            name: spec.name.clone(),
+            input: serde_json::json!({}),
+        };
+        let required = registry
+            .operation_effects(&call)
+            .ok_or_else(|| anyhow::anyhow!("registered tool lacks operation classification"))?
+            .required;
         let proposal = registry
-            .propose_intent(
-                &policy,
-                ToolUse {
-                    id: "xtask-conformance".into(),
-                    name: spec.name.clone(),
-                    input: serde_json::json!({}),
-                },
-                Trust::Workspace,
-                ceiling,
-            )
+            .propose_intent(&policy, call, Trust::Workspace, ceiling)
             .map_err(|error| {
                 anyhow::anyhow!(
                     "tool-policy rejected registered tool `{}`: {error}",
                     spec.name
                 )
             })?;
-        validate_tool_policy_projection(&spec.name, spec.purity, spec.capability, &proposal)?;
+        validate_tool_policy_projection(
+            &spec.name,
+            spec.purity,
+            spec.capability,
+            required,
+            &proposal,
+        )?;
     }
     Ok(())
 }
@@ -729,15 +735,17 @@ fn validate_tool_policy_projection(
     name: &str,
     purity: iteron_protocol::Purity,
     capability: Capability,
+    required: CapabilitySet,
     proposal: &iteron_tools::ToolPolicyProposal,
 ) -> Result<()> {
     if proposal.intent.call.name != name
         || proposal.intent.purity != purity
-        || proposal.eligible != CapabilitySet::only(capability)
+        || !required.contains(capability)
+        || proposal.eligible != required
         || !proposal.intent.admitted.is_empty()
     {
         bail!(
-            "tool-policy projection for `{name}` does not exactly preserve registry purity/capability and deny-by-default admission"
+            "tool-policy projection for `{name}` does not exactly preserve registry purity, registered minimum, operation requirements and deny-by-default admission"
         );
     }
     Ok(())
@@ -1066,10 +1074,93 @@ mod tests {
                 "sample",
                 iteron_protocol::Purity::Pure,
                 Capability::ReadOnly,
+                CapabilitySet::only(Capability::ReadOnly),
                 &proposal,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn tool_policy_projection_retains_all_opaque_and_literal_operation_requirements() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let registry = iteron_tools::Registry::coding_agent(root).unwrap();
+        let ceiling = CapabilitySet::from_iter_capabilities([
+            Capability::ReadOnly,
+            Capability::ReversibleLocal,
+            Capability::CodeExecuting,
+            Capability::TrustMutating,
+            Capability::IrreversibleExternal,
+        ]);
+        let policy = iteron_tools::ToolPolicy::default();
+        for (input, expected) in [
+            (
+                serde_json::json!({}),
+                CapabilitySet::from_iter_capabilities([
+                    Capability::CodeExecuting,
+                    Capability::ReversibleLocal,
+                    Capability::TrustMutating,
+                    Capability::IrreversibleExternal,
+                ]),
+            ),
+            (
+                serde_json::json!({"command":"printf bounded"}),
+                CapabilitySet::only(Capability::CodeExecuting),
+            ),
+        ] {
+            let call = ToolUse {
+                id: "operation-conformance".into(),
+                name: "bash".into(),
+                input,
+            };
+            let required = registry.operation_effects(&call).unwrap().required;
+            assert_eq!(required, expected);
+            let mut proposal = registry
+                .propose_intent(&policy, call, Trust::Workspace, ceiling)
+                .unwrap();
+            validate_tool_policy_projection(
+                "bash",
+                iteron_protocol::Purity::Effecting,
+                Capability::CodeExecuting,
+                required,
+                &proposal,
+            )
+            .unwrap();
+            proposal.eligible = CapabilitySet::only(Capability::ReadOnly);
+            assert!(
+                validate_tool_policy_projection(
+                    "bash",
+                    iteron_protocol::Purity::Effecting,
+                    Capability::CodeExecuting,
+                    required,
+                    &proposal
+                )
+                .is_err()
+            );
+            proposal.eligible = required;
+            proposal.intent.admitted = required;
+            assert!(
+                validate_tool_policy_projection(
+                    "bash",
+                    iteron_protocol::Purity::Effecting,
+                    Capability::CodeExecuting,
+                    required,
+                    &proposal
+                )
+                .is_err()
+            );
+            proposal.intent.admitted = CapabilitySet::none();
+            assert!(
+                validate_tool_policy_projection(
+                    "bash",
+                    iteron_protocol::Purity::Effecting,
+                    Capability::ReadOnly,
+                    required,
+                    &proposal
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
