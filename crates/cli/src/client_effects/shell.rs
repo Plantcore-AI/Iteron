@@ -510,6 +510,25 @@ pub(crate) async fn run_fixture(
     execute(repo, command, &[], mode, rules, cancelled).await
 }
 
+/// Keep Darwin's non-Send siginfo_t on the synchronous stack. Only exit/error observations may
+/// enter the async shell state; WNOWAIT still preserves the exact leader until the last signal.
+#[cfg(unix)]
+fn retained_leader_exited(pid: u32) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } == pid as i32)
+}
+
 /// A retained unreaped leader protects group identity until the last signal. After actual reap,
 /// numeric group identity is observation-only: no later cleanup can signal a reused process group.
 struct OwnedProcessGroup {
@@ -572,28 +591,17 @@ impl OwnedProcessGroup {
             loop {
                 // WNOWAIT observes exit without freeing the leader/group ID. Pipe EOF alone is
                 // not exit: redirected foreground work must still be allowed to finish.
-                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                let result = unsafe {
-                    libc::waitid(
-                        libc::P_PID,
-                        pid as libc::id_t,
-                        &mut info,
-                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                    )
-                };
-                if result != 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::EINTR) {
-                        continue;
+                match retained_leader_exited(pid) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) if error.raw_os_error() == Some(libc::EINTR) => continue,
+                    Err(error) => {
+                        // An unexpectedly reaped leader cannot authorize a raw numeric signal.
+                        if error.raw_os_error() == Some(libc::ECHILD) {
+                            self.pid = None;
+                        }
+                        return Err(error);
                     }
-                    // An unexpectedly reaped leader cannot authorize a raw numeric signal.
-                    if error.raw_os_error() == Some(libc::ECHILD) {
-                        self.pid = None;
-                    }
-                    return Err(error);
-                }
-                if unsafe { info.si_pid() } == pid as i32 {
-                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

@@ -3,6 +3,25 @@
 use crate::collected_child::CollectedChild;
 use std::process::ExitStatus;
 
+/// Observe exit without consuming the collector's wait identity. Darwin's siginfo_t contains
+/// non-Send pointer fields, so keep the native buffer entirely within this synchronous call.
+#[cfg(unix)]
+fn retained_leader_exited(pid: u32) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } == pid as i32)
+}
+
 /// Keep the leader unreaped through the last group signal. Once the actual wait consumes its
 /// identity, the old numeric group may only be observed; neither Drop nor retry may signal it.
 pub(crate) struct OwnedProcessGroup {
@@ -39,27 +58,18 @@ impl OwnedProcessGroup {
         };
         let mut exited = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         loop {
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            let result = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    pid as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            };
-            if result != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::EINTR) {
+            match retained_leader_exited(pid) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) if error.raw_os_error() == Some(libc::EINTR) => {
                     tokio::task::yield_now().await;
                     continue;
                 }
-                // Any uncertain wait identity forbids further numeric signals.
-                self.retained_leader = None;
-                return Err(error);
-            }
-            if unsafe { info.si_pid() } == pid as i32 {
-                return Ok(());
+                Err(error) => {
+                    // Any uncertain wait identity forbids further numeric signals.
+                    self.retained_leader = None;
+                    return Err(error);
+                }
             }
             if exited.recv().await.is_none() {
                 return Err(std::io::Error::other("owned child exit observation closed"));
@@ -203,13 +213,19 @@ mod tests {
 
     #[tokio::test]
     async fn actual_wait_retires_the_last_signal_identity_before_observation_or_drop() {
+        fn require_send<T: Send>(future: T) -> T {
+            future
+        }
+
         let mut command = tokio::process::Command::new("bash");
         command.arg("-c").arg("exit 7").kill_on_drop(true);
         crate::configure_process_group(&mut command);
         let mut child = command.spawn().unwrap();
         let group = child.id();
         let mut owner = super::OwnedProcessGroup::capture(&child);
-        let status = owner.wait_and_close(&mut child).await.unwrap();
+        let status = require_send(owner.wait_and_close(&mut child))
+            .await
+            .unwrap();
         assert_eq!(status.code(), Some(7));
         assert!(owner.retained_leader.is_none());
         assert!(super::confirm_owned_group_shutdown(group).await);
