@@ -328,6 +328,110 @@ fn quality_affecting_invariant_requires_an_explicit_override() {
     validate(std::slice::from_ref(&row)).unwrap();
 }
 
+fn exact_client_invariant_row() -> CensusRow {
+    let mut row = discover_source(
+        "cli",
+        "crates/cli/src/app_server/thread_inspection.rs",
+        "struct Inspection { #[serde(default)] max_events: usize }",
+    )
+    .unwrap()
+    .remove(0);
+    row.id = "cli.app_server.thread_inspection.max_inspection_events".into();
+    row.tier2_id = Some(row.id.clone());
+    row.candidate_kind = CensusCandidateKind::Const;
+    row.owner.symbol = "MAX_INSPECTION_EVENTS".into();
+    row.disposition = CensusDisposition::InvariantReadOnly;
+    row.external_address = None;
+    row.binding_requirement = None;
+    row.caller_input_proof = None;
+    row.invariant_kind = Some(InvariantKind::Security);
+    row.explicit_invariant_override = true;
+    row.owning_human_review = Some(OwningHumanReviewStatus::RequiredNotSourceProven);
+    row.applied = false;
+    row.behavior_oracle = None;
+    row.review_evidence = Some(format!(
+        "explicit source-specific Tier-2 disposition rule: `{}` at {} — Security; observed at {}:1; mechanical source evidence only, not a claim of human review",
+        row.owner.symbol, row.owner.path, row.owner.path
+    ));
+    row
+}
+
+#[test]
+fn closed_declaration_disposition_is_validated_from_source_owner_and_reason() {
+    let row = exact_client_invariant_row();
+    validate(std::slice::from_ref(&row)).unwrap();
+    assert_eq!(
+        source_dispositions::kind(&row),
+        Some(InvariantKind::Security)
+    );
+
+    let mut wrong_reason = row.clone();
+    wrong_reason.invariant_kind = Some(InvariantKind::Identity);
+    assert!(
+        validate(&[wrong_reason])
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete exact source disposition evidence")
+    );
+    let mut wrong_evidence = row.clone();
+    wrong_evidence.review_evidence = row.review_evidence.as_ref().map(|evidence| {
+        evidence.replace(
+            "explicit source-specific Tier-2 disposition rule",
+            "closed Tier-2 disposition rule",
+        )
+    });
+    assert!(
+        validate(&[wrong_evidence])
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete exact source disposition evidence")
+    );
+}
+
+#[test]
+fn changed_owner_or_new_source_form_cannot_borrow_a_fixed_const_disposition() {
+    let row = exact_client_invariant_row();
+    let mut changed_owner = row.clone();
+    changed_owner.owner.symbol = "Other::MAX_INSPECTION_EVENTS".into();
+    assert!(source_dispositions::kind(&changed_owner).is_none());
+    assert!(validate(&[changed_owner]).is_err());
+    let mut foreign_path = row.clone();
+    foreign_path.owner.path = "crates/cli/src/other.rs".into();
+    assert!(validate(&[foreign_path]).is_err());
+    let mut foreign_crate = row.clone();
+    foreign_crate.owner.krate = "other".into();
+    assert!(validate(&[foreign_crate]).is_err());
+    let mut new_symbol = row.clone();
+    new_symbol.owner.symbol = "MAX_FUTURE_EVENTS".into();
+    assert!(validate(&[new_symbol]).is_err());
+    let mut source_form = row.clone();
+    source_form.candidate_kind = CensusCandidateKind::SerdeDefault;
+    assert!(validate(&[source_form]).is_err());
+    let mut no_tier2 = row;
+    no_tier2.tier2_id = None;
+    assert!(validate(&[no_tier2]).is_err());
+}
+
+#[test]
+fn unapplied_quality_marker_stays_unclassified_without_an_exact_decision() {
+    let mut row = exact_client_invariant_row();
+    row.id = "cli.app_server.thread_inspection.new_quality_threshold".into();
+    row.tier2_id = Some(row.id.clone());
+    row.owner.symbol = "NEW_QUALITY_THRESHOLD".into();
+    row.explicit_invariant_override = false;
+    row.review_evidence = Some(format!(
+        "closed Tier-2 disposition rule: `{}` at {} — mechanical test; observed at {}:1; mechanical source evidence only, not a claim of human review",
+        row.owner.symbol, row.owner.path, row.owner.path
+    ));
+    assert!(!row.applied);
+    assert!(
+        validate(&[row])
+            .unwrap_err()
+            .to_string()
+            .contains("have no explicit override")
+    );
+}
+
 #[test]
 fn invariant_cannot_retain_a_writable_address_or_claim_human_approval() {
     let mut row = discover_source(

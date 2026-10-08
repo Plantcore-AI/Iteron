@@ -6,6 +6,7 @@
 //! those declared forms, never for the mathematical set of every possible optimization input.
 
 mod discovery;
+mod source_dispositions;
 
 use crate::tunables_params::{
     CandidateKind, Disposition, InvariantReason, OwnerRow, ParamRow, UseSiteRow,
@@ -60,7 +61,6 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "cli.workflow.policy_checkpoint.policy_checkpoint_file",
     "ctx.compact.compaction_marker_close",
     "ctx.compact.compaction_marker_open",
-    "ctx.context_port.skill_cache",
     "ctx.context_materialization.marker",
     "ctx.skills_metadata.skill_refused_tools",
     "ctx.token_estimator.decoded_pixel_image_estimator_policy_id",
@@ -715,8 +715,13 @@ impl CensusRow {
             Disposition::InvariantReadOnly
         ) {
             let kind = invariant_kind(param);
-            let explicit = QUALITY_INVARIANT_OVERRIDES.contains(&param.id.as_str());
-            let qualifier = if explicit {
+            let source_explicit = source_dispositions::reason(&param.owner)
+                .is_some_and(|reason| param.invariant_reason == Some(reason));
+            let explicit =
+                QUALITY_INVARIANT_OVERRIDES.contains(&param.id.as_str()) || source_explicit;
+            let qualifier = if source_explicit {
+                "explicit source-specific Tier-2 disposition rule"
+            } else if explicit {
                 "explicit census disposition override"
             } else {
                 "closed Tier-2 disposition rule"
@@ -803,11 +808,17 @@ fn invariant_review_evidence(kind: InvariantKind) -> &'static str {
 }
 
 fn invariant_kind(param: &ParamRow) -> InvariantKind {
-    let id = param.id.to_ascii_lowercase();
-    match param
-        .invariant_reason
-        .expect("invariant ParamRow has a closed reason")
-    {
+    invariant_kind_for(
+        param
+            .invariant_reason
+            .expect("invariant ParamRow has a closed reason"),
+        &param.id,
+    )
+}
+
+fn invariant_kind_for(reason: InvariantReason, id: &str) -> InvariantKind {
+    let id = id.to_ascii_lowercase();
+    match reason {
         InvariantReason::Identity => InvariantKind::Identity,
         InvariantReason::WireCompatibility => InvariantKind::WireCompatibility,
         InvariantReason::CapabilityAuthority => InvariantKind::Authority,
@@ -970,8 +981,19 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                         row.id
                     );
                 }
+                let source_explicit = source_dispositions::kind(row);
+                if let Some(expected) = source_explicit
+                    && (row.invariant_kind != Some(expected)
+                        || !evidence.contains("explicit source-specific Tier-2 disposition rule"))
+                {
+                    bail!(
+                        "{} has incomplete exact source disposition evidence",
+                        row.id
+                    );
+                }
                 if row.explicit_invariant_override
                     && !QUALITY_INVARIANT_OVERRIDES.contains(&row.id.as_str())
+                    && source_explicit.is_none()
                 {
                     bail!("{} carries an unregistered invariant override", row.id);
                 }
