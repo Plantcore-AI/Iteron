@@ -12,19 +12,21 @@ const MAX_ENTRIES: usize = 32;
 const COMPLETION_DIRECTORY_CACHE_ENTRIES: usize = 32;
 const COMPLETION_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(1);
 
+/// Fixture handshake held by the native completion worker until it can resume.
+#[cfg(test)]
+type CompletionWorkerPause = std::sync::Arc<
+    std::sync::Mutex<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+>;
+
 #[derive(Clone)]
 pub(crate) struct CompletionSource {
     workspace: PathBuf,
     admitted: bool,
     #[cfg(test)]
-    pause: Option<
-        std::sync::Arc<
-            std::sync::Mutex<(
-                std::sync::mpsc::SyncSender<()>,
-                std::sync::mpsc::Receiver<()>,
-            )>,
-        >,
-    >,
+    pause: Option<CompletionWorkerPause>,
 }
 impl CompletionSource {
     pub(crate) fn equivalent(&self, other: &Self) -> bool {

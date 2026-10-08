@@ -24,6 +24,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit};
 
+/// Fixture handshake held by the native storage worker until it can resume.
+#[cfg(test)]
+type ExportStagePause = Arc<
+    Mutex<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+>;
+
 /// No Deserialize/path-taking public constructor: source identity comes from the real writer.
 #[derive(Clone)]
 pub(crate) struct NativeExportScope {
@@ -32,14 +41,7 @@ pub(crate) struct NativeExportScope {
     run: RunId,
     workspace: PathBuf,
     #[cfg(test)]
-    stage_pause: Option<
-        Arc<
-            Mutex<(
-                std::sync::mpsc::SyncSender<()>,
-                std::sync::mpsc::Receiver<()>,
-            )>,
-        >,
-    >,
+    stage_pause: Option<ExportStagePause>,
 }
 impl NativeExportScope {
     pub(crate) fn capture(agent: &Agent) -> Option<Self> {

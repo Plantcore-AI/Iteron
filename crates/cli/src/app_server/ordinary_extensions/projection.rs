@@ -121,6 +121,20 @@ pub(super) fn events(
     )
 }
 
+fn scrub_strings(value: Value) -> Value {
+    match value {
+        Value::String(value) => Value::String(text(&value)),
+        Value::Array(values) => Value::Array(values.into_iter().map(scrub_strings).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, scrub_strings(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::events;
@@ -171,18 +185,5 @@ mod tests {
         assert_eq!(projected["filtered_foreign_run"], 1);
         assert_eq!(projected["unscoped_observations"], 1);
         assert!(rows.iter().all(|row| row.get("durable_seq").is_none()));
-    }
-}
-fn scrub_strings(value: Value) -> Value {
-    match value {
-        Value::String(value) => Value::String(text(&value)),
-        Value::Array(values) => Value::Array(values.into_iter().map(scrub_strings).collect()),
-        Value::Object(values) => Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, scrub_strings(value)))
-                .collect(),
-        ),
-        other => other,
     }
 }
