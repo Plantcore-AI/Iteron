@@ -2,6 +2,7 @@
 //! physical process/content authority independently of the observer's lifetime.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod capability_fs;
+pub(crate) mod experiment_lab;
 mod export;
 mod payload;
 mod process;
@@ -10,6 +11,7 @@ pub(crate) mod shell;
 pub(crate) mod tunables_simulation;
 pub(crate) mod worker;
 pub(crate) mod workspace_read;
+pub(crate) mod workspace_storage;
 
 pub(crate) use export::{CollisionPolicy, MAX_TRANSCRIPT_EXPORT_BYTES};
 pub(crate) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};

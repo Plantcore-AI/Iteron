@@ -1563,3 +1563,13 @@ mod operator_project_init_journey;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "headless_serve/tunables_simulation_journey.rs"]
 mod tunables_simulation_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/native_host_control.rs"]
+mod native_host_control;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+use native_host_control::{launch, matching_control};
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/experiment_lab_journey.rs"]
+mod experiment_lab_journey;

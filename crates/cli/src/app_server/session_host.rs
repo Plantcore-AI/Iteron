@@ -1030,6 +1030,7 @@ impl AppServer {
         let init_settlement_observed = events.contract.shutdown_project_init().await;
         let preference_settlement_observed = events.contract.shutdown_model_preferences().await;
         let workspace_read_observed = events.contract.shutdown_workspace_reads().await;
+        let lab_observed = events.contract.shutdown_lab().await;
         let stop_hook_shutdown_error = if let Some(observer) = stop_hooks.take() {
             match observer.shutdown().await {
                 Ok(observations) => {
@@ -1080,6 +1081,11 @@ impl AppServer {
             report
                 .lines
                 .push("workspace source read remains unobserved".into());
+        }
+        if !lab_observed {
+            report
+                .lines
+                .push("offline lab physical work or publication remains unobserved".into());
         }
         if let Some(reason) = stop_hook_shutdown_error {
             report.lines.push(reason);

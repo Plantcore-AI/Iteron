@@ -141,6 +141,7 @@ struct Projection {
     project_init: Option<Arc<super::project_init::ProjectInitService>>,
     model_preferences: Option<Arc<super::model_preferences::PreferenceService>>,
     workspace_reads: Option<Arc<super::tunables_simulation::WorkspaceReadService>>,
+    lab: Option<Arc<super::experiment_lab::LabService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -184,6 +185,28 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn lab_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::experiment_lab::LabService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .lab
+                    .get_or_insert_with(|| Arc::new(super::experiment_lab::LabService::default()))
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_lab(&self) -> bool {
+        match self.with_mut(|projection| projection.lab.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
     pub(super) fn workspace_read_admission(
         &self,
     ) -> Option<(

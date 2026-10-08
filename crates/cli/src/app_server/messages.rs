@@ -387,6 +387,7 @@ pub(crate) enum Control {
     SelectModelDefaultV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
     ModelPreferenceRead(super::ModelPreferenceReadV1),
     TunablesSimulation(super::TunablesLoadV1),
+    Lab(super::LabCommandV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -544,6 +545,7 @@ pub(crate) enum ControlReply {
     ProjectInit(crate::client_effects::project_init::ProjectInitReceipt),
     ModelPreference(Option<super::PreferenceReceipt>),
     TunablesSimulation(Box<super::ScopedTunablesSimulationV1>),
+    Lab(Box<super::ScopedLabFactsV1>),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

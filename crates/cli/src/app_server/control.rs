@@ -735,6 +735,16 @@ pub(super) async fn apply_control(
             );
             return;
         }
+        Control::Lab(command) => {
+            super::experiment_lab::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                command,
+                request.reply,
+            );
+            return;
+        }
         Control::SelectModelV1(request) => match agent
             .client_inventory_owner()
             .ok_or("bootstrap inventory is unavailable".to_owned())

@@ -804,7 +804,7 @@ pub(super) fn handle_registered_command(
             );
         }
         SlashCommand::Lab => {
-            experiment_lab::handle(app, session, arg);
+            experiment_lab::queue(app, session, transcript_effects, interrupt, arg);
         }
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A

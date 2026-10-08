@@ -46,7 +46,9 @@ fn max_evidence_rows_bytes() -> usize {
 }
 
 mod verify;
-pub use verify::verify_evidence_bundle;
+pub use verify::{
+    EvidenceBundleSource, verify_evidence_bundle, verify_evidence_bundle_from_source,
+};
 
 #[derive(Clone)]
 pub struct EvidenceSigner(SigningKey);

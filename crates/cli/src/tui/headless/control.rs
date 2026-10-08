@@ -91,6 +91,9 @@ pub(super) enum WireControl {
     TunablesSimulationV1 {
         command: crate::app_server::TunablesLoadV1,
     },
+    LabV1 {
+        command: crate::app_server::LabCommandV1,
+    },
     ModelPreferenceReadV1 {
         command: crate::app_server::ModelPreferenceReadV1,
     },
@@ -364,6 +367,7 @@ impl WireControl {
             Self::SelectModelDefaultV1 { selection } => Control::SelectModelDefaultV1(selection),
             Self::ModelPreferenceReadV1 { command } => Control::ModelPreferenceRead(command),
             Self::TunablesSimulationV1 { command } => Control::TunablesSimulation(command),
+            Self::LabV1 { command } => Control::Lab(command),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
             Self::ProjectInitV1 { command } => Control::ProjectInit(Box::new(command)),
@@ -624,6 +628,9 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }
         ControlReply::TunablesSimulation(value) => {
             json!({"type":"tunables_simulation_v1","receipt":value,"source":"host_workspace_request","runtime_bound":false})
+        }
+        ControlReply::Lab(value) => {
+            json!({"type":"lab_v1","receipt":value,"runtime_activation":false})
         }
         ControlReply::ProjectInit(value) => json!({"type":"project_init_v1","receipt":value}),
         ControlReply::OperatorShell(value) => json!({"type":"operator_shell_v1","receipt":value}),

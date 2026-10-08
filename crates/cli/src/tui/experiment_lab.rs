@@ -1,601 +1,248 @@
-//! Offline experiment request and signed-evidence TUI surface.
-
-use super::*;
-use iteron_eval::VerifiedEvidenceBundle;
-use iteron_eval::evidence_bundle::{
-    EvidenceRowOutcome, EvidenceRowsDocument, EvidenceRowsProvenance,
+//! Offline lab intent and immutable fact presentation. Native storage belongs to the host.
+use super::{App, Session, block, command_dispatch, item, kv, transcript_effect};
+use crate::app_server::{Control, LabCommandV1, ScopedLabFactsV1};
+use crate::client_effects::experiment_lab::{
+    ComparisonViewV1, LabActionV1, LabFactsV1, RequestStatusV1, RequestViewV1,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
-
-mod storage;
-
-use storage::*;
-
-const MAX_VALUE_BYTES: usize = 32 * 1024;
-const MAX_REQUEST_BYTES: u64 = 128 * 1024;
-const MAX_LISTED_REQUESTS: usize = 80;
-const MAX_LISTED_BUNDLES: usize = 40;
-/// Characters a JSON value may occupy on one request row. A wider value wraps and breaks the
-/// column alignment the row shares with every other listed request; longer values are elided, and
-/// the ellipsis that replaces the tail costs one of these characters.
-const ONE_LINE_VALUE_MAX_CHARS: usize = 120;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CandidateRequest {
-    family: String,
-    family_semantic_digest: String,
-    value: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum PromotionMode {
-    ExternalHumanAuthorityOnly,
-}
-
-/// A serialized boolean whose only inhabitant is `false`. This preserves the request-v1 wire
-/// shape while making self-promotion and runtime activation impossible to represent in Rust.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Denied;
-
-impl Serialize for Denied {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bool(false)
+use std::sync::{Arc, atomic::AtomicBool};
+const USAGE: &str = "/lab [list|request FAMILY JSON|compare BUNDLE TRUSTED_KEY|promote]";
+fn parse(argument: &str) -> Result<LabActionV1, &'static str> {
+    if argument.len() > 33 * 1024 {
+        return Err("lab command exceeds input bound");
     }
-}
-
-impl<'de> Deserialize<'de> for Denied {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        if bool::deserialize(deserializer)? {
-            return Err(serde::de::Error::custom(
-                "experiment lab promotion/activation must be false",
-            ));
+    let text = argument.trim();
+    let action = if text.is_empty() || text == "list" {
+        LabActionV1::List
+    } else if let Some(rest) = text.strip_prefix("request ") {
+        let index = rest.find(char::is_whitespace).ok_or(USAGE)?;
+        LabActionV1::Request {
+            family: rest[..index].into(),
+            value: rest[index..].trim().into(),
         }
-        Ok(Self)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PromotionBoundary {
-    mode: PromotionMode,
-    self_promotion: Denied,
-    runtime_activation: Denied,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExperimentRequest {
-    schema_version: u8,
-    request_type: String,
-    request_id: String,
-    status: String,
-    evaluation_purpose: String,
-    allowed_partition: String,
-    tunables_registry_digest: String,
-    candidate: CandidateRequest,
-    promotion: PromotionBoundary,
-}
-
-#[derive(Debug, Clone)]
-struct RequestReceipt {
-    request: ExperimentRequest,
-    relative_path: PathBuf,
-    reused: bool,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum LabError {
-    #[error("usage: /lab [list|request <family> <json>|compare <bundle> <trusted-key>|promote]")]
-    Usage,
-    #[error("experiment lab path is unsafe: {0}")]
-    UnsafePath(String),
-    #[error("experiment request is invalid: {0}")]
-    InvalidRequest(String),
-    #[error("experiment lab I/O failed: {0}")]
-    Io(String),
-    #[error("signed evidence verification failed: {0}")]
-    Evidence(String),
-}
-
-pub(super) fn handle(app: &mut App, session: &Session, arg: &str) {
-    let input = arg.trim();
-    let outcome = if input.is_empty() || input == "list" {
-        list(app, session.workspace())
-    } else if let Some(rest) = input.strip_prefix("request ") {
-        request(app, session.workspace(), rest)
-    } else if let Some(rest) = input.strip_prefix("compare ") {
-        compare(app, session.workspace(), rest)
-    } else if input == "promote" || input.starts_with("promote ") {
-        app.panel(
-            "◇",
-            "experiment lab · promotion boundary",
-            vec![
-                kv("status", "blocked by design"),
-                kv("authority", "external human-owned PromotionAuthority"),
-                kv("runtime activation", "unavailable from /lab"),
-                block::PanelRow::Note(
-                    "The lab can request train-only experiments and verify evidence. It cannot sign, promote, activate, or roll back policy.".into(),
-                ),
-            ],
-        );
-        Ok(())
+    } else if let Some(rest) = text.strip_prefix("compare ") {
+        let words = rest.split_whitespace().take(3).collect::<Vec<_>>();
+        let [bundle, key] = words.as_slice() else {
+            return Err(USAGE);
+        };
+        LabActionV1::Compare {
+            bundle_id: (*bundle).into(),
+            trusted_public_key: (*key).into(),
+        }
     } else {
-        Err(LabError::Usage)
+        return Err(USAGE);
     };
-    if let Err(error) = outcome {
-        app.note(block::NoticeLevel::Err, error.to_string());
-    }
+    action.validate()?;
+    Ok(action)
 }
-
-fn request(app: &mut App, workspace: &Path, input: &str) -> Result<(), LabError> {
-    let Some((family, value)) = split_once_whitespace(input) else {
-        return Err(LabError::Usage);
+pub(super) fn queue(
+    app: &mut App,
+    session: &Session,
+    effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
+    argument: &str,
+) {
+    if argument.trim() == "promote" || argument.trim().starts_with("promote ") {
+        app.panel("◇","experiment lab · promotion boundary",vec![kv("status","blocked by design"),
+            kv("runtime activation","unavailable from /lab"),block::PanelRow::Note(
+            "The lab can create offline train-only requests and compare signed evidence. It cannot activate or promote policy.".into())]);
+        return;
+    }
+    let Some(scope) = session.client.thread_snapshot_v1() else {
+        app.note(block::NoticeLevel::Warn, "lab has no current session");
+        return;
     };
-    let receipt = create_request(workspace, family, value)?;
-    render_request(app, &receipt);
-    Ok(())
-}
-
-fn compare(app: &mut App, workspace: &Path, input: &str) -> Result<(), LabError> {
-    let mut words = input.split_whitespace();
-    let bundle_id = words.next().ok_or(LabError::Usage)?;
-    let trusted_key = words.next().ok_or(LabError::Usage)?;
-    if words.next().is_some() || !safe_component(bundle_id) {
-        return Err(LabError::Usage);
+    match parse(argument) {
+        Ok(action) => command_dispatch::queue_command_control(
+            app,
+            session,
+            effects,
+            interrupt,
+            Control::Lab(LabCommandV1 {
+                thread_id: scope.thread_id,
+                run_id: scope.run_id,
+                action,
+            }),
+            transcript_effect::ControlKind::Lab,
+        ),
+        Err(reason) => app.note(block::NoticeLevel::Err, reason),
     }
-    let evidence_root =
-        secure_subdir(workspace, &[".iteron", "experiments", "evidence"], false)?
-            .ok_or_else(|| LabError::Evidence("no local evidence directory exists".into()))?;
-    let bundle = evidence_root.join(bundle_id);
-    let metadata = std::fs::symlink_metadata(&bundle)
-        .map_err(|error| LabError::Evidence(error.to_string()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(LabError::UnsafePath(
-            "evidence bundle must be a regular directory".into(),
-        ));
-    }
-    let canonical = bundle
-        .canonicalize()
-        .map_err(|error| LabError::Evidence(error.to_string()))?;
-    if !canonical.starts_with(&evidence_root) {
-        return Err(LabError::UnsafePath(
-            "evidence bundle escapes the experiment root".into(),
-        ));
-    }
-    let verified = iteron_eval::verify_evidence_bundle(&canonical, trusted_key)
-        .map_err(|error| LabError::Evidence(error.to_string()))?;
-    render_comparison(app, bundle_id, &verified);
-    Ok(())
 }
-
-fn list(app: &mut App, workspace: &Path) -> Result<(), LabError> {
-    let Some(root) = secure_subdir(workspace, &[".iteron", "experiments"], false)? else {
-        app.panel(
-            "◇",
-            "experiment lab",
-            vec![
-                kv("status", "ready · no local experiments"),
-                kv("scope", "offline · train-only"),
-                kv("registry", iteron_tunables::REGISTRY_DIGEST_SHA256),
-                kv("promotion", "external human authority only"),
-                block::PanelRow::Note(
-                    "Start with `/lab request <family> <json-value>`. No runtime setting changes when a request is created.".into(),
-                ),
-            ],
-        );
-        return Ok(());
-    };
-    let requests = list_requests(&root.join("requests"))?;
-    let bundles = list_bundles(&root.join("evidence"))?;
-    let mut rows = vec![
-        kv("status", "offline · evidence-gated"),
-        kv("registry", iteron_tunables::REGISTRY_DIGEST_SHA256),
-        kv("requests", &requests.len().to_string()),
-        kv("signed bundles", &bundles.len().to_string()),
-    ];
-    rows.extend(requests.iter().map(|request| {
-        item(
-            "◇",
-            &format!("{} · {}", request.request_id, request.status),
-            &format!(
-                "{} = {}",
-                request.candidate.family,
-                one_line_value(&request.candidate.value)
-            ),
-        )
-    }));
-    rows.extend(bundles.iter().map(|bundle| {
-        item(
-            "◆",
-            bundle,
-            "signed evidence · `/lab compare ID TRUSTED_KEY`",
-        )
-    }));
-    rows.push(block::PanelRow::Note(
-        "No experiment can self-promote; /lab has no activation credential or promotion key."
-            .into(),
-    ));
-    app.panel("◇", "experiment lab", rows);
-    Ok(())
-}
-
-fn create_request(
-    workspace: &Path,
-    family_id: &str,
-    raw_value: &str,
-) -> Result<RequestReceipt, LabError> {
-    if raw_value.len()
-        > iteron_tunables::param_integer("cli.tui.experiment_lab.max_value_bytes", MAX_VALUE_BYTES)
+pub(super) fn render(app: &mut App, session: &Session, receipt: ScopedLabFactsV1) {
+    if session
+        .client
+        .thread_snapshot_v1()
+        .is_none_or(|scope| scope.thread_id != receipt.thread_id || scope.run_id != receipt.run_id)
     {
-        return Err(LabError::InvalidRequest("value exceeds 32 KiB".into()));
+        app.note(
+            block::NoticeLevel::Warn,
+            "lab observation belongs to a previous session",
+        );
+        return;
     }
-    let family = iteron_tunables::families()
-        .iter()
-        .find(|family| family.id == family_id)
-        .ok_or_else(|| LabError::InvalidRequest(format!("unknown family `{family_id}`")))?;
-    if family.optimization.class == iteron_tunables::OptimizationClass::Pin {
-        return Err(LabError::InvalidRequest(format!(
-            "`{family_id}` is a security/durability pin, not a search choice"
-        )));
-    }
-    if family.implementation_status != iteron_tunables::ImplementationStatus::Full {
-        return Err(LabError::InvalidRequest(format!(
-            "`{family_id}` has no complete production binding"
-        )));
-    }
-    let value = serde_json::from_str(raw_value)
-        .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_owned()));
-    if value.is_null() {
-        return Err(LabError::InvalidRequest(
-            "null is not a candidate value; omit inactive conditional families".into(),
-        ));
-    }
-    let candidate = CandidateRequest {
-        family: family.id.into(),
-        family_semantic_digest: iteron_tunables::family_semantic_digest(family)
-            .map_err(|error| LabError::InvalidRequest(error.to_string()))?
-            .value,
-        value,
-    };
-    let payload = serde_json::to_vec(&candidate)
-        .map_err(|error| LabError::InvalidRequest(error.to_string()))?;
-    let digest = hex::encode(Sha256::digest(payload));
-    let request_id = format!("req-{}", &digest[..20]);
-    let request = ExperimentRequest {
-        schema_version: 1,
-        request_type: "offline_tuner_request".into(),
-        request_id: request_id.clone(),
-        status: "requested".into(),
-        evaluation_purpose: "tune".into(),
-        allowed_partition: "train".into(),
-        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
-        candidate,
-        promotion: PromotionBoundary {
-            mode: PromotionMode::ExternalHumanAuthorityOnly,
-            self_promotion: Denied,
-            runtime_activation: Denied,
-        },
-    };
-    let directory = secure_subdir(workspace, &[".iteron", "experiments", "requests"], true)?
-        .expect("create=true always returns a directory");
-    let destination = directory.join(format!("{request_id}.json"));
-    let mut bytes = serde_json::to_vec_pretty(&request)
-        .map_err(|error| LabError::InvalidRequest(error.to_string()))?;
-    bytes.push(b'\n');
-    let reused = destination.exists();
-    if reused && read_bounded(&destination)? != bytes {
-        return Err(LabError::InvalidRequest(
-            "content-addressed request id collision".into(),
-        ));
-    }
-    if !reused {
-        write_atomic(&directory, &destination, &bytes)?;
-    }
-    Ok(RequestReceipt {
-        request,
-        relative_path: PathBuf::from(".iteron/experiments/requests")
-            .join(format!("{request_id}.json")),
-        reused,
-    })
+    render_facts(app, receipt.facts);
 }
-
-fn render_request(app: &mut App, receipt: &RequestReceipt) {
+fn render_facts(app: &mut App, facts: LabFactsV1) {
+    match facts {
+        LabFactsV1::Inventory {
+            requests,
+            bundles,
+            incomplete,
+        } => {
+            let mut rows = vec![
+                kv("status", "offline · train-only"),
+                kv("registry", iteron_tunables::REGISTRY_DIGEST_SHA256),
+                kv("requests shown", &requests.len().to_string()),
+                kv("evidence directories shown", &bundles.len().to_string()),
+                kv(
+                    "inventory",
+                    if incomplete {
+                        "incomplete · bounded scan or unreadable entries"
+                    } else {
+                        "observed complete"
+                    },
+                ),
+            ];
+            for request in requests {
+                rows.push(item(
+                    "◇",
+                    &request.request_id,
+                    &format!("{} = {}", request.family, request.value),
+                ));
+            }
+            for bundle in bundles {
+                rows.push(item(
+                    "◆",
+                    &bundle,
+                    "unverified local index · /lab compare ID TRUSTED_KEY",
+                ));
+            }
+            rows.push(block::PanelRow::Note("No runtime settings change when a request is created. Listed evidence is verified only by /lab compare.".into()));
+            app.panel("◇", "experiment lab", rows);
+        }
+        LabFactsV1::Request { receipt } => render_request(app, &receipt),
+        LabFactsV1::Comparison { view } => render_comparison(app, &view),
+    }
+}
+fn render_request(app: &mut App, receipt: &RequestViewV1) {
+    let status = match receipt.status {
+        RequestStatusV1::Created => "requested · new",
+        RequestStatusV1::Existing => "requested · existing",
+        RequestStatusV1::NotPublished => "not recorded",
+        RequestStatusV1::PublicationUnknown => "publication unknown · do not retry yet",
+    };
     app.panel(
         "◇",
         "experiment request",
         vec![
-            kv("status", if receipt.reused { "requested · existing" } else { "requested · new" }),
-            kv("request", &receipt.request.request_id),
-            kv("family", &receipt.request.candidate.family),
-            kv("value", &one_line_value(&receipt.request.candidate.value)),
+            kv("status", status),
+            kv("request", &receipt.request_id),
+            kv("family", &receipt.family),
+            kv("value", &receipt.value),
             kv("evaluation", "tune · train partition only"),
             kv("runtime activation", "none"),
-            kv("promotion", "external human authority only"),
-            kv("artifact", &receipt.relative_path.display().to_string()),
-            block::PanelRow::Note(
-                "Request recorded. An offline runner/tuner may consume it; this TUI did not change the active policy.".into(),
-            ),
+            kv("artifact", &receipt.relative_path),
+            block::PanelRow::Note("This request does not change the active policy.".into()),
         ],
     );
 }
-
-fn render_comparison(app: &mut App, bundle_id: &str, verified: &VerifiedEvidenceBundle) {
-    let comparison = &verified.paired.comparison;
+fn render_comparison(app: &mut App, view: &ComparisonViewV1) {
     let mut rows = vec![
         kv("trust", "verified · signed bytes + recomputed reports"),
         kv(
             "result status",
-            if verified.is_synthetic_fixture() {
+            if view.synthetic {
                 "synthetic fixture · acceptance only · not a performance result"
             } else {
                 "measured evidence"
             },
         ),
-        kv("bundle", bundle_id),
+        kv("bundle", &view.bundle),
         kv(
             "baseline",
             &format!(
                 "{} · {:.1}% resolved",
-                comparison.baseline.name,
-                comparison.baseline.resolved_rate * 100.0
+                view.baseline,
+                view.baseline_rate * 100.0
             ),
         ),
         kv(
             "candidate",
             &format!(
                 "{} · {:.1}% resolved",
-                comparison.treatment.name,
-                comparison.treatment.resolved_rate * 100.0
+                view.candidate,
+                view.candidate_rate * 100.0
             ),
         ),
         kv(
             "quality Δ",
             &format!(
                 "{:+.1} pp · CI95 [{:+.1}, {:+.1}]",
-                comparison.resolved_rate_delta * 100.0,
-                comparison.paired_ci95[0] * 100.0,
-                comparison.paired_ci95[1] * 100.0
+                view.rate_delta * 100.0,
+                view.ci95[0] * 100.0,
+                view.ci95[1] * 100.0
             ),
         ),
         kv(
             "paired observations",
+            &format!("{} / {} minimum", view.matched, view.minimum),
+        ),
+        kv("conclusion", &view.conclusion),
+        kv("signer", &view.signer_display),
+        kv(
+            "cost Δ",
+            &view
+                .cost_delta_usd
+                .map(|cost| format!("${cost:+.6}"))
+                .unwrap_or_else(|| "unknown · not promotion-ready".into()),
+        ),
+        kv(
+            "row provenance",
+            if view.synthetic {
+                "synthetic fixture · acceptance only · not a result"
+            } else {
+                "measured · signed and recomputed"
+            },
+        ),
+        kv(
+            "resolved denominator",
             &format!(
-                "{} / {} minimum",
-                comparison.matched_pairs, comparison.minimum_pairs
+                "{} / {} total rows",
+                view.success + view.task_failure,
+                view.total_rows
             ),
         ),
-        kv("conclusion", &comparison.statistical_conclusion.to_string()),
-        kv("signer", &format!("{}…", &verified.index.public_key[..12])),
+        kv(
+            "row outcomes",
+            &format!(
+                "{} success · {} task failure · {} infrastructure failure · {} censored · {} held out",
+                view.success,
+                view.task_failure,
+                view.infrastructure_failure,
+                view.censored,
+                view.held_out
+            ),
+        ),
     ];
-    rows.push(kv(
-        "cost Δ",
-        &comparison
-            .cost_delta_usd
-            .map(|delta| format!("${delta:+.6}"))
-            .unwrap_or_else(|| "unknown · not promotion-ready".into()),
-    ));
-    append_evidence_summary(&mut rows, &verified.evidence_rows);
-    for point in &verified.pareto.points {
+    for point in &view.pareto {
         rows.push(item(
             "◆",
             &format!(
                 "{} · {:.1}% · ${:.4}",
-                point.candidate_id,
+                point.candidate,
                 point.resolved_rate * 100.0,
                 point.average_cost_usd
             ),
             &format!(
                 "{:.0} ms · {} failed",
-                point.average_latency_ms, point.failed_runs
+                point.average_latency_ms, point.failed
             ),
         ));
     }
-    rows.push(kv("Pareto frontier", &verified.pareto.frontier.join(" · ")));
+    rows.push(kv("Pareto frontier", &view.frontier.join(" · ")));
     rows.push(block::PanelRow::Note(
-        "Evidence comparison is read-only. Promotion still requires the separate human-owned authority and held-out gate.".into(),
+        "Evidence comparison is read-only and cannot activate runtime policy.".into(),
     ));
     app.panel("◆", "experiment evidence", rows);
 }
-
-fn append_evidence_summary(rows: &mut Vec<block::PanelRow>, evidence: &EvidenceRowsDocument) {
-    let count = |outcome| {
-        evidence
-            .rows
-            .iter()
-            .filter(|row| row.outcome == outcome)
-            .count()
-    };
-    let success = count(EvidenceRowOutcome::Success);
-    let task_failure = count(EvidenceRowOutcome::TaskFailure);
-    let infrastructure_failure = count(EvidenceRowOutcome::InfrastructureFailure);
-    let censored = count(EvidenceRowOutcome::Censored);
-    let held_out = evidence
-        .rows
-        .iter()
-        .filter(|row| row.partition == iteron_eval::Partition::HeldOut)
-        .count();
-    let denominator = evidence
-        .rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.outcome,
-                EvidenceRowOutcome::Success | EvidenceRowOutcome::TaskFailure
-            )
-        })
-        .count();
-    rows.push(kv(
-        "row provenance",
-        match evidence.provenance {
-            EvidenceRowsProvenance::Measured => "measured · signed and recomputed",
-            EvidenceRowsProvenance::SyntheticFixture => {
-                "synthetic fixture · acceptance only · not a result"
-            }
-        },
-    ));
-    rows.push(kv(
-        "resolved denominator",
-        &format!("{denominator} / {} total rows", evidence.rows.len()),
-    ));
-    rows.push(kv(
-        "row outcomes",
-        &format!(
-            "{success} success · {task_failure} task failure · {infrastructure_failure} infrastructure failure · {censored} censored · {held_out} held out"
-        ),
-    ));
-}
-
-fn split_once_whitespace(value: &str) -> Option<(&str, &str)> {
-    let offset = value.find(char::is_whitespace)?;
-    let (left, right) = value.split_at(offset);
-    let right = right.trim_start();
-    (!left.is_empty() && !right.is_empty()).then_some((left, right))
-}
-
-fn one_line_value(value: &serde_json::Value) -> String {
-    let mut text = value.to_string().replace(['\n', '\r'], " ");
-    if text.chars().count()
-        > iteron_tunables::param_integer(
-            "cli.tui.experiment_lab.one_line_value_max_chars",
-            ONE_LINE_VALUE_MAX_CHARS,
-        )
-    {
-        text = format!(
-            "{}…",
-            text.chars()
-                .take(
-                    iteron_tunables::param_integer(
-                        "cli.tui.experiment_lab.one_line_value_max_chars",
-                        ONE_LINE_VALUE_MAX_CHARS
-                    ) - 1
-                )
-                .collect::<String>()
-        );
-    }
-    text
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_workspace(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "iteron-cli-lab-{label}-{}-{nonce:x}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path).unwrap();
-        path
-    }
-
-    fn full_search_family() -> &'static str {
-        iteron_tunables::families()
-            .iter()
-            .find(|family| {
-                family.implementation_status == iteron_tunables::ImplementationStatus::Full
-                    && family.optimization.class != iteron_tunables::OptimizationClass::Pin
-            })
-            .unwrap()
-            .id
-    }
-
-    #[test]
-    fn request_is_content_addressed_train_only_and_has_no_activation_surface() {
-        let workspace = temp_workspace("request");
-        let first = create_request(&workspace, full_search_family(), "true").unwrap();
-        let second = create_request(&workspace, full_search_family(), "true").unwrap();
-        assert_eq!(first.request.request_id, second.request.request_id);
-        assert!(!first.reused);
-        assert!(second.reused);
-        assert_eq!(first.request.evaluation_purpose, "tune");
-        assert_eq!(first.request.allowed_partition, "train");
-        assert_eq!(
-            first.request.promotion.mode,
-            PromotionMode::ExternalHumanAuthorityOnly
-        );
-        assert_eq!(first.request.promotion.self_promotion, Denied);
-        assert_eq!(first.request.promotion.runtime_activation, Denied);
-        assert!(
-            serde_json::from_value::<PromotionBoundary>(serde_json::json!({
-                "mode": "external_human_authority_only",
-                "self_promotion": false,
-                "runtime_activation": true
-            }))
-            .is_err()
-        );
-        let mut app = App::new();
-        render_request(&mut app, &first);
-        let block::BlockKind::Panel { title, rows } = &app.history.blocks().last().unwrap().kind
-        else {
-            panic!("request must render as a semantic panel");
-        };
-        assert_eq!(title, "experiment request");
-        assert!(rows.iter().any(|row| matches!(
-            row,
-            block::PanelRow::KeyValue { key, value }
-                if key == "evaluation" && value.contains("train partition only")
-        )));
-        let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[test]
-    fn pin_and_symlinked_lab_root_are_refused() {
-        let workspace = temp_workspace("refusal");
-        let pinned = iteron_tunables::families()
-            .iter()
-            .find(|family| family.optimization.class == iteron_tunables::OptimizationClass::Pin)
-            .unwrap();
-        assert!(create_request(&workspace, pinned.id, "true").is_err());
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(std::env::temp_dir(), workspace.join(".iteron")).unwrap();
-            assert!(create_request(&workspace, full_search_family(), "true").is_err());
-        }
-        let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[test]
-    fn exact_frozen_fixture_renders_with_unmistakable_non_result_provenance() {
-        let verified = iteron_eval::verify_evidence_bundle(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../eval/fixtures/evidence-bundle-v1"),
-            "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
-        )
-        .unwrap();
-        let mut app = App::new();
-        render_comparison(&mut app, "evidence-bundle-v1", &verified);
-        let block::BlockKind::Panel { title, rows } = &app.history.blocks().last().unwrap().kind
-        else {
-            panic!("verified fixture must render as a semantic panel");
-        };
-        assert_eq!(title, "experiment evidence");
-        assert!(rows.iter().any(|row| matches!(
-            row,
-            block::PanelRow::KeyValue { key, value }
-                if key == "row provenance" && value.contains("not a result")
-        )));
-        assert!(rows.iter().any(|row| matches!(
-            row,
-            block::PanelRow::KeyValue { key, value }
-                if key == "row outcomes"
-                    && value.contains("2 success")
-                    && value.contains("1 task failure")
-                    && value.contains("1 infrastructure failure")
-                    && value.contains("1 held out")
-        )));
-    }
-}
+mod tests;

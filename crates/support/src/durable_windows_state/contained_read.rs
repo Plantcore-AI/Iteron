@@ -31,6 +31,7 @@ use windows_sys::{
     },
 };
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+const MAX_READER_BYTES: usize = 32 * 1024 * 1024;
 #[derive(PartialEq, Eq)]
 struct FileStamp {
     volume: u32,
@@ -42,6 +43,119 @@ struct FileStamp {
     written_lo: u32,
     attributes: u32,
 }
+/// Ordinary read-only capability. Every ancestor retains a no-delete-share, non-reparse handle.
+/// Reads and enumeration use the actual held directory handles without pathname reopening.
+pub struct WindowsWorkspaceReader {
+    directories: Vec<File>,
+}
+impl WindowsWorkspaceReader {
+    pub fn open(path: &Path) -> Result<Self, WindowsStateError> {
+        let directories = pin_read_directory_chain(path)?;
+        local_ntfs(directories.last().ok_or(WindowsStateError::Unavailable)?)?;
+        Ok(Self { directories })
+    }
+    pub fn open_child(&self, name: &str) -> Result<Option<Self>, WindowsStateError> {
+        let _ = super::filename_units(std::ffi::OsStr::new(name))?;
+        let parent = self
+            .directories
+            .last()
+            .ok_or(WindowsStateError::Unavailable)?;
+        let Some(child) = optional_directory(parent, name)? else {
+            return Ok(None);
+        };
+        let mut directories = self
+            .directories
+            .iter()
+            .map(File::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|_| WindowsStateError::Unavailable)?;
+        directories.push(child);
+        Ok(Some(Self { directories }))
+    }
+    pub fn read_leaf(&self, name: &str, limit: usize) -> Result<Vec<u8>, WindowsStateError> {
+        if limit > MAX_READER_BYTES {
+            return Err(WindowsStateError::Unavailable);
+        }
+        let parent = self
+            .directories
+            .last()
+            .ok_or(WindowsStateError::Unavailable)?;
+        let mut file = read_leaf(parent, std::ffi::OsStr::new(name))?;
+        let before = stamp(&file, false)?;
+        let size = (u64::from(before.size_hi) << 32) | u64::from(before.size_lo);
+        if size > limit as u64 {
+            return Err(WindowsStateError::Unavailable);
+        }
+        let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+        (&mut file)
+            .take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| WindowsStateError::Unavailable)?;
+        if bytes.len() > limit || before != stamp(&file, false)? {
+            return Err(WindowsStateError::Unavailable);
+        }
+        Ok(bytes)
+    }
+    pub fn list(&self, limit: usize) -> Result<(Vec<(String, bool)>, bool), WindowsStateError> {
+        let directory = self
+            .directories
+            .last()
+            .ok_or(WindowsStateError::Unavailable)?;
+        super::workspace_directory_read::list(directory, limit)
+    }
+}
+fn optional_directory(parent: &File, name: &str) -> Result<Option<File>, WindowsStateError> {
+    use windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE;
+    use windows_sys::Win32::Foundation::{
+        STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_WRITE, FILE_TRAVERSE,
+    };
+    let mut units = super::filename_units(std::ffi::OsStr::new(name))?;
+    let unicode = UNICODE_STRING {
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &unicode,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: null(),
+        SecurityQualityOfService: null(),
+    };
+    let mut raw: HANDLE = null_mut();
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: held parent, bounded native component and live aligned outputs.
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+            &attributes,
+            &mut io,
+            null(),
+            FILE_ATTRIBUTE_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            null(),
+            0,
+        )
+    };
+    if status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND {
+        return Ok(None);
+    }
+    if status < 0 {
+        return Err(WindowsStateError::Unavailable);
+    }
+    // SAFETY: successful native open returned a new owned handle exactly once.
+    let child = unsafe { File::from_raw_handle(raw) };
+    let _ = stamp(&child, true)?;
+    Ok(Some(child))
+}
+
 fn stamp(file: &File, directory: bool) -> Result<FileStamp, WindowsStateError> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
@@ -217,6 +331,42 @@ pub(super) fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn held_workspace_reader_enumerates_and_reads_exact_native_namespace() {
+        let path = std::env::temp_dir().join(format!(
+            "iteron-workspace-reader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("alpha.json"), b"actual complete bytes").unwrap();
+        std::fs::create_dir(path.join("child")).unwrap();
+        let reader = WindowsWorkspaceReader::open(&path).unwrap();
+        assert_eq!(
+            reader.read_leaf("alpha.json", 64).unwrap(),
+            b"actual complete bytes"
+        );
+        assert!(reader.read_leaf("alpha.json", 2).is_err());
+        assert!(reader.open_child("missing").unwrap().is_none());
+        assert!(reader.open_child("child").unwrap().is_some());
+        assert!(reader.open_child("../escape").is_err());
+        let (rows, truncated) = reader.list(1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(truncated);
+        let (mut rows, truncated) = reader.list(4).unwrap();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![("alpha.json".into(), false), ("child".into(), true)]
+        );
+        assert!(!truncated);
+        assert!(std::fs::rename(&path, path.with_extension("moved")).is_err());
+        drop(reader);
+        std::fs::remove_dir_all(path).unwrap();
+    }
     #[test]
     fn ordinary_checkout_source_reads_without_private_directory_acl_or_write_permission() {
         let path =

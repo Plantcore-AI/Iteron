@@ -427,6 +427,9 @@ pub(super) fn apply_transcript_effect_event(
     }
     if let Some(control) = event.control {
         match (control.kind, control.reply) {
+            (transcript_effect::ControlKind::Lab, Some(app_server::ControlReply::Lab(receipt))) => {
+                experiment_lab::render(app, session, *receipt)
+            }
             (
                 transcript_effect::ControlKind::TunablesSimulation,
                 Some(app_server::ControlReply::TunablesSimulation(receipt)),
