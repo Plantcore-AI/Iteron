@@ -18,7 +18,7 @@ use iteron_workflow::events::{PREVIEW_MAX, ProgressEvent, ProgressSink, Workflow
 #[cfg(all(test, feature = "script-workflows"))]
 use iteron_workflow::{AgentCall, AgentOutcome};
 #[cfg(all(test, feature = "script-workflows"))]
-use iteron_workflow::{AgentSpawner, RunReport, RunSpec, WorkflowEngine};
+use iteron_workflow::{AgentSpawner, RunSpec, WorkflowEngine};
 
 mod launch;
 mod live;
@@ -156,9 +156,9 @@ pub use launch::{
     Collected, DetachedRun, InTurnWorkflowLauncher, Launched, PreparedWorkflow, WorkflowLauncher,
     launch_prepared,
 };
-#[cfg(feature = "script-workflows")]
-pub use progress::FanoutProgressSink;
-#[cfg(any(test, feature = "script-workflows"))]
+#[cfg(all(test, feature = "script-workflows"))]
+use progress::FanoutProgressSink;
+#[cfg(test)]
 pub use progress::UiProgressSink;
 pub use progress::{DegradedAgentSink, StdoutProgressSink, in_turn_progress_sink};
 #[cfg(all(test, feature = "script-workflows"))]
@@ -178,7 +178,5 @@ pub use supervisor::{
     WorkflowSupervisor,
 };
 
-#[cfg(all(test, feature = "script-workflows"))]
-use progress::MAX_PARTIAL_RESULT_BYTES;
 #[cfg(all(test, feature = "script-workflows"))]
 mod tests;

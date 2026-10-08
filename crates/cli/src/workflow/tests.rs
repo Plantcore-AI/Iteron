@@ -1,7 +1,7 @@
 use super::*;
 use iteron_protocol::{Block, StopReason, Usage};
 use iteron_provider::{ProviderError, TurnResult, UsageReport};
-use iteron_workflow::{RunId, RunReport};
+use iteron_workflow::{PROGRESS_SINK_PORT_VERSION, RunId, RunReport};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
