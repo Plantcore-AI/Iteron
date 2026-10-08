@@ -613,6 +613,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/record/src/redact/new_event_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/record/src/resolved_fixture.rs"
         },
         {
@@ -3299,6 +3303,22 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/context_injection_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/tests/native_generations.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/fixture_native_input.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/host_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/test_support/tempdir_tests.rs"
         }
       ],
       "contracts": [
@@ -3473,10 +3493,6 @@
         {
           "kind": "file",
           "path": "crates/cli/src/machine_contract.rs"
-        },
-        {
-          "kind": "tree",
-          "path": "crates/cli/src/output"
         },
         {
           "kind": "file",
@@ -8175,6 +8191,7 @@
       "iteron-ctx": {
         "normal": [
           "iteron-protocol",
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],
@@ -8244,6 +8261,7 @@
       "iteron-marketplace": {
         "normal": [
           "iteron-protocol",
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],
