@@ -717,7 +717,7 @@ fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
     let mut controller = AgentController::open(store.clone(), config(8)).unwrap();
     let before = controller.revision();
     store.0.lock().unwrap().failure = Some((ControllerStoreError::Unavailable, false));
-    assert!(
+    assert_eq!(
         controller
             .spawn_workflow_child(
                 AgentActor::Agent(AgentIdV1(1)),
@@ -726,7 +726,8 @@ fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
                 engine_binding(),
                 1000
             )
-            .is_err()
+            .unwrap_err(),
+        ControllerError::Store(ControllerStoreError::Unavailable)
     );
     assert_eq!(controller.revision(), before);
     assert_eq!(controller.list(AgentActor::Operator).unwrap().len(), 1);
@@ -739,7 +740,7 @@ fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
         0
     );
     store.0.lock().unwrap().failure = Some((ControllerStoreError::OutcomeUnknown, true));
-    assert!(
+    assert_eq!(
         controller
             .spawn_workflow_child(
                 AgentActor::Agent(AgentIdV1(1)),
@@ -748,19 +749,95 @@ fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
                 engine_binding(),
                 1000
             )
-            .is_err()
+            .unwrap_err(),
+        ControllerError::Store(ControllerStoreError::OutcomeUnknown)
+    );
+    assert_eq!(
+        controller.list(AgentActor::Operator),
+        Err(ControllerError::Poisoned)
     );
     drop(controller);
     let mut reopened = AgentController::open(store, config(8)).unwrap();
     let child = reopened
         .inspect(AgentActor::Operator, AgentIdV1(2))
         .unwrap();
-    assert!(matches!(child.state, AgentStateV1::RecoveryRequired { .. }));
-    assert_eq!(child.queued_messages, 0);
+    let AgentStateV1::RecoveryRequired { epoch } = child.state else {
+        panic!("an uncertain published child must retain its quarantined epoch");
+    };
+    // Publication was uncertain, not absent: the same atomic snapshot had already claimed and
+    // delivered this task. Delivery is not consumption. Reopening preserves that evidence and
+    // its reservation; it must neither erase the input nor turn it into a fresh idle task.
+    let durable = serde_json::to_value(reopened.snapshot()).unwrap();
+    let messages = durable["mailbox"]["messages"].as_object().unwrap();
+    assert_eq!(messages.len(), 1);
+    let task: iteron_agents::AgentMailboxMessage =
+        serde_json::from_value(messages.values().next().unwrap().clone()).unwrap();
+    assert_eq!(task.receiver, child.agent_id);
+    assert_eq!(task.sender, Some(reopened.root_id()));
+    assert_eq!(
+        task.kind,
+        iteron_protocol::agent_control::AgentMessageKindV1::Task
+    );
+    assert_eq!(task.state, AgentMessageStateV1::Delivered { epoch });
+    assert_eq!(task.text.as_deref(), Some("Investigate child"));
+    assert_eq!(child.queued_messages, messages.len());
+    assert_eq!(child.budget, budget(4));
+    assert_eq!(child.usage.turns, 1);
+    assert_eq!(
+        reopened
+            .inspect(AgentActor::Operator, reopened.root_id())
+            .unwrap()
+            .reserved,
+        iteron_protocol::agent_control::AgentUsageV1 {
+            turns: budget(4).turns,
+            tokens: budget(4).tokens,
+            cost_microusd: budget(4).cost_microusd,
+            wall_ms: 0,
+        }
+    );
+    let replay = reopened
+        .existing_workflow_child(
+            AgentActor::Agent(reopened.root_id()),
+            "engine-unknown",
+            &spawn(reopened.root_id(), "child", vec![]),
+            &engine_binding(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(replay.lease.replayed);
+    assert!(replay.lease.initial.is_empty());
+    assert_eq!(replay.lease.epoch, epoch);
+    assert_eq!(replay.claim.assigned_agent, child.agent_id);
+    assert_eq!(replay.claim.task, task.text.unwrap());
+    assert_eq!(reopened.workflow_completion(&replay.claim).unwrap(), None);
     assert_eq!(
         reopened.begin_turn(child.agent_id).unwrap_err(),
         ControllerError::RecoveryRequired
     );
+    assert_eq!(
+        reopened.deliver(child.agent_id, epoch, true).unwrap_err(),
+        ControllerError::StaleEpoch
+    );
+    assert_eq!(
+        reopened
+            .mark_consumed(child.agent_id, epoch, &[task.id])
+            .unwrap_err(),
+        ControllerError::StaleEpoch
+    );
+    assert_eq!(
+        reopened
+            .execute(
+                AgentActor::Operator,
+                "uncertain-child-followup",
+                AgentCommandV1::FollowupTask {
+                    agent_id: child.agent_id,
+                    text: "this must not restart the admitted task".into(),
+                },
+            )
+            .unwrap_err(),
+        ControllerError::RecoveryRequired
+    );
+    assert_eq!(serde_json::to_value(reopened.snapshot()).unwrap(), durable);
 }
 
 #[test]
