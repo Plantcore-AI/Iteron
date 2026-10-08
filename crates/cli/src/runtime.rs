@@ -159,6 +159,10 @@ mod tool_image_admission;
 mod tool_result_projection;
 pub use compaction_journal::CompactionReport;
 mod completion_semantics;
+mod context_injection;
+mod context_injection_assembly;
+mod context_injection_gate;
+mod context_injection_journal;
 mod context_preparation_events;
 mod context_runtime;
 use context_runtime::{IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON};
@@ -324,7 +328,7 @@ pub(crate) use inbound_control::TurnSubmission;
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
 use iteron_obs::{
-    CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
+    CostState, Ledger, PricingPort, ProjectionAdmissionError, admit_verified_projection,
 };
 use iteron_protocol::capability_set::CapabilitySet;
 #[cfg(test)]
@@ -1696,58 +1700,6 @@ impl Agent {
         let input_images = self.admit_input_images(input_images)?;
         let messages = self.admit_submission(task)?;
         self.drive_admitted(messages, task, input_images).await
-    }
-
-    /// Resolve the complete durable context before any provider request, including Ultracode's
-    /// decomposition/fan calls. The idempotence guard lets the eventual single writer reuse the
-    /// same bytes without emitting a second context phase or ContextInjection.
-    async fn resolve_injection_before_provider(
-        &mut self,
-        relevance_task: &str,
-    ) -> Result<(), KernelError> {
-        self.ensure_record_healthy()?;
-        if self.injected.is_some() {
-            return Ok(());
-        }
-        self.emit(
-            TurnId(self.seq_turn),
-            EventKind::Phase {
-                phase: Phase::Context,
-            },
-        );
-        self.ensure_record_healthy()?;
-        let context_span = PhaseSpan::enter(Phase::Context);
-        let turn = TurnId(self.seq_turn);
-        let mut gates = vec![(
-            "context.source.discovered",
-            LifecyclePayload {
-                magnitude: Some(u64::try_from(relevance_task.len()).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        )];
-        if self.memory_workspace.is_some() {
-            gates.extend([
-                (
-                    "memory.query.created",
-                    LifecyclePayload {
-                        magnitude: Some(u64::try_from(relevance_task.len()).unwrap_or(u64::MAX)),
-                        ..LifecyclePayload::default()
-                    },
-                ),
-                ("memory.budget.requested", LifecyclePayload::default()),
-            ]);
-        }
-        for (event_id, payload) in gates {
-            let report = self
-                .brokered_lifecycle_gate(turn, event_id, payload)
-                .await?;
-            if let HookDecision::Deny(reason) = report.decision {
-                return Err(KernelError::ContextResolution(reason));
-            }
-        }
-        let resolved = self.resolve_injection(TurnId(self.seq_turn), relevance_task);
-        self.ledger.phase_context(context_span.elapsed_ms());
-        resolved
     }
 
     /// Run the controller loop and keep the working set it finished with.
