@@ -24,7 +24,7 @@ use super::verification_journal::{VerificationJournal, VerificationPolicyBootstr
 use super::verification_state::VerificationStateOwner;
 use super::workspace_checkpoint::WorkspaceCheckpointOwner;
 use iteron_ctx::RequestEstimator;
-use iteron_protocol::{Block, EventKind, Message, Role, Trust, TurnId};
+use iteron_protocol::{Block, EventKind, Message, Role, Trust};
 use std::sync::Arc;
 use std::time::Instant;
 

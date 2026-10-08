@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Semaphore, watch};
 
+#[cfg(test)]
+#[path = "persistent_agents/fixture_native_input.rs"]
+mod fixture_native_input;
 #[path = "persistent_agents/input_admission.rs"]
 pub(super) mod input_admission;
 #[path = "persistent_agents/parent_turn.rs"]

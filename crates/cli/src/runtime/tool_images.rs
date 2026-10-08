@@ -1,5 +1,5 @@
 //! Post-terminal private pixels and model projection. No model/input can mint the receipt.
-use super::{Agent, KernelError, tool_execution_journal::ToolTerminalReceipt};
+use super::{Agent, tool_execution_journal::ToolTerminalReceipt};
 #[cfg(test)]
 use iteron_protocol::Block;
 use iteron_tools::CapturedToolImage;

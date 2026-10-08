@@ -4,7 +4,7 @@ use super::{
     Agent, KernelError, persistent_agents, replay_scoped_rollout, route_attempt_accounting,
 };
 use iteron_agents::ControllerError;
-use iteron_protocol::{EventKind, ProviderRouteUsageTruth, TurnId};
+use iteron_protocol::{EventKind, ProviderRouteUsageTruth};
 use persistent_agents::RuntimeProviderBudgetPort;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

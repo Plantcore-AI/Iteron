@@ -14,7 +14,7 @@
 //! ReversibleLocal, run-if-allowed for CodeExecuting, refused otherwise — the capability
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
-pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+pub use iteron_kernel::{diagnostics, effect_class, effects};
 #[cfg(test)]
 #[path = "runtime/test_support/tempdir_tests.rs"]
 pub(crate) mod test_tempdir;
@@ -71,7 +71,7 @@ mod provider_turn_driver;
 mod provider_turn_entry;
 mod provider_turn_evidence;
 mod provider_usage_journal;
-use provider_usage_journal::{INCOMPLETE_USAGE_NOTICE, UNPRICEABLE_CACHE_CREATION_NOTICE};
+use provider_usage_journal::INCOMPLETE_USAGE_NOTICE;
 mod request_accounting;
 mod request_admission;
 mod request_admission_assembly;
@@ -127,10 +127,7 @@ pub(crate) use frontend_events::{PlantcoreUiEvent, RuntimeFrontendEvent};
 use stream_progress::{InternalStreamProgress, StreamTiming};
 use tool_presentation::UI_PROJECTION_TRUNCATED_WHEN_UNMARKED;
 pub(crate) use tool_presentation::bounded_child_report;
-use tool_presentation::{
-    scrub_value, strict_utf8_head, tool_end_ui, truncate_tail, ui_approval_arguments,
-    ui_verification_rollback_arguments,
-};
+use tool_presentation::strict_utf8_head;
 
 pub(crate) mod advisory_maintenance;
 mod agent_config;
@@ -168,7 +165,6 @@ mod context_injection_gate;
 mod context_injection_journal;
 mod context_preparation_events;
 mod context_runtime;
-use context_runtime::{IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON};
 mod decision_observability;
 mod decomposition;
 mod deferred_tools;
@@ -195,7 +191,6 @@ mod cold_cohort;
 mod hook_execution;
 pub mod hooks;
 mod inbound_control;
-use inbound_control::MAX_INBOUND_OPS_PER_POLL;
 use inbound_control::{
     INBOUND_DRAIN_POLL_INTERVAL, UNSUPPORTED_SUBMISSION_NOTICE, VERSION_MISMATCH_SUBMISSION_NOTICE,
 };
@@ -230,6 +225,7 @@ mod plantcore;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod controller_engine_children;
 mod controller_engine_scope;
 mod direct_child_execution;
 mod execution_deadline;
@@ -256,10 +252,9 @@ mod private_attachments;
 mod provider_accounting;
 mod turn_advance;
 mod turn_advance_assembly;
-use provider_accounting::{
-    MAX_COMMITTED_PROVIDER_RUN_NOTICES, PROVIDER_RUN_NOTICE_KEY_BODY_LEN,
-    PROVIDER_RUN_NOTICE_LABEL, PROVIDER_RUN_NOTICE_PREFIX,
-};
+#[cfg(test)]
+use provider_accounting::PROVIDER_RUN_NOTICE_PREFIX;
+use provider_accounting::{MAX_COMMITTED_PROVIDER_RUN_NOTICES, PROVIDER_RUN_NOTICE_LABEL};
 mod provider_attempt_journal;
 mod provider_attempt_pump;
 mod provider_charge_evidence;
@@ -319,7 +314,6 @@ mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
 use workflow_spawner::MAX_DELEGATION_DEPTH;
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
-use deferred_tools::AutoApprovedCall;
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
 #[cfg(test)]
 use deferred_tools::declared_write_paths;
@@ -330,22 +324,23 @@ use hooks::{HookDecision, HookEvent, Hooks};
 pub(crate) use inbound_control::TurnSubmission;
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
-use iteron_obs::{
-    CostState, Ledger, PricingPort, ProjectionAdmissionError, admit_verified_projection,
-};
-use iteron_protocol::capability_set::CapabilitySet;
+use iteron_obs::{CostState, Ledger, PricingPort};
 #[cfg(test)]
-use iteron_protocol::{AgentLoopState, StopReason};
+use iteron_obs::{ProjectionAdmissionError, admit_verified_projection};
+#[cfg(test)]
+use iteron_protocol::StopReason;
+use iteron_protocol::capability_set::CapabilitySet;
 #[cfg(any(test, feature = "legacy-plantcore"))]
 use iteron_protocol::{Block, Role};
 use iteron_protocol::{
-    Budget, Capability, CostAttribution, CostProjectionIdentity, DurableEnvironmentContext,
-    DurableInstructionContext, Effort, Event, EventKind, LifecyclePayload,
-    MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode, PermissionRules,
-    Phase, PricingRoute, Purity, RuntimePolicyEventVersion, RuntimePolicySource,
-    RuntimePolicyState, Seq, SignedRateCard, SqEnvelope, SubmissionId, SubmissionRejectionReason,
-    ToolResult, ToolUse, Trust, TurnId, Verdict,
+    Budget, Capability, CostAttribution, DurableEnvironmentContext, Effort, Event, EventKind,
+    LifecyclePayload, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode,
+    PermissionRules, Phase, PricingRoute, RuntimePolicyEventVersion, RuntimePolicySource,
+    RuntimePolicyState, Seq, SqEnvelope, SubmissionId, SubmissionRejectionReason, ToolResult,
+    ToolUse, Trust, TurnId, Verdict,
 };
+#[cfg(test)]
+use iteron_protocol::{DurableInstructionContext, Purity, SignedRateCard};
 #[cfg(test)]
 use iteron_provider::ProviderNotice;
 use iteron_provider::{
@@ -366,9 +361,10 @@ use provider_accounting::{
     bounded_provider_notice, bounded_provider_run_notice, elapsed_us,
     provider_run_notice_key_from_text, unix_now_secs,
 };
+#[cfg(test)]
+use route_validation::validate_pricing_route_digest;
 use route_validation::{
-    replay_logical_rollout, replay_scoped_rollout, validate_pricing_route_digest,
-    validate_route_digest, validate_route_identifier,
+    replay_logical_rollout, replay_scoped_rollout, validate_route_digest, validate_route_identifier,
 };
 use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
@@ -377,8 +373,6 @@ use std::time::{Duration, Instant};
 use transcript::project_messages_from_events;
 use transcript::{merge_adjacent_user_message, reconcile_transcript};
 pub(crate) use workflow_spawner::attach_workflow_telemetry;
-#[cfg(test)]
-pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
 pub(crate) type RuntimeBudgetHealth = operator_status::RuntimeBudgetHealth;

@@ -1,7 +1,7 @@
 //! A tool observation, never an operator submission or effect/admission proof.
 use crate::{ImageContent, ImageMediaType, RunId, Seq, TenantId, Trust};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest, Sha256};
 
 pub const MAX_TOOL_IMAGE_ENCODED_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_TOOL_IMAGES_PER_MESSAGE: usize = 4;
