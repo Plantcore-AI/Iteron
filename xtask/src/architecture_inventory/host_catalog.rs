@@ -127,6 +127,30 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
     },
     Surface {
+        path: "xtask/src/tunables_params/fixed_client.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "classify exact client fixed declarations by actual source owner without changing runtime controls",
+        ],
+        next_seams: &["same-candidate compiler and maintained generation evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params/fixed_core.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "classify exact core fixed declarations by actual source owner without changing runtime controls",
+        ],
+        next_seams: &["same-candidate compiler and maintained generation evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params/fixed_runtime.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "classify exact runtime fixed declarations by actual source owner without changing runtime controls",
+        ],
+        next_seams: &["same-candidate compiler and maintained generation evidence remain required"],
+    },
+    Surface {
         path: "xtask/src/tunables_params.rs",
         boundary: "build-release",
         responsibilities: &[

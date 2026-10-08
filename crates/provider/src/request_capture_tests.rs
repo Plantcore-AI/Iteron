@@ -99,7 +99,7 @@ fn provider(
     Box::new(HealthReportingProvider::new(
         inner,
         "fixture",
-        ProviderHealthStore::default(),
+        ProviderHealthStore::new(1),
     ))
 }
 

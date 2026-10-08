@@ -8,7 +8,7 @@ use super::{
     MAX_CATALOG_MODELS, MAX_CATALOG_PAGES, MAX_DISPLAY_NAME_BYTES, MAX_FIREWORKS_CATALOG_ACCOUNTS,
     MAX_FIREWORKS_CATALOG_PAGES, MAX_FIREWORKS_DEPLOYED_MODELS, MAX_MODEL_ID_BYTES, MAX_PAGE_BYTES,
     MAX_PAGE_TOKEN_BYTES, MAX_TOTAL_BYTES, ModelDescriptor, PER_REQUEST_TIMEOUT, ProviderInstance,
-    RawModel, Selectability, TOTAL_DISCOVERY_TIMEOUT, compatibility, model_family,
+    RawModel, Selectability, TOTAL_DISCOVERY_TIMEOUT, model_family,
 };
 use crate::{ProviderError, api_error_from_response};
 use futures_util::StreamExt;

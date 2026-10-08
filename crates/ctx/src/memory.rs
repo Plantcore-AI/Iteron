@@ -23,7 +23,7 @@ pub use selection::{
 use selection::{bm25, memory_retrieval_scores, token_jaccard_ppm, tokenize};
 
 #[cfg(test)]
-use file_store::{parse_index_line, trust_for};
+use file_store::trust_for;
 #[cfg(test)]
 use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome};
 use std::collections::{BTreeMap, HashMap, HashSet};

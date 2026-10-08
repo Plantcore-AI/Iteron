@@ -209,7 +209,7 @@ pub(super) fn prepare_request(
     let mut bytes =
         serde_json::to_vec_pretty(&request).map_err(|_| "request encoding unavailable")?;
     bytes.push(b'\n');
-    if bytes.len() > super::MAX_REQUEST_BYTES {
+    if bytes.len() > super::max_request_bytes() {
         return Err("request exceeds bounded storage");
     }
     Ok((request, bytes))

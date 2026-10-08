@@ -112,7 +112,8 @@ impl ClientBootstrapFactory {
                 .map_or_else(Default::default, |runs| {
                     crate::workflow::restored_inventory(
                         &runs.join("subagents").join("workflows"),
-                        16,
+                        iteron_tunables::param_integer("cli.tui.workflow_region.restore_limit", 16)
+                            .min(16),
                     )
                 });
             if owner.reader.snapshot().is_none_or(|current| {

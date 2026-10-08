@@ -9,6 +9,14 @@ use model::{ExperimentRequest, prepare_request, project_request};
 use std::path::PathBuf;
 const MAX_SCAN: usize = 4096;
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
+fn max_request_bytes() -> usize {
+    // Preserve the existing lowering-only request-read control at its original address.
+    iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.max_request_bytes",
+        MAX_REQUEST_BYTES,
+    )
+    .min(MAX_REQUEST_BYTES)
+}
 pub(crate) struct NativeExperimentLab {
     workspace: PathBuf,
     action: PreparedAction,
@@ -119,7 +127,7 @@ impl NativeExperimentLab {
                         Publication::Created => RequestStatusV1::Created,
                         Publication::Existing => {
                             let actual = directory
-                                .read(&leaf, MAX_REQUEST_BYTES)
+                                .read(&leaf, max_request_bytes())
                                 .map_err(|_| "existing request cannot be safely verified")?;
                             if actual != bytes {
                                 return Err("request identity collision; existing bytes retained");
@@ -211,7 +219,7 @@ fn list(root: &NativeDirectory) -> Result<LabFactsV1, &'static str> {
                 incomplete = true;
                 break;
             }
-            let bytes = match directory.read(&name, MAX_REQUEST_BYTES.min(read_remaining)) {
+            let bytes = match directory.read(&name, max_request_bytes().min(read_remaining)) {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     incomplete = true;

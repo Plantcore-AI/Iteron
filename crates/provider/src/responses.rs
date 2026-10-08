@@ -11,12 +11,10 @@ use usage::parse_usage;
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
-    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult, UsageReport,
+    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult,
 };
 use futures_util::StreamExt;
-use iteron_protocol::{
-    Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
-};
+use iteron_protocol::{Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1759,6 +1757,8 @@ fn remaining_timeout(
 
 #[cfg(test)]
 mod tests {
+    use crate::UsageReport;
+    use iteron_protocol::Usage;
     #[test]
     fn actual_tool_pixels_follow_function_output_without_new_operator_semantics() {
         let message = crate::tool_image::message_fixture();

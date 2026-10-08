@@ -1,9 +1,9 @@
 //! Operator pricing tooling without a session or paid attempt.
 
 use super::options::{Cli, PricingAction};
+use super::provider_bootstrap::BUILTIN_DEFAULT_PROVIDER;
 use crate::config::FileConfig;
 use crate::{config, output, pricing, providers};
-const BUILTIN_DEFAULT_PROVIDER: &str = "openai";
 
 /// `iteron pricing <print-digests|sign>` — the shipped path to a priced run (I-40).
 ///

@@ -1,6 +1,6 @@
 use super::{
-    ContextMaterialRootV1, ContextMaterialUnavailableV1, ContextMaterialVersionV1, MaterialRender,
-    MaterialSource, digest,
+    CapturedContextMaterial, ContextMaterialRootV1, ContextMaterialUnavailableV1,
+    ContextMaterialVersionV1, MaterialRender, MaterialSource, digest,
 };
 use crate::{
     ContextDecision, ContextPort, ContextPortInput, ContextSlotObservation, ContextSourceClass,

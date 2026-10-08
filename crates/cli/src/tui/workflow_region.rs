@@ -202,7 +202,14 @@ impl WorkflowMonitor {
     #[cfg(test)]
     pub(crate) fn rehydrate(&mut self, workflows_dir: Option<&std::path::Path>) -> usize {
         self.observe_restored(workflows_dir.map_or_else(Vec::new, |dir| {
-            workflow_rehydrate::restore(dir, RESTORE_LIMIT)
+            workflow_rehydrate::restore(
+                dir,
+                iteron_tunables::param_integer(
+                    "cli.tui.workflow_region.restore_limit",
+                    RESTORE_LIMIT,
+                )
+                .min(RESTORE_LIMIT),
+            )
         }))
     }
 
@@ -212,7 +219,10 @@ impl WorkflowMonitor {
         }
         self.rehydrated = true;
         let mut added = 0;
-        for restored in rows.into_iter().take(RESTORE_LIMIT) {
+        for restored in rows.into_iter().take(
+            iteron_tunables::param_integer("cli.tui.workflow_region.restore_limit", RESTORE_LIMIT)
+                .min(RESTORE_LIMIT),
+        ) {
             if self.position(&restored.run_id).is_some() {
                 continue;
             }

@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use syn::spanned::Spanned as _;
 use syn::visit::{self, Visit};
 
+mod fixed_client;
+mod fixed_core;
+mod fixed_runtime;
 mod source_wiring;
 mod stable_source;
 mod use_evidence;
@@ -820,6 +823,9 @@ fn row_for(
     declaration_line: usize,
 ) -> ParamRow {
     let actual_source = relative;
+    let fixed_reason = fixed_client::reason(actual_source, name, owner_symbol)
+        .or_else(|| fixed_core::reason(actual_source, name, owner_symbol))
+        .or_else(|| fixed_runtime::reason(actual_source, name, owner_symbol));
     let relative = stable_source::original_source(relative, name).unwrap_or(relative);
     let ty = param_type(ty_text, value);
     let cryptographic_shape = (krate == "record"
@@ -1101,7 +1107,9 @@ fn row_for(
         }
         _ => None,
     };
-    let class = if let Some(class) = deliberate_runtime_control {
+    let class = if fixed_reason.is_some() {
+        ParamClass::Structural
+    } else if let Some(class) = deliberate_runtime_control {
         class
     } else if native_completion_ceiling
         || cryptographic_shape
@@ -1141,7 +1149,9 @@ fn row_for(
     let (disposition, invariant_reason) = if matches!(class, ParamClass::Structural) {
         (
             Disposition::InvariantReadOnly,
-            Some(if native_completion_ceiling {
+            Some(if let Some(reason) = fixed_reason {
+                reason
+            } else if native_completion_ceiling {
                 InvariantReason::Security
             } else {
                 invariant_reason_for(

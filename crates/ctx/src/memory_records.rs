@@ -81,10 +81,20 @@ impl MemoryRecordDraft {
             scope: MemoryRecordScope::Workspace {
                 workspace_sha256: workspace_digest(workspace)?,
             },
-            confidence_ppm: DEFAULT_CONFIDENCE_PPM,
+            confidence_ppm: iteron_tunables::param_integer(
+                "ctx.memory_records.default_confidence_ppm",
+                DEFAULT_CONFIDENCE_PPM,
+            )
+            .min(1_000_000),
             invalidation: MemoryInvalidation::ExpiresAt {
                 unix_seconds: now
-                    .checked_add(DEFAULT_LIFETIME_SECONDS)
+                    .checked_add(
+                        iteron_tunables::param_u64(
+                            "ctx.memory_records.default_lifetime_seconds",
+                            DEFAULT_LIFETIME_SECONDS,
+                        )
+                        .clamp(1, DEFAULT_LIFETIME_SECONDS),
+                    )
                     .ok_or_else(invalid)?,
             },
             path_evidence: Vec::new(),
