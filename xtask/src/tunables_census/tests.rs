@@ -937,3 +937,176 @@ fn duplicate_external_addresses_require_owner_qualification() {
     rows[1].external_address.as_mut().unwrap().owner = "serde::OtherConfig".to_owned();
     validate(&rows).unwrap();
 }
+
+#[test]
+fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let cases = [
+        (
+            "crates/cli/src/app_server/session_factory.rs",
+            "cli.app.server.session.factory.sessionfactory.verified.inline.replayreadlimits.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.3.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.4.1",
+            InvariantKind::Durability,
+        ),
+        (
+            "crates/cli/src/runtime/budget_control.rs",
+            "cli.runtime.budget.control.agent.admit.operator.tool.call.inline.super.permission.policy.operationpolicy.field.governing.trust.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/invocation_admission.rs",
+            "cli.runtime.invocation.admission.invocationadmissionsession.prepare.inline.invocationadmission.field.phase.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/runtime/memory_activation.rs",
+            "cli.runtime.memory.activation.memoryactivation.resolve.inline.memoryreferenceadmissionv1.field.version.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/cli/src/runtime/permission_policy.rs",
+            "cli.runtime.permission.policy.evaluate.operation.inline.operationadmission.field.verdict.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/persistent_agents/input_admission.rs",
+            "cli.runtime.persistent.agents.input.admission.liveagentmailbox.source.admission.inline.agentinputadmissionv1.field.version.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/cli/src/runtime/pricing.rs",
+            "cli.runtime.pricing.sharedusdbudget.from.microusd.inline.self.field.depth.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/request_admission.rs",
+            "cli.runtime.request.admission.requestadmission.a.from.bound.inline.self.field.phase.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/runtime/workspace_rewind.rs",
+            "cli.runtime.workspace.rewind.agent.admit.workspace.rewind.inline.operationpolicy.field.governing.trust.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/tui/persistent_agents.rs",
+            "cli.tui.persistent.agents.parse.inline.agentbudgetv1.field.turns.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ctx.runtime.policy.contextbudgetpolicy.for.usable.window.inline.self.field.task.context.elastic.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ctx.runtime.policy.contextbudgetpolicy.for.usable.window.inline.self.field.transcript.elastic.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/obs/src/pricing/physical_replay.rs",
+            "obs.pricing.physical.replay.physicalpricingreplay.observe.inline.admission.field.closed.1",
+            InvariantKind::Replay,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.hydrated.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.physical.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/session/bounded_reindex.rs",
+            "record.session.bounded.reindex.session.bounded.reindex.inline.replayreadlimits.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+    ];
+    assert_eq!(cases.len(), 19);
+    for (path, expected_id, kind) in cases {
+        let source = std::fs::read_to_string(root.join(path)).unwrap();
+        let krate = path.split('/').nth(1).unwrap();
+        let rows = discover_source(krate, path, &source).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == expected_id)
+            .unwrap_or_else(|| panic!("actual inline declaration absent: {expected_id}"));
+        assert_eq!(
+            row.disposition,
+            CensusDisposition::InvariantReadOnly,
+            "{expected_id}"
+        );
+        assert_eq!(row.invariant_kind, Some(kind), "{expected_id}");
+        assert!(source_form_invariant_matches(row), "{expected_id}");
+        assert!(row.external_address.is_none());
+        assert!(!row.applied);
+        validate(&[row.clone()]).unwrap();
+        let mut wrong_value = row.clone();
+        wrong_value.value = "not_the_admitted_literal".into();
+        assert!(
+            !source_form_invariant_matches(&wrong_value),
+            "{expected_id}"
+        );
+        assert!(validate(&[wrong_value]).is_err(), "{expected_id}");
+        let mut wrong_identity = row.clone();
+        wrong_identity.id.push_str(".foreign");
+        assert!(
+            !source_form_invariant_matches(&wrong_identity),
+            "{expected_id}"
+        );
+        let mut wrong_path = row.clone();
+        wrong_path.owner.path.push_str(".foreign");
+        assert!(!source_form_invariant_matches(&wrong_path), "{expected_id}");
+    }
+}
+
+#[test]
+fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
+    for (path, source) in [
+        (
+            "crates/cli/src/runtime/permission_policy.rs",
+            "fn evaluate_operation() { let _ = OtherAdmission { verdict: Verdict::Auto }; }",
+        ),
+        (
+            "crates/cli/src/runtime/memory_activation.rs",
+            "impl MemoryActivation { fn resolve() { let _ = MemoryReferenceAdmissionV1 { version: 2 }; } }",
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "impl FrontendQueuePolicy { fn owner() { let _ = Self::new(1, 2, 3, CosmeticOverflow::Drop, AuthoritativeOverflow::Reject); } }",
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "impl ContextBudgetPolicy { fn for_usable_window() -> Self { Self { task_context_elastic: true, transcript_elastic: true } } }",
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "impl ReplayReadLimits { fn budget() { let _ = ReplayReadBudget { events: 1, physical: 1, hydrated: 1 }; } }",
+        ),
+    ] {
+        let krate = path.split('/').nth(1).unwrap();
+        let rows = discover_source(krate, path, source).unwrap();
+        assert!(!rows.is_empty(), "{path}");
+        assert!(
+            rows.iter()
+                .all(|row| row.disposition == CensusDisposition::BindingRequired),
+            "{path}"
+        );
+    }
+}
