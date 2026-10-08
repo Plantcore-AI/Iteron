@@ -41,7 +41,7 @@ pub(super) fn make_main(
     };
     let mut agent = Agent::new(
         provider.clone(),
-        Registry::read_only(&workspace.0.join("repo")).unwrap(),
+        Registry::read_only(workspace.0.join("repo")).unwrap(),
         rollout,
         "test-model".into(),
         "Main source fixture".into(),
@@ -354,7 +354,7 @@ async fn existing_writer_constructor_cannot_skip_the_cohort_guard_by_omitting_se
         Rollout::open_existing(&workspace.0.join("runs"), &run, TenantId("tenant".into())).unwrap();
     let mut direct = Agent::new(
         provider.clone(),
-        Registry::read_only(&workspace.0.join("repo")).unwrap(),
+        Registry::read_only(workspace.0.join("repo")).unwrap(),
         rollout,
         "test-model".into(),
         "constructor fixture".into(),

@@ -1125,6 +1125,10 @@ pub(crate) fn attach_workflow_telemetry(
     }
 }
 
+/// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
+/// beside the child registry's absence of `dispatch_agent`.
+pub(super) const MAX_DELEGATION_DEPTH: u8 = 1;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -2485,7 +2489,3 @@ return results;
         );
     }
 }
-
-/// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
-/// beside the child registry's absence of `dispatch_agent`.
-pub(super) const MAX_DELEGATION_DEPTH: u8 = 1;

@@ -70,12 +70,13 @@ async fn current_memory_after_next_epoch(delete: bool) {
             && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
     })
     .await;
-    let systems = provider.systems.lock().unwrap();
-    assert!(
-        !systems[1].contains(body),
-        "a new epoch must not reuse the stale memory prefix"
-    );
-    drop(systems);
+    {
+        let systems = provider.systems.lock().unwrap();
+        assert!(
+            !systems[1].contains(body),
+            "a new epoch must not reuse the stale memory prefix"
+        );
+    }
     let second_view = host.inspect(AgentActor::Operator, child).unwrap();
     assert_eq!(first_view.incarnation, second_view.incarnation);
     assert_eq!(first_view.agent_id, second_view.agent_id);

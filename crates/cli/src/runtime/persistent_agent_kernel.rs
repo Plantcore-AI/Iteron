@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 type Resident = Arc<tokio::sync::Mutex<Agent>>;
+#[cfg(test)]
+type ResidentFixture = Arc<dyn Fn(&mut Agent) + Send + Sync>;
 mod budget;
 mod profiles;
 mod recovery;
@@ -45,7 +47,7 @@ pub(super) struct KernelPersistentRuntime {
     // Own every inactive Main writer lock while this single host drives the cohort.
     main_rollout_owners: Mutex<Vec<iteron_record::Rollout>>,
     #[cfg(test)]
-    fixture: Option<Arc<dyn Fn(&mut Agent) + Send + Sync>>,
+    fixture: Option<ResidentFixture>,
 }
 
 impl KernelPersistentRuntime {
