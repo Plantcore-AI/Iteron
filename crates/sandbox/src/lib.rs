@@ -772,7 +772,7 @@ async fn collect_owned_child_output<C: collected_child::CollectedChild>(
         }
     };
 
-    let mut pipes_known = false;
+    let pipes_known;
     let (timed_out, cancelled, status) = match completed {
         CollectionStop::Completed(status) => match status {
             Ok(status) => {

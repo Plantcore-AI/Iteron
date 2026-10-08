@@ -61,6 +61,20 @@ struct ProcessGroupToken {
     armed: Mutex<bool>,
 }
 
+#[cfg(unix)]
+impl ProcessGroupToken {
+    // Only called while this token's armed mutex is held and the child identity is retained.
+    fn signal(&self, signal: libc::c_int) {
+        if let Some(pid) = self
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 1)
+        {
+            unsafe { libc::kill(-pid, signal) };
+        }
+    }
+}
+
 /// An opaque cleanup capability minted for one confined process group.
 ///
 /// The raw pid is never exposed, so callers cannot turn model-controlled numbers into signals for
@@ -86,7 +100,7 @@ impl ConfinedProcessControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *armed {
-            crate::signal_process_group(self.0.pid, signal);
+            self.0.signal(signal);
         }
     }
 
@@ -110,7 +124,7 @@ impl ConfinedProcessControl {
         // `kill(2)` would leave a PID-reuse window between those two operations.
         self.spend_with(|| {
             #[cfg(unix)]
-            crate::signal_process_group(self.0.pid, libc::SIGKILL);
+            self.0.signal(libc::SIGKILL);
         });
     }
 

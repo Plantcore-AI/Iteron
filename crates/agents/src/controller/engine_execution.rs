@@ -171,8 +171,7 @@ impl<J: super::AgentControllerJournal> super::AgentController<J> {
             .snapshot
             .workflow_claims
             .values()
-            .filter(|receipt| receipt.claim.assigned_agent == id)
-            .filter_map(|receipt| receipt.claim.execution.as_ref());
+            .filter_map(|receipt| receipt.execution_for(id, epoch));
         let binding = bindings.next().cloned().or_else(|| {
             self.snapshot
                 .agents

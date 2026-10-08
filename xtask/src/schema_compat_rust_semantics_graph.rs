@@ -12,13 +12,16 @@ const MAX_PROTOCOL_BYTES: u64 = 16 * 1024 * 1024;
 const PROTOCOL_ROOT: &str = "crates/protocol/src/lib.rs";
 
 #[derive(Clone, Copy)]
-pub(super) enum SourceView<'a> {
+pub(in crate::schema_compat::rust_shape) enum SourceView<'a> {
     Base { root: &'a Path, revision: &'a str },
     Candidate { root: &'a Path },
 }
 
 impl SourceView<'_> {
-    pub(super) fn read_optional(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+    pub(in crate::schema_compat::rust_shape) fn read_optional(
+        &self,
+        relative: &str,
+    ) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Base { root, revision } => {
                 read_revision_file_bounded(root, revision, relative, MAX_FILE_BYTES)
@@ -32,7 +35,7 @@ impl SourceView<'_> {
         }
     }
 
-    pub(super) fn read_text(&self, relative: &str) -> Result<String> {
+    pub(in crate::schema_compat::rust_shape) fn read_text(&self, relative: &str) -> Result<String> {
         let bytes = self
             .read_optional(relative)?
             .with_context(|| format!("compatibility source '{relative}' is missing"))?;
@@ -40,7 +43,10 @@ impl SourceView<'_> {
             .with_context(|| format!("compatibility source '{relative}' is not UTF-8"))
     }
 
-    pub(super) fn parse_file(&self, relative: &str) -> Result<syn::File> {
+    pub(in crate::schema_compat::rust_shape) fn parse_file(
+        &self,
+        relative: &str,
+    ) -> Result<syn::File> {
         let source = self.read_text(relative)?;
         syn::parse_file(&source)
             .with_context(|| format!("compatibility source '{relative}' does not parse as Rust"))

@@ -24,6 +24,9 @@ pub fn language_server_dispatch_key(language: &str, command: &str) -> String {
     use sha2::{Digest, Sha256};
     format!(
         "{language}/{}",
-        hex::encode(Sha256::digest(command.as_bytes()))
+        Sha256::digest(command.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     )
 }

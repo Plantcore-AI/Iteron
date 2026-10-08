@@ -103,6 +103,19 @@ pub(super) struct WorkflowReceipt {
     message: AgentMessageIdV1,
     completion: Option<AgentWorkflowCompletion>,
 }
+impl WorkflowReceipt {
+    pub(super) fn execution_for(
+        &self,
+        agent: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Option<&AgentEngineExecution> {
+        if self.claim.assigned_agent == agent && self.epoch == epoch {
+            self.claim.execution.as_ref()
+        } else {
+            None
+        }
+    }
+}
 impl<J: AgentControllerJournal> AgentController<J> {
     /// Atomically reserve a genuine child, accept its source task and bind the engine attribution
     /// to its first runtime epoch. No ordinary idle worker can race an intermediate queued spawn.
