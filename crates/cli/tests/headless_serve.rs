@@ -2,6 +2,8 @@ use iteron_protocol::wire::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 #[cfg(unix)]
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(not(feature = "legacy-plantcore"))]
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -903,6 +905,7 @@ fn wait_for_exit(mut process: CoreProcess) -> (std::process::ExitStatus, Vec<u8>
     }
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_startup(scratch: &Scratch, ca: &Path, plantcore: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
@@ -933,6 +936,7 @@ fn recording_startup(scratch: &Scratch, ca: &Path, plantcore: bool) -> std::proc
 }
 
 #[test]
+#[cfg(feature = "legacy-plantcore")]
 fn recording_ca_argument_is_hidden_and_requires_plantcore_serve() {
     let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
         .args(["serve", "--help"])
@@ -998,6 +1002,7 @@ fn recording_ca_argument_is_hidden_and_requires_plantcore_serve() {
 }
 
 #[test]
+#[cfg(feature = "legacy-plantcore")]
 fn recording_route_and_pem_fail_before_the_listener_binds() {
     let scratch = Scratch::new("https://127.0.0.1:443/v1");
     let ca = scratch.root.join("ca.pem");
@@ -1024,6 +1029,113 @@ fn recording_route_and_pem_fail_before_the_listener_binds() {
     );
     assert!(!stderr.contains("private-material"));
     assert!(!stderr.contains("\"event\":\"listening\""));
+}
+
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_recording_refusal(scratch: &Scratch, arguments: &[OsString]) {
+    // Choose an actual available endpoint rather than letting an unrelated occupied port explain
+    // refusal. The parser must reject before a token, provider, record or listener is constructed.
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let before = fs::read(scratch.home().join(".iteron/config.json")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .env_clear()
+        .env("HOME", scratch.home())
+        .env("ITERON_CONFIG_HOME", scratch.home())
+        .env("LANG", "C.UTF-8")
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env(KEY_ENV, KEY)
+        .env("ITERON_PROVIDER_API_KEY", "synthetic-recording-key")
+        .current_dir(scratch.repo())
+        .arg("--repo")
+        .arg(scratch.repo())
+        .arg("--runs-dir")
+        .arg(scratch.runs())
+        .arg("--provider")
+        .arg(PROVIDER_ID)
+        .arg("--model")
+        .arg(MODEL_ID)
+        .args(["serve", "--listen"])
+        .arg(address.to_string())
+        .args(arguments)
+        .output()
+        .expect("run standalone parser refusal");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("unexpected argument"), "{stderr}");
+    assert!(stderr.contains(arguments[0].to_str().unwrap()), "{stderr}");
+    for text in [&stdout, &stderr] {
+        assert!(!text.contains("private-material"));
+        assert!(!text.contains("synthetic-recording-key"));
+        assert!(!text.contains(KEY));
+        assert!(!text.contains("\"event\":\"listening\""));
+        assert!(!text.contains("recording_provider_route_invalid"));
+        assert!(!text.contains("recording_provider_ca_invalid_pem"));
+    }
+    assert_eq!(fs::read_dir(scratch.runs()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(scratch.repo()).unwrap().count(), 0);
+    assert_eq!(
+        fs::read(scratch.home().join(".iteron/config.json")).unwrap(),
+        before
+    );
+    assert!(TcpListener::bind(address).is_ok());
+}
+
+#[test]
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_serve_hides_and_rejects_legacy_recording_controls() {
+    let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args(["serve", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("--listen"));
+    for option in [
+        "--plantcore",
+        "--recording-provider-ca-file",
+        "--recording-inject-harness-error",
+        "--recording-app-server-fault",
+    ] {
+        assert!(!help.contains(option));
+    }
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let ca = scratch.root.join("ca.pem");
+    fs::write(&ca, "private-material-not-a-certificate").unwrap();
+    for arguments in [
+        vec![OsString::from("--plantcore")],
+        vec!["--recording-provider-ca-file".into(), ca.into_os_string()],
+        vec!["--recording-inject-harness-error".into()],
+        vec![
+            "--recording-app-server-fault".into(),
+            "frame-chunk-missing".into(),
+        ],
+    ] {
+        standalone_recording_refusal(&scratch, &arguments);
+    }
+}
+
+#[test]
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_recording_bootstrap_refuses_before_route_pem_or_listener_effects() {
+    let scratch = Scratch::new("https://127.0.0.1:443/v1");
+    let ca = scratch.root.join("ca.pem");
+    let material = b"private-material-not-a-certificate";
+    fs::write(&ca, material).unwrap();
+    for api_root in ["https://localhost:443/v1", "https://127.0.0.1:443/v1"] {
+        scratch.configure_recording_provider(api_root);
+        standalone_recording_refusal(
+            &scratch,
+            &[
+                "--plantcore".into(),
+                "--recording-provider-ca-file".into(),
+                ca.as_os_str().to_owned(),
+            ],
+        );
+        assert_eq!(fs::read(&ca).unwrap(), material);
+    }
 }
 
 fn stop(mut process: CoreProcess) -> Vec<u8> {
