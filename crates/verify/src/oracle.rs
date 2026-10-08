@@ -542,6 +542,10 @@ mod tests {
                 iteron_sandbox::SandboxError::Unsupported => {
                     iteron_sandbox::SandboxError::Unsupported
                 }
+                #[cfg(windows)]
+                iteron_sandbox::SandboxError::WindowsLaunch(detail) => {
+                    iteron_sandbox::SandboxError::Spawn(detail.to_string())
+                }
                 iteron_sandbox::SandboxError::Spawn(detail) => {
                     iteron_sandbox::SandboxError::Spawn(detail.clone())
                 }

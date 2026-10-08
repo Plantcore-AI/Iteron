@@ -31,6 +31,8 @@ use std::collections::BTreeMap;
 
 #[cfg(windows)]
 pub mod durable_windows_state;
+#[cfg(windows)]
+pub mod owned_windows_job;
 
 /// Environment variables permitted into a bundle. Deliberately short, and deliberately excluding
 /// anything whose name ends in `KEY`, `TOKEN` or `SECRET`.

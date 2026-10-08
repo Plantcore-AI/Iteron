@@ -445,6 +445,12 @@ fn spawn_error(error: SandboxError) -> ActionError {
         SandboxError::Unsupported | SandboxError::Profile(_) => {
             ActionError::Definite(error.to_string())
         }
+        #[cfg(windows)]
+        SandboxError::WindowsLaunch(ref launch) if launch.not_dispatched() => {
+            ActionError::Definite(error.to_string())
+        }
+        #[cfg(windows)]
+        SandboxError::WindowsLaunch(_) => ActionError::Unknown(error.to_string()),
         SandboxError::Spawn(_) => ActionError::Unknown(format!(
             "persistent process spawn outcome is unknown; Iteron will not retry automatically: {error}"
         )),

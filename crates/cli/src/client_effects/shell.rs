@@ -16,7 +16,33 @@ const POST_KILL_DRAIN: Duration = Duration::from_secs(1);
 /// is outside the 0..=255 wait-status range, so it cannot collide with a real exit status.
 const NO_EXIT_CODE: i32 = -1;
 
-#[derive(Debug, serde::Serialize)]
+#[cfg(not(windows))]
+type ShellChild = tokio::process::Child;
+#[cfg(windows)]
+type ShellChild = iteron_support::owned_windows_job::OwnedWindowsChild;
+
+#[cfg(windows)]
+pub(crate) enum WindowsShellCustody {
+    Launch(Box<iteron_support::owned_windows_job::WindowsJobLaunchError>),
+    Job(std::sync::Arc<iteron_support::owned_windows_job::OwnedWindowsJob>),
+}
+#[cfg(windows)]
+impl std::fmt::Debug for WindowsShellCustody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Launch(error) => formatter
+                .debug_tuple("WindowsLaunchCustody")
+                .field(error)
+                .finish(),
+            Self::Job(job) => formatter
+                .debug_tuple("WindowsJobCustody")
+                .field(job)
+                .finish(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
 pub(crate) struct ShellCompletion {
     pub(crate) source_run: Option<iteron_protocol::RunId>,
     pub(crate) command: String,
@@ -25,6 +51,24 @@ pub(crate) struct ShellCompletion {
     pub(crate) code: i32,
     pub(crate) outcome: ShellOutcome,
     pub(crate) cleanup: ShellCleanup,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub(crate) windows_custody: Option<WindowsShellCustody>,
+}
+impl std::fmt::Debug for ShellCompletion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut view = formatter.debug_struct("ShellCompletion");
+        view.field("source_run", &self.source_run)
+            .field("command_bytes", &self.command.len())
+            .field("body_bytes", &self.body.len())
+            .field("ok", &self.ok)
+            .field("code", &self.code)
+            .field("outcome", &self.outcome)
+            .field("cleanup", &self.cleanup);
+        #[cfg(windows)]
+        view.field("windows_custody", &self.windows_custody);
+        view.finish()
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +143,8 @@ fn failed(command: &str, body: String) -> ShellCompletion {
         code: -1,
         outcome: ShellOutcome::NotStarted,
         cleanup: ShellCleanup::NotDispatched,
+        #[cfg(windows)]
+        windows_custody: None,
     }
 }
 
@@ -235,6 +281,7 @@ async fn execute(
     command.process_group(0);
     iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, credential_env_names);
 
+    #[cfg(not(windows))]
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -244,7 +291,29 @@ async fn execute(
             );
         }
     };
+    #[cfg(windows)]
+    let mut child = match ShellChild::spawn(command.as_std_mut()).await {
+        Ok(child) => child,
+        Err(error) => {
+            if error.not_dispatched() {
+                return failed(cmd, error.to_string());
+            }
+            return ShellCompletion {
+                source_run: None,
+                command: display(cmd, 32 * 1024),
+                body: display(&error.to_string(), 256 * 1024),
+                ok: false,
+                code: NO_EXIT_CODE,
+                outcome: ShellOutcome::OutcomeUnknown,
+                cleanup: ShellCleanup::Unobserved,
+                windows_custody: Some(WindowsShellCustody::Launch(Box::new(error))),
+            };
+        }
+    };
+    #[cfg(not(windows))]
     let mut group = OwnedProcessGroup::new(child.id());
+    #[cfg(windows)]
+    let mut group = OwnedProcessGroup::new(child.id(), child.job());
     let Some(mut stdout) = child.stdout.take() else {
         group.terminate(&mut child).await;
         return unobserved(cmd, "shell stdout pipe was unavailable".into(), &group);
@@ -262,11 +331,28 @@ async fn execute(
         let running = tokio::time::timeout(deadline, async {
             // Keep the direct child unreaped until both pipes close. A cancelled drain can
             // still signal its exact owned process group without a reusable pgid window.
-            let (out_result, err_result) =
-                tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
-            out_result?;
-            err_result?;
-            group.wait_and_close(&mut child).await
+            #[cfg(not(windows))]
+            {
+                let (out_result, err_result) =
+                    tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
+                out_result?;
+                err_result?;
+                group.wait_and_close(&mut child).await
+            }
+            #[cfg(windows)]
+            {
+                // Actual leader completion closes its owned Job concurrently with pipe drain,
+                // including redirected or pipe-holding descendants. EOF alone cannot do this.
+                let (out_result, err_result, status) = tokio::join!(
+                    drain(&mut stdout, &mut out),
+                    drain(&mut stderr, &mut err),
+                    group.wait_and_close(&mut child),
+                );
+                out_result?;
+                err_result?;
+                group.pipes_closed = true;
+                status
+            }
         });
         tokio::pin!(running);
         tokio::select! {
@@ -279,17 +365,21 @@ async fn execute(
     };
     if completed.is_none() {
         group.terminate(&mut child).await;
-        let _ = tokio::time::timeout(
+        let drained = tokio::time::timeout(
             iteron_tunables::param_duration(
                 "cli.tui.inline_shell.post_kill_drain",
                 POST_KILL_DRAIN,
             )
             .min(POST_KILL_DRAIN),
-            async {
-                let _ = tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
-            },
+            async { tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err)) },
         )
         .await;
+        #[cfg(windows)]
+        {
+            group.pipes_closed = matches!(drained, Ok((Ok(()), Ok(()))));
+        }
+        #[cfg(not(windows))]
+        let _ = drained;
         return unobserved(
             cmd,
             "[cancelled by operator; dispatched shell effects may have occurred]".into(),
@@ -313,18 +403,21 @@ async fn execute(
                 group.pid = None;
                 group.observe_closed_group().await;
             }
-            let _ = tokio::time::timeout(
+            let drained = tokio::time::timeout(
                 iteron_tunables::param_duration(
                     "cli.tui.inline_shell.post_kill_drain",
                     POST_KILL_DRAIN,
                 )
                 .min(POST_KILL_DRAIN),
-                async {
-                    let _ =
-                        tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err),);
-                },
+                async { tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err)) },
             )
             .await;
+            #[cfg(windows)]
+            {
+                group.pipes_closed = matches!(drained, Ok((Ok(()), Ok(()))));
+            }
+            #[cfg(not(windows))]
+            let _ = drained;
             (status, true)
         }
         None => unreachable!("cancelled returned above"),
@@ -371,6 +464,9 @@ async fn execute(
         } else {
             ShellCleanup::Unobserved
         },
+        #[cfg(windows)]
+        windows_custody: (!group.cleanup_confirmed())
+            .then(|| WindowsShellCustody::Job(group.job.clone())),
     }
 }
 
@@ -398,6 +494,9 @@ fn unobserved(command: &str, body: String, group: &OwnedProcessGroup) -> ShellCo
         } else {
             ShellCleanup::Unobserved
         },
+        #[cfg(windows)]
+        windows_custody: (!group.cleanup_confirmed())
+            .then(|| WindowsShellCustody::Job(group.job.clone())),
     }
 }
 #[cfg(test)]
@@ -418,20 +517,42 @@ struct OwnedProcessGroup {
     #[cfg(unix)]
     group: Option<i32>,
     confirmed: bool,
+    #[cfg(windows)]
+    job: std::sync::Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
+    #[cfg(windows)]
+    pipes_closed: bool,
 }
 impl OwnedProcessGroup {
-    fn new(pid: Option<u32>) -> Self {
+    fn new(
+        pid: Option<u32>,
+        #[cfg(windows)] job: std::sync::Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
+    ) -> Self {
         Self {
             pid,
             #[cfg(unix)]
             group: pid.and_then(|pid| i32::try_from(pid).ok()),
             confirmed: false,
+            #[cfg(windows)]
+            job,
+            #[cfg(windows)]
+            pipes_closed: false,
         }
     }
     fn cleanup_confirmed(&self) -> bool {
-        self.confirmed
+        #[cfg(windows)]
+        {
+            self.confirmed && self.pipes_closed
+        }
+        #[cfg(not(windows))]
+        {
+            self.confirmed
+        }
     }
     fn signal_retained_group(&self) {
+        #[cfg(windows)]
+        {
+            let _ = self.job.terminate();
+        }
         #[cfg(unix)]
         if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
             unsafe {
@@ -441,7 +562,7 @@ impl OwnedProcessGroup {
     }
     async fn wait_and_close(
         &mut self,
-        child: &mut tokio::process::Child,
+        child: &mut ShellChild,
     ) -> std::io::Result<std::process::ExitStatus> {
         #[cfg(unix)]
         {
@@ -488,10 +609,14 @@ impl OwnedProcessGroup {
             }
         };
         self.pid = None;
+        #[cfg(windows)]
+        {
+            let _ = self.job.terminate();
+        }
         self.observe_closed_group().await;
         Ok(status)
     }
-    async fn terminate(&mut self, child: &mut tokio::process::Child) {
+    async fn terminate(&mut self, child: &mut ShellChild) {
         self.signal_retained_group();
         let _ = child.start_kill();
         match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
@@ -522,8 +647,11 @@ impl OwnedProcessGroup {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
-        // Windows has no owned JobObject here. Direct child exit never proves all descendants
-        // stopped; the actual host conservatively retains unresolved cleanup/adoption custody.
+        #[cfg(windows)]
+        {
+            self.confirmed = self.job.confirm_empty(Duration::from_secs(1)).await;
+        }
+        // No unsupported platform infers descendant cleanup from its leader alone.
     }
 }
 impl Drop for OwnedProcessGroup {
@@ -577,3 +705,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "shell/windows_tests.rs"]
+mod windows_tests;

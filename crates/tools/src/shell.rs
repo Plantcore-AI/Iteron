@@ -402,6 +402,15 @@ fn finish_sandbox_run_with_budget(
         Err(error @ (SandboxError::Unsupported | SandboxError::Profile(_))) => {
             return ToolExecution::Definite(tool_result(tool_use_id, error.to_string(), true));
         }
+        #[cfg(windows)]
+        Err(SandboxError::WindowsLaunch(launch)) => {
+            let result = tool_result(tool_use_id, launch.to_string(), true);
+            return if launch.not_dispatched() {
+                ToolExecution::Definite(result)
+            } else {
+                ToolExecution::Unknown(result)
+            };
+        }
         Err(SandboxError::Spawn(_)) => {
             // The backend may have crossed process spawn before a pipe/wait failure. Without a
             // durable process handle and workspace reconciliation, replay is unsafe.

@@ -385,6 +385,14 @@ async fn spawn_initialized(
         Err(SandboxError::Unsupported | SandboxError::Profile(_)) => {
             return Err(RunFailure::new(LspToolError::SandboxUnavailable, false));
         }
+        #[cfg(windows)]
+        Err(SandboxError::WindowsLaunch(launch)) => {
+            return if launch.not_dispatched() {
+                Err(RunFailure::new(LspToolError::SandboxUnavailable, false))
+            } else {
+                Err(RunFailure::new(LspToolError::SpawnOutcomeUnknown, true))
+            };
+        }
         Err(SandboxError::Spawn(_)) => {
             return Err(RunFailure::new(LspToolError::SpawnOutcomeUnknown, true));
         }

@@ -1,18 +1,22 @@
 //! Bounded quiescence observation for the exact private group minted before native spawn.
 
+use crate::collected_child::CollectedChild;
 use std::process::ExitStatus;
-use tokio::process::Child;
 
 /// Keep the leader unreaped through the last group signal. Once the actual wait consumes its
 /// identity, the old numeric group may only be observed; neither Drop nor retry may signal it.
 pub(crate) struct OwnedProcessGroup {
     retained_leader: Option<u32>,
+    #[cfg(windows)]
+    job: Option<std::sync::Arc<iteron_support::owned_windows_job::OwnedWindowsJob>>,
 }
 
 impl OwnedProcessGroup {
-    pub(crate) fn capture(child: &Child) -> Self {
+    pub(crate) fn capture<C: CollectedChild>(child: &C) -> Self {
         Self {
-            retained_leader: child.id(),
+            retained_leader: child.process_id(),
+            #[cfg(windows)]
+            job: child.retained_job(),
         }
     }
 
@@ -63,9 +67,9 @@ impl OwnedProcessGroup {
         }
     }
 
-    pub(crate) async fn wait_and_close(
+    pub(crate) async fn wait_and_close<C: CollectedChild>(
         &mut self,
-        child: &mut Child,
+        child: &mut C,
     ) -> std::io::Result<ExitStatus> {
         #[cfg(unix)]
         {
@@ -74,24 +78,56 @@ impl OwnedProcessGroup {
             // an exact owned group identity. End them before consuming the leader's receipt.
             self.signal_retained(libc::SIGKILL);
         }
-        let result = child.wait().await;
+        let result = child.wait_status().await;
+        #[cfg(windows)]
+        if result.is_ok() {
+            if let Some(job) = self.job.as_ref() {
+                let _ = job.terminate();
+            }
+        }
         self.retained_leader = None;
         result
     }
 
-    pub(crate) async fn kill_and_reap(&mut self, child: &mut Child) -> std::io::Result<ExitStatus> {
+    pub(crate) async fn kill_and_reap<C: CollectedChild>(
+        &mut self,
+        child: &mut C,
+    ) -> std::io::Result<ExitStatus> {
         #[cfg(unix)]
         self.signal_retained(libc::SIGKILL);
-        let _ = child.start_kill();
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref() {
+            let _ = job.terminate();
+        }
+        let _ = child.request_kill();
         // start_kill may internally observe a completed direct child. No later group signal is
         // needed or authorized after the last signal above, including cancellation during wait.
         self.retained_leader = None;
-        child.wait().await
+        child.wait_status().await
+    }
+
+    pub(crate) async fn confirm_shutdown(&self, group: Option<u32>) -> bool {
+        #[cfg(windows)]
+        {
+            let _ = group;
+            match self.job.as_ref() {
+                Some(job) => job.confirm_empty(std::time::Duration::from_secs(1)).await,
+                None => false,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            confirm_owned_group_shutdown(group).await
+        }
     }
 }
 
 impl Drop for OwnedProcessGroup {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref() {
+            let _ = job.terminate();
+        }
         #[cfg(unix)]
         self.signal_retained(libc::SIGKILL);
     }
@@ -100,6 +136,7 @@ impl Drop for OwnedProcessGroup {
 /// This proves only the owned Unix process group, not arbitrary processes that escaped its scope.
 /// It is observation-only after reap: a reused numeric group must never receive a cleanup signal.
 /// Platforms without such an observation stay unavailable; no leader exit is promoted to proof.
+#[cfg(not(windows))]
 pub(crate) async fn confirm_owned_group_shutdown(group: Option<u32>) -> bool {
     #[cfg(unix)]
     {

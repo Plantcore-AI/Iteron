@@ -34,6 +34,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{Notify, mpsc, watch};
 
 pub mod bubblewrap;
+mod collected_child;
 mod owned_process_cleanup;
 mod persistent;
 /// Pseudo-terminal transport for confined children. Unix-only: the whole module is `libc` ioctls,
@@ -69,6 +70,9 @@ pub enum SandboxError {
     Unsupported,
     #[error("sandbox spawn: {0}")]
     Spawn(String),
+    #[cfg(windows)]
+    #[error("sandbox owned Windows launch: {0}")]
+    WindowsLaunch(#[source] Box<iteron_support::owned_windows_job::WindowsJobLaunchError>),
     #[error("profile: {0}")]
     Profile(String),
 }
@@ -641,15 +645,14 @@ async fn drain_bounded<R: AsyncRead + Unpin>(
 pub fn configure_process_group(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
-    // No Windows equivalent is wired yet: process groups there mean job objects, which is #39's
-    // territory and unbuilt. Bind the parameter so a `-D warnings` build on windows-msvc does not
-    // fail on an unused argument.
+    // Windows launch is performed by the sealed suspended/Job constructor below. Setting a
+    // creation flag here would not by itself establish custody or descendant cleanup proof.
     #[cfg(not(unix))]
     let _ = command;
 }
 
-async fn terminate_with_grace(
-    child: &mut tokio::process::Child,
+async fn terminate_with_grace<C: collected_child::CollectedChild>(
+    child: &mut C,
     group: &mut owned_process_cleanup::OwnedProcessGroup,
     observer: Option<&OutputObserver>,
 ) -> Option<std::process::ExitStatus> {
@@ -703,12 +706,21 @@ pub async fn terminate_process_group_and_reap(child: &mut tokio::process::Child)
 /// for the entire run. On timeout we signal the process group, force-kill/reap after one bounded
 /// grace, then give the now-closed pipes a short bounded window to flush already-written bytes.
 pub(crate) async fn collect_child_output(
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+    conf: &Confinement,
+) -> Result<RunOutput, SandboxError> {
+    collect_owned_child_output(child, stdout, stderr, conf).await
+}
+
+async fn collect_owned_child_output<C: collected_child::CollectedChild>(
+    mut child: C,
     mut stdout: tokio::process::ChildStdout,
     mut stderr: tokio::process::ChildStderr,
     conf: &Confinement,
 ) -> Result<RunOutput, SandboxError> {
-    let owned_group = child.id();
+    let owned_group = child.process_id();
     let mut group_owner = owned_process_cleanup::OwnedProcessGroup::capture(&child);
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
     let mut err = BoundedCapture::with_limit(conf.max_output_bytes);
@@ -834,7 +846,7 @@ pub(crate) async fn collect_child_output(
             .observe_owned_group_cleanup
             .load(Ordering::Acquire)
     }) {
-        owned_process_cleanup::confirm_owned_group_shutdown(owned_group).await
+        group_owner.confirm_shutdown(owned_group).await
     } else {
         false
     };
@@ -894,10 +906,18 @@ pub(crate) async fn run_direct(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     configure_process_group(&mut cmd);
+    #[cfg(not(windows))]
     let mut child = cmd.spawn().map_err(|e| {
         publish_output_io_failure(conf, None);
         SandboxError::Spawn(e.to_string())
     })?;
+    #[cfg(windows)]
+    let mut child = iteron_support::owned_windows_job::OwnedWindowsChild::spawn(cmd.as_std_mut())
+        .await
+        .map_err(|error| {
+            publish_output_io_failure(conf, None);
+            SandboxError::WindowsLaunch(Box::new(error))
+        })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         publish_output_io_failure(conf, Some(OutputStream::Stdout));
         SandboxError::Spawn("child stdout was not piped".into())
@@ -906,7 +926,7 @@ pub(crate) async fn run_direct(
         publish_output_io_failure(conf, Some(OutputStream::Stderr));
         SandboxError::Spawn("child stderr was not piped".into())
     })?;
-    collect_child_output(child, stdout, stderr, conf).await
+    collect_owned_child_output(child, stdout, stderr, conf).await
 }
 
 /// Pick the best backend for this platform. An unconfined confinement never reaches a backend's
@@ -930,7 +950,9 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
     }
 }
 
+#[cfg(any(not(windows), test))]
 const PREFERRED_CONFINED_SHELL: &str = "/bin/bash";
+#[cfg(any(not(windows), test))]
 const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
 
 /// Pick the shell a confined command is executed with. `/bin/bash` stays the preference — the tool
@@ -938,6 +960,7 @@ const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
 /// home is exactly the image that does not have it: Alpine and other BusyBox userlands ship only
 /// `/bin/sh`. Hardcoding bash there turned every `bash` tool call into a bare spawn failure inside
 /// an otherwise perfectly usable namespace, so resolve the interpreter instead of assuming it.
+#[cfg(any(not(windows), test))]
 fn select_confined_shell(preferred_exists: bool) -> &'static str {
     if preferred_exists {
         iteron_tunables::param_str(
@@ -957,13 +980,20 @@ fn select_confined_shell(preferred_exists: bool) -> &'static str {
 pub fn confined_shell() -> &'static str {
     static SHELL: OnceLock<&'static str> = OnceLock::new();
     SHELL.get_or_init(|| {
-        select_confined_shell(
-            std::path::Path::new(iteron_tunables::param_str(
-                "sandbox.lib.preferred_confined_shell",
-                PREFERRED_CONFINED_SHELL,
-            ))
-            .exists(),
-        )
+        #[cfg(windows)]
+        {
+            "bash"
+        }
+        #[cfg(not(windows))]
+        {
+            select_confined_shell(
+                std::path::Path::new(iteron_tunables::param_str(
+                    "sandbox.lib.preferred_confined_shell",
+                    PREFERRED_CONFINED_SHELL,
+                ))
+                .exists(),
+            )
+        }
     })
 }
 
@@ -1202,3 +1232,7 @@ mod env_tests;
 #[cfg(test)]
 #[path = "unconfined_pty_tests.rs"]
 mod unconfined_pty_tests;
+
+#[cfg(all(test, windows))]
+#[path = "windows_job_tests.rs"]
+mod windows_job_tests;
