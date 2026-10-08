@@ -95,7 +95,7 @@ async fn prepare_attempt(
     if !env.state.admit_agent_call() {
         return Err(format!(
             "agent call ceiling {} reached",
-            env.state.max_agent_calls
+            env.state.max_agent_calls()
         ));
     }
     let input_digest = digest_bytes(call.prompt.as_bytes());

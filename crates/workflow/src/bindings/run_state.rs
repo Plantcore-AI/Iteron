@@ -83,6 +83,12 @@ impl RunState {
         self.index.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// The immutable ceiling installed for this run. Reading it does not reserve a child call;
+    /// only `admit_agent_call` advances the bounded admission counter.
+    pub(super) const fn max_agent_calls(&self) -> usize {
+        self.max_agent_calls
+    }
+
     /// Admit one real child spawn. Journal hits do not consume the aggregate ceiling; every schema
     /// retry does. The compare-and-update keeps concurrent callers from overshooting it.
     pub(super) fn admit_agent_call(&self) -> bool {
