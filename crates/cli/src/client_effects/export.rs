@@ -844,7 +844,7 @@ mod tests {
         std::fs::remove_dir_all(outside).ok();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     #[test]
     fn platforms_without_inode_relative_atomic_publication_fail_closed() {
         let root = scratch("unsupported");
