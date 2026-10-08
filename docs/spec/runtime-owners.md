@@ -127,6 +127,8 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `coding_run_driver.rs`, `coding_provider_execution.rs` | Retain private invocation messages, response/tool phases, provider obligation and exact pending kernel call | Real provider/tool execution ports → consumed completion decisions |
 | `coding_request_execution.rs` | Retain the actual working transcript, recovery guard and admission state through host errors and a single request projection | Frozen recipe + owned transcript → concrete recovery/admission ports → native request |
 | `coding_execution_journal.rs` | Sequentially reborrow the sole invocation WAL, effects, ledger, policy and terminal owners | Real resident writer fields → concrete per-stage journals |
+| `coding_run_coordinator.rs`, `coding_response_phase.rs` | Retain finite external IO handoffs and actual post-provider clock and settled tool message | Sole coding driver → consumed concrete stage → physical handoff result |
+| `coding_run_composition.rs` | Capture actual current trusted scope and select the concrete port at each pending IO stage | Finite coordinator work → existing native owners → retained stage completion |
 | `coding_request_session.rs`, `coding_request_assembly.rs` | Run the actual hook and ordered control gate before native projection while retaining request source | Owned request → same writer and actual inbox → admitted transcript and recovery handoff |
 | `coding_provider_session.rs`, `coding_provider_assembly.rs` | Retain actual paid provider obligation and mutable native route slots through provider pump | Native request → actual resident route and shared journal → typed completion or hedge suspension |
 | `tool_image_admission.rs` | Validate confirmed tool images against the actual vision route and pinned decoder/token aggregate bounds | Tool receipt + immutable media policy → admitted request blocks |
@@ -141,6 +143,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `app_server/client_shell.rs`, `client_effects/shell.rs` | Capture actual host permission/environment authority and retain submission/adoption custody through existing bounded operator shell execution | Strict current-run command → actual host policy → owned process-group cleanup observation |
 | `app_server/project_init.rs`, `client_effects/project_init.rs` | Capture existing scaffold write authority and retain bounded worker custody through create-only native publication | Strict current-run intent → real host scope → observed file publication or retained uncertainty |
 | `app_server/model_preferences.rs`, `config/preferences.rs` | Retain actual default model write independently of presentation under global configuration lock and native barriers | Committed model route → actual worker custody → scoped installation receipt |
+| `app_server/tunables_simulation.rs`, `client_effects/tunables_simulation.rs`, `client_effects/workspace_read.rs` | Retain existing operator simulation source read under host policy and publish canonical redacted explanations | Strict scoped read intent → actual bounded native read → immutable simulation view |
 
 ```mermaid
 flowchart LR

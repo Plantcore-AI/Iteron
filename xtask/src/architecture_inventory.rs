@@ -22,6 +22,47 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/coding_run_coordinator.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain finite pending external IO, hedge, kernel and completion handoffs with consumed private phases",
+            "delegate actual transcript, tickets and paid obligations to the sole coding driver",
+        ],
+        next_seams: &["same-candidate compiler, native and real client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/coding_run_composition.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "capture actual current immutable scope and concrete IO ports for each pending handoff",
+        ],
+        next_seams: &["same-candidate compiler, native and real client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/coding_response_phase.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "own actual post-provider phase clock, projection allowance and settled tool message",
+        ],
+        next_seams: &["same-candidate compiler, native and real client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/app_server/tunables_simulation.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "admit existing simulation file read under actual host policy and retain submission and adoption custody",
+        ],
+        next_seams: &["same-candidate compiler, native and real client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/workspace_read.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "read actual bounded regular workspace bytes through held native handles and version and path rebinding",
+        ],
+        next_seams: &["same-candidate compiler, native and real client evidence remain required"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/persistent_native_generations.rs",
         boundary: "cli-host",
         responsibilities: &[

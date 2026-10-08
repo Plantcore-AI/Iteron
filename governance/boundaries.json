@@ -3267,6 +3267,26 @@
         {
           "kind": "tree",
           "path": "crates/cli/src/runtime/persistent_native_generations"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_run_coordinator.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_run_composition.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_response_phase.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_result_projection.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/plantcore_response.rs"
         }
       ],
       "contracts": [
