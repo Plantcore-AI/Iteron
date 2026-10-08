@@ -3287,6 +3287,26 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/plantcore_response.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_injection.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_injection_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_injection_gate.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_injection_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_injection_tests.rs"
         }
       ],
       "contracts": [
