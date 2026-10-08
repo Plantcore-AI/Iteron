@@ -449,6 +449,26 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 // provider retries and empty replay within run_leaf retain that epoch's context.
                 // Isolated children without an installed memory namespace take the no-IO path.
                 child.begin_user_memory_decision();
+                // Before any model tool is visible, bind the exact admitted epoch's real run
+                // and publish this resident's inherited native context. Child tool handlers
+                // keep only Weak host ports; absence of a strong Agent field is not permission
+                // to fall back to the Main bootstrap's model or named rules for grandchildren.
+                mailbox
+                    .provider_budget_port()
+                    .map_err(KernelError::AgentControl)?
+                    .bind(&child.provider_scope())
+                    .map_err(KernelError::AgentControl)?;
+                let (control, owner) = mailbox
+                    .child_controller()
+                    .map_err(KernelError::AgentControl)?;
+                if owner != view.agent_id {
+                    return Err(KernelError::AgentControl(ControllerError::Permission));
+                }
+                child.publish_current_native_context(
+                    &control,
+                    owner,
+                    iteron_protocol::TurnId(child.seq_turn),
+                )?;
                 if let Some(admission) = mailbox
                     .source_admission(&initial, &task)
                     .map_err(KernelError::AgentControl)?

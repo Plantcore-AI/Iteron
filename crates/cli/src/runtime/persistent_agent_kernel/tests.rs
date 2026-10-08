@@ -423,6 +423,13 @@ fn setup_with_financial_and_memory(
             child.context_home_dir = None;
         }));
     }
+    // Explicit compatibility for this older provider-free Main fixture only. Production never
+    // accepts a missing scoped native publication, and missing child scope never uses this flag.
+    runtime
+        .generations
+        .get_mut()
+        .unwrap()
+        .allow_legacy_main_fixture();
     let runtime = Arc::new(runtime);
     let config = AgentControllerConfig {
         workspace_scope: "resident-fixture".into(),
