@@ -368,6 +368,8 @@ use std::time::{Duration, Instant};
 use transcript::project_messages_from_events;
 use transcript::{merge_adjacent_user_message, reconcile_transcript};
 pub(crate) use workflow_spawner::attach_workflow_telemetry;
+#[cfg(all(test, feature = "script-workflows"))]
+pub(crate) use workflow_spawner::safe_agent_refusal;
 pub use workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 
 pub(crate) type RuntimeBudgetHealth = operator_status::RuntimeBudgetHealth;
