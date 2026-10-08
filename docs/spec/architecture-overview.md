@@ -1,5 +1,10 @@
 # 2. 体系结构总览 (Architecture Overview)
 
+当前 standalone coding 核心与具体状态 owner 见
+[Architecture](../architecture.md) 和 [Runtime owners](runtime-owners.md)。本节的三平面、
+checkpoint 和离线进化描述可选策略扩展的目标契约；普通 coding turn 直接沿核心的
+模型、工具、输入控制及终态路径执行。目标契约的验收状态须以同候选的实际证据为准。
+
 本节给出 Iteron 的整体图景:系统由哪几个平面构成、它们通过什么互相连接、以及每一处机制被同一套判据约束。后续各节(microkernel 组件见 §3、ABI 契约见 §4、strategy slot 见 §5、evolution pipeline 见 §6、评测见 §7)都是本节这张地图上某一块的展开;读本节的目的,是在进入细节前先建立"哪一部分是冻结的、哪一部分是可进化的、二者以什么为界"的全局判断。
 
 Iteron 的定位是**"harness 的可训练基座"**:把一个 agent 专门化(specialize)到某个垂类,指的是**训练 harness,而不是训练 model**。除 microkernel 外,系统里每一个非内核决策都是**一个 typed policy space 里的策略**;它被训练后的状态是一等公民工件,即 **PolicyManifest(即 harness checkpoint)**。权重学的是先验(prior),harness 学的是具体处境(situation)。这一定位决定了整个体系结构必须回答一个结构性问题:**哪些东西可以被自我改进的算子(self-improving operator)改写,哪些绝对不能。** 答案就是下面的三平面切分。

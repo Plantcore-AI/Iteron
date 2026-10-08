@@ -8,6 +8,32 @@ do not own another model/tool loop. The runtime imports shared command/event con
 the pure machine projection, with no production dependency on TUI, App Server or CLI output.
 This direction is checked by `iteron-xtask boundaries check`.
 
+The following diagram names logical interfaces in the current source. Each arrow carries
+a command, a narrow execution port or an immutable observation; it does not grant access to
+another owner's mutable state.
+
+```mermaid
+flowchart TD
+    Front[CLI / TUI / external clients] -->|typed submissions and controls| Host[Launch and App Server adapters]
+    Host --> Ingress[SessionInbox / SessionControl / SubmittedTurnState]
+    Ingress --> Resident[Resident execution composition]
+    Resident --> Driver[CodingRunDriver]
+    Driver --> Coordinator[CodingRunCoordinator]
+    Resident --> Context[ContextInjection and ContextPort]
+    Coordinator --> Provider[CodingProviderExecution and native route ports]
+    Coordinator --> Tools[ToolRoundExecution and process owners]
+    Resident --> Terminal[RunFinalization and TerminalRecord]
+    Host -->|collaboration commands| Controller[AgentController and mailbox]
+    Scheduler[LiveWorkflowScheduler] -->|versioned controller port| Controller
+    Controller -->|owned resident epoch| Resident
+    Context --> Journal[WAL / effect / accounting owners]
+    Provider --> Journal
+    Tools --> Journal
+    Terminal --> Journal
+    Resident -->|bounded facts| Projection[Lifecycle and machine projections]
+    Projection --> Front
+```
+
 The table names current source ownership. An extracted file is useful only when its state,
 physical work or decision authority belongs to that owner; file size alone is not acceptance.
 
@@ -22,6 +48,9 @@ physical work or decision authority belongs to that owner; file size alone is no
 | Provider caches | `providers/catalog_cache.rs`, `probe_cache.rs`, `cache_storage.rs`, `cache_writeback.rs` | Private scoped retained evidence and consumed best-effort writeback; no secret byte projection. |
 | Prepared mailbox input | `runtime/persistent_agents/prepared_mailbox.rs`, `request_manifest.rs` | Full native user-text fields and private host commitments; retained manifest before durable consumption before IO. |
 | Resident transcript | `runtime/session_transcript.rs` | Private restored/working projection; actual durable new-input receipt before consuming staged state. |
+| Coding invocation phases | `runtime/coding_run_driver.rs`, `coding_run_coordinator.rs`, `coding_response_phase.rs` | Retained transcript and provider/tool obligations; private consumed IO handoffs and actual response completion. |
+| Stable context installation | `runtime/context_injection.rs`, `context_injection_journal.rs` | Historical or live bounded source; required durable prefix receipt before installing cached bytes. |
+| Versioned captured pixels | `protocol/image_record.rs`, `runtime/tool_image_replay.rs` | New pixel vocabulary uses versioned message/compaction tags; actual current replay retains verified image provenance and order. |
 | Model response | `runtime/model_response.rs` | Provider stop reason and existing invocation state; continuation, answer candidate, bounded stop or refusal. |
 | Terminal and publication | `runtime/control_terminal.rs`, `run_finalization.rs`, `terminal_record.rs`, `turn_publication.rs` | Actual cleanup and committed terminal receipts; read-only answer/finalization facts. |
 | Persistent collaboration | `crates/agents`, `runtime/persistent_agents`, `workflow/live_session` | Host-bound identities, bounded mailbox and controller budgets; exact task/attempt receipts. |
@@ -45,7 +74,11 @@ The ongoing runtime and TUI extraction is not yet a completed architecture accep
 Rebuild the source inventory with `iteron-xtask architecture inventory`; current-candidate
 compiler, client/render, recovery, platform and performance evidence must accompany completion.
 
-## Two diagrams, two questions
+## Optional checkpoint and evolution contracts
+
+The diagrams below describe the optional checkpoint and offline evolution system. The
+ordinary coding path above remains the product entry point. These target contracts do not
+add a research, work-order or promotion stage to an ordinary turn.
 
 The checkpoint surface answers **which admitted harness should this model-task
 cell use?**
