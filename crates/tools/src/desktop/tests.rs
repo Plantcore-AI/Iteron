@@ -171,14 +171,14 @@ async fn native_registration_is_inert_and_real_png_scope_is_honest() {
     let registry = fixture.registry(&root);
     assert!(fixture.state.lock().await.requests.is_empty());
     let refused = registry
-        .execute_captured(call(
+        .run_effect_captured(call(
             json!({"action":"open","driver":{"url":"http://elsewhere/"}}),
         ))
         .await;
     assert!(result(&refused).is_error);
     assert!(fixture.state.lock().await.requests.is_empty());
     let opened = registry
-        .execute_captured(call(json!({"action":"open"})))
+        .run_effect_captured(call(json!({"action":"open"})))
         .await;
     assert!(!result(&opened).is_error, "{opened:?}");
     assert_eq!(content(&opened)["execution_scope"], "native_mac_desktop");
@@ -209,26 +209,26 @@ async fn lost_native_mutation_is_not_repeated_and_actual_close_settles_owner() {
     let fixture = Fixture::new().await;
     let registry = fixture.registry(&root);
     let opened = registry
-        .execute_captured(call(json!({"action":"open"})))
+        .run_effect_captured(call(json!({"action":"open"})))
         .await;
     let view = content(&opened)["view_ref"].as_str().unwrap().to_owned();
     fixture.state.lock().await.lose_click = true;
     let lost = registry
-        .execute_captured(call(
+        .run_effect_captured(call(
             json!({"action":"click","view_ref":view,"selector":"one"}),
         ))
         .await;
     assert!(matches!(lost.execution, ToolExecution::Unknown(_)));
     let close = content(&lost)["close_ref"].as_str().unwrap().to_owned();
     let rejected = registry
-        .execute_captured(call(
+        .run_effect_captured(call(
             json!({"action":"click","view_ref":view,"selector":"one"}),
         ))
         .await;
     assert!(result(&rejected).is_error);
     assert_eq!(fixture.state.lock().await.clicks, 1);
     let closed = registry
-        .execute_captured(call(json!({"action":"close","view_ref":close})))
+        .run_effect_captured(call(json!({"action":"close","view_ref":close})))
         .await;
     assert!(!result(&closed).is_error);
     assert_eq!(content(&closed)["closed"], true);
@@ -239,12 +239,12 @@ async fn changed_native_app_source_requires_observation_before_action() {
     let fixture = Fixture::new().await;
     let registry = fixture.registry(&root);
     let opened = registry
-        .execute_captured(call(json!({"action":"open"})))
+        .run_effect_captured(call(json!({"action":"open"})))
         .await;
     let view = content(&opened)["view_ref"].as_str().unwrap().to_owned();
     fixture.state.lock().await.source = "<Application><Dialog/></Application>".into();
     let rejected = registry
-        .execute_captured(call(
+        .run_effect_captured(call(
             json!({"action":"click","view_ref":view,"selector":"one"}),
         ))
         .await;
@@ -252,7 +252,7 @@ async fn changed_native_app_source_requires_observation_before_action() {
     assert!(result(&rejected).is_error);
     assert_eq!(fixture.state.lock().await.clicks, 0);
     let observed = registry
-        .execute_captured(call(json!({"action":"observe","view_ref":view})))
+        .run_effect_captured(call(json!({"action":"observe","view_ref":view})))
         .await;
     assert!(!result(&observed).is_error);
     assert_ne!(content(&observed)["view_ref"], view);
@@ -294,7 +294,7 @@ async fn real_native_mac2_main_desktop_observation_and_session_close() {
     )
     .unwrap();
     let opened = registry
-        .execute_captured(call(json!({"action":"open"})))
+        .run_effect_captured(call(json!({"action":"open"})))
         .await;
     assert!(!result(&opened).is_error, "{opened:?}");
     assert_eq!(
@@ -303,7 +303,7 @@ async fn real_native_mac2_main_desktop_observation_and_session_close() {
     );
     let view = content(&opened)["view_ref"].as_str().unwrap().to_owned();
     let closed = registry
-        .execute_captured(call(json!({"action":"close","view_ref":view})))
+        .run_effect_captured(call(json!({"action":"close","view_ref":view})))
         .await;
     assert!(!result(&closed).is_error, "{closed:?}");
 }

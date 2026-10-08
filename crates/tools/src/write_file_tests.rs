@@ -41,6 +41,8 @@ fn editing_only_registry(root: &Path) -> Registry {
         observation_focus: Default::default(),
         process_launch_policy: Default::default(),
         workspace_boundary: false,
+        // Ordinary operator registry: no inherited child write scope has been installed.
+        inherited_write_scope: Default::default(),
         process_control: None,
         lsp_control: None,
         deferred_tool_catalog: None,
