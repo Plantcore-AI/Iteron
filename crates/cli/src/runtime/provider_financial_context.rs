@@ -16,9 +16,9 @@ use iteron_protocol::{
     CostAttribution, CostProjectionIdentity, ProviderRouteAttemptAccounting,
     ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
     ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason, RunId, SignedRateCard, TenantId,
-    TurnId, UsageReport,
+    TurnId,
 };
-use iteron_provider::Provider;
+use iteron_provider::{Provider, UsageReport};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 

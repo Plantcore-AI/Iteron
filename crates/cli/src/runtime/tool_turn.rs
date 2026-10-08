@@ -4,7 +4,7 @@ use super::KernelError;
 use super::early_tool_executor::EarlyToolTask;
 use super::policy_evidence::{self, PolicyDecisionDraft};
 use iteron_kernel::effects::{EffectTicket, ToolCallAdmission, ToolCallContractError};
-use iteron_protocol::{PolicyActionV1, ToolResult, ToolUse, Trust, intent::Purity};
+use iteron_protocol::{PolicyActionV1, Purity, ToolResult, ToolUse, Trust};
 use iteron_tools::{ToolPolicyError, ToolPolicyProposal};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;

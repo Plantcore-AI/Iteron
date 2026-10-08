@@ -1,6 +1,7 @@
 //! Fail-closed summary coverage verification.
 
 use super::*;
+use iteron_protocol::{Block, Role};
 
 impl Agent {
     pub(super) async fn verify_compaction_summary(

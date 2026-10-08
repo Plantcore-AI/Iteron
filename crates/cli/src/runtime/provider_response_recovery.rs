@@ -186,7 +186,7 @@ impl ProviderResponseRecoveryOwner {
                 }));
             }
         };
-        Ok(ProviderResponseResolution::Accepted(
+        Ok(ProviderResponseResolution::Accepted(Box::new(
             AcceptedProviderResponse {
                 route,
                 round,
@@ -200,7 +200,7 @@ impl ProviderResponseRecoveryOwner {
                     usage_evidence
                 },
             },
-        ))
+        )))
     }
 }
 

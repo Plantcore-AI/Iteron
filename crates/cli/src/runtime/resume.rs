@@ -1,4 +1,5 @@
 use super::*;
+use iteron_protocol::Block;
 
 /// Approval sequence a replay starts from when the journal holds no `Approval` event, so the first
 /// approval of the resumed run still mints a strictly increasing id.

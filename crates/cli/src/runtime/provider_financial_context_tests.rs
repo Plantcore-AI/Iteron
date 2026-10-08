@@ -7,8 +7,9 @@ use crate::runtime::pricing::SharedUsdBudget;
 use iteron_obs::pricing::{HmacPricingAuthority, HmacPricingKey, sign_rate_card};
 use iteron_protocol::{
     Block, PricingRoute, PricingVersion, ProviderRouteCostTruth, ProviderRouteUsageTruth, RateCard,
-    RunId, StopReason, TenantId, TokenRateCard, TurnId, Usage, UsageReport,
+    RunId, StopReason, TenantId, TokenRateCard, TurnId, Usage,
 };
+use iteron_provider::UsageReport;
 use iteron_provider::{ProviderError, TurnResult};
 use std::sync::Arc;
 

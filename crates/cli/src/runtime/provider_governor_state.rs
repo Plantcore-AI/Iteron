@@ -321,7 +321,7 @@ impl Agent {
             })
     }
 
-    fn provider_route_admission(
+    pub(super) fn provider_route_admission(
         &mut self,
         turn: TurnId,
     ) -> super::provider_route_admission::ProviderRouteAdmission<'_> {

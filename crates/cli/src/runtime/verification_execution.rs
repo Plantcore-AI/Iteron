@@ -9,7 +9,7 @@ use super::strong_verification::StrongVerificationGate;
 use super::tool_presentation::strict_utf8_head;
 use super::turn_activity;
 use iteron_kernel::{effect_class, effects};
-use iteron_protocol::{Capability, LifecyclePayload};
+use iteron_protocol::{Capability, LifecyclePayload, TurnId};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);

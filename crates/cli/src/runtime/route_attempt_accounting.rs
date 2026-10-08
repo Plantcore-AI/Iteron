@@ -6,9 +6,8 @@ use iteron_protocol::{ProviderRouteAttemptAccounting, TurnId};
 
 pub(super) use super::provider_charge_evidence::{
     ProviderRouteChargeLedger, ProviderRouteChargeReplay, RouteChargeTruth,
-    VerifiedProviderRouteCharge, crash_recovery_accounting, monetary_followup_safe,
-    not_dispatched_accounting, replay_evidence, replay_route_charges, route_accounting_id,
-    route_attempt_identity, verified_charge,
+    VerifiedProviderRouteCharge, crash_recovery_accounting, not_dispatched_accounting,
+    replay_evidence, replay_route_charges, verified_charge,
 };
 
 impl Agent {
@@ -117,3 +116,6 @@ impl Agent {
             .map_err(KernelError::PricingLedger)
     }
 }
+
+#[cfg(test)]
+pub(super) use super::provider_charge_evidence::{route_accounting_id, route_attempt_identity};

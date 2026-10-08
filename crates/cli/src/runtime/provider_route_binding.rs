@@ -7,8 +7,9 @@ use super::provider_governor_state::GovernedProviderRoute;
 use super::provider_selection::ProviderSelectionOwner;
 use super::provider_selection_journal::ProviderSelectionJournal;
 use iteron_kernel::diagnostics::KernelDiagnostic;
-use iteron_protocol::slot::StrategySlot;
-use iteron_protocol::{CapabilitySet, PolicyActionV1, PricingRoute, SlotId, TurnId};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::slot::{SlotId, StrategySlot};
+use iteron_protocol::{PolicyActionV1, PricingRoute, TurnId};
 use iteron_provider::{
     ControlError, FailoverClass, Provider, ProviderGovernor, ProviderRequestControls,
 };

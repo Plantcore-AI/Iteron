@@ -23,7 +23,7 @@ impl StreamToolEvents {
         self.present(UiEvent::ToolStart {
             id: call.id.clone(),
             name: call.name.clone(),
-            args: iteron_record::redact::scrub_value(&call.input),
+            args: super::tool_presentation::scrub_value(&call.input),
         });
     }
     pub(super) fn emit(&self, event: &str, effect: Option<EffectId>, payload: LifecyclePayload) {

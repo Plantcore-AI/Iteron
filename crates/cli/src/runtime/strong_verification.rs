@@ -16,9 +16,8 @@ use super::verification_journal::VerificationJournal;
 use super::verification_state::VerificationStateOwner;
 use super::workspace_checkpoint::{CheckpointScope, WorkspaceCheckpoint, WorkspaceCheckpointOwner};
 use iteron_obs::PhaseSpan;
-use iteron_protocol::{
-    Capability, CapabilitySet, EventKind, LifecyclePayload, Outcome, Phase, TurnId,
-};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::{Capability, EventKind, LifecyclePayload, Outcome, Phase, TurnId};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

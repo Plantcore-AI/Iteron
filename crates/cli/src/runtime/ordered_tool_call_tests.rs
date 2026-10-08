@@ -1,6 +1,7 @@
 use super::OrderedCallAdmission;
 use crate::runtime::{Agent, Budget, DurableAppendFault, KernelError};
-use iteron_protocol::{Capability, EventKind, RunId, SlotId, TenantId, ToolUse, Trust, TurnId};
+use iteron_protocol::slot::SlotId;
+use iteron_protocol::{Capability, EventKind, RunId, TenantId, ToolUse, Trust, TurnId};
 use iteron_protocol::{Purity, capability_set::CapabilitySet, intent::ToolIntent};
 use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResult};
 use iteron_record::Rollout;

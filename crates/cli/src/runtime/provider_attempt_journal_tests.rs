@@ -10,6 +10,7 @@ use iteron_agents::ControllerError;
 use iteron_kernel::{diagnostics::DiagnosticEmitter, effects};
 use iteron_obs::Ledger;
 use iteron_protocol::{Capability, EventKind, RunId, TenantId, TurnId};
+use iteron_provider::UsageReport;
 use iteron_record::Rollout;
 use std::path::PathBuf;
 
@@ -25,7 +26,7 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
     use iteron_obs::pricing::{HmacPricingAuthority, HmacPricingKey, sign_rate_card};
     use iteron_protocol::{
         Block, PricingRoute, PricingVersion, ProviderRouteAttemptIdentity, ProviderRouteUsageTruth,
-        RateCard, StopReason, TokenRateCard, Usage, UsageReport,
+        RateCard, StopReason, TokenRateCard, Usage,
     };
     use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResult};
     use std::sync::{
@@ -212,11 +213,11 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
             system: "system".into(),
             messages: vec![],
             input_images: vec![],
-            tools: vec![],
+            tools: vec![].into(),
             max_tokens: 128,
             cache_system: false,
             thinking_budget: 0,
-            reasoning_effort: None,
+            reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
             controls: Default::default(),
         },
         &mut |_| {},

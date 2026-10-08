@@ -10,7 +10,7 @@ use iteron_protocol::{Trust, TurnId};
 impl Agent {
     /// Assemble the ordered effect owner from real disjoint state ports. No permission or
     /// provider authority reaches its executor, and the external permit remains with this loop.
-    fn tool_declaration_admission(
+    pub(super) fn tool_declaration_admission(
         &mut self,
         turn: TurnId,
         trust: Trust,
@@ -59,7 +59,7 @@ impl Agent {
         }
     }
 
-    fn ordered_tool_call(
+    pub(super) fn ordered_tool_call(
         &mut self,
         turn: TurnId,
         tool: &str,

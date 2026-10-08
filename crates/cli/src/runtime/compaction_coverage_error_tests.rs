@@ -39,9 +39,7 @@ impl Provider for CoverageFailureProvider {
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if request.system.contains("transcript-compaction auditor") {
-            return Err(ProviderError::Refusal(
-                "actual coverage endpoint refused".into(),
-            ));
+            return Err(ProviderError::Refusal);
         }
         let text = "Preserve exact operator task and all unresolved requirements.";
         on_item(StreamItem::TextDelta(text.into()));
@@ -67,8 +65,8 @@ async fn actual_coverage_failure_cannot_install_or_record_a_verified_summary() {
     assert!(agent.run("").await.is_err());
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(
-        agent.transcript_state.working().as_ref().unwrap(),
-        &messages
+        serde_json::to_value(agent.transcript_state.working().as_ref().unwrap()).unwrap(),
+        serde_json::to_value(&messages).unwrap()
     );
     assert!(!agent.compaction_state.compacted());
     let path = agent.rollout.path().to_path_buf();

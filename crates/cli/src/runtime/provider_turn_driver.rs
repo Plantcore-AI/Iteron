@@ -42,8 +42,9 @@ use super::turn_activity::ActivityStage;
 use super::turn_publication::TurnPublicationOwner;
 use iteron_kernel::diagnostics::DiagnosticEmitter;
 use iteron_obs::Ledger;
+use iteron_protocol::LifecyclePayload;
+use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::slot::StrategySlot;
-use iteron_protocol::{CapabilitySet, LifecyclePayload};
 use iteron_provider::{
     AttemptPermit, Provider, ProviderGovernor, ProviderRequestControls, TurnRequest, TurnResult,
 };

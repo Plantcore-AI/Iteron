@@ -61,14 +61,15 @@ impl InvocationFundingTransaction<'_> {
             // Installation follows recovery. A failed replay cannot leave an apparently funded
             // empty shared object whose presence makes a later invocation skip physical history.
             let shared = Arc::new(SharedUsdBudget::from_microusd(target));
-            let scoped = iteron_record::replay_scoped_rollout(self.journal.rollout.path())
-                .map_err(|error| {
-                    *self.journal.record_failed = true;
-                    self.journal
-                        .diagnostics
-                        .emit(iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {});
-                    KernelError::Record(error)
-                })?;
+            let scoped =
+                super::route_validation::replay_scoped_rollout(self.journal.rollout.path())
+                    .map_err(|error| {
+                        *self.journal.record_failed = true;
+                        self.journal.diagnostics.emit(
+                            iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {},
+                        );
+                        KernelError::Record(error)
+                    })?;
             let replay = replay_route_charges(&scoped, self.pricing)?;
             shared
                 .restore_provider_route_charges(&self.journal.ledger.cost_state(), replay)

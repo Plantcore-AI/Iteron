@@ -4,8 +4,7 @@ use crate::runtime::ordered_tool_call::OrderedCallAdmission;
 use crate::runtime::{Agent, Budget, KernelError, UiEvent};
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{
-    Capability, EventKind, Op, PermissionMode, RunId, SubmissionId, TenantId, ToolUse, Trust,
-    TurnId,
+    EventKind, Op, PermissionMode, RunId, SubmissionId, TenantId, ToolUse, Trust, TurnId,
 };
 use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResult};
 use iteron_record::Rollout;

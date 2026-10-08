@@ -3,8 +3,9 @@
 use super::provider_route_events::ProviderRouteEvents;
 use super::provider_route_journal::ProviderRouteJournal;
 use super::session_control::SessionControlState;
-use super::turn_activity::{ActivityDetailCode, ActivitySpan, ActivityStage};
+use super::turn_activity::{ActivitySpan, ActivityStage};
 use super::{KernelError, PROVIDER_INTERRUPT_POLL_INTERVAL};
+use iteron_protocol::ActivityDetailCode;
 use iteron_protocol::LifecyclePayload;
 use iteron_provider::{
     AdmissionReason, AttemptPermit, CircuitTransition, ProviderAdmission, ProviderError,

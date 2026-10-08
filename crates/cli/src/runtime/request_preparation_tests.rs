@@ -368,8 +368,8 @@ fn uncovered_summary_closes_component_bridge_without_recursive_provider_spend() 
 
 #[test]
 fn actual_route_rebind_rechecks_output_headroom_and_keeps_original_policy_request() {
-    let (directory, mut agent, mut messages) = fixture();
-    messages = vec![Message::user_text(
+    let (directory, mut agent, _) = fixture();
+    let mut messages = vec![Message::user_text(
         "bounded request after auxiliary route change",
     )];
     agent.context_estimator.invalidate_transcript();
@@ -466,8 +466,8 @@ async fn real_recovery_summary_cannot_replace_transcript_after_its_writer_refuse
     assert!(matches!(agent.run("").await, Err(KernelError::Record(_))));
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(
-        agent.transcript_state.working().as_ref().unwrap(),
-        &messages
+        serde_json::to_value(agent.transcript_state.working().as_ref().unwrap()).unwrap(),
+        serde_json::to_value(&messages).unwrap()
     );
     assert!(!agent.compaction_state.compacted());
     let run = agent.rollout.run_id().clone();

@@ -1,4 +1,5 @@
 use super::*;
+use iteron_protocol::{Block, Role};
 
 /// Retain at most one UTF-8 scalar beyond the interrupted-stream display limit. That extra
 /// scalar lets `strict_utf8_head` mark truncation without buffering an unbounded provider stream.

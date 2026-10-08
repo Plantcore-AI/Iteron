@@ -8,6 +8,7 @@
 use super::provider_extension::{self, ProviderDispatchGate, ProviderExtensionPermit};
 use super::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use iteron_protocol::Block;
 use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -733,8 +734,12 @@ impl Agent {
         };
         match governor.admit(route_id, Instant::now()) {
             Admission::Admitted(permit) => {
-                self.emit_circuit_transition(turn, permit.transition);
-                self.record_provider_governor_state(turn, route_id, permit.transition, None)?;
+                self.provider_route_admission(turn).journal.observe(
+                    turn,
+                    route_id,
+                    permit.transition,
+                    None,
+                )?;
                 Ok(Some(permit))
             }
             Admission::Deferred { wait, reason } => {

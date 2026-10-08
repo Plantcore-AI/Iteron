@@ -3,8 +3,9 @@ use crate::runtime::provider_attempt_journal::{
     ProviderIntent, ProviderLogicalUsageEvidence, ProviderObservedAttempt,
 };
 use crate::runtime::{Agent, KernelError};
-use iteron_protocol::{Capability, StopReason, TurnId, UsageReport};
+use iteron_protocol::{Capability, StopReason, TurnId};
 use iteron_provider::TurnResult;
+use iteron_provider::UsageReport;
 
 /// Existing direct-accounting fixtures cross the real physical intent/terminal barriers. Only the
 /// physical journal can mint the receipt; there is no test/public constructor for a sealed proof.
@@ -108,7 +109,7 @@ async fn durable_fallback_terminal_projects_exact_second_physical_receipt_and_re
     };
     use iteron_kernel::diagnostics::DiagnosticEmitter;
     use iteron_obs::pricing::{HmacPricingAuthority, HmacPricingKey, sign_rate_card};
-    use iteron_obs::{CostState, Ledger, PricingPort, PricingReplay};
+    use iteron_obs::{CostState, Ledger, PricingReplay};
     use iteron_protocol::{
         Event, EventKind, PricingRoute, PricingVersion, RateCard, RunId, Seq, SignedRateCard,
         TenantId, TokenRateCard, Usage,
