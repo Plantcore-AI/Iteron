@@ -482,9 +482,9 @@ fn scope_drift_with_import_mode(
     if imports(base) != imports(current) {
         return Some(ScopeDrift::Import);
     }
-    // An attribute-free `mod image_input;` cannot affect a frozen item that never names
-    // `image_input`. Attributed declarations remain unconditional ScopeBindings, so macro-use and
-    // conditional module sources are still compared even in this name-filtered path.
+    // A module with only built-in name-preserving attributes cannot affect a frozen item that
+    // never names it. Referenced declarations retain the full cfg/path fingerprint; macro-use,
+    // cfg_attr, procedural attributes and nonliteral paths remain unconditional bindings.
     if retain(module_bindings(base), false) != retain(module_bindings(current), false) {
         return Some(ScopeDrift::Module);
     }
@@ -1100,6 +1100,54 @@ mod tests {
             ),
             Some(ScopeDrift::Import)
         );
+    }
+
+    #[test]
+    fn literal_module_paths_preserve_names_without_allowing_frozen_redirects() {
+        let base: syn::File = syn::parse_quote! {
+            mod output;
+            mod recording_provider;
+        };
+        let extracted: syn::File = syn::parse_quote! {
+            mod output;
+            #[cfg(feature = "legacy-plantcore")]
+            mod recording_provider;
+            #[cfg(not(feature = "legacy-plantcore"))]
+            #[path = "recording_provider_disabled.rs"]
+            mod recording_provider;
+        };
+        let output_names = referenced("fn frozen() { output::emit(); }");
+        assert_eq!(
+            scope_drift_with_import_mode(&base, &extracted, Some(&output_names), true),
+            None
+        );
+        assert_eq!(
+            scope_drift(&base, &extracted, Some(&referenced("recording_provider"))),
+            Some(ScopeDrift::Module)
+        );
+        assert_eq!(
+            scope_drift(&base, &extracted, None),
+            Some(ScopeDrift::Module)
+        );
+        for redirect in [
+            "#[path = \"other.rs\"] mod output; mod recording_provider;",
+            "mod output; #[macro_use] mod recording_provider;",
+            "mod output; #[cfg_attr(any(), path = \"other.rs\")] mod recording_provider;",
+            "mod output; #[path = include_str!(\"other.rs\")] mod recording_provider;",
+            "mod output; #[path = \"\"] mod recording_provider;",
+            "mod output; #[procedural] mod recording_provider;",
+        ] {
+            assert_eq!(
+                scope_drift_with_import_mode(
+                    &base,
+                    &syn::parse_file(redirect).unwrap(),
+                    Some(&output_names),
+                    true,
+                ),
+                Some(ScopeDrift::Module),
+                "{redirect}"
+            );
+        }
     }
 
     #[test]

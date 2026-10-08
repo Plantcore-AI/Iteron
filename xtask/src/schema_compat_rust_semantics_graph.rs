@@ -510,12 +510,26 @@ pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
         .filter_map(|item| match item {
             syn::Item::Mod(module) => Some(ScopeBinding {
                 fingerprint: module_fingerprint(module),
-                names: binding_attributes_are_inert(&module.attrs)
+                names: module_binding_attributes_are_named(&module.attrs)
                     .then(|| BTreeSet::from([module.ident.unraw().to_string()])),
             }),
             _ => None,
         })
         .collect()
+}
+
+/// The built-in literal `path` attribute selects a module source without introducing another
+/// binding. Referenced modules still compare their complete declaration, including the path.
+/// Keep this exception module-only: procedural/conditional attributes and nonliteral paths remain
+/// unknown-name bindings and are therefore always compared.
+fn module_binding_attributes_are_named(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        binding_attributes_are_inert(std::slice::from_ref(attribute))
+            || (attribute.path().is_ident("path")
+                && matches!(&attribute.meta, syn::Meta::NameValue(value)
+                    if matches!(&value.value, syn::Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(path) if !path.value().is_empty()))))
+    })
 }
 
 /// Doc and plain `cfg` attributes do not make a binding's name unknowable. `cfg` can remove the
