@@ -3,6 +3,25 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/support/src/owned_windows_job.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "retain actual suspended Windows child and private non-breakaway JobObject through assignment and resume",
+            "cache actual exit status and retire process references before observing native job population",
+        ],
+        next_seams: &[
+            "bounded custody after consumer drop and actual Windows execution remain required",
+        ],
+    },
+    Surface {
+        path: "crates/sandbox/src/collected_child.rs",
+        boundary: "sandbox",
+        responsibilities: &[
+            "adapt actual Unix and Windows child pipes and wait observations for the shared bounded collector",
+        ],
+        next_seams: &["same-candidate compiler and native execution remain required"],
+    },
+    Surface {
         path: "crates/cli/src/app_server/tunables_simulation.rs",
         boundary: "cli-host",
         responsibilities: &[

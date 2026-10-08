@@ -8516,6 +8516,7 @@
       },
       "iteron-sandbox": {
         "normal": [
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],
