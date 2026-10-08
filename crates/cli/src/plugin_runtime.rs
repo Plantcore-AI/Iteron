@@ -567,6 +567,19 @@ fn contribution_artifact(contribution: &Contribution, root: &Path) -> Option<Pat
     }
 }
 
+fn bounded_refusal_display(raw: &str) -> String {
+    let scrubbed = iteron_record::redact::scrub(raw);
+    let mut take = scrubbed.len().min(512);
+    while !scrubbed.is_char_boundary(take) {
+        take -= 1;
+    }
+    let mut text = scrubbed[..take].to_owned();
+    if take < scrubbed.len() {
+        text.push_str(" [display shortened]");
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,17 +680,4 @@ mod tests {
             metadata
         );
     }
-}
-
-fn bounded_refusal_display(raw: &str) -> String {
-    let scrubbed = iteron_record::redact::scrub(raw);
-    let mut take = scrubbed.len().min(512);
-    while !scrubbed.is_char_boundary(take) {
-        take -= 1;
-    }
-    let mut text = scrubbed[..take].to_owned();
-    if take < scrubbed.len() {
-        text.push_str(" [display shortened]");
-    }
-    text
 }

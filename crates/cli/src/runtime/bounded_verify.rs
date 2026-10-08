@@ -368,7 +368,7 @@ mod tests {
                 provider_route_attempt: None,
             },
         };
-        owner.recover(&run, &[terminal.clone()]);
+        owner.recover(&run, std::slice::from_ref(&terminal));
         assert_eq!(
             owner.inspect(&run, &id).unwrap()["task"]["state"],
             "reconciliation_needed"

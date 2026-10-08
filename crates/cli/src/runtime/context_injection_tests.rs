@@ -198,7 +198,6 @@ fn actual_legacy_upgrade_reopens_with_its_admitted_prefix_and_ignores_changed_pr
         .unwrap();
     assert_eq!(replayed.text, committed.text);
     assert_eq!(replayed.trust, committed.trust);
-    drop(journal);
     drop(reopened);
     assert_eq!(iteron_record::replay(&path).unwrap().len(), events.len());
     std::fs::remove_dir_all(root).unwrap();

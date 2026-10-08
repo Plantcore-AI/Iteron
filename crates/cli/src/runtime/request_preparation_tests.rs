@@ -220,7 +220,7 @@ fn real_writer_refusal_keeps_original_transcript_and_candidate_unusable() {
         serde_json::to_value(&original).unwrap()
     );
     assert_eq!(
-        serde_json::to_value(&agent.transcript_state.working()).unwrap(),
+        serde_json::to_value(agent.transcript_state.working()).unwrap(),
         serde_json::to_value(Some(&original)).unwrap()
     );
     assert!(owner.validate().is_err());

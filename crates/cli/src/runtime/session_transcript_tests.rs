@@ -101,7 +101,6 @@ fn empty_recovery_is_not_an_input_and_real_new_instruction_has_one_durable_recei
         iteron_protocol::Block::Text { text } if text == "actual new instruction"
     )));
     let path = journal.rollout.path().to_path_buf();
-    drop(journal);
     drop(rollout);
     let events = iteron_record::replay(&path).unwrap();
     let messages = events

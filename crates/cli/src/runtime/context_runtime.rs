@@ -848,6 +848,11 @@ impl Agent {
     }
 }
 
+pub(super) const IMAGE_INPUT_UNSUPPORTED_REASON: &str = "the selected model has no verified image-input capability, so attachments were not submitted; \
+if this route does accept images, declare it with `image_input: true` under that model in \
+`model_capabilities` in your config";
+pub(super) const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
+
 #[cfg(test)]
 mod context_budget_recovery_tests {
     use super::*;
@@ -947,8 +952,3 @@ mod context_budget_recovery_tests {
         );
     }
 }
-
-pub(super) const IMAGE_INPUT_UNSUPPORTED_REASON: &str = "the selected model has no verified image-input capability, so attachments were not submitted; \
-if this route does accept images, declare it with `image_input: true` under that model in \
-`model_capabilities` in your config";
-pub(super) const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";

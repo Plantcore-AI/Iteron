@@ -14,6 +14,37 @@ pub(super) struct InvocationScope<'a> {
     pub(super) wall_secs: u64,
 }
 
+pub(super) struct SubmissionInvocation {
+    images: InvocationImages,
+    deadline: Option<DeadlineLease>,
+}
+impl SubmissionInvocation {
+    pub(super) fn stage(
+        scope: InvocationScope<'_>,
+        deadlines: &mut ExecutionDeadlineOwner,
+        images: &[ImageContent],
+    ) -> Result<Self, KernelError> {
+        let deadline = deadlines.begin_invocation(scope.wall_secs)?;
+        let images =
+            InvocationImages::stage(scope.runs, scope.tenant, scope.run, scope.turn, images)
+                .map_err(|_| {
+                    KernelError::ContextResolution("private image attachment storage failed".into())
+                })?;
+        Ok(Self {
+            images,
+            deadline: Some(deadline),
+        })
+    }
+    pub(super) fn images(&self) -> &[ImageContent] {
+        self.images.images()
+    }
+    /// Stop hooks/post-answer maintenance follow the original contract and run after the owned
+    /// invocation deadline is released. Inherited parent deadlines are unaffected.
+    pub(super) fn release_deadline(&mut self) {
+        self.deadline.take();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{InvocationScope, SubmissionInvocation};
@@ -50,35 +81,5 @@ mod tests {
         assert_eq!(deadlines.current(), None);
         assert_eq!(std::fs::read(&runs).unwrap(), b"physical store refusal");
         std::fs::remove_dir_all(root).unwrap();
-    }
-}
-pub(super) struct SubmissionInvocation {
-    images: InvocationImages,
-    deadline: Option<DeadlineLease>,
-}
-impl SubmissionInvocation {
-    pub(super) fn stage(
-        scope: InvocationScope<'_>,
-        deadlines: &mut ExecutionDeadlineOwner,
-        images: &[ImageContent],
-    ) -> Result<Self, KernelError> {
-        let deadline = deadlines.begin_invocation(scope.wall_secs)?;
-        let images =
-            InvocationImages::stage(scope.runs, scope.tenant, scope.run, scope.turn, images)
-                .map_err(|_| {
-                    KernelError::ContextResolution("private image attachment storage failed".into())
-                })?;
-        Ok(Self {
-            images,
-            deadline: Some(deadline),
-        })
-    }
-    pub(super) fn images(&self) -> &[ImageContent] {
-        self.images.images()
-    }
-    /// Stop hooks/post-answer maintenance follow the original contract and run after the owned
-    /// invocation deadline is released. Inherited parent deadlines are unaffected.
-    pub(super) fn release_deadline(&mut self) {
-        self.deadline.take();
     }
 }
