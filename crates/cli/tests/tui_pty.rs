@@ -1432,8 +1432,8 @@ fn experiment_lab_is_terminal_real_read_only_by_default_and_blocks_promotion() {
         let screen = pty.screen_text();
         screen.contains("experiment lab")
             && screen.contains("offline · train-only")
-            && screen.contains("external human authority only")
-            && screen.contains("No runtime setting changes")
+            && screen.contains("observed complete")
+            && screen.contains("No runtime settings change")
     });
     assert!(
         !scratch.repo().join(".iteron/experiments").exists(),
@@ -1504,7 +1504,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     assert!(!pty.screen_text().contains('�'));
 
     pty.send(b"e");
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         pty.wait_until("filtered atomic transcript export", |pty| {
             pty.screen_text().contains("exported ->")
@@ -1514,9 +1514,9 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         assert!(filtered.starts_with("# Iteron transcript\n\n"));
         assert!(filtered.contains("needle 你好 😀"));
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pty.wait_until("truthful fail-closed export diagnostic", |pty| {
-        pty.screen_text().contains("export failed before dispatch:")
+        pty.screen_text().contains("export not published:")
             && !scratch.repo().join("core-transcript-filtered.md").exists()
     });
 
@@ -1538,7 +1538,7 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
     let slash_export = scratch.repo().join("core-transcript.md");
     let slash_export_2 = scratch.repo().join("core-transcript-2.md");
     pty.send(b"/export\r");
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         // The file appearing is not the export finishing: the writer creates it before the app
         // clears its pending flag, and a second `/export` inside that window is refused with
@@ -1558,11 +1558,11 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
                     .any(|window| window == b"exported ->")
         });
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pty.wait_until(
         "slash export fails closed without filesystem mutation",
         |pty| {
-            pty.screen_text().contains("export failed before dispatch:")
+            pty.screen_text().contains("export not published:")
                 && !slash_export.exists()
                 && !slash_export_2.exists()
         },
