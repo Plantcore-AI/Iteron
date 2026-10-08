@@ -748,7 +748,7 @@ jobs:
               "$(git rev-parse "refs/tags/$previous")"
             require_eq "v0.0.26 immutable source must match the pin" \
               "7ec48721747ab5067679518be9ccfe8455a293b4" "$previous_commit"
-            compatibility_commit=587f1d80cc0cbde62685b1665565d7c5f2eb49de
+            compatibility_commit=b2e4f9f7bd61fe0b94964af5690c3651bef0d276
             compatibility_schema_blob=760156076ccf46a3f450c2ea2eb06622cd228ca1
             require_eq "v0.0.26 bridge must name a commit object" \
               "commit" "$(git cat-file -t "$compatibility_commit")"
