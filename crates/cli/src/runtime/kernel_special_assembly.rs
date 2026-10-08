@@ -165,7 +165,7 @@ impl Agent {
                 .map(DirectChildWork::Controller);
         }
         Ok(DirectChildWork::Native {
-            context,
+            context: Box::new(context),
             identity: DirectChildIdentity {
                 run,
                 directory: self.subagent_directory(),
@@ -220,7 +220,7 @@ impl Agent {
             }),
             KernelSpecialKind::Workflow => {
                 let preparation = self.kernel_workflow_preparation(turn);
-                KernelDispatchWork::Workflow(WorkflowExecution {
+                KernelDispatchWork::Workflow(Box::new(WorkflowExecution {
                     deadline: self.run_deadline.current(),
                     preparation,
                     launcher: self.workflow_launcher.clone(),
@@ -229,7 +229,7 @@ impl Agent {
                         frontend: self.frontend_saturation.clone(),
                         events: events.clone(),
                     },
-                })
+                }))
             }
             #[cfg(feature = "legacy-plantcore")]
             KernelSpecialKind::Artifact => KernelDispatchWork::Artifact,
