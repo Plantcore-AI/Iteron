@@ -7,6 +7,13 @@ pub(crate) enum ArgumentError {
     MissingRequired {
         field: String,
     },
+    UnknownField {
+        field: String,
+    },
+    StringTooLong {
+        field: String,
+        maximum: usize,
+    },
     TypeMismatch {
         field: String,
         expected: &'static str,
@@ -50,6 +57,23 @@ impl ArgumentError {
                 object.insert(
                     "message".into(),
                     Value::String(format!("missing required field `{field}`")),
+                );
+            }
+            Self::UnknownField { field } => {
+                fields(&mut object, "unknown_field", field);
+                object.insert(
+                    "message".into(),
+                    Value::String(format!("object `{field}` contains an undeclared field")),
+                );
+            }
+            Self::StringTooLong { field, maximum } => {
+                fields(&mut object, "string_too_long", field);
+                object.insert("maximum".into(), Value::Number((*maximum).into()));
+                object.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "field `{field}` allows at most {maximum} Unicode characters"
+                    )),
                 );
             }
             Self::TypeMismatch {

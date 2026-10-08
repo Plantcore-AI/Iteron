@@ -88,6 +88,8 @@ fn validate_schema_at(
                 | "description"
                 | "minimum"
                 | "enum"
+                | "additionalProperties"
+                | "maxLength"
         ) {
             return Err(SchemaError::new(
                 format!("{path}.{keyword}").as_str(),
@@ -157,6 +159,25 @@ fn validate_schema_at(
                 ));
             }
         }
+    }
+
+    if let Some(additional) = object.get("additionalProperties")
+        && (declared_type != Some("object") || additional != &Value::Bool(false))
+    {
+        return Err(SchemaError::new(
+            &format!("{path}.additionalProperties"),
+            "`additionalProperties` supports only false on `type: object`",
+        ));
+    }
+
+    if object.contains_key("maxLength") {
+        if declared_type != Some("string") {
+            return Err(SchemaError::new(
+                &format!("{path}.maxLength"),
+                "`maxLength` requires `type: string` in the supported subset",
+            ));
+        }
+        schema_item_count(object, "maxLength", path)?;
     }
 
     if object.contains_key("properties") || object.contains_key("required") {
@@ -347,6 +368,18 @@ fn validate_arguments_at(schema: &Value, input: &Value, path: &str) -> Result<()
         let object = input
             .as_object()
             .expect("type was checked before object constraints");
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if schema.get("additionalProperties") == Some(&Value::Bool(false))
+            && object
+                .keys()
+                .any(|field| properties.is_none_or(|known| !known.contains_key(field)))
+        {
+            // Reflect only the schema-owned object path, not an arbitrarily large or sensitive
+            // unknown field name/value supplied by the caller.
+            return Err(ArgumentError::UnknownField {
+                field: display_path(path),
+            });
+        }
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
             for field in required.iter().filter_map(Value::as_str) {
                 if !object.contains_key(field) {
@@ -356,12 +389,31 @@ fn validate_arguments_at(schema: &Value, input: &Value, path: &str) -> Result<()
                 }
             }
         }
-        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        if let Some(properties) = properties {
             for (field, property_schema) in properties {
                 if let Some(value) = object.get(field) {
                     validate_arguments_at(property_schema, value, &child_path(path, field))?;
                 }
             }
+        }
+    }
+
+    if declared_type == Some("string")
+        && let Some(maximum) = schema
+            .get("maxLength")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    {
+        let text = input
+            .as_str()
+            .expect("type was checked before string constraints");
+        // JSON Schema length counts Unicode scalar values. The task-plan owner separately
+        // retains its stricter byte ceiling before durable publication.
+        if text.chars().nth(maximum).is_some() {
+            return Err(ArgumentError::StringTooLong {
+                field: display_path(path),
+                maximum,
+            });
         }
     }
 

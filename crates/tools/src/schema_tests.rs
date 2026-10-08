@@ -274,3 +274,144 @@ async fn supported_enum_is_enforced_before_external_dispatch() {
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn coding_registry_admits_plan_schema_and_rejects_unknown_nested_and_overbound_arguments() {
+    let root = temp_root("plan-closed-schema");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let inspect = registry
+        .dispatch(ToolUse {
+            id: "plan-inspect".into(),
+            name: "update_plan".into(),
+            input: serde_json::json!({"operation":"inspect"}),
+        })
+        .await;
+    assert_eq!(
+        inspect.content, "update_plan requires the resident durable task-plan owner",
+        "valid input reaches the actual registered host-only executor stub"
+    );
+    for (input, kind, field) in [
+        (
+            serde_json::json!({"operation":"inspect", "unexpected":true}),
+            "unknown_field",
+            "$",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "steps":[{"description":"bounded", "status":"pending", "unexpected":true}]}),
+            "unknown_field",
+            "steps[0]",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "steps":[{"description":"x".repeat(513), "status":"pending"}]}),
+            "string_too_long",
+            "steps[0].description",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "obligations":vec!["bounded";33]}),
+            "too_many_items",
+            "obligations",
+        ),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: format!("plan-refused-{kind}-{field}"),
+                name: "update_plan".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        let error: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(error["error"], "invalid_tool_arguments");
+        assert_eq!(error["kind"], kind);
+        assert_eq!(error["field"], field);
+        assert_eq!(registry.memo_stats(), (0, 0));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn closed_string_schema_enforces_unicode_length_before_external_executor() {
+    let root = temp_root("closed-unicode");
+    let mut registry = Registry::read_only(&root).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    registry
+        .register_external(
+            ToolSpec {
+                name: "closed_probe".into(),
+                description: "closed bounded input".into(),
+                input_schema: serde_json::json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"text":{"type":"string","maxLength":2}},
+                    "required":["text"]
+                }),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                boxfut::box_it(async move { ok_result(call.id, "executed".into()) })
+            },
+        )
+        .unwrap();
+    let valid = registry
+        .dispatch(ToolUse {
+            id: "two-characters".into(),
+            name: "closed_probe".into(),
+            input: serde_json::json!({"text":"界界"}),
+        })
+        .await;
+    assert!(!valid.is_error);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let unknown_name = "caller-controlled-name".repeat(1024);
+    let mut unknown_input = serde_json::json!({"text":"ok"});
+    unknown_input
+        .as_object_mut()
+        .unwrap()
+        .insert(unknown_name.clone(), serde_json::Value::Bool(true));
+    for input in [serde_json::json!({"text":"界界界"}), unknown_input] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "closed-refused".into(),
+                name: "closed_probe".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        assert!(!result.content.contains(&unknown_name));
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn new_closed_schema_keywords_reject_open_unsupported_or_malformed_constraints() {
+    for input_schema in [
+        serde_json::json!({"type":"object","additionalProperties":true}),
+        serde_json::json!({"type":"object","additionalProperties":{"type":"string"}}),
+        serde_json::json!({"type":"string","additionalProperties":false}),
+        serde_json::json!({"type":"integer","maxLength":2}),
+        serde_json::json!({"type":"string","maxLength":-1}),
+        serde_json::json!({"type":"string","maxLength":2.5}),
+        serde_json::json!({"type":"string","maxLength":"2"}),
+    ] {
+        let root = temp_root("closed-registration-refused");
+        let mut registry = Registry::read_only(&root).unwrap();
+        assert!(
+            registry
+                .register_external(
+                    ToolSpec {
+                        name: "invalid_closed_probe".into(),
+                        description: "must not register".into(),
+                        input_schema,
+                        purity: Purity::Pure,
+                        capability: Capability::ReadOnly,
+                    },
+                    |call, _| boxfut::box_it(async move { ok_result(call.id, String::new()) }),
+                )
+                .is_err()
+        );
+        assert!(registry.purity_of("invalid_closed_probe").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
