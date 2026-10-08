@@ -121,6 +121,12 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
             | "MAX_COMMAND_REPLAY_BYTES"
             | "MAX_RECORDED_COMMANDS",
         ) => Some(InvariantReason::HardBudgetEffectLedger),
+        // Once kill has been requested, this fixed deadline bounds the native wait before the
+        // retained process owner falls back to reaping or reports an unobserved outcome. It is
+        // not an export strategy timeout or authority to release unresolved cleanup custody.
+        ("crates/cli/src/client_effects/worker.rs", "REAP_DEADLINE") => {
+            Some(InvariantReason::HardBudgetEffectLedger)
+        }
         _ => None,
     }
 }
@@ -222,5 +228,26 @@ mod tests {
                 assert!(reason(path, name, name).is_none(), "{path}::{name}");
             }
         }
+    }
+
+    #[test]
+    fn only_the_actual_native_reap_deadline_is_a_fixed_cleanup_bound() {
+        let path = "crates/cli/src/client_effects/worker.rs";
+        assert!(matches!(
+            reason(path, "REAP_DEADLINE", "REAP_DEADLINE"),
+            Some(InvariantReason::HardBudgetEffectLedger)
+        ));
+        assert!(reason(path, "EXPORT_DEADLINE", "EXPORT_DEADLINE").is_none());
+        assert!(reason(path, "REAP_DEADLINE", "Other::REAP_DEADLINE").is_none());
+        assert!(reason("crates/cli/src/other.rs", "REAP_DEADLINE", "REAP_DEADLINE").is_none());
+        assert!(
+            reason(
+                "crates/cli/src/tui/clipboard_image.rs",
+                "MAX_WINDOWS_SYSTEM_ROOT_BYTES",
+                "MAX_WINDOWS_SYSTEM_ROOT_BYTES"
+            )
+            .is_none(),
+            "the existing native allocation helper remains a live lowering-only control"
+        );
     }
 }

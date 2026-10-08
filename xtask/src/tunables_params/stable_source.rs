@@ -286,9 +286,10 @@ pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str
             | "SQ_ENTRY_OVERHEAD_BYTES"
             | "SQ_PRIORITY_CAPACITY",
         ) => Some("crates/cli/src/app_server.rs"),
-        ("crates/cli/src/tui/clipboard_image.rs", "MAX_CLIPBOARD_ENV_BYTES" | "SCRIPT") => {
-            Some("crates/cli/src/tui.rs")
-        }
+        (
+            "crates/cli/src/tui/clipboard_image.rs",
+            "MAX_CLIPBOARD_ENV_BYTES" | "MAX_WINDOWS_SYSTEM_ROOT_BYTES" | "SCRIPT",
+        ) => Some("crates/cli/src/tui.rs"),
         ("crates/cli/src/tui/frame_render.rs", "KEYS")
         | ("crates/cli/src/tui/status_render.rs", "LINE") => Some("crates/cli/src/tui.rs"),
         ("crates/cli/src/tui/headless/commands.rs", "MAX_RECORDED_COMMANDS") => {
@@ -503,6 +504,11 @@ mod tests {
                 "REWIND_TARGET_ROWS",
                 "cli.tui.workspace_command.rewind_target_rows",
             ),
+            (
+                "crates/cli/src/tui/clipboard_image.rs",
+                "MAX_WINDOWS_SYSTEM_ROOT_BYTES",
+                "cli.tui.max_windows_system_root_bytes",
+            ),
         ] {
             assert_eq!(super::super::base_param_id("cli", path, name), id);
             let source = std::fs::read_to_string(root.join(path)).unwrap();
@@ -547,6 +553,79 @@ mod tests {
                 "removed or fixture-only state gets no invented production identity"
             );
         }
+    }
+
+    #[test]
+    fn native_windows_directory_allocation_lowers_before_adding_the_terminator() {
+        fn bounded(source: &str) -> bool {
+            let parsed = syn::parse_file(source).unwrap();
+            let Some(function) = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == "trusted_windows_directory" => {
+                    Some(function)
+                }
+                _ => None,
+            }) else {
+                return false;
+            };
+            let Some(tokens) = function.block.stmts.iter().find_map(|statement| {
+                let syn::Stmt::Local(local) = statement else {
+                    return None;
+                };
+                let syn::Pat::Ident(binding) = &local.pat else {
+                    return None;
+                };
+                let syn::Expr::Macro(value) = local.init.as_ref()?.expr.as_ref() else {
+                    return None;
+                };
+                (binding.ident == "buffer" && value.mac.path.is_ident("vec"))
+                    .then(|| value.mac.tokens.to_string())
+            }) else {
+                return false;
+            };
+            let repeated = syn::parse_str::<syn::ExprRepeat>(&format!("[{tokens}]"))
+                .expect("the real native allocation has a repeat length");
+            let syn::Expr::Binary(length) = repeated.len.as_ref() else {
+                return false;
+            };
+            let syn::Expr::MethodCall(cap) = length.left.as_ref() else {
+                return false;
+            };
+            matches!(length.op, syn::BinOp::Add(_))
+                && matches!(length.right.as_ref(), syn::Expr::Lit(value) if matches!(&value.lit, syn::Lit::Int(one) if one.base10_parse::<usize>().ok() == Some(1)))
+                && cap.method == "min"
+                && cap.args.len() == 1
+                && matches!(&cap.args[0], syn::Expr::Path(value) if value.path.is_ident("MAX_WINDOWS_SYSTEM_ROOT_BYTES"))
+                && matches!(cap.receiver.as_ref(), syn::Expr::Call(call)
+                    if matches!(call.func.as_ref(), syn::Expr::Path(value)
+                        if value.path.segments.len() == 2
+                            && value.path.segments[0].ident == "iteron_tunables"
+                            && value.path.segments[1].ident == "param_integer")
+                        && call.args.len() == 2
+                        && matches!(&call.args[0], syn::Expr::Lit(value)
+                            if matches!(&value.lit, syn::Lit::Str(id)
+                                if id.value() == "cli.tui.max_windows_system_root_bytes"))
+                        && matches!(&call.args[1], syn::Expr::Path(value)
+                            if value.path.is_ident("MAX_WINDOWS_SYSTEM_ROOT_BYTES")))
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let source =
+            std::fs::read_to_string(root.join("crates/cli/src/tui/clipboard_image.rs")).unwrap();
+        assert!(bounded(&source));
+        let uncapped = source.replace(".min(MAX_WINDOWS_SYSTEM_ROOT_BYTES)", "");
+        assert_ne!(uncapped, source);
+        assert!(!bounded(&uncapped));
+        let redirected = source.replace(
+            "cli.tui.max_windows_system_root_bytes",
+            "cli.tui.clipboard_image.max_windows_system_root_bytes",
+        );
+        assert!(!bounded(&redirected));
+        assert_eq!(
+            super::original_source("crates/cli/src/other.rs", "MAX_WINDOWS_SYSTEM_ROOT_BYTES"),
+            None
+        );
     }
 
     #[test]

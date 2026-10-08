@@ -224,7 +224,9 @@ pub(super) fn trusted_windows_directory() -> Option<OsString> {
         iteron_tunables::param_integer(
             "cli.tui.max_windows_system_root_bytes",
             MAX_WINDOWS_SYSTEM_ROOT_BYTES
-        ) + 1
+        )
+        .min(MAX_WINDOWS_SYSTEM_ROOT_BYTES)
+            + 1
     ];
     // SAFETY: `buffer` is writable for its declared length and retained until the call returns.
     let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
