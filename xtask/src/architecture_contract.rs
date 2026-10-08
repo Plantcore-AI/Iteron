@@ -552,6 +552,7 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/sandbox/src/owned_process_cleanup.rs",
         "crates/sandbox/src/collected_child.rs",
         "crates/support/src/owned_windows_job.rs",
+        "crates/support/src/owned_windows_job/custody.rs",
         "crates/cli/src/runtime/direct_child_execution.rs",
         "crates/cli/src/runtime/workflow_execution.rs",
         "crates/cli/src/runtime/workflow_preparation.rs",

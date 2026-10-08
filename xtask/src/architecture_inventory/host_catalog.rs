@@ -9,9 +9,16 @@ pub(super) const SURFACES: &[Surface] = &[
             "retain actual suspended Windows child and private non-breakaway JobObject through assignment and resume",
             "cache actual exit status and retire process references before observing native job population",
         ],
-        next_seams: &[
-            "bounded custody after consumer drop and actual Windows execution remain required",
+        next_seams: &["same-candidate compiler and actual Windows execution remain required"],
+    },
+    Surface {
+        path: "crates/support/src/owned_windows_job/custody.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "admit bounded native cleanup capacity before process creation and retain dropped real child and job handles",
+            "retire custody only after actual wait and empty job observations; quarantine worker failures without claiming effect completion",
         ],
+        next_seams: &["same-candidate compiler and actual Windows execution remain required"],
     },
     Surface {
         path: "crates/sandbox/src/collected_child.rs",

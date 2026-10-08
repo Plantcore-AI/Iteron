@@ -144,6 +144,8 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `kernel_child_accounting.rs`, `obs/child_accounting.rs` | Preserve known child/tool terminals before separately observing real ledgers; exact pending facts survive restart and prevent unproven finite-budget admission | Known physical completion → exact accounting WAL pair → actual ledger fold |
 | `client_effects.rs`, `client_effects/`, `app_server/client_export.rs` | Retain native transcript publication, private content cleanup and actual session/read/concurrency leases outside frontend observers | Observed current run port → scoped host export → independent publication and cleanup receipts |
 | `app_server/client_shell.rs`, `client_effects/shell.rs` | Capture actual host permission/environment authority and retain submission/adoption custody through existing bounded operator shell execution | Strict current-run command → actual host policy → owned process-group cleanup observation |
+| `support/owned_windows_job.rs` | Own suspended native launch, exact primary-thread resume, private non-breakaway JobObject and observed process status | Actual process references retire before job population is queried |
+| `support/owned_windows_job/custody.rs` | Retain dropped native child/job handles behind one worker and at most64 admitted live, queued or quarantined custodians | Actual wait plus empty-job observation retires custody; worker failure closes new admission without publishing an effect terminal |
 | `app_server/project_init.rs`, `client_effects/project_init.rs` | Capture existing scaffold write authority and retain bounded worker custody through create-only native publication | Strict current-run intent → real host scope → observed file publication or retained uncertainty |
 | `app_server/model_preferences.rs`, `config/preferences.rs` | Retain actual default model write independently of presentation under global configuration lock and native barriers | Committed model route → actual worker custody → scoped installation receipt |
 | `app_server/tunables_simulation.rs`, `client_effects/tunables_simulation.rs`, `client_effects/workspace_read.rs` | Retain existing operator simulation source read under host policy and publish canonical redacted explanations | Strict scoped read intent → actual bounded native read → immutable simulation view |
@@ -176,6 +178,11 @@ This does not accept every workspace module or executable boundary. Final accept
 rebuilt same-candidate source inventory, default/optional profile gates and actual concurrent tool,
 cancellation, raw-artifact, frontend and restart journeys. Scoped source reviews do not replace
 compiler, process-custody or native durability evidence.
+
+The Windows cleanup worker retains handles while the host process is alive. It does not
+prove operating-system cleanup after host death between creating an unassigned suspended
+process and assigning it to the private JobObject. Assigned-tree kill-on-close and native
+execution need their own observed platform evidence.
 
 
 ### Optional task plans
