@@ -261,7 +261,8 @@ pub(super) fn source_invariant_disposition(
             "the zero pre-paint network budget is a host-owned latency ceiling, not a trainable provider policy",
         ));
     }
-    if identity.contains("crates/record/src/session.rs")
+    if (identity.contains("crates/record/src/session.rs")
+        || identity.contains("crates/record/src/session/index.rs"))
         && identity.contains("sessiondeltahardlimits")
     {
         return Some(invariant(
@@ -700,6 +701,9 @@ pub(super) fn manifest_kind(name: &str) -> Option<CensusCandidateKind> {
 }
 
 pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
+    // Only these existing declarations moved. Preserve their external identities without
+    // replacing actual owner/use-site provenance or giving new source forms historical aliases.
+    let (relative, symbol) = original_source_form(relative, symbol);
     let module = relative
         .rsplit_once("/src/")
         .map(|(_, tail)| tail)
@@ -719,6 +723,46 @@ pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+fn original_source_form<'a>(relative: &'a str, symbol: &'a str) -> (&'a str, &'a str) {
+    match relative {
+        "crates/record/src/session/model.rs"
+            if symbol.starts_with("SessionMeta.")
+                || symbol.starts_with("SessionAncestryReceipt.") =>
+        {
+            ("crates/record/src/session.rs", symbol)
+        }
+        "crates/record/src/session/index.rs" if symbol.starts_with("SessionDeltaRef.") => {
+            ("crates/record/src/session.rs", symbol)
+        }
+        "crates/record/src/session/index.rs"
+            if symbol == "session::index.inline::SessionDeltaHardLimits::field::rows.1" =>
+        {
+            (
+                "crates/record/src/session.rs",
+                "session.inline::SessionDeltaHardLimits::field::rows.1",
+            )
+        }
+        "crates/ctx/src/memory/selection.rs"
+            if symbol.starts_with("MemoryCandidate.")
+                || symbol.starts_with("MemorySlotObservation.") =>
+        {
+            ("crates/ctx/src/memory.rs", symbol)
+        }
+        "crates/provider/src/catalog/discovery.rs"
+            if symbol.starts_with("FireworksModel.")
+                || symbol.starts_with("FireworksDeployedModel.") =>
+        {
+            ("crates/provider/src/catalog.rs", symbol)
+        }
+        "crates/provider/src/catalog/health.rs"
+            if symbol == "ProviderHealthStore::new.parameter::max_entries.1" =>
+        {
+            ("crates/provider/src/catalog.rs", symbol)
+        }
+        _ => (relative, symbol),
+    }
 }
 
 pub(super) fn is_policy_context(context: &str) -> bool {

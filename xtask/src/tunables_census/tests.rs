@@ -1,6 +1,118 @@
 use super::*;
 
 #[test]
+fn moved_source_forms_keep_id_and_real_owner_evidence() {
+    for (krate, old_path, new_path, source) in [
+        (
+            "record",
+            "crates/record/src/session.rs",
+            "crates/record/src/session/model.rs",
+            "struct SessionMeta { #[serde(default)] ancestry: Vec<String> }\n\
+             struct SessionAncestryReceipt { #[serde(default)] observed_record_bytes: u64 }",
+        ),
+        (
+            "record",
+            "crates/record/src/session.rs",
+            "crates/record/src/session/index.rs",
+            "struct SessionDeltaRef { #[serde(default)] delta_high_water: u64 }",
+        ),
+        (
+            "ctx",
+            "crates/ctx/src/memory.rs",
+            "crates/ctx/src/memory/selection.rs",
+            "struct MemoryCandidate { #[serde(default)] modified_unix_secs: Option<u64> }\n\
+             struct MemorySlotObservation { #[serde(default)] reference_unix_secs: u64 }",
+        ),
+        (
+            "provider",
+            "crates/provider/src/catalog.rs",
+            "crates/provider/src/catalog/discovery.rs",
+            "struct FireworksModel { #[serde(default)] conversation_config: Option<String> }\n\
+             struct FireworksDeployedModel { #[serde(default)] is_default: bool }",
+        ),
+        (
+            "provider",
+            "crates/provider/src/catalog.rs",
+            "crates/provider/src/catalog/health.rs",
+            "impl ProviderHealthStore { pub fn new(max_entries: usize) -> Self { todo!() } }",
+        ),
+    ] {
+        let before = discover_source(krate, old_path, source).unwrap();
+        let after = discover_source(krate, new_path, source).unwrap();
+        assert!(!before.is_empty(), "{old_path}");
+        assert_eq!(before.len(), after.len());
+        for (old, new) in before.iter().zip(&after) {
+            assert_eq!(old.id, new.id);
+            assert_eq!(old.disposition, new.disposition);
+            assert_eq!(old.value, new.value);
+            assert_eq!(new.owner.path, new_path);
+            assert!(new.use_sites.iter().all(|site| site.path == new_path));
+            if let Some(proof) = &new.caller_input_proof {
+                assert_eq!(proof.path, new_path);
+            }
+        }
+    }
+}
+
+#[test]
+fn moved_session_hard_envelope_remains_readonly_and_validates_actual_source() {
+    let source = "struct SessionDeltaHardLimits { rows: u64, bytes: u64 }\n\
+                  const SESSION_DELTA_HARD_LIMITS: SessionDeltaHardLimits =\n\
+                      SessionDeltaHardLimits { rows: 4_096, bytes: 16 * 1024 * 1024 };";
+    let before = discover_source("record", "crates/record/src/session.rs", source).unwrap();
+    let after = discover_source("record", "crates/record/src/session/index.rs", source).unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, before[0].id);
+    assert_eq!(
+        after[0].id,
+        "record.session.session.inline.sessiondeltahardlimits.field.rows.1"
+    );
+    assert_eq!(after[0].owner.path, "crates/record/src/session/index.rs");
+    assert_eq!(after[0].owner.symbol, "session::index");
+    assert_eq!(after[0].disposition, CensusDisposition::InvariantReadOnly);
+    assert_eq!(after[0].invariant_kind, Some(InvariantKind::Durability));
+    assert!(source_form_invariant_matches(&before[0]));
+    assert!(source_form_invariant_matches(&after[0]));
+    validate(&after).unwrap();
+
+    let unrelated = source.replace("SessionDeltaHardLimits", "SessionScanLimits");
+    let row = discover_source("record", "crates/record/src/session/index.rs", &unrelated)
+        .unwrap()
+        .remove(0);
+    assert_eq!(row.disposition, CensusDisposition::BindingRequired);
+    assert!(row.id.starts_with("record.session.index."));
+    assert!(!source_form_invariant_matches(&row));
+
+    let mut forged_source = after[0].clone();
+    forged_source.owner.path = "crates/record/src/unrelated.rs".into();
+    assert!(!source_form_invariant_matches(&forged_source));
+}
+
+#[test]
+fn unrelated_new_owner_defaults_do_not_inherit_historical_aliases() {
+    let source = "struct NewPolicy { #[serde(default)] threshold: u32 }";
+    for (krate, path, expected_prefix) in [
+        (
+            "ctx",
+            "crates/ctx/src/memory/selection.rs",
+            "ctx.memory.selection.",
+        ),
+        ("cli", "crates/cli/src/block/diff.rs", "cli.block.diff."),
+        (
+            "provider",
+            "crates/provider/src/catalog/discovery.rs",
+            "provider.catalog.discovery.",
+        ),
+    ] {
+        let row = discover_source(krate, path, source).unwrap().remove(0);
+        assert!(row.id.starts_with(expected_prefix));
+        assert_eq!(row.owner.path, path);
+        assert_eq!(row.disposition, CensusDisposition::RuntimeSettable);
+    }
+}
+
+#[test]
 fn discovers_declared_defaults_but_not_default_constructor_uses() {
     let source = r#"
         struct RuntimePolicy {

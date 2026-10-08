@@ -69,8 +69,11 @@ pub(super) fn scan_production_sources(
 
 pub(super) fn source_form_invariant_matches(row: &CensusRow) -> bool {
     row.tier2_id.is_none()
-        && source_invariant_disposition(&format!("{}::{}", row.owner.symbol, row.id), &row.value)
-            .is_some_and(|disposition| Some(disposition.kind) == row.invariant_kind)
+        && source_invariant_disposition(
+            &format!("{}::{}::{}", row.owner.path, row.owner.symbol, row.id),
+            &row.value,
+        )
+        .is_some_and(|disposition| Some(disposition.kind) == row.invariant_kind)
 }
 
 #[cfg(test)]
