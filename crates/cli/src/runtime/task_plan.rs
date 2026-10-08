@@ -198,6 +198,7 @@ impl PreparedTaskPlan {
         }
     }
 }
+#[cfg(test)]
 impl super::Agent {
     pub(crate) fn task_plan_snapshot(&self) -> serde_json::Value {
         self.task_plan.inspect()

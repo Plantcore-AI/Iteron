@@ -95,15 +95,14 @@ impl KernelSpawner {
             }
         };
 
-        if let Some(observer) = &self.cx.kernel_workflow_ledgers {
-            if observer
+        if let Some(observer) = &self.cx.kernel_workflow_ledgers
+            && observer
                 .lock()
                 .map_or(true, |mut owner| owner.begin(ordinal).is_err())
-            {
-                return AgentOutcome::null(
-                    "native workflow accounting admission refused before provider IO",
-                );
-            }
+        {
+            return AgentOutcome::null(
+                "native workflow accounting admission refused before provider IO",
+            );
         }
         // `run_leaf` owns `&mut child` until completion, so its already-existing UI seam is the
         // live per-turn observation point. Drain it alongside the child future: TurnEnd carries

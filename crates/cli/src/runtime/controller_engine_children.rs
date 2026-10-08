@@ -40,6 +40,9 @@ pub(super) struct ControllerEngineChildren {
     unresolved: Arc<AtomicBool>,
 }
 impl ControllerEngineChildren {
+    // Composition captures the independently owned host, parent source and finite execution
+    // limits once. Keep these explicit rather than packaging mutable runtime authority.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         control: Arc<dyn AgentControlPort>,
         parent: AgentIdV1,

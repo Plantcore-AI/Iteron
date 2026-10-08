@@ -282,9 +282,11 @@ async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission
     };
     let completion = work
         .run(
-            TurnId(1),
-            0,
-            "read",
+            crate::runtime::direct_child_execution::DirectChildInvocation {
+                turn: TurnId(1),
+                index: 0,
+                task: "read",
+            },
             &mut journal,
             &mut control,
             &events,
@@ -303,10 +305,12 @@ async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission
         failed_actions,
         admitted,
         super::tool_result(&call, result, Trust::Untrusted),
-        source,
-        &events,
-        TurnId(1),
-        &effect,
+        super::KnownSpecialObservation {
+            accounting: source,
+            events: &events,
+            turn: TurnId(1),
+            effect: &effect,
+        },
     )
     .unwrap();
     assert!(matches!(

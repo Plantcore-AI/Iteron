@@ -1,7 +1,7 @@
 //! Adapter from the persistent controller's runtime port to real resident Iteron Agents.
 
 use super::persistent_agents::{
-    AgentControlPort, AgentObservation, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
+    AgentControlPort, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
     PersistentAgentRuntime,
 };
 use super::persistent_native_generations::NativeGenerations;
@@ -17,7 +17,7 @@ use iteron_agents::{
 };
 use iteron_obs::CostState;
 use iteron_protocol::agent_control::{
-    AgentCommandV1, AgentControlReplyV1, AgentEpochV1, AgentIdV1, AgentMessageIdV1, AgentViewV1,
+    AgentCommandV1, AgentEpochV1, AgentIdV1, AgentMessageIdV1, AgentViewV1,
 };
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Capability, EventKind, Purity, ToolResult, ToolSpec, Trust};
@@ -946,50 +946,8 @@ impl Agent {
         Ok(limits)
     }
 
-    pub(crate) fn persistent_workflow_controller(
-        &self,
-    ) -> Result<Arc<dyn iteron_workflow::live_scheduler::WorkflowControllerPort>, ControllerError>
-    {
-        Ok(self.persistent_control()?.workflow_port())
-    }
-    pub(crate) fn persistent_workflow_completion(
-        &self,
-        task: &iteron_workflow::live_scheduler::ScheduledTaskV1,
-    ) -> Result<Option<iteron_agents::AgentWorkflowCompletion>, ControllerError> {
-        self.persistent_control()?.workflow_completion(task)
-    }
-
-    pub(crate) fn execute_agent_control(
-        &self,
-        request_id: &str,
-        command: AgentCommandV1,
-    ) -> Result<AgentControlReplyV1, ControllerError> {
-        self.persistent_control()?
-            .command(AgentActor::Operator, request_id, command)
-    }
     pub(crate) fn list_persistent_agents(&self) -> Result<Vec<AgentViewV1>, ControllerError> {
         self.persistent_control()?.list(AgentActor::Operator)
-    }
-    pub(crate) fn inspect_persistent_agent(
-        &self,
-        id: AgentIdV1,
-    ) -> Result<AgentViewV1, ControllerError> {
-        self.persistent_control()?.inspect(AgentActor::Operator, id)
-    }
-    pub(crate) fn persistent_agent_message(
-        &self,
-        id: AgentMessageIdV1,
-    ) -> Result<AgentMailboxMessage, ControllerError> {
-        self.persistent_control()?.message(AgentActor::Operator, id)
-    }
-    pub(crate) async fn wait_persistent_agents(
-        &self,
-        revision: u64,
-        timeout_ms: u64,
-    ) -> Result<AgentObservation, ControllerError> {
-        self.persistent_control()?
-            .wait(AgentActor::Operator, revision, timeout_ms)
-            .await
     }
 }
 

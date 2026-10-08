@@ -27,7 +27,7 @@ use std::{
 
 pub(super) enum DirectChildWork {
     Native {
-        context: KernelSpawnerContext,
+        context: Box<KernelSpawnerContext>,
         identity: DirectChildIdentity,
     },
     Controller(Arc<ControllerEngineChildren>),
@@ -36,17 +36,21 @@ pub(super) enum DirectChildWork {
 pub(super) struct DirectChildExecution {
     pub(super) work: DirectChildWork,
 }
+pub(super) struct DirectChildInvocation<'a> {
+    pub(super) turn: TurnId,
+    pub(super) index: usize,
+    pub(super) task: &'a str,
+}
 impl DirectChildExecution {
     pub(super) async fn run(
         self,
-        turn: TurnId,
-        index: usize,
-        task: &str,
+        invocation: DirectChildInvocation<'_>,
         journal: &mut KernelDispatchJournal<'_>,
         control: &mut KernelDispatchControl<'_>,
         events: &StreamToolEvents,
         mut hooks: super::hook_execution::HookExecutionScope<'_>,
     ) -> Result<super::kernel_child_accounting::KernelChildCompletion, KernelError> {
+        let DirectChildInvocation { turn, index, task } = invocation;
         if let DirectChildWork::Refused(reason) = &self.work {
             return Ok(
                 super::kernel_child_accounting::KernelChildCompletion::no_child(
@@ -88,7 +92,7 @@ impl DirectChildExecution {
                         )),
                     );
                 }
-                let mut child = match KernelSpawner::new(context).build_direct_child(&identity) {
+                let mut child = match KernelSpawner::new(*context).build_direct_child(&identity) {
                     Ok(child) => child,
                     Err(reason) => {
                         return Ok(
@@ -223,7 +227,7 @@ impl DirectChildExecution {
             Some((run, ledger)) => {
                 super::kernel_child_accounting::ChildAccountingSource::DirectNative {
                     run,
-                    ledger,
+                    ledger: Box::new(ledger),
                     summary: result.clone(),
                     outcome: terminal,
                 }

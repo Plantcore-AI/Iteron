@@ -143,6 +143,7 @@ impl LiveAgentMailbox {
         Ok(text)
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) fn render_steer(
         &self,
         input: &AgentMailboxMessage,

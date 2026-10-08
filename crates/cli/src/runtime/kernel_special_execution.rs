@@ -26,7 +26,7 @@ pub(super) fn classify(call: &ToolUse, artifact_enabled: bool) -> Option<KernelS
 
 use super::{
     KernelError,
-    direct_child_execution::DirectChildExecution,
+    direct_child_execution::{DirectChildExecution, DirectChildInvocation},
     effect_descriptor::{effect_done_terminal, effect_failed_terminal},
     failed_action_cache::FailedActionCache,
     hook_execution::HookExecutionScope,
@@ -45,7 +45,7 @@ use iteron_protocol::{Capability, LifecyclePayload, ToolResult, Trust, TurnId};
 pub(super) enum KernelDispatchWork {
     Plan,
     Direct(DirectChildExecution),
-    Workflow(WorkflowExecution),
+    Workflow(Box<WorkflowExecution>),
     #[cfg(feature = "legacy-plantcore")]
     Artifact,
 }
@@ -138,12 +138,15 @@ impl KernelSpecialExecution<'_> {
                 );
                 let completion = work
                     .run(
-                        turn,
-                        index,
-                        call.input
-                            .get("task")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or(""),
+                        DirectChildInvocation {
+                            turn,
+                            index,
+                            task: call
+                                .input
+                                .get("task")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(""),
+                        },
                         &mut self.journal,
                         &mut self.control,
                         &events,
@@ -164,7 +167,7 @@ impl KernelSpecialExecution<'_> {
                     capability,
                     super::tool_presentation::ui_approval_arguments(&call.input),
                 )?;
-                let result = match work
+                let result = match (*work)
                     .run(
                         &call.input,
                         turn,
@@ -218,23 +221,36 @@ impl KernelSpecialExecution<'_> {
             self.failed_actions,
             admitted,
             result,
-            accounting,
-            &events,
-            turn,
-            &effect,
+            KnownSpecialObservation {
+                accounting,
+                events: &events,
+                turn,
+                effect: &effect,
+            },
         )
     }
+}
+/// Accounting observation scope follows this same admitted physical tool terminal. Keeping the
+/// receipt identity with its observation does not turn unavailable accounting into unknown IO.
+pub(super) struct KnownSpecialObservation<'a> {
+    pub(super) accounting: Option<super::kernel_child_accounting::ChildAccountingSource>,
+    pub(super) events: &'a super::stream_tool_events::StreamToolEvents,
+    pub(super) turn: TurnId,
+    pub(super) effect: &'a iteron_protocol::EffectId,
 }
 pub(super) fn complete_known_special(
     journal: &mut KernelDispatchJournal<'_>,
     failed: &mut FailedActionCache,
     admitted: KernelToolCall,
     result: ToolResult,
-    accounting: Option<super::kernel_child_accounting::ChildAccountingSource>,
-    events: &super::stream_tool_events::StreamToolEvents,
-    turn: TurnId,
-    effect: &iteron_protocol::EffectId,
+    observation: KnownSpecialObservation<'_>,
 ) -> Result<KernelSpecialResult, KernelError> {
+    let KnownSpecialObservation {
+        accounting,
+        events,
+        turn,
+        effect,
+    } = observation;
     let capacity_error = match &accounting {
         Some(source) => source.begin(journal, turn, effect)?.err(),
         None => None,

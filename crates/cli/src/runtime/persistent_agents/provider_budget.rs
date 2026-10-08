@@ -21,6 +21,7 @@ pub(crate) trait RuntimeProviderBudgetPort: Send + Sync {
     }
     fn bind(&self, scope: &str) -> Result<(), ControllerError>;
     fn reserve(&self, admission: RuntimeProviderBudgetAdmission) -> Result<(), ControllerError>;
+    #[cfg(test)]
     fn reservation(
         &self,
         scope: &str,
@@ -110,6 +111,7 @@ impl<J: AgentControllerJournal + Send + 'static> RuntimeProviderBudgetPort for P
         self.host.notify(controller.revision());
         result
     }
+    #[cfg(test)]
     fn reservation(
         &self,
         scope: &str,

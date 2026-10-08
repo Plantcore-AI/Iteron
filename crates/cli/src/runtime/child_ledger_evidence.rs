@@ -9,7 +9,7 @@ const MAX_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
-pub(super) struct AgentRuntimeLedger {
+pub(crate) struct AgentRuntimeLedger {
     agent: AgentIdV1,
     epoch: AgentEpochV1,
     tenant: TenantId,
@@ -61,12 +61,11 @@ impl CompletedChildLedgers {
         if !self.snapshots.contains_key(&agent) && self.snapshots.len() >= 64 {
             return Err(ControllerError::Capacity);
         }
-        if let Some(old) = self.snapshots.get(&agent) {
-            if epoch.incarnation < old.epoch.incarnation
-                || (epoch.incarnation == old.epoch.incarnation && epoch.turn <= old.epoch.turn)
-            {
-                return Err(ControllerError::StaleEpoch);
-            }
+        if let Some(old) = self.snapshots.get(&agent)
+            && (epoch.incarnation < old.epoch.incarnation
+                || (epoch.incarnation == old.epoch.incarnation && epoch.turn <= old.epoch.turn))
+        {
+            return Err(ControllerError::StaleEpoch);
         }
         let retained_bytes = ledger
             .bounded_snapshot_bytes(MAX_RECEIPT_BYTES)

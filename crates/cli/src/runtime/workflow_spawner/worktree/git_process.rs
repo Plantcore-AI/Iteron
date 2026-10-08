@@ -155,12 +155,11 @@ fn capture_until(
     let result = (|| {
         let stdout = receive(&out, pipes)?.map_err(|_| unavailable())?;
         let stderr = receive(&err, pipes)?.map_err(|_| unavailable())?;
-        if let Some(writer) = writer {
-            if let Err(error) = receive(&writer, pipes)?
-                && error.kind() != std::io::ErrorKind::BrokenPipe
-            {
-                return Err(unavailable());
-            }
+        if let Some(writer) = writer
+            && let Err(error) = receive(&writer, pipes)?
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(unavailable());
         }
         if require_complete && stdout.overflow {
             return Err(unavailable());

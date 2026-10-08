@@ -53,10 +53,11 @@ fn base(context: &KernelSpawnerContext) -> Result<String, ControllerError> {
         part(definition.execution_digest().as_bytes())?;
     }
     part(context.hooks.catalog_identity().digest_sha256.as_bytes())?;
-    for text in [&context.compaction_summary_prompt, &context.verify_command] {
-        if let Some(text) = text {
-            part(text.as_bytes())?;
-        }
+    for text in [&context.compaction_summary_prompt, &context.verify_command]
+        .into_iter()
+        .flatten()
+    {
+        part(text.as_bytes())?;
     }
     if let Some((text, trust)) = &context.environment_context {
         part(text.as_bytes())?;

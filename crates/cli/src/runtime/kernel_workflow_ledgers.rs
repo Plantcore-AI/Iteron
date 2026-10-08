@@ -26,7 +26,7 @@ impl NativeWorkflowLedger {
         &self.ledger
     }
     pub(super) fn outcome(&self) -> WorkflowChildOutcome {
-        self.outcome.clone()
+        self.outcome
     }
 }
 enum Observation {

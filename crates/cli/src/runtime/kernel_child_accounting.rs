@@ -44,7 +44,7 @@ impl KernelChildCompletion {
 pub(super) enum ChildAccountingSource {
     DirectNative {
         run: RunId,
-        ledger: Ledger,
+        ledger: Box<Ledger>,
         summary: Result<String, String>,
         outcome: WorkflowChildOutcome,
     },
@@ -122,7 +122,7 @@ impl ChildAccountingSource {
                     receipt.run().clone(),
                     receipt.ledger(),
                     &summary,
-                    child_outcome(terminal.clone()),
+                    child_outcome(*terminal),
                 )?;
             }
             Self::Workflow {
