@@ -1021,12 +1021,45 @@ fn runtime_method(source: &str, owner: &str, name: &str) -> Result<syn::Block> {
 }
 
 fn budget_tokens(value: &impl ToTokens) -> String {
-    // Trailing separators are syntax formatting, not a different budget expression.
-    value
-        .to_token_stream()
-        .to_string()
-        .replace(", }", "}")
-        .replace(", )", ")")
+    budget_token_stream(value.to_token_stream()).to_string()
+}
+fn budget_token_stream(stream: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    use proc_macro2::{Delimiter, TokenTree};
+    let mut normalized = proc_macro2::TokenStream::new();
+    let mut previous = None;
+    for token in stream {
+        let current =
+            match token {
+                TokenTree::Group(group) => {
+                    let mut children: Vec<_> = group.stream().into_iter().collect();
+                    let call_group = matches!(&previous, Some(TokenTree::Group(_)))
+                        || matches!(&previous, Some(TokenTree::Ident(name)) if !matches!(
+                            name.to_string().as_str(), "return" | "break" | "if" | "while" | "match"
+                        ));
+                    let separator_count = children.iter().filter(|token|
+                    matches!(token, TokenTree::Punct(punct) if punct.as_char() == ',')
+                ).count();
+                    // Calls/struct fields permit a trailing separator. Preserve a singleton tuple's
+                    // comma: `(value,)` is a different type from `(value)`. Literal token contents are
+                    // never edited, and every group retains its original delimiter.
+                    if children.last().is_some_and(
+                        |token| matches!(token, TokenTree::Punct(punct) if punct.as_char() == ','),
+                    ) && (group.delimiter() == Delimiter::Brace
+                        || (group.delimiter() == Delimiter::Parenthesis
+                            && (call_group || separator_count > 1)))
+                    {
+                        children.pop();
+                    }
+                    let children = children.into_iter().collect();
+                    let canonical = budget_token_stream(children);
+                    TokenTree::Group(proc_macro2::Group::new(group.delimiter(), canonical))
+                }
+                token => token,
+            };
+        normalized.extend(std::iter::once(current.clone()));
+        previous = Some(current);
+    }
+    normalized
 }
 fn budget_expr(source: &str) -> Result<String> {
     Ok(budget_tokens(&syn::parse_str::<syn::Expr>(source)?))
@@ -1531,6 +1564,39 @@ mod tests {
             "edit".to_string(),
         ];
         assert!(validate_read_only_names(&expected, &unexpected).is_err());
+    }
+
+    #[test]
+    fn budget_token_normalization_preserves_literal_and_tuple_authority() {
+        for (plain, formatted) in [
+            (
+                "allocate(turns, wall, tokens, &budget)",
+                "allocate(turns, wall, tokens, &budget,)",
+            ),
+            ("Some(tokens)", "Some(tokens,)"),
+            (
+                "Budget { max_turns: turns }",
+                "Budget { max_turns: turns, }",
+            ),
+            (
+                "match input { (a, b) => a }",
+                "match input { (a, b,) => a, }",
+            ),
+        ] {
+            assert_eq!(budget_expr(plain).unwrap(), budget_expr(formatted).unwrap());
+        }
+        for (left, right) in [
+            ("(tokens,)", "(tokens)"),
+            ("Some((tokens,))", "Some((tokens))"),
+            ("Some(\"literal,)\")", "Some(\"literal)\")"),
+            ("Some(\"literal, }\")", "Some(\"literal}\")"),
+            (
+                "allocate(turns, wall, tokens, &budget)",
+                "allocate(turns, wall, tokens, &unbounded)",
+            ),
+        ] {
+            assert_ne!(budget_expr(left).unwrap(), budget_expr(right).unwrap());
+        }
     }
 
     #[test]
