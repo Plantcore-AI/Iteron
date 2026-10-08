@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+const MAX_VALUE_BYTES: usize = 32 * 1024;
+const ONE_LINE_VALUE_MAX_CHARS: usize = 120;
+fn max_value_bytes() -> usize {
+    iteron_tunables::param_integer("cli.tui.experiment_lab.max_value_bytes", MAX_VALUE_BYTES)
+        .min(MAX_VALUE_BYTES)
+}
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum LabActionV1 {
@@ -21,7 +27,7 @@ impl LabActionV1 {
                 if !family.is_empty()
                     && family.len() <= 128
                     && !value.trim().is_empty()
-                    && value.len() <= 32 * 1024 =>
+                    && value.len() <= max_value_bytes() =>
             {
                 Ok(())
             }
@@ -163,7 +169,7 @@ fn candidate(family_id: &str, value: serde_json::Value) -> Result<CandidateReque
         || serde_json::to_vec(&value)
             .map_err(|_| "invalid candidate value")?
             .len()
-            > 32 * 1024
+            > max_value_bytes()
     {
         return Err("candidate has no complete binding or violates value bounds");
     }
@@ -184,8 +190,8 @@ pub(super) fn prepare_request(
     family: &str,
     raw: &str,
 ) -> Result<(ExperimentRequest, Vec<u8>), &'static str> {
-    if raw.len() > 32 * 1024 {
-        return Err("candidate value exceeds 32KiB");
+    if raw.len() > max_value_bytes() {
+        return Err("candidate value exceeds the configured byte limit");
     }
     let candidate = candidate(
         family,
@@ -240,6 +246,21 @@ pub(super) fn display(value: &str) -> String {
         .take(512)
         .collect()
 }
+fn one_line_value(value: &str) -> String {
+    let text = display(value).replace(['\n', '\r'], " ");
+    let limit = iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.one_line_value_max_chars",
+        ONE_LINE_VALUE_MAX_CHARS,
+    )
+    .min(ONE_LINE_VALUE_MAX_CHARS);
+    if text.chars().count() <= limit {
+        text
+    } else if limit == 0 {
+        String::new()
+    } else {
+        format!("{}…", text.chars().take(limit - 1).collect::<String>())
+    }
+}
 pub(super) fn project_request(
     request: &ExperimentRequest,
     status: RequestStatusV1,
@@ -247,7 +268,7 @@ pub(super) fn project_request(
     RequestViewV1 {
         request_id: request.request_id.clone(),
         family: request.candidate.family.clone(),
-        value: display(&request.candidate.value.to_string()),
+        value: one_line_value(&request.candidate.value.to_string()),
         relative_path: format!(".iteron/experiments/requests/{}.json", request.request_id),
         status,
     }

@@ -12,6 +12,7 @@ use iteron_protocol::{
         RewindFilesV1, RewindScopeV1, RewindTargetV1, RewindUnrecordedV1, WorkspaceRewindCommandV1,
     },
 };
+const REWIND_TARGET_ROWS: usize = 30;
 
 pub(super) fn parse(
     scope: &ThreadSnapshotV1,
@@ -81,7 +82,12 @@ pub(super) fn project(reply: WorkspaceRewound) -> Vec<Action> {
     }
     if !fact.points.is_empty() {
         let mut rows=vec![PanelRow::Note("preview: /rewind [RUN@]SEQ [all|code|conversation] [keep|delete] · append apply to execute".into())];
-        rows.extend(fact.points.iter().take(30).map(|point| {
+        let limit = iteron_tunables::param_integer(
+            "cli.tui.workspace_command.rewind_target_rows",
+            REWIND_TARGET_ROWS,
+        )
+        .min(REWIND_TARGET_ROWS);
+        rows.extend(fact.points.iter().take(limit).map(|point| {
             kv(
                 &format!(
                     "{}@{}",

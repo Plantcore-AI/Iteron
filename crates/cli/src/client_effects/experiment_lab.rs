@@ -9,6 +9,8 @@ use model::{ExperimentRequest, prepare_request, project_request};
 use std::path::PathBuf;
 const MAX_SCAN: usize = 4096;
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
+const MAX_LISTED_REQUESTS: usize = 80;
+const MAX_LISTED_BUNDLES: usize = 40;
 fn max_request_bytes() -> usize {
     // Preserve the existing lowering-only request-read control at its original address.
     iteron_tunables::param_integer(
@@ -195,6 +197,16 @@ fn chain(
     Ok(current)
 }
 fn list(root: &NativeDirectory) -> Result<LabFactsV1, &'static str> {
+    let max_requests = iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.max_listed_requests",
+        MAX_LISTED_REQUESTS,
+    )
+    .min(MAX_LISTED_REQUESTS);
+    let max_bundles = iteron_tunables::param_integer(
+        "cli.tui.experiment_lab.max_listed_bundles",
+        MAX_LISTED_BUNDLES,
+    )
+    .min(MAX_LISTED_BUNDLES);
     let Some(root) = chain(root, &[".iteron", "experiments"], false)
         .map_err(|_| "experiment namespace is unsafe")?
     else {
@@ -244,7 +256,7 @@ fn list(root: &NativeDirectory) -> Result<LabFactsV1, &'static str> {
                 incomplete = true;
                 continue;
             }
-            if requests.len() == 80 {
+            if requests.len() == max_requests {
                 incomplete = true;
                 break;
             }
@@ -284,7 +296,7 @@ fn list(root: &NativeDirectory) -> Result<LabFactsV1, &'static str> {
                 incomplete = true;
                 continue;
             }
-            if bundles.len() == 40 {
+            if bundles.len() == max_bundles {
                 incomplete = true;
                 break;
             }

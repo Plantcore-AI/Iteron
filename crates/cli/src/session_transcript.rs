@@ -6,7 +6,8 @@ use iteron_protocol::{Block, EventKind, Role, ToolResult};
 use iteron_record::ScopedEvent;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
-const MAX_BLOCKS: usize = 120;
+const MAX_ADOPTED_BLOCKS: usize = 120;
+const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 const MAX_BYTES: usize = 512 * 1024;
 fn text(value: &str, limit: usize) -> (String, bool) {
     let safe = iteron_record::redact::scrub(value);
@@ -65,6 +66,16 @@ fn scrub(value: &Value) -> Value {
     }
 }
 pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
+    let max_blocks = iteron_tunables::param_integer(
+        "cli.tui.session_adoption.max_adopted_blocks",
+        MAX_ADOPTED_BLOCKS,
+    )
+    .min(MAX_ADOPTED_BLOCKS);
+    let max_tool_output_bytes = iteron_tunables::param_integer(
+        "cli.tui.session_adoption.max_adopted_tool_output_bytes",
+        MAX_ADOPTED_TOOL_OUTPUT_BYTES,
+    )
+    .min(MAX_ADOPTED_TOOL_OUTPUT_BYTES);
     let mut selected = VecDeque::new();
     let mut total = 0_usize;
     for scoped in events {
@@ -79,7 +90,10 @@ pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
                 || matches!(block, Block::Thinking {thinking} if !thinking.trim().is_empty())
             {
                 total = total.saturating_add(1);
-                if selected.len() == MAX_BLOCKS {
+                if max_blocks == 0 {
+                    continue;
+                }
+                if selected.len() == max_blocks {
                     selected.pop_front();
                 }
                 selected.push_back((scoped, message.role, block));
@@ -158,7 +172,7 @@ pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
                     ))
                     .and_then(|v| *v);
                 let (output, truncated) = recorded
-                    .map(|r| text(&r.content, 4 * 1024))
+                    .map(|r| text(&r.content, max_tool_output_bytes))
                     .unwrap_or_else(|| {
                         (
                             "no unambiguous recorded result for this physical run and turn".into(),
