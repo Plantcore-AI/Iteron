@@ -452,8 +452,12 @@ fn use_tree_names(
             } else {
                 Some(name.ident.unraw().to_string())
             };
-            if let (Some(names), Some(bound)) = (names.as_mut(), bound) {
-                names.insert(bound);
+            if let Some(bound) = bound {
+                if let Some(names) = names.as_mut() {
+                    names.insert(bound);
+                }
+            } else {
+                *names = None;
             }
         }
         syn::UseTree::Rename(rename) => {
@@ -475,17 +479,109 @@ fn use_tree_names(
     }
 }
 
+/// Canonical leaves retain the actual complete path, alias, visibility and attributes. Grouping
+/// unrelated imports together is formatting, not a change to each named binding's authority.
+/// Unknown-name imports stay whole and unconditional; executable freezes still compare all leaves.
+fn named_use_leaves(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<(syn::Ident, syn::token::PathSep)>,
+    emit: &mut impl FnMut(syn::UseTree) -> bool,
+) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => {
+            prefix.push((path.ident.clone(), path.colon2));
+            let complete = named_use_leaves(&path.tree, prefix, emit);
+            prefix.pop();
+            complete
+        }
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .all(|tree| named_use_leaves(tree, prefix, emit)),
+        leaf => {
+            let mut parts = prefix.as_slice();
+            let mut leaf = leaf.clone();
+            // `use a::b::{self}` imports a::b as b. Reconstruct that same complete module
+            // path, not an invalid standalone `a::b::self` or a different `a::self` binding.
+            if let Some((parent, rest)) = parts.split_last() {
+                match &mut leaf {
+                    syn::UseTree::Name(name) if name.ident.unraw() == "self" => {
+                        name.ident = parent.0.clone();
+                        parts = rest;
+                    }
+                    syn::UseTree::Rename(rename) if rename.ident.unraw() == "self" => {
+                        rename.ident = parent.0.clone();
+                        parts = rest;
+                    }
+                    _ => {}
+                }
+            }
+            for (ident, colon2) in parts.iter().rev() {
+                leaf = syn::UseTree::Path(syn::UsePath {
+                    ident: ident.clone(),
+                    colon2: *colon2,
+                    tree: Box::new(leaf),
+                });
+            }
+            emit(leaf)
+        }
+    }
+}
+
 pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
+    let mut bytes = 0usize;
     file.items
         .iter()
-        .filter_map(|item| match item {
+        .flat_map(|item| match item {
             syn::Item::Use(item) => {
                 let mut names = binding_attributes_are_inert(&item.attrs).then(BTreeSet::new);
                 use_tree_names(&item.tree, None, &mut names);
-                Some(ScopeBinding {
-                    fingerprint: semantic_use(item),
-                    names,
-                })
+                if names.as_ref().is_some_and(|names| !names.is_empty()) {
+                    let mut leaves = Vec::new();
+                    let complete = named_use_leaves(&item.tree, &mut Vec::new(), &mut |tree| {
+                        // Clone only leaf metadata, never the whole group for each member.
+                        let canonical = syn::ItemUse {
+                            attrs: item
+                                .attrs
+                                .iter()
+                                .filter(|attr| !is_doc(attr))
+                                .cloned()
+                                .collect(),
+                            vis: item.vis.clone(),
+                            use_token: item.use_token,
+                            leading_colon: item.leading_colon,
+                            tree,
+                            semi_token: item.semi_token,
+                        };
+                        let fingerprint = semantic_use(&canonical);
+                        let Some(next) = bytes
+                            .checked_add(fingerprint.len())
+                            .filter(|next| *next as u64 <= MAX_FILE_BYTES)
+                        else {
+                            return false;
+                        };
+                        bytes = next;
+                        let mut names = Some(BTreeSet::new());
+                        use_tree_names(&canonical.tree, None, &mut names);
+                        leaves.push(ScopeBinding { fingerprint, names });
+                        true
+                    });
+                    if complete {
+                        leaves
+                    } else {
+                        // A pathological repeated prefix/attribute cannot create an unbounded
+                        // synthetic scope. Keep the original item unconditional on refusal.
+                        vec![ScopeBinding {
+                            fingerprint: semantic_use(item),
+                            names: None,
+                        }]
+                    }
+                } else {
+                    vec![ScopeBinding {
+                        fingerprint: semantic_use(item),
+                        names,
+                    }]
+                }
             }
             syn::Item::ExternCrate(item) => {
                 let bound = item.rename.as_ref().map_or_else(
@@ -494,12 +590,12 @@ pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
                 );
                 let names = (binding_attributes_are_inert(&item.attrs) && bound != "_")
                     .then(|| BTreeSet::from([bound]));
-                Some(ScopeBinding {
+                vec![ScopeBinding {
                     fingerprint: semantic_extern_crate(item),
                     names,
-                })
+                }]
             }
-            _ => None,
+            _ => Vec::new(),
         })
         .collect()
 }

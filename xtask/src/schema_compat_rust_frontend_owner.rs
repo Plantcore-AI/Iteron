@@ -138,6 +138,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relocated_type_origins_ignore_only_unrelated_group_members() {
+        let grouped: syn::File = syn::parse_quote! {
+            use iteron_protocol::{Capability, Phase, SubmissionId, Unrelated};
+        };
+        let extracted: syn::File = syn::parse_quote! {
+            use iteron_protocol::Capability;
+            use iteron_protocol::{Phase, SubmissionId};
+        };
+        let root = origins(&grouped).unwrap();
+        for (name, origin) in origins(&extracted).unwrap() {
+            assert_eq!(root.get(&name), Some(&origin));
+        }
+        let redirected: syn::File = syn::parse_quote! {
+            use evil::{Capability, Phase, SubmissionId};
+        };
+        for (name, origin) in origins(&redirected).unwrap() {
+            assert_ne!(root.get(&name), Some(&origin));
+        }
+    }
+
+    #[test]
     fn actual_contract_relocation_keeps_one_canonical_type_owner() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
