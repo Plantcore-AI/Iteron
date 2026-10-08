@@ -28,7 +28,7 @@ impl Provider for NoProviderIo {
         panic!("approval and terminal fixtures must not dispatch a provider");
     }
 }
-fn agent(root: &Path) -> Agent {
+fn resident_agent(root: &Path) -> Agent {
     let rollout = Rollout::open(
         &root.join(".iteron/runs"),
         &RunId("terminal-owner-fixture".into()),
@@ -64,7 +64,7 @@ fn write() -> ToolUse {
 #[tokio::test]
 async fn force_cancel_atomic_during_approval_refuses_before_effect_and_retains_receiver() {
     let root = gate_integration_tests::temp_ws("approval-atomic-force");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     agent.set_approvals(rx);
     let stop = Arc::new(AtomicBool::new(false));
@@ -109,7 +109,7 @@ async fn force_cancel_atomic_during_approval_refuses_before_effect_and_retains_r
 #[tokio::test]
 async fn approval_pump_keeps_steer_and_wrong_response_out_of_the_durable_decision() {
     let root = gate_integration_tests::temp_ws("approval-owner-steer");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     agent.set_approvals(rx);
     let (ui, mut reader) = tokio::sync::mpsc::channel(8);
@@ -164,7 +164,7 @@ async fn approval_pump_keeps_steer_and_wrong_response_out_of_the_durable_decisio
 #[tokio::test]
 async fn approval_record_refusal_restores_the_actual_receiver_and_stops_execution() {
     let root = gate_integration_tests::temp_ws("approval-owner-record-refusal");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     for _ in 0..256 {
         agent
             .inbox
@@ -213,7 +213,7 @@ async fn approval_record_refusal_restores_the_actual_receiver_and_stops_executio
 #[tokio::test]
 async fn terminal_refusal_preserves_stop_and_committed_terminal_preserves_inherited_owner() {
     let root = gate_integration_tests::temp_ws("terminal-owner-stop");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let stop = Arc::new(AtomicBool::new(true));
     agent.inherit_interrupt(stop.clone());
     agent.fail_next_durable_append = Some(DurableAppendFault::RunTerminal);
@@ -230,7 +230,7 @@ async fn terminal_refusal_preserves_stop_and_committed_terminal_preserves_inheri
     std::fs::remove_dir_all(root).unwrap();
 
     let root = gate_integration_tests::temp_ws("terminal-owner-inherited");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let stop = Arc::new(AtomicBool::new(true));
     agent.inherit_interrupt(stop.clone());
     assert_eq!(
@@ -252,7 +252,7 @@ async fn terminal_refusal_preserves_stop_and_committed_terminal_preserves_inheri
 async fn already_received_physical_reap_receipt_is_not_consumed_twice() {
     use super::super::force_cancel::{ForceCancelEvidence, ForceCancelSeam, ProcessReapProof};
     let root = gate_integration_tests::temp_ws("terminal-owner-known-reap");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let (requests, mut requested) = tokio::sync::mpsc::channel(1);
     let (proofs, evidence) = tokio::sync::mpsc::channel(1);
     proofs
@@ -289,7 +289,7 @@ async fn already_received_physical_reap_receipt_is_not_consumed_twice() {
 #[tokio::test]
 async fn dropping_approval_wait_preserves_same_resident_ingress_and_next_submission() {
     let root = gate_integration_tests::temp_ws("approval-owner-future-drop");
-    let mut agent = agent(&root);
+    let mut agent = resident_agent(&root);
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     agent.set_approvals(rx);
     assert!(
