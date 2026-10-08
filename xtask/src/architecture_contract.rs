@@ -594,6 +594,13 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/ctx/src/memory/operator_store.rs",
         "crates/ctx/src/memory/selection.rs",
         "xtask/src/tunables_params/stable_source.rs",
+        "crates/record/src/session/model.rs",
+        "crates/record/src/session/paths.rs",
+        "crates/record/src/session/replay.rs",
+        "crates/record/src/session/cache_receipts.rs",
+        "crates/record/src/session/projection.rs",
+        "crates/record/src/session/index.rs",
+        "crates/record/src/session/lifecycle.rs",
     ] {
         let source = read(root, path, MAX_SOURCE_BYTES)?;
         validate_production_module(path, &source)?;

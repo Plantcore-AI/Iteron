@@ -142,3 +142,17 @@ for each admitted epoch before model tools. Production missing-context admission
 RecoveryRequired. Source retention permits 64 admitted scopes and 16 additional historical
 generations, with an absolute 80-object bound. These source contracts still need actual native,
 restart and semantic execution on the final candidate.
+
+## Focused remaining source domains
+
+The five production sources above 2,000 lines in the earlier whole-workspace census now have
+actual responsibility owners: catalog discovery/health/pure routing, logical session replay and
+index transactions, physical/reference memory stores and pure selection, complete diff presentation,
+and read-only helper evidence versus explicit source rewrites. Existing public interfaces and
+runtime lookup addresses remain stable; generated artifacts retain actual new source provenance.
+
+The record crate facade measures 2,011 production lines after its two real publication assembly
+hunks. It retains the sole Rollout writer state and composes separate append, bounded replay,
+session projection and index owners. This is an explicit clear modular structure under the current
+alternative criterion; the workspace is not claimed to have every file below 2,000 lines.
+Same-candidate compilation, regenerated guards and actual platform/runtime evidence remain required.

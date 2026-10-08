@@ -3,6 +3,64 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/record/src/session/model.rs",
+        boundary: "record-sessions",
+        responsibilities: &["retain unchanged public session projection and provenance schemas"],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/paths.rs",
+        boundary: "record-sessions",
+        responsibilities: &["resolve exact session record paths and clock or currency defaults"],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/replay.rs",
+        boundary: "record-sessions",
+        responsibilities: &["retain cumulative verified logical ancestry read and fork budgets"],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/cache_receipts.rs",
+        boundary: "record-sessions",
+        responsibilities: &[
+            "verify exact record and ancestor receipts before accepting a rebuildable cache",
+        ],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/projection.rs",
+        boundary: "record-sessions",
+        responsibilities: &[
+            "own incremental projection state and prepare immutable record-bound publication facts",
+        ],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/index.rs",
+        boundary: "record-sessions",
+        responsibilities: &[
+            "retain real paging snapshots and cross-process index publication transactions",
+        ],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session/lifecycle.rs",
+        boundary: "record-sessions",
+        responsibilities: &[
+            "hold exact journal and derivative leases through deletion and explicit retention",
+        ],
+        next_seams: &["same-candidate compiler, restart and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/record/src/session.rs",
+        boundary: "record-sessions",
+        responsibilities: &[
+            "assemble stable public session contracts over private replay, projection, index and lifecycle owners",
+        ],
+        next_seams: &["same-candidate compiler and behavior evidence remain required"],
+    },
+    Surface {
         path: "crates/ctx/src/memory.rs",
         boundary: "context-knowledge",
         responsibilities: &[

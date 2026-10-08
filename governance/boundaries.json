@@ -684,8 +684,8 @@
           "path": "crates/record/src/session_private_cache.rs"
         },
         {
-          "kind": "file",
-          "path": "crates/record/src/session/bounded_reindex.rs"
+          "kind": "tree",
+          "path": "crates/record/src/session"
         }
       ],
       "contracts": [

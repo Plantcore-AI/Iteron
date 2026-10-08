@@ -20,6 +20,37 @@ pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str
             | "CACHE_LIMIT"
             | "CACHE",
         ) => Some("crates/ctx/src/memory.rs"),
+        ("crates/record/src/session/cache_receipts.rs", "RECEIPT_SCAN_CHUNK_BYTES") => {
+            Some("crates/record/src/session.rs")
+        }
+        (
+            "crates/record/src/session/index.rs",
+            "BACKGROUND_SESSION_COMPACTIONS"
+            | "DEFAULT_SESSION_DELTA_COMPACT_BYTES"
+            | "DEFAULT_SESSION_DELTA_COMPACT_ROWS"
+            | "DEFAULT_SESSION_PAGE_SIZE"
+            | "INDEX_SCAN_LINES_PER_LIVE_RUN"
+            | "MAX_BACKGROUND_SESSION_COMPACTIONS"
+            | "MAX_SESSION_PAGE_SCAN_LINES"
+            | "MAX_SESSION_PAGE_SIZE"
+            | "SESSION_DELTA_HARD_LIMITS"
+            | "SESSION_DELTA_INDEX_FILE"
+            | "SESSION_DELTA_INDEX_VERSION"
+            | "SESSION_DELTA_REFS_DIR"
+            | "SESSION_DELTA_STATE_FILE"
+            | "SESSION_INDEX_DIRTY_FILE"
+            | "SESSION_INDEX_HEADER",
+        ) => Some("crates/record/src/session.rs"),
+        ("crates/record/src/session/model.rs", "MAX" | "MAX_FORK_DEPTH") => {
+            Some("crates/record/src/session.rs")
+        }
+        ("crates/record/src/session/paths.rs", "MICROUSD_PER_USD" | "PRE_EPOCH_TIMESTAMP_SECS") => {
+            Some("crates/record/src/session.rs")
+        }
+        (
+            "crates/record/src/session/replay.rs",
+            "RUN_ID_NANOS_FALLBACK" | "UNBOUNDED_SCOPE_ADMITS_LINE",
+        ) => Some("crates/record/src/session.rs"),
         _ => None,
     }
 }

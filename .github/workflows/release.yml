@@ -737,6 +737,36 @@ jobs:
             validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
             git worktree add --detach "$validator_root" "$compatibility_commit"
           fi
+          if [[ "$previous" == v0.0.26 ]]; then
+            # v0.0.26 assumes the former monolithic machine producer and lacks
+            # the complete additive record corpus. Keep its immutable contract
+            # as the comparison base; use only this exact descendant validator.
+            require_eq "v0.0.26 bridge candidate must be v0.0.27" \
+              "v0.0.27" "$candidate_tag"
+            require_eq "v0.0.26 immutable tag object must match the pin" \
+              "a552d22a59af06376403765edd93d42aed60d8f7" \
+              "$(git rev-parse "refs/tags/$previous")"
+            require_eq "v0.0.26 immutable source must match the pin" \
+              "7ec48721747ab5067679518be9ccfe8455a293b4" "$previous_commit"
+            compatibility_commit=63feb5bd9d32d43b61ee2dd22ac14ff4481f64d1
+            compatibility_schema_blob=760156076ccf46a3f450c2ea2eb06622cd228ca1
+            require_eq "v0.0.26 bridge must name a commit object" \
+              "commit" "$(git cat-file -t "$compatibility_commit")"
+            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
+            git merge-base --is-ancestor \
+              "$compatibility_commit" "${{ steps.metadata.outputs.commit }}"
+            require_eq "v0.0.26 bridge schema policy must match the pinned blob" \
+              "$compatibility_schema_blob" \
+              "$(git rev-parse "$compatibility_commit:governance/schema-compatibility.json")"
+            if ! git diff --quiet \
+              "$compatibility_commit" "${{ steps.metadata.outputs.commit }}" \
+              -- 'xtask/src/schema_compat*' xtask/src/rust_source.rs \
+              xtask/Cargo.toml Cargo.toml Cargo.lock; then
+              fail "v0.0.26 bridge schema validator or compiled dependencies differ from the candidate"
+            fi
+            validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
+            git worktree add --detach "$validator_root" "$compatibility_commit"
+          fi
           validator_target=$RUNNER_TEMP/core-schema-validator-target
           (
             cd "$validator_root"
