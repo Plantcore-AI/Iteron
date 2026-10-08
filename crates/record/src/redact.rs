@@ -25,11 +25,17 @@ pub fn redact_event(event: &Event) -> Event {
             installation: iteron_protocol::agent_cohort::AgentCohortInstallationV1 {
                 origin: iteron_protocol::agent_cohort::AgentCohortOriginV1 {
                     version: installation.origin.version,
-                    tenant: installation.origin.tenant.clone(),
-                    run_id: installation.origin.run_id.clone(),
+                    tenant: iteron_protocol::TenantId(scrub_route_identifier(
+                        &installation.origin.tenant.0,
+                    )),
+                    run_id: iteron_protocol::RunId(scrub_route_identifier(
+                        &installation.origin.run_id.0,
+                    )),
                     config_sha256: scrub_route_digest(&installation.origin.config_sha256),
                 },
-                installed_run: installation.installed_run.clone(),
+                installed_run: iteron_protocol::RunId(scrub_route_identifier(
+                    &installation.installed_run.0,
+                )),
             },
         },
         EventKind::OrdinaryExtensionBindingsV1 {
@@ -109,11 +115,11 @@ pub fn redact_event(event: &Event) -> Event {
         },
         // Matching pending/resolved and physical-terminal evidence must use the same exact id.
         EventKind::ChildAccountingPendingV1 { effect_id } => EventKind::ChildAccountingPendingV1 {
-            effect_id: effect_id.clone(),
+            effect_id: iteron_protocol::EffectId(scrub_route_identifier(&effect_id.0)),
         },
         EventKind::ChildAccountingResolvedV1 { effect_id } => {
             EventKind::ChildAccountingResolvedV1 {
-                effect_id: effect_id.clone(),
+                effect_id: iteron_protocol::EffectId(scrub_route_identifier(&effect_id.0)),
             }
         }
         EventKind::ToolImageObservedV1 { observation } => EventKind::ToolImageObservedV1 {

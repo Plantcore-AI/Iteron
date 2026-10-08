@@ -1,5 +1,5 @@
 //! Actual writer/reopen evidence for newly typed events, independent of generic JSON scrubbing.
-use super::scrub;
+use super::{redact_event, scrub};
 use crate::{RecordError, Rollout};
 use iteron_protocol::agent_cohort::{AgentCohortInstallationV1, AgentCohortOriginV1};
 use iteron_protocol::agent_control::{AgentEpochV1, AgentIdV1, AgentMessageIdV1};
@@ -248,5 +248,36 @@ fn secret_structural_identity_and_malformed_receipts_refuse_before_wal_append() 
             Err(RecordError::InvalidEventSchema { .. })
         ));
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn direct_public_redactor_masks_structural_secrets_without_wal_preconditions() {
+    for slot in 0..3 {
+        let mut installation = installation();
+        match slot {
+            0 => installation.origin.tenant.0 = secret().into(),
+            1 => installation.origin.run_id.0 = secret().into(),
+            _ => installation.installed_run.0 = secret().into(),
+        }
+        // Shape validation alone permits these portable strings; this utility also serves
+        // display callers that never submitted the event through the record writer.
+        installation.validate().unwrap();
+        let projected = redact_event(&event(EventKind::AgentCohortInstalledV1 { installation }));
+        let encoded = serde_json::to_string(&projected).unwrap();
+        assert!(!encoded.contains(secret()));
+        assert!(encoded.contains("[REDACTED"));
+    }
+    for kind in [
+        EventKind::ChildAccountingPendingV1 {
+            effect_id: EffectId(secret().into()),
+        },
+        EventKind::ChildAccountingResolvedV1 {
+            effect_id: EffectId(secret().into()),
+        },
+    ] {
+        let encoded = serde_json::to_string(&redact_event(&event(kind))).unwrap();
+        assert!(!encoded.contains(secret()));
+        assert!(encoded.contains("[REDACTED"));
     }
 }
