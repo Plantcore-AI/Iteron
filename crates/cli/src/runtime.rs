@@ -15,6 +15,9 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+#[cfg(test)]
+#[path = "runtime/test_support/tempdir_tests.rs"]
+pub(crate) mod test_tempdir;
 mod tool_execution_assembly;
 mod tool_execution_session;
 #[cfg(test)]

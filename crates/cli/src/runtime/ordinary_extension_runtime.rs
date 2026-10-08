@@ -148,7 +148,7 @@ impl Agent {
                         bindings,
                     } = &scoped.event.kind
                     {
-                        if !writers.insert((scoped.tenant.clone(), scoped.run_id.clone()))
+                        if !writers.insert((scoped.tenant.0.as_str(), scoped.run_id.0.as_str()))
                             || catalog_sha256.len() != 64
                             || !catalog_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
                             || !(1..=iteron_extension_sdk::MAX_BINDINGS)

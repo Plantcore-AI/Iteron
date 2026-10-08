@@ -26,8 +26,8 @@ impl Provider for Answer {
             }],
             stop_reason: StopReason::EndTurn,
             usage: UsageReport::complete(Usage {
-                input_tokens: 1,
-                output_tokens: 2,
+                input: 1,
+                output: 2,
                 ..Default::default()
             }),
         })

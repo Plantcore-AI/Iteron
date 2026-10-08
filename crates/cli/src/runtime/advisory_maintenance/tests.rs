@@ -1,5 +1,6 @@
 use super::store::{FileJournal, MaintenanceJournal};
 use super::*;
+use crate::runtime::test_tempdir as tempfile;
 
 fn owner(directory: &Path) -> Arc<MaintenanceOwner> {
     MaintenanceOwner::new(

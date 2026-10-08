@@ -6,7 +6,7 @@ use iteron_extension_sdk::UiStatusV1;
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{
     Block, Budget, Capability, EventKind, PermissionMode, PricingRoute, RunId, StopReason,
-    TenantId, Usage, Verdict,
+    TenantId, ToolUse, Usage, Verdict,
 };
 use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport};
 use iteron_record::Rollout;
@@ -25,11 +25,11 @@ impl Provider for NativeToolJourney {
         let index = self.calls.fetch_add(1, Ordering::AcqRel);
         let blocks = if index == 0 {
             assert!(request.tools.iter().any(|tool| tool.name == "sample__read"));
-            vec![Block::ToolUse {
+            vec![Block::ToolUse(ToolUse {
                 id: "sdk-read-call".into(),
                 name: "sample__read".into(),
                 input: json!({}),
-            }]
+            })]
         } else {
             vec![Block::Text {
                 text: "native SDK journey completed".into(),

@@ -539,6 +539,7 @@ impl Hooks {
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
+            extension_dispatch: None,
         }
     }
 
@@ -1919,6 +1920,7 @@ mod tests {
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_HOOKS)),
             stop_observer: None,
+            extension_dispatch: None,
         };
         let started = std::time::Instant::now();
         let decision = hooks.run(HookEvent::PreToolUse, "{}").await;

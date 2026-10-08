@@ -1,5 +1,5 @@
 //! Sole mutable optional task-plan owner. Only actual WAL receipts publish replacement state.
-use iteron_protocol::{Event, EventKind, Role, Seq, task_plan::TaskPlanSnapshotV1};
+use iteron_protocol::{Block, Event, EventKind, Role, Seq, task_plan::TaskPlanSnapshotV1};
 use serde::Deserialize;
 #[cfg(test)]
 #[path = "task_plan_tests.rs"]

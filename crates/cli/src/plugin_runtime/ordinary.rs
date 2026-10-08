@@ -117,7 +117,7 @@ impl RuntimePlugins {
                         version: identity.version.clone(),
                         manifest_sha256: identity.manifest_digest_sha256.clone(),
                         surface: slot.surface,
-                        key: slot.key,
+                        key: slot.key.clone(),
                         capabilities: binding.capabilities,
                         descriptor,
                     });

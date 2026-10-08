@@ -342,7 +342,9 @@ pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErr
         KernelError::TunablesAlreadyResolved | KernelError::TunablesNotResolved => {
             PolicyHarnessErrorCode::TunablesError
         }
-        KernelError::ToolingPolicy(_) => PolicyHarnessErrorCode::ToolingPolicyError,
+        KernelError::ToolingPolicy(_) | KernelError::OrdinaryExtension(_) => {
+            PolicyHarnessErrorCode::ToolingPolicyError
+        }
         KernelError::ExecutionPolicy(_) => PolicyHarnessErrorCode::ExecutionPolicyError,
         KernelError::ToolOutputSpill(_) => PolicyHarnessErrorCode::ToolOutputSpillError,
         KernelError::McpLifecycle(_) => PolicyHarnessErrorCode::McpLifecycleError,
