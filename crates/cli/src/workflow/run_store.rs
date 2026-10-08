@@ -219,16 +219,6 @@ fn recent_journal_summary(
     Some((true, count_agent_results(&text)))
 }
 
-/// Load one restart-safe listing through the same manifest/script/result readers used by
-/// `iteron workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
-#[cfg(test)]
-pub(crate) fn load_run_listing(workflows_dir: &Path, run_id: String) -> Option<RunListing> {
-    load_held_run_listing(
-        &super::restart_read::RestartDirectory::open(workflows_dir).ok()?,
-        run_id,
-    )
-}
-
 pub(super) fn load_held_run_listing(
     root: &super::restart_read::RestartDirectory,
     run_id: String,

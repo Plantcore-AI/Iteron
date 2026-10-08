@@ -160,13 +160,6 @@ impl StrongVerificationGate<'_> {
         Ok(verdict)
     }
 
-    /// Build and run the oracle. Split from [`StrongVerificationGate::run_verify`] so the boundary owns the
-    /// intent/terminal pair and this owns only the dispatch.
-    #[cfg(test)]
-    pub(super) async fn dispatch_verify(&mut self, command: &str) -> VerifyDispatch {
-        self.dispatch_verify_task(command, None).await
-    }
-
     async fn dispatch_verify_task(
         &mut self,
         command: &str,

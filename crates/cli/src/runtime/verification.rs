@@ -112,24 +112,6 @@ impl Agent {
             .await
     }
     #[cfg(test)]
-    pub(super) async fn run_verify(
-        &mut self,
-        command: &str,
-    ) -> Result<iteron_verify::Verdict, KernelError> {
-        self.strong_verification_gate(TurnId(self.seq_turn))
-            .run_verify(command)
-            .await
-    }
-    #[cfg(test)]
-    pub(super) async fn dispatch_verify(
-        &mut self,
-        command: &str,
-    ) -> super::verification_execution::VerifyDispatch {
-        self.strong_verification_gate(TurnId(self.seq_turn))
-            .dispatch_verify(command)
-            .await
-    }
-    #[cfg(test)]
     pub(super) async fn run_bounded_verify(
         &mut self,
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
