@@ -1893,7 +1893,7 @@ fn temp_workspace(tag: &str) -> std::path::PathBuf {
 #[cfg(feature = "legacy-plantcore")]
 fn enable_plantcore_fixture(agent: &mut Agent, gate: Arc<crate::runtime::DispatchGate>) {
     let document: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
+        "../../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
     ))
     .unwrap();
     let payload = serde_json::from_value(document["control"]["payload"].clone()).unwrap();
