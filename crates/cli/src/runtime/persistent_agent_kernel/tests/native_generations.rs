@@ -257,3 +257,232 @@ async fn context_source_is_actual_scope_and_same_description_new_transport_is_a_
         &RunId(current.origin.parent().run.clone())
     );
 }
+
+#[tokio::test]
+async fn actual_nested_bare_spawn_inherits_resident_model_rules_and_exact_child_wal() {
+    let workspace = Workspace::new();
+    let old = Arc::new(ProviderFixture::default());
+    let current = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, control) = setup(&workspace, old, false);
+    let mut main = main_runtime(&runtime, control.clone());
+    main.run("bind actual nested Main").await.unwrap();
+    let old_route = main.provider_selection.selected().unwrap().route.clone();
+    let route = PricingRoute {
+        model_id: "nested-current-model".into(),
+        ..old_route.clone()
+    };
+    main.provider_selection
+        .set_pricing_port(pricing(&[old_route, route.clone()]));
+    main.record_operator_model_selection(
+        current.clone(),
+        route.provider_id.clone(),
+        route.model_id.clone(),
+        route.catalog_digest.clone(),
+        route.capability_digest.clone(),
+    )
+    .unwrap();
+    let mut rules = main.permission_rules().clone();
+    rules.set_tool("web_search", iteron_protocol::Verdict::Deny);
+    main.transition_permission_rules(rules, iteron_protocol::RuntimePolicySource::Operator)
+        .unwrap();
+    main.refresh_persistent_native_context(TurnId(1)).unwrap();
+    let first = host
+        .command(
+            AgentActor::Operator,
+            "actual-nested-parent",
+            command("nested parent"),
+        )
+        .unwrap()
+        .agent_id;
+    until(|| host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle).await;
+    let parent = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&first)
+        .unwrap()
+        .clone();
+    let parent = parent.lock().await;
+    assert!(
+        parent.persistent_agents.is_none(),
+        "no strong resident/host cycle"
+    );
+    let run = parent.rollout.run_id().clone();
+    let path = parent.rollout.path().to_owned();
+    let parent_rules = parent.permission_rules().clone();
+    drop(parent);
+    let nested = AgentCommandV1::Spawn {
+        parent_id: first,
+        label: "actual nested child".into(),
+        task: "nested child response".into(),
+        capabilities: CapabilitySet::only(Capability::ReadOnly),
+        budget: iteron_protocol::agent_control::AgentBudgetV1 {
+            turns: 1,
+            tokens: 250_000,
+            cost_microusd: 50_000,
+            wall_ms: 5_000,
+        },
+        write_paths: vec![],
+    };
+    // The same real actor-bound host port used by the installed agent_task handler.
+    let grandchild = host
+        .command(AgentActor::Agent(first), "actual-grandchild", nested)
+        .unwrap()
+        .agent_id;
+    until(|| {
+        host.inspect(AgentActor::Operator, grandchild)
+            .unwrap()
+            .state
+            == AgentStateV1::Idle
+    })
+    .await;
+    let binding = host
+        .shared
+        .controller
+        .lock()
+        .unwrap()
+        .ordinary_native_child(grandchild)
+        .unwrap()
+        .unwrap();
+    let reference = binding.native_context.as_ref().unwrap();
+    assert_eq!(reference.run, run.0);
+    assert_eq!(binding.model_id, route.model_id);
+    let bytes = std::fs::read(&path).unwrap();
+    let captured = iteron_record::native_child_context::read_reference(&bytes, reference).unwrap();
+    assert_eq!(captured.permission_rules, parent_rules);
+    assert_eq!(captured.route, route);
+    let resident = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&grandchild)
+        .unwrap()
+        .clone();
+    let grandchild = resident.lock().await;
+    let provider: Arc<dyn iteron_provider::Provider> = current;
+    assert!(Arc::ptr_eq(&grandchild.provider, &provider));
+    assert_eq!(grandchild.permission_rules(), &parent_rules);
+}
+
+#[tokio::test]
+async fn actual_scope_publications_do_not_consume_sixteen_historical_generation_slots() {
+    let workspace = Workspace::new();
+    let (_, runtime, _, control) = setup(&workspace, Arc::new(ProviderFixture::default()), false);
+    let mut main = main_runtime(&runtime, control);
+    main.run("bind actual quota fixture").await.unwrap();
+    let route = main.provider_selection.selected().unwrap().route.clone();
+    let template = main.kernel_spawner_context(&route, "persistent-agents");
+    let mut generations = NativeGenerations::new(template.clone());
+    let state = workspace.0.join("quota-records");
+    std::fs::create_dir(&state).unwrap();
+    let mut first_writer = None;
+    let mut first_source = None;
+    let mut first_context = None;
+    for ordinal in 1..=64 {
+        let run = RunId(format!("actual-native-quota-{ordinal}"));
+        let mut writer =
+            iteron_record::Rollout::open(&state, &run, template.tenant.clone()).unwrap();
+        let mut context = template.clone();
+        context.parent_run_id = run.0.clone();
+        let source = AgentEngineParentSource {
+            tenant: template.tenant.0.clone(),
+            run: run.0,
+            provider_scope_sha256: iteron_protocol::agent_cohort::provider_scope(
+                writer.tenant(),
+                writer.run_id(),
+            ),
+        };
+        assert!(
+            generations
+                .reference(AgentIdV1(ordinal), &source, &context)
+                .unwrap()
+                .is_none()
+        );
+        publish_quota(
+            &mut generations,
+            AgentIdV1(ordinal),
+            &mut writer,
+            context.clone(),
+            &source,
+        );
+        if ordinal == 1 {
+            first_writer = Some(writer);
+            first_source = Some(source);
+            first_context = Some(context);
+        }
+    }
+    let mut writer = first_writer.unwrap();
+    let source = first_source.unwrap();
+    let mut context = first_context.unwrap();
+    // Different actual transport objects, with the same description, must retain distinct
+    // durable publications. These are historical generations rather than new scoped owners.
+    for _ in 0..16 {
+        context.provider = Arc::new(ProviderFixture::default());
+        assert!(
+            generations
+                .reference(AgentIdV1(1), &source, &context)
+                .unwrap()
+                .is_none()
+        );
+        publish_quota(
+            &mut generations,
+            AgentIdV1(1),
+            &mut writer,
+            context.clone(),
+            &source,
+        );
+    }
+    context.provider = Arc::new(ProviderFixture::default());
+    assert!(matches!(
+        generations.reference(AgentIdV1(1), &source, &context),
+        Err(iteron_agents::ControllerError::Capacity)
+    ));
+    assert!(matches!(
+        generations.default_child(AgentIdV1(1), false),
+        Err(iteron_agents::ControllerError::RecoveryRequired)
+    ));
+    let absent = NativeGenerations::new(template);
+    assert!(matches!(
+        absent.default_child(AgentIdV1(2), false),
+        Err(iteron_agents::ControllerError::RecoveryRequired)
+    ));
+    drop(writer);
+}
+
+fn publish_quota(
+    generations: &mut NativeGenerations,
+    owner: AgentIdV1,
+    writer: &mut iteron_record::Rollout,
+    context: crate::runtime::workflow_spawner::KernelSpawnerContext,
+    source: &AgentEngineParentSource,
+) {
+    let publication = crate::runtime::workflow_spawner::native_context::capture(
+        &context,
+        source,
+        writer.next_sequence().0,
+    )
+    .unwrap();
+    let sequence = writer
+        .append(&iteron_protocol::Event {
+            seq: iteron_protocol::Seq::ZERO,
+            turn: TurnId(0),
+            kind: iteron_protocol::EventKind::NativeChildContextCapturedV1 {
+                context: publication.clone(),
+            },
+        })
+        .unwrap();
+    let reference = iteron_protocol::native_child_context::NativeChildContextRefV1 {
+        generation_sha256: publication.generation_sha256.clone(),
+        tenant: source.tenant.clone(),
+        run: source.run.clone(),
+        sequence: sequence.0,
+    };
+    let bytes = std::fs::read(writer.path()).unwrap();
+    assert_eq!(
+        iteron_record::native_child_context::read_reference(&bytes, &reference).unwrap(),
+        publication
+    );
+    generations
+        .install(owner, context, source, &publication, reference)
+        .unwrap();
+}

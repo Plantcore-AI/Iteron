@@ -11,7 +11,12 @@ use std::{
 };
 #[path = "persistent_native_generations/archive.rs"]
 mod archive;
-const MAX_GENERATIONS: usize = 16;
+// A first current context for each actual scoped owner is independent of retained history.
+// No eviction can erase a committed resident's old reference. 64 scopes plus 16 historical
+// publications bounds the owner to 80 retained contexts; every scope still has exact WAL truth.
+const MAX_CURRENT_SCOPES: usize = 64;
+const MAX_HISTORICAL_GENERATIONS: usize = 16;
+const MAX_GENERATIONS: usize = MAX_CURRENT_SCOPES + MAX_HISTORICAL_GENERATIONS;
 
 struct Generation {
     spawner: Arc<KernelSpawner>,
@@ -20,6 +25,9 @@ struct Generation {
 }
 pub(super) struct NativeGenerations {
     refreshing: BTreeSet<String>,
+    admitted_scopes: BTreeSet<String>,
+    #[cfg(test)]
+    legacy_main_fixture: bool,
     invalidated: BTreeSet<iteron_protocol::agent_control::AgentIdV1>,
     bootstrap: Arc<KernelSpawner>,
     held: BTreeMap<String, Generation>,
@@ -31,12 +39,19 @@ impl NativeGenerations {
         context.execution_deadline = None; // exact epoch/Invocation owns its deadline lease.
         Self {
             refreshing: BTreeSet::new(),
+            admitted_scopes: BTreeSet::new(),
+            #[cfg(test)]
+            legacy_main_fixture: false,
             invalidated: BTreeSet::new(),
             bootstrap: Arc::new(KernelSpawner::new(context)),
             held: BTreeMap::new(),
             active: BTreeMap::new(),
             owners: BTreeMap::new(),
         }
+    }
+    #[cfg(test)]
+    pub(super) fn allow_legacy_main_fixture(&mut self) {
+        self.legacy_main_fixture = true;
     }
     pub(super) fn bootstrap(&self) -> &KernelSpawner {
         &self.bootstrap
@@ -115,6 +130,8 @@ impl NativeGenerations {
                 },
             );
         }
+        self.admitted_scopes
+            .insert(source.provider_scope_sha256.clone());
         self.refreshing.remove(&source.provider_scope_sha256);
         self.invalidated.remove(&owner);
         self.owners.insert(owner, digest.clone());
@@ -123,8 +140,11 @@ impl NativeGenerations {
         Ok(())
     }
     fn capacity(&self, source: &AgentEngineParentSource) -> Result<(), ControllerError> {
-        if self.held.len() >= MAX_GENERATIONS
-            || self.active.len() >= 64 && !self.active.contains_key(&source.provider_scope_sha256)
+        let new_scope = !self.admitted_scopes.contains(&source.provider_scope_sha256);
+        let scopes = self.admitted_scopes.len() + usize::from(new_scope);
+        if scopes > MAX_CURRENT_SCOPES
+            || self.held.len() >= scopes + MAX_HISTORICAL_GENERATIONS
+            || self.held.len() >= MAX_GENERATIONS
         {
             Err(ControllerError::Capacity)
         } else {
@@ -150,11 +170,27 @@ impl NativeGenerations {
         }) {
             return Err(ControllerError::RecoveryRequired);
         }
-        let spawner = self
+        let spawner = match self
             .active
             .get(&origin.parent().provider_scope_sha256)
             .and_then(|id| self.held.get(id))
-            .map_or(&self.bootstrap, |generation| &generation.spawner);
+        {
+            Some(generation) => &generation.spawner,
+            None => {
+                // Existing provider-free unit fixtures explicitly begin with no Main
+                // native publication. This exception never exists in a production build.
+                #[cfg(test)]
+                if self.legacy_main_fixture
+                    && origin.parent().run == self.bootstrap.persistent_namespace().0
+                {
+                    return self
+                        .bootstrap
+                        .prepare_engine_execution(request, origin)
+                        .map_err(|_| ControllerError::Permission);
+                }
+                return Err(ControllerError::RecoveryRequired);
+            }
+        };
         spawner
             .prepare_engine_execution(request, origin)
             .map_err(|_| {
@@ -170,7 +206,11 @@ impl NativeGenerations {
             return Err(ControllerError::RecoveryRequired);
         }
         let Some(generation) = self.owners.get(&parent).and_then(|id| self.held.get(id)) else {
-            return Ok(None);
+            #[cfg(test)]
+            if parent == iteron_protocol::agent_control::AgentIdV1(1) && self.legacy_main_fixture {
+                return Ok(None); // Explicit unbound legacy Main fixture only.
+            }
+            return Err(ControllerError::RecoveryRequired);
         };
         let source = AgentEngineParentSource {
             tenant: generation.publication.tenant.clone(),
@@ -200,7 +240,11 @@ impl NativeGenerations {
         execution: Option<&AgentEngineExecution>,
     ) -> Result<Arc<KernelSpawner>, ControllerError> {
         let Some(execution) = execution else {
-            return Ok(self.bootstrap.clone());
+            #[cfg(test)]
+            if self.legacy_main_fixture {
+                return Ok(self.bootstrap.clone()); // Unbound legacy fixture, not cold authority.
+            }
+            return Err(ControllerError::RecoveryRequired);
         };
         let selected = if let Some(reference) = &execution.native_context {
             if !self.held.contains_key(&reference.generation_sha256) {
@@ -209,6 +253,8 @@ impl NativeGenerations {
                 let context = self
                     .bootstrap
                     .restore_native_context(&publication, reference.clone())?;
+                self.admitted_scopes
+                    .insert(publication.scope_sha256.clone());
                 self.held.insert(
                     reference.generation_sha256.clone(),
                     Generation {
@@ -227,7 +273,16 @@ impl NativeGenerations {
             }
             generation.spawner.clone()
         } else {
-            self.bootstrap.clone()
+            #[cfg(test)]
+            if self.legacy_main_fixture
+                && execution.origin.parent().run == self.bootstrap.persistent_namespace().0
+            {
+                self.bootstrap
+                    .validate_engine_execution(execution)
+                    .map_err(|_| ControllerError::RequestConflict)?;
+                return Ok(self.bootstrap.clone());
+            }
+            return Err(ControllerError::RecoveryRequired);
         };
         selected
             .validate_engine_execution(execution)
