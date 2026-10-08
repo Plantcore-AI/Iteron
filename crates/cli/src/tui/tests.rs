@@ -6,8 +6,8 @@ mod tests {
     };
     use super::control_submission::side_request_for;
     use super::event_projection::apply_event;
+    use super::input_lanes::MAX_PENDING_SUBMISSIONS;
     use super::picker::{MAX_PICKER_QUERY_BYTES, MAX_PICKER_QUERY_CHARS};
-    use super::status_render::activity_label;
     use super::*;
 
     #[test]
@@ -7907,7 +7907,7 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
     let (presented, elapsed) = visible_activity(&app).expect("delayed activity is visible now");
     assert!(elapsed >= Duration::from_millis(400));
     assert_eq!(
-        activity_label(presented.event()),
+        status_render::activity_label(presented.event()),
         "request sent · waiting for provider"
     );
 

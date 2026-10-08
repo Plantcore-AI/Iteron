@@ -116,7 +116,7 @@ pub(super) const TOOL_REVEAL_DELAY: Duration = Duration::from_millis(300);
 /// Bound anti-flash bookkeeping independently from transcript retention. Reaching the cap reveals
 /// the oldest running tool early; it never drops lifecycle evidence.
 pub(super) const MAX_PENDING_TOOL_PROJECTIONS: usize = 64;
-pub(super) use super::input_lanes::{MAX_PENDING_SUBMISSIONS, MAX_SUBMISSION_BYTES};
+pub(super) use super::input_lanes::MAX_SUBMISSION_BYTES;
 /// A burst of streamed deltas costs ONE frame: the loop wakes on the first delta of the burst and
 /// then holds the next draw for this long so the rest of the burst folds into it. Visible token
 /// latency is bounded by this interval instead of by a fixed input-poll period.

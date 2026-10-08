@@ -176,10 +176,7 @@ use driver_support::{
     parse_cap, reload_operator_keymap, service_input_control, update_keymap_status, wake_until,
 };
 #[cfg(test)]
-use driver_support::{
-    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, TOOL_REVEAL_DELAY, complete_path,
-    eq_tick_slots,
-};
+use driver_support::{MAX_EQ_EVENTS_PER_TICK, TOOL_REVEAL_DELAY, complete_path, eq_tick_slots};
 pub(crate) use driver_support::{char_width, text_width};
 use event_actions::{
     apply_server_event, apply_theme_selection, clear_last_turn_telemetry_from,
