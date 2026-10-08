@@ -156,9 +156,11 @@ pub use launch::{
     Collected, DetachedRun, InTurnWorkflowLauncher, Launched, PreparedWorkflow, WorkflowLauncher,
     launch_prepared,
 };
-pub use progress::{DegradedAgentSink, StdoutProgressSink, in_turn_progress_sink};
+#[cfg(feature = "script-workflows")]
+pub use progress::FanoutProgressSink;
 #[cfg(any(test, feature = "script-workflows"))]
-pub use progress::{FanoutProgressSink, UiProgressSink};
+pub use progress::UiProgressSink;
+pub use progress::{DegradedAgentSink, StdoutProgressSink, in_turn_progress_sink};
 #[cfg(all(test, feature = "script-workflows"))]
 use progress::{FinishedAgent, PartialWork, PartialWorkSink};
 pub(crate) use restored_inventory::{RestoredWorkflowInventory, restored_inventory};
