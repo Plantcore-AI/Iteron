@@ -604,8 +604,54 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
             installation
                 .validate()
                 .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            // These names determine physical journal/controller recovery identity. Redaction
+            // cannot rename them after admission, so credential-shaped names refuse beforehand.
+            for identity in [
+                &installation.origin.tenant.0,
+                &installation.origin.run_id.0,
+                &installation.installed_run.0,
+            ] {
+                if crate::redact::scrub_route_identifier(identity) != *identity {
+                    return Err(RecordError::InvalidEventSchema {
+                        reason: "cohort scope identities must be credential-free",
+                    });
+                }
+            }
         }
-
+        EventKind::OrdinaryExtensionBindingsV1 { catalog_sha256, .. }
+            if !crate::redact::is_content_address(catalog_sha256) =>
+        {
+            return Err(RecordError::InvalidEventSchema {
+                reason: "ordinary extension catalog must carry a content digest",
+            });
+        }
+        EventKind::TaskPlanUpdatedV1 { plan } => plan
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
+        EventKind::MemoryReferenceAdmittedV1 { admission } => {
+            admission
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_correlation_identifier(&admission.record_id)
+                != admission.record_id
+            {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "memory record correlation identity must be credential-free",
+                });
+            }
+        }
+        EventKind::TurnPublicationV1 { fact } => fact
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
+        EventKind::ChildAccountingPendingV1 { effect_id }
+        | EventKind::ChildAccountingResolvedV1 { effect_id }
+            if effect_id.0.is_empty()
+                || crate::redact::scrub_route_identifier(&effect_id.0) != effect_id.0 =>
+        {
+            return Err(RecordError::InvalidEventSchema {
+                reason: "child accounting effect identity must be nonempty and credential-free",
+            });
+        }
         EventKind::AgentInputAdmittedV1 { admission } => admission
             .validate()
             .map_err(|reason| RecordError::InvalidEventSchema { reason })?,

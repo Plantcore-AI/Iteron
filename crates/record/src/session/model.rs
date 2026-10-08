@@ -1,6 +1,6 @@
 //! Public session projections and provenance contracts; all serialized fields retain their schema.
 use iteron_obs::CostState;
-use iteron_protocol::{Block, Effort, Event, Message, Outcome, Role, RunId, Seq, TenantId};
+use iteron_protocol::{Block, Effort, Event, Message, Outcome, RunId, Seq, TenantId};
 use std::path::PathBuf;
 
 /// The branch point of a fork/rewind child. `parent_hash_at_seq` cross-links the child to the

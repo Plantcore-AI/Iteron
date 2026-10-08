@@ -19,6 +19,103 @@ use iteron_protocol::{
 /// `Rollout::append`, so every recorded event is scrubbed regardless of who emitted it.
 pub fn redact_event(event: &Event) -> Event {
     let kind = match &event.kind {
+        // Scope names are physical recovery references, not prose. The write/replay boundary
+        // rejects credential-shaped names before this projection can preserve their identity.
+        EventKind::AgentCohortInstalledV1 { installation } => EventKind::AgentCohortInstalledV1 {
+            installation: iteron_protocol::agent_cohort::AgentCohortInstallationV1 {
+                origin: iteron_protocol::agent_cohort::AgentCohortOriginV1 {
+                    version: installation.origin.version,
+                    tenant: installation.origin.tenant.clone(),
+                    run_id: installation.origin.run_id.clone(),
+                    config_sha256: scrub_route_digest(&installation.origin.config_sha256),
+                },
+                installed_run: installation.installed_run.clone(),
+            },
+        },
+        EventKind::OrdinaryExtensionBindingsV1 {
+            catalog_sha256,
+            bindings,
+        } => EventKind::OrdinaryExtensionBindingsV1 {
+            catalog_sha256: scrub_route_digest(catalog_sha256),
+            bindings: *bindings,
+        },
+        // A model-maintained plan carries free text. Status/revision/source sequence are facts;
+        // scrubbing text never turns a reported completion into verified execution evidence.
+        EventKind::TaskPlanUpdatedV1 { plan } => EventKind::TaskPlanUpdatedV1 {
+            plan: iteron_protocol::task_plan::TaskPlanSnapshotV1 {
+                version: plan.version,
+                revision: plan.revision,
+                based_on_submission_seq: plan.based_on_submission_seq,
+                steps: plan
+                    .steps
+                    .iter()
+                    .map(|step| iteron_protocol::task_plan::PlanStepV1 {
+                        description: scrub(&step.description),
+                        status: step.status,
+                    })
+                    .collect(),
+                obligations: plan.obligations.iter().map(|text| scrub(text)).collect(),
+            },
+        },
+        // These receipts contain validated numeric identities and content commitments only.
+        // Generic JSON string scrubbing would destroy their relation to the actual source bytes.
+        EventKind::AgentInputAdmittedV1 { admission } => EventKind::AgentInputAdmittedV1 {
+            admission: iteron_protocol::agent_input::AgentInputAdmissionV1 {
+                version: admission.version,
+                receiver: admission.receiver,
+                epoch: admission.epoch,
+                projection_sha256: scrub_route_digest(&admission.projection_sha256),
+                sources: admission
+                    .sources
+                    .iter()
+                    .map(|source| iteron_protocol::agent_input::AgentInputSourceV1 {
+                        message_id: source.message_id,
+                        sender: source.sender,
+                        content_sha256: scrub_route_digest(&source.content_sha256),
+                    })
+                    .collect(),
+            },
+        },
+        EventKind::MemoryReferenceAdmittedV1 { admission } => {
+            EventKind::MemoryReferenceAdmittedV1 {
+                admission: iteron_protocol::memory_reference::MemoryReferenceAdmissionV1 {
+                    version: admission.version,
+                    deleted: admission.deleted,
+                    record_id: scrub_correlation_identifier(&admission.record_id),
+                    record_revision: admission.record_revision,
+                    record_sha256: scrub_route_digest(&admission.record_sha256),
+                    workspace_sha256: scrub_route_digest(&admission.workspace_sha256),
+                    source_sha256: scrub_route_digest(&admission.source_sha256),
+                    body_sha256: scrub_route_digest(&admission.body_sha256),
+                    message_sha256: scrub_route_digest(&admission.message_sha256),
+                },
+            }
+        }
+        EventKind::TurnPublicationV1 { fact } => EventKind::TurnPublicationV1 {
+            fact: match fact {
+                iteron_protocol::turn_publication::TurnPublicationFactV1::AnswerAvailable {
+                    message_seq,
+                } => iteron_protocol::turn_publication::TurnPublicationFactV1::AnswerAvailable {
+                    message_seq: *message_seq,
+                },
+                iteron_protocol::turn_publication::TurnPublicationFactV1::TurnFinalized {
+                    outcome,
+                    budget_limit,
+                } => iteron_protocol::turn_publication::TurnPublicationFactV1::TurnFinalized {
+                    outcome: *outcome,
+                    budget_limit: budget_limit.as_deref().map(scrub),
+                },
+            },
+        },
+        // Matching pending/resolved and physical-terminal evidence must use the same exact id.
+        EventKind::ChildAccountingPendingV1 { effect_id } => EventKind::ChildAccountingPendingV1 {
+            effect_id: effect_id.clone(),
+        },
+        EventKind::ChildAccountingResolvedV1 { effect_id } => {
+            EventKind::ChildAccountingResolvedV1 {
+                effect_id: effect_id.clone(),
+            }
+        }
         EventKind::ToolImageObservedV1 { observation } => EventKind::ToolImageObservedV1 {
             observation: redact_tool_image(observation),
         },
@@ -487,7 +584,7 @@ fn redact_workflow_event(event: &WorkflowEvent) -> WorkflowEvent {
     }
 }
 
-fn is_content_address(value: &str) -> bool {
+pub(super) fn is_content_address(value: &str) -> bool {
     let hex = value.strip_prefix("sha256:").unwrap_or(value);
     hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -891,6 +988,10 @@ fn looks_like_hex_or_b64_token(w: &str) -> bool {
     let has_digit = w.chars().any(|c| c.is_ascii_digit());
     has_upper && has_digit
 }
+
+#[cfg(test)]
+#[path = "redact/new_event_tests.rs"]
+mod new_event_tests;
 
 #[cfg(test)]
 mod tests {
