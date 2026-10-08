@@ -3,6 +3,70 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/app_server/experiment_lab.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "admit existing offline lab intent and retain native publication and session exclusion independently of the observer",
+        ],
+        next_seams: &["same-candidate compiler, native and client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/experiment_lab.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "execute bounded native request publication and offline inventory under the captured host authority",
+        ],
+        next_seams: &["same-candidate compiler, native and client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/experiment_lab/model.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "validate existing immutable request identity and project bounded redacted offline facts without runtime activation",
+        ],
+        next_seams: &["same-candidate compiler and client evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/experiment_lab/comparison.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain a bounded native evidence source and project only the actual signed recomputed comparison",
+        ],
+        next_seams: &["same-candidate compiler and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/workspace_storage.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "select the actual finite native workspace directory capability and closed publication outcomes",
+        ],
+        next_seams: &["same-candidate compiler and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/workspace_storage/unix.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain Unix namespace and regular file identities through finite enumeration, read and create-only publication",
+        ],
+        next_seams: &["same-candidate compiler and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/workspace_storage/windows.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "compose held ordinary NTFS read and private staged by-handle publication capabilities",
+        ],
+        next_seams: &["same-candidate compiler and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/support/src/durable_windows_state/workspace_directory_read.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "enumerate actual held native directory pages under independent operation, row and buffer bounds",
+        ],
+        next_seams: &["same-candidate compiler and actual Windows evidence remain required"],
+    },
+    Surface {
         path: "crates/support/src/owned_windows_job.rs",
         boundary: "support-bundle",
         responsibilities: &[
