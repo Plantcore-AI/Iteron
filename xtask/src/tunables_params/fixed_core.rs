@@ -57,6 +57,12 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
             Some(InvariantReason::WireCompatibility)
         }
 
+        // Native porcelain branch bytes are rejected before terminal-safe expansion. This fixed
+        // hostile-input envelope is independent of presentation choices and cannot be enlarged.
+        ("crates/tools/src/git_observe.rs", "MAX_ENVIRONMENT_BRANCH_BYTES") => {
+            Some(InvariantReason::Security)
+        }
+
         // Descriptor and installed-binding bounds are checked before ordinary native bindings
         // can enter the host. Per-binding arguments/status/subscription capacity remain explicit.
         ("crates/extension-sdk/src/descriptors.rs", "MAX_BINDINGS" | "MAX_DESCRIPTOR_BYTES") => {
@@ -219,6 +225,11 @@ mod tests {
     fn exact_native_scope_and_replay_boundaries_have_closed_reasons() {
         for (path, name, expected) in [
             (
+                "crates/tools/src/git_observe.rs",
+                "MAX_ENVIRONMENT_BRANCH_BYTES",
+                InvariantReason::Security,
+            ),
+            (
                 "crates/tools/src/lsp/capability.rs",
                 "IDENTITY_UNPROVABLE",
                 InvariantReason::Security,
@@ -266,6 +277,22 @@ mod tests {
         ] {
             assert_eq!(reason(path, name, name), None);
         }
+        assert_eq!(
+            reason(
+                "crates/tools/src/git_observe.rs",
+                "ENVIRONMENT_GIT_TIMEOUT",
+                "ENVIRONMENT_GIT_TIMEOUT"
+            ),
+            None
+        );
+        assert_eq!(
+            reason(
+                "crates/tools/src/git_observe.rs",
+                "MAX_FUTURE_BRANCH_BYTES",
+                "MAX_FUTURE_BRANCH_BYTES"
+            ),
+            None
+        );
         assert_eq!(
             reason(
                 "crates/tools/src/contained_source.rs",
