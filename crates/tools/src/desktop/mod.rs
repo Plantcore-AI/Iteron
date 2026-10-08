@@ -56,7 +56,7 @@ pub fn register(registry: &mut Registry, config: DesktopConfig) -> Result<(), To
             generation: 0,
         }),
         capacity: Arc::new(Semaphore::new(1)),
-        nonce: hex::encode(nonce),
+        nonce: nonce.iter().map(|byte| format!("{byte:02x}")).collect(),
     });
     registry.register_external_effect_captured(ToolSpec {
         name:"desktop".into(),
@@ -342,7 +342,10 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 fn digest(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 fn failure(id: &str, reason: &str, unknown: bool) -> CapturedToolExecution {
     let result=ToolResult{tool_use_id:id.into(),content:json!({"error":reason,"effects_known":!unknown,"reconciliation_required":unknown,"execution_scope":"native_mac_desktop"}).to_string(),is_error:true,trust:Trust::Workspace,latency_ms:0};
