@@ -1376,7 +1376,7 @@ fn validate_direct_child_allocation(source: &str) -> Result<()> {
     // only reduce the single ceiling minted by def.rs.
     let expressions = [
         "if remaining_turns == Budget::UNLIMITED_TURNS { ceiling.max_turns } else { remaining_turns.saturating_sub(writer.max(2).min(remaining_turns)).min(ceiling.max_turns) }",
-        "Budget { max_turns: child_turns, max_usd: ceiling.max_usd, max_tokens: match (remaining_tokens, ceiling.max_tokens) { (Some(tokens), Some(limit)) => { Some(self.child_token_share.floor_u64(tokens).min(limit)) }, (Some(tokens), None) => Some(self.child_token_share.floor_u64(tokens)), (None, limit) => limit }, max_wall_secs: self.child_wall_share.floor_u64(remaining_wall_seconds).clamp(1, ceiling.max_wall_secs), max_consecutive_tool_errors: ceiling.max_consecutive_tool_errors }",
+        "Budget { max_turns: child_turns, max_usd: ceiling.max_usd, max_tokens: match (remaining_tokens, ceiling.max_tokens) { (Some(tokens), Some(limit)) => { Some(self.child_token_share.floor_u64(tokens).min(limit)) } (Some(tokens), None) => Some(self.child_token_share.floor_u64(tokens)), (None, limit) => limit }, max_wall_secs: self.child_wall_share.floor_u64(remaining_wall_seconds).clamp(1, ceiling.max_wall_secs), max_consecutive_tool_errors: ceiling.max_consecutive_tool_errors }",
     ];
     let child_turns = budget_local(&body, "child_turns");
     let Some(syn::Stmt::Expr(returned, None)) = body.stmts.last() else {
