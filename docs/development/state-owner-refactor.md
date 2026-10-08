@@ -11,6 +11,10 @@ remaining seams. Counts include comments and blank lines. Rust AST spans exclude
 test-only items; `any(test, feature)` code remains production. This separates source inventory from
 runtime or release acceptance.
 
+The current source target is at most 2,000 production lines per file, with explicitly
+justified clear modular structure as an alternative. Source counts guide responsibility review;
+meeting a count alone proves neither architectural quality nor runtime behavior.
+
 ## Baseline responsibilities
 
 Public main `7ec48721747ab5067679518be9ccfe8455a293b4` has these physical counts:
@@ -24,7 +28,7 @@ Public main `7ec48721747ab5067679518be9ccfe8455a293b4` has these physical counts
 | CLI workflow | 1,907 | 1,622 | submission, supervisor, progress projection, child assembly |
 | QuickJS bindings | 1,618 | 12 | script adapter, attempt dispatch, parallel group owner, ledger ports |
 
-At that baseline all six exceed the 1,200 production-line target. Adding the live scheduler creates a new narrow
+At that baseline all six exceeded the then-current 1,200 production-line target. Adding the live scheduler creates a new narrow
 owner; it does not remove these existing responsibilities or close their refactoring work.
 
 ## Current integrated source checkpoint
@@ -125,3 +129,16 @@ the existing script graph identity and journal semantics. CLI features must forw
 workflow engine and tool catalog features together. Default and enabled profiles require final
 same-candidate integration evidence; source guards and physical line counts alone do not accept
 provider cleanup, recovery or end-user journeys.
+
+## Current completion and nested native sources
+
+Path completion enters an opaque host metadata-read port bound to the current thread/run and
+read authority. Its physical worker retains the adoption lease and the single native slot after
+observer cancellation. Held namespace identities and finite scan/entry/aggregate limits govern
+the cache; the TUI owns only the draft generation and menu.
+
+Nested residents bind their actual provider-budget scope and publish inherited native context
+for each admitted epoch before model tools. Production missing-context admission returns
+RecoveryRequired. Source retention permits 64 admitted scopes and 16 additional historical
+generations, with an absolute 80-object bound. These source contracts still need actual native,
+restart and semantic execution on the final candidate.

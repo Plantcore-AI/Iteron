@@ -834,6 +834,10 @@
         {
           "kind": "file",
           "path": "crates/provider/src/usage_bounds_tests.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider/src/catalog"
         }
       ],
       "contracts": [
@@ -1163,6 +1167,10 @@
         {
           "kind": "file",
           "path": "crates/ctx/src/memory_records.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/ctx/src/memory"
         }
       ],
       "contracts": [

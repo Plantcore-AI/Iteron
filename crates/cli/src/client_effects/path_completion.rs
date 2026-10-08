@@ -9,6 +9,8 @@ const MAX_ROW_BYTES: usize = 255;
 const MAX_ENTRY_BYTES: usize = 256 * 1024;
 const MAX_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ENTRIES: usize = 32;
+const COMPLETION_DIRECTORY_CACHE_ENTRIES: usize = 32;
+const COMPLETION_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub(crate) struct CompletionSource {
@@ -81,7 +83,7 @@ impl CompletionSource {
         let now = Instant::now();
         let ttl = iteron_tunables::param_duration(
             "cli.tui.driver_support.completion_directory_cache_ttl",
-            Duration::from_secs(1),
+            COMPLETION_DIRECTORY_CACHE_TTL,
         );
         cache.evict_expired(now, ttl);
         let entry = if let Some(index) = cache
@@ -146,7 +148,7 @@ impl CompletionSource {
         };
         let limit = iteron_tunables::param_integer(
             "cli.tui.driver_support.completion_directory_cache_entries",
-            MAX_ENTRIES,
+            COMPLETION_DIRECTORY_CACHE_ENTRIES,
         )
         .clamp(1, MAX_ENTRIES);
         while cache.entries.len() >= limit

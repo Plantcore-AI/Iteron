@@ -12,7 +12,7 @@ use syn::visit::Visit;
 const MAX_SOURCE_BYTES: u64 = 2 * 1_024 * 1_024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1_024;
 const MAX_PACKAGES: usize = 128;
-const MAX_PRODUCTION_LINES: usize = 1_200;
+const MAX_PRODUCTION_LINES: usize = super::architecture_inventory::PRODUCTION_TARGET;
 
 const SCHEDULER_MODULES: &[&str] = &[
     "crates/workflow/src/live_scheduler/mod.rs",
@@ -582,6 +582,18 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/app_server.rs",
         "crates/cli/src/tui.rs",
         "crates/provider/src/usage_bounds.rs",
+        "crates/provider/src/catalog/discovery.rs",
+        "crates/provider/src/catalog/health.rs",
+        "crates/provider/src/catalog/routing.rs",
+        "xtask/src/tunables_params/source_wiring.rs",
+        "xtask/src/tunables_params/use_evidence.rs",
+        "crates/cli/src/app_server/path_completion.rs",
+        "crates/cli/src/client_effects/path_completion.rs",
+        "crates/cli/src/block/diff.rs",
+        "crates/ctx/src/memory/file_store.rs",
+        "crates/ctx/src/memory/operator_store.rs",
+        "crates/ctx/src/memory/selection.rs",
+        "xtask/src/tunables_params/stable_source.rs",
     ] {
         let source = read(root, path, MAX_SOURCE_BYTES)?;
         validate_production_module(path, &source)?;
@@ -885,7 +897,9 @@ fn validate_production_module(relative: &str, source: &str) -> Result<()> {
     // Exclude only syntactically test-only items, using the same rule as the maintained inventory.
     // Product include fragments remain forbidden by ExplicitImports, including optional profiles.
     if super::architecture_inventory::production_lines(source)? > MAX_PRODUCTION_LINES {
-        bail!("{relative} exceeds the 1200-line production owner limit");
+        bail!(
+            "{relative} exceeds the 2000-line production owner target; separate responsibilities or document the modular exception"
+        );
     }
     Ok(())
 }

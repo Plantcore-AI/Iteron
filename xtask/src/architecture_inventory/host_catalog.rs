@@ -3,6 +3,124 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/ctx/src/memory.rs",
+        boundary: "context-knowledge",
+        responsibilities: &[
+            "join bounded source materialization and its exact same-decision audit through the stable public facade",
+        ],
+        next_seams: &["same-candidate compiler and behavioral evidence remain required"],
+    },
+    Surface {
+        path: "crates/ctx/src/memory/file_store.rs",
+        boundary: "context-knowledge",
+        responsibilities: &["own confined store metadata, index reads and the retained body cache"],
+        next_seams: &["same-candidate compiler and behavioral evidence remain required"],
+    },
+    Surface {
+        path: "crates/ctx/src/memory/operator_store.rs",
+        boundary: "context-knowledge",
+        responsibilities: &[
+            "publish operator reference edits through the sole versioned memory record owner",
+        ],
+        next_seams: &["same-candidate compiler and behavioral evidence remain required"],
+    },
+    Surface {
+        path: "crates/ctx/src/memory/selection.rs",
+        boundary: "context-knowledge",
+        responsibilities: &[
+            "own pure gathered-value selection and deterministic score retention without physical storage authority",
+        ],
+        next_seams: &["same-candidate compiler and behavioral evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params/stable_source.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "retain exact runtime lookup identities for moved declarations while recording actual source provenance",
+        ],
+        next_seams: &["same-candidate compiler and behavioral evidence remain required"],
+    },
+    Surface {
+        path: "crates/provider/src/catalog.rs",
+        boundary: "provider-core",
+        responsibilities: &[
+            "retain configured provider identity, credentials, injected transport and immutable catalog or pricing evidence",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/provider/src/catalog/discovery.rs",
+        boundary: "provider-core",
+        responsibilities: &["own bounded physical catalog or account discovery and page decoding"],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/provider/src/catalog/health.rs",
+        boundary: "provider-core",
+        responsibilities: &["own bounded provider and model health state plus evidence merging"],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/provider/src/catalog/routing.rs",
+        boundary: "provider-core",
+        responsibilities: &[
+            "choose only from already resolved model identities through a pure closed strategy contract",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "harvest and classify maintained source declarations without runtime authority",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params/source_wiring.rs",
+        boundary: "build-release",
+        responsibilities: &["own explicit maintainer AST source rewrites and replacement spans"],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "xtask/src/tunables_params/use_evidence.rs",
+        boundary: "build-release",
+        responsibilities: &[
+            "collect read-only actual runtime helper evidence from production AST and macros",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/app_server/path_completion.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "bind actual current workspace read scope and retain finite native worker custody independently of presentation",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/path_completion.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "read held directory metadata beneath the captured workspace and own bounded identity-checked completion cache",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/block.rs",
+        boundary: "cli-render",
+        responsibilities: &["own presentation block identity and tool or timer state"],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/block/diff.rs",
+        boundary: "cli-render",
+        responsibilities: &[
+            "render immutable standalone or embedded diffs with shared complete gutter and wrap geometry",
+        ],
+        next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
+    },
+    Surface {
         path: "crates/protocol/src/image_record.rs",
         boundary: "protocol-compat",
         responsibilities: &[

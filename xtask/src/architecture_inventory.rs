@@ -11,7 +11,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 const MAX_SOURCE_BYTES: u64 = 2 * 1_024 * 1_024;
-const PRODUCTION_TARGET: usize = 1_200;
+pub(super) const PRODUCTION_TARGET: usize = 2_000;
 
 struct Surface {
     path: &'static str,

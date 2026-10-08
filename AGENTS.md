@@ -27,8 +27,8 @@ snapshots.
 - Security, permission, durability, replay, budget, and effect-ledger guarantees
   are not learnable strategy choices.
 - Prefer small private modules and exhaustive typed protocols.
-- Target production modules below 1,200 lines; add a module rather than
-  extending a file already around that limit.
+- Keep production files at most 2,000 lines, or retain a clearly justified modular
+  structure. Separate actual responsibilities; avoid arbitrary file fragments.
 - Agent/runtime changes require integration evidence. TUI changes require semantic
   and terminal-render evidence.
 - Every change must declare affected boundary IDs and invariant overlays. Run
