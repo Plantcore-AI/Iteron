@@ -176,7 +176,9 @@ impl Agent {
                 } else if recovered.iter().any(|scoped| {
                     matches!(
                         scoped.event.kind,
-                        EventKind::Message { .. } | EventKind::EffectIntent { .. }
+                        EventKind::Message { .. }
+                            | EventKind::MessageV2 { .. }
+                            | EventKind::EffectIntent { .. }
                     )
                 }) {
                     return Err(KernelError::OrdinaryExtension(

@@ -251,6 +251,95 @@ async fn reopened_catalog_change_refuses_and_removes_every_new_executable_alias(
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn reopened_unbound_message_v2_refuses_catalog_without_aliases_binding_or_provider_io() {
+    use iteron_protocol::{
+        Event, ImageContent, ImageMediaType, Message, Role, Seq, TurnId,
+        tool_image::{ToolImageObservationV1, ToolImageScopeV1},
+    };
+    let scratch = crate::runtime::test_tempdir::tempdir().unwrap();
+    let root = scratch.path();
+    let run = RunId("sdk-unbound-message-v2".into());
+    let provider = Arc::new(NativeToolJourney {
+        calls: AtomicUsize::new(0),
+    });
+    let mut owner = agent(root, &run, provider.clone());
+    owner
+        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .unwrap();
+    // Synthetic, validated untrusted pixels exercise the actual new record vocabulary. This
+    // observation is data; it grants no tool effect or terminal authority to this fixture.
+    let observation = ToolImageObservationV1 {
+        version: 1,
+        tool_use_id: "unbound-pixels".into(),
+        owner_tenant: TenantId::default(),
+        owner_run: run.clone(),
+        terminal_seq: Seq(1),
+        observed_unix_ms: 1,
+        source_url_display: "https://example.com/".into(),
+        scope: ToolImageScopeV1::IsolatedBrowserViewport,
+        artifact_id: "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f".into(),
+        width: 1,
+        height: 1,
+        image: ImageContent::new(ImageMediaType::Png, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=").unwrap(),
+    };
+    observation.validate().unwrap();
+    let kind = EventKind::message(Message {
+        role: Role::User,
+        content: vec![Block::ToolImage(observation)],
+    });
+    assert!(matches!(kind, EventKind::MessageV2 { .. }));
+    owner
+        .rollout
+        .append(&Event {
+            seq: Seq::ZERO,
+            turn: TurnId(0),
+            kind,
+        })
+        .unwrap();
+    let path = owner.rollout.path().to_owned();
+    drop(owner);
+
+    let mut reopened = agent(root, &run, provider.clone());
+    let prior_bytes = std::fs::read(&path).unwrap();
+    let replay = iteron_record::replay(&path).unwrap();
+    assert!(
+        replay
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::MessageV2 { .. }))
+    );
+    assert!(!replay.iter().any(|event| matches!(
+        event.kind,
+        EventKind::Message { .. }
+            | EventKind::EffectIntent { .. }
+            | EventKind::OrdinaryExtensionBindingsV1 { .. }
+    )));
+    let result = reopened.install_ordinary_extensions(
+        bindings(),
+        &ProviderDirectory::inspect_local(&[]).unwrap(),
+        None,
+    );
+    assert!(matches!(
+        result,
+        Err(KernelError::OrdinaryExtension(
+            "ordinary SDK cannot replace an unbound historical lineage"
+        ))
+    ));
+    assert!(reopened.ordinary_extensions_port().is_none());
+    assert!(reopened.registry.capability_of("sample__read").is_none());
+    assert!(reopened.registry.capability_of("read_file").is_some());
+    assert_eq!(provider.calls.load(Ordering::Acquire), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), prior_bytes);
+    assert!(
+        !iteron_record::replay(&path)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::OrdinaryExtensionBindingsV1 { .. }))
+    );
+    drop(reopened);
+}
+
 #[test]
 fn actual_emitter_rebind_uses_the_new_bus_and_keeps_old_bus_events_unavailable() {
     let root = gate_integration_tests::temp_ws("sdk-real-bus-rebind");
