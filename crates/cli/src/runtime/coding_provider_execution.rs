@@ -100,7 +100,7 @@ impl CodingProviderExecution {
                 Ok(CodingProviderProgress::Hedge)
             }
             ProviderPumpProgress::Completed(result) => {
-                self.completed = Some(self.driver.take().ok_or_else(boundary)?.finish(result)?);
+                self.completed = Some(self.driver.take().ok_or_else(boundary)?.finish(*result)?);
                 self.failed = false;
                 Ok(CodingProviderProgress::Complete)
             }

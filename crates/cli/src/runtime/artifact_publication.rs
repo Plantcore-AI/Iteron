@@ -239,26 +239,6 @@ impl super::Agent {
         })
     }
 
-    pub(super) fn tool_output_publication(
-        &self,
-        call: &ToolUse,
-        source: Seq,
-    ) -> Arc<dyn ToolOutputPublicationPort> {
-        Arc::new(self.output_publisher(BTreeMap::from([(call.id.clone(), source.0)])))
-    }
-
-    pub(super) fn publish_captured_result(
-        &self,
-        call: &ToolUse,
-        source: Seq,
-        result: &ToolResult,
-        known: bool,
-    ) -> Option<String> {
-        self.tool_output_publication(call, source)
-            .publish(call, result, known)
-            .err()
-    }
-
     pub(super) fn publish_captured_answer(&self) {
         if self.run_assistant_text.is_empty() {
             return;

@@ -1,6 +1,7 @@
 //! Optional ordinary SDK host: native guards/routes and same-owner bounded observation ports.
 //! No provider is invoked or automatically selected by registration.
 use super::UiEvent;
+#[cfg(test)]
 use crate::providers::{ModelSelection, ProviderDirectory};
 use iteron_extension_sdk::{
     EventSubscriptionV1, ExtensionDispatchPolicy, ExtensionEventBatchV1, ExtensionEventReader,
@@ -18,6 +19,7 @@ use std::sync::{
 pub(super) struct OrdinaryExtensionHost {
     pub(super) catalog_sha256: String,
     pub(super) routes: Vec<NativeProviderRegistrationV1>,
+    #[cfg(test)]
     pub(super) directory: ProviderDirectory,
     pub(super) policy: Option<Arc<dyn ExtensionDispatchPolicy>>,
     pub(super) status: TextStatusReader,
@@ -135,6 +137,7 @@ impl OrdinaryExtensionHost {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn resolve_selection(
         &self,
         name: &str,

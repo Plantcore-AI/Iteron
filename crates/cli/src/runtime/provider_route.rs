@@ -617,19 +617,6 @@ impl Agent {
             }
         }
     }
-
-    pub(super) async fn wait_provider_retry(&self, delay: Duration) -> Result<(), KernelError> {
-        self.control
-            .wait_retry(
-                delay,
-                self.run_deadline.current(),
-                iteron_tunables::param_duration(
-                    "cli.runtime.provider_interrupt_poll_interval",
-                    PROVIDER_INTERRUPT_POLL_INTERVAL,
-                ),
-            )
-            .await
-    }
 }
 
 // Existing ordinary/auxiliary/hedge call sites enter the same physical transport owner.

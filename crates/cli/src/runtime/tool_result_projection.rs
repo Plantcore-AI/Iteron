@@ -22,21 +22,12 @@ impl ToolResultProjectionPolicy<'_> {
                     (ordinary.saturating_add(1), lsp)
                 }
             });
-        TurnResultProjectionBudget {
-            tool_result_bytes: self.budget.fair_result_visible_bytes(
-                ContextBudgetClass::ToolResults,
-                self.inspection
-                    .component_tokens(ContextBudgetClass::ToolResults),
-                ordinary,
-                self.visible_bytes,
-            ),
-            lsp_result_bytes: self.budget.fair_result_visible_bytes(
-                ContextBudgetClass::LspResults,
-                self.inspection
-                    .component_tokens(ContextBudgetClass::LspResults),
-                lsp,
-                self.visible_bytes,
-            ),
-        }
+        TurnResultProjectionBudget::from_component_allowances(
+            self.budget,
+            self.inspection,
+            ordinary,
+            lsp,
+            self.visible_bytes,
+        )
     }
 }

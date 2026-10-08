@@ -34,31 +34,6 @@ impl Agent {
             events,
         }
     }
-    pub(super) fn context_usage_reconciliation(&mut self) -> ContextUsageReconciliation<'_> {
-        let events = self.context_preparation_events();
-        let (provider_id, model_id) = self.provider_selection.selected().map_or_else(
-            || {
-                (
-                    self.provider.provider_instance_id().unwrap_or("unbound"),
-                    self.model.as_str(),
-                )
-            },
-            |selected| {
-                (
-                    selected.route.provider_id.as_str(),
-                    selected.route.model_id.as_str(),
-                )
-            },
-        );
-        ContextUsageReconciliation {
-            ledgers: &self.context_ledgers,
-            baselines: &mut self.token_estimate_baselines,
-            calibration: &mut self.token_calibration,
-            provider_id,
-            model_id,
-            events,
-        }
-    }
     pub(super) fn provider_commit_session(
         &mut self,
         turn: TurnId,

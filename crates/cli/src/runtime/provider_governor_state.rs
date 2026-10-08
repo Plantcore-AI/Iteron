@@ -189,6 +189,7 @@ impl Agent {
         Ok(())
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     /// Remove every preconfigured fallback that would change the immutable PlantCore engine
     /// identity. Retry and hedge attempts remain on the selected route; a future alternate
     /// transport instance may remain only when it advertises the exact same provider/model pair.

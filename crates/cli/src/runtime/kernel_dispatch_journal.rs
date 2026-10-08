@@ -71,9 +71,6 @@ impl KernelDispatchJournal<'_> {
     pub(super) fn next_ordinal(&mut self, turn: TurnId, class: effect_class::EffectClass) -> usize {
         self.effects.next_ordinal(turn, class)
     }
-    pub(super) fn healthy(&self) -> Result<(), KernelError> {
-        self.require_healthy()
-    }
     pub(super) fn append(
         &mut self,
         turn: TurnId,

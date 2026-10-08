@@ -236,6 +236,7 @@ impl Agent {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn retain_pending_steer(&mut self, steer: PendingSteer) {
         if let Err(steer) = self.inbox.push(steer) {
             self.reject_saturated_steers(

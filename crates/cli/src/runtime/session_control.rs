@@ -117,6 +117,7 @@ impl SessionControlState {
         self.interrupt = Some(flag);
         self.owns_interrupt = true;
     }
+    #[cfg(test)]
     pub(super) fn bind_force_cancel(&mut self, flag: Arc<AtomicBool>) {
         self.force_cancel = flag;
         self.owns_force_cancel = true;

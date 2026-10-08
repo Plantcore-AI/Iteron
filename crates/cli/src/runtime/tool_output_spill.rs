@@ -281,16 +281,6 @@ impl super::Agent {
             self.tool_output_spill.clone()
         }
     }
-
-    pub(super) fn cleanup_tool_output_spills(
-        &self,
-        boundary: ToolOutputSpillCleanup,
-    ) -> Result<(), super::KernelError> {
-        self.tool_output_spill
-            .as_ref()
-            .map_or(Ok(()), |store| store.cleanup(boundary))
-            .map_err(|_| super::KernelError::ToolOutputSpill("lifecycle cleanup failed"))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

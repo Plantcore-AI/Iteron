@@ -114,11 +114,11 @@ impl SharedUsdBudget {
             self.mark_unknown();
             return Err("provider route charge exceeded its pre-dispatch reservation");
         }
-        if let Some(parent) = &self.parent {
-            if let Err(error) = parent.commit_provider_route_charge(charge.clone()) {
-                self.mark_unknown();
-                return Err(error);
-            }
+        if let Some(parent) = &self.parent
+            && let Err(error) = parent.commit_provider_route_charge(charge.clone())
+        {
+            self.mark_unknown();
+            return Err(error);
         }
         if ledger.admit(charge)? {
             let Some(total) = self
@@ -267,12 +267,12 @@ impl SharedUsdBudget {
                 "positive USD provider concurrency is serialized until signed per-attempt reservations are available",
             );
         }
-        if let Some(parent) = &self.parent {
-            if let Err(error) = parent.try_acquire_provider_dispatch(reservation_microusd) {
-                self.provider_dispatch_in_flight
-                    .store(false, Ordering::Release);
-                return Err(error);
-            }
+        if let Some(parent) = &self.parent
+            && let Err(error) = parent.try_acquire_provider_dispatch(reservation_microusd)
+        {
+            self.provider_dispatch_in_flight
+                .store(false, Ordering::Release);
+            return Err(error);
         }
         if let Err(error) = self.reserve_local(reservation_microusd) {
             if let Some(parent) = &self.parent {
@@ -367,6 +367,7 @@ impl SharedUsdBudget {
 /// the ledger; an error, panic, or dropped async future leaves it armed and closes the ceiling.
 pub(super) struct ProviderAttemptGuard {
     budget: Option<Arc<SharedUsdBudget>>,
+    #[cfg(test)]
     projected_at_unix_secs: u64,
     completed: bool,
     owns_dispatch_lane: bool,
@@ -375,7 +376,7 @@ pub(super) struct ProviderAttemptGuard {
 impl ProviderAttemptGuard {
     pub(super) fn new(
         budget: Option<&Arc<SharedUsdBudget>>,
-        projected_at_unix_secs: u64,
+        _projected_at_unix_secs: u64,
         reservation_microusd: Option<u64>,
     ) -> Result<Self, &'static str> {
         let budget = budget.filter(|budget| budget.requires_pricing()).cloned();
@@ -390,12 +391,14 @@ impl ProviderAttemptGuard {
         };
         Ok(Self {
             budget,
-            projected_at_unix_secs,
+            #[cfg(test)]
+            projected_at_unix_secs: _projected_at_unix_secs,
             completed: false,
             owns_dispatch_lane,
         })
     }
 
+    #[cfg(test)]
     pub(super) fn projected_at_unix_secs(&self) -> u64 {
         self.projected_at_unix_secs
     }

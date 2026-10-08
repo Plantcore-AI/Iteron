@@ -8,24 +8,6 @@ use super::{Agent, KernelError};
 use iteron_protocol::TurnId;
 
 impl Agent {
-    pub(super) fn memory_request_exposure(
-        &mut self,
-        turn: TurnId,
-    ) -> super::memory_request_exposure::MemoryRequestExposure<'_> {
-        let events = super::provider_route_events::ProviderRouteEvents {
-            turn,
-            lifecycle: self.lifecycle_emitter.clone(),
-            hooks: self.lifecycle_hooks.clone(),
-            correlation: self.lifecycle_correlation(Some(turn)),
-            activity: self.activity.clone(),
-        };
-        super::memory_request_exposure::MemoryRequestExposure {
-            visibility: &mut self.session_memory_visibility,
-            memory_traces: &self.memory_traces,
-            events,
-        }
-    }
-
     pub(super) fn provider_route_binding(
         &mut self,
         turn: TurnId,

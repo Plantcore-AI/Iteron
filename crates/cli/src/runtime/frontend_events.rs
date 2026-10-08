@@ -129,7 +129,10 @@ pub enum UiEvent {
 /// PlantCore-only runtime facts carried beside the frozen CLI `UiEvent` vocabulary.
 #[derive(Debug, Clone)]
 pub(crate) enum PlantcoreUiEvent {
+    // Only the optional legacy producer emits this frozen pure projection vocabulary.
+    #[cfg_attr(not(feature = "legacy-plantcore"), allow(dead_code))]
     Usage(iteron_protocol::TurnUsage),
+    #[cfg_attr(not(feature = "legacy-plantcore"), allow(dead_code))]
     RunAdmitted {
         profile_digest_sha256: iteron_protocol::HexSha256,
     },
@@ -139,6 +142,8 @@ pub(crate) enum PlantcoreUiEvent {
 #[derive(Debug, Clone)]
 pub(crate) enum RuntimeFrontendEvent {
     Ui(UiEvent),
+    // No standalone producer; the historical pure projection contract remains available.
+    #[cfg_attr(not(feature = "legacy-plantcore"), allow(dead_code))]
     Plantcore(PlantcoreUiEvent),
     TurnPublication(iteron_protocol::turn_publication::TurnPublicationEventV1),
 }

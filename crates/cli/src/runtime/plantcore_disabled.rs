@@ -1,7 +1,7 @@
 //! Compatibility refusals for historical integration call sites. The standalone runtime owns
 //! no integration state, paths, configuration, metering, product outputs or dispatch authority.
 use super::{Agent, KernelError};
-use iteron_protocol::{ArtifactDeclaration, ProductResult, ProviderRouteAttemptAccounting, TurnId};
+use iteron_protocol::{ProductResult, TurnId};
 use std::sync::Arc;
 
 const UNAVAILABLE: &str = "legacy integration is unavailable in standalone Iteron";
@@ -10,18 +10,24 @@ const UNAVAILABLE: &str = "legacy integration is unavailable in standalone Itero
 // acquire a lease or admit a submission in a standalone build.
 #[derive(Debug)]
 pub(crate) struct DispatchGate;
-#[derive(Debug)]
-pub(super) struct DispatchPermit;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResumeActivation;
 
 impl DispatchGate {
+    #[allow(
+        dead_code,
+        reason = "Frozen compatibility gate surface is unavailable in standalone; it cannot call the supplied effect or acquire state."
+    )]
     pub(crate) async fn pause_after_safe_point(&self) -> Result<(), &'static str> {
         Err(UNAVAILABLE)
     }
     pub(super) async fn await_recording_provider_usage_settled(&self) -> Result<(), &'static str> {
         Err(UNAVAILABLE)
     }
+    #[allow(
+        dead_code,
+        reason = "Frozen compatibility gate surface is unavailable in standalone; it cannot call the supplied effect or acquire state."
+    )]
     pub(crate) fn prepare_resume(&self) -> Result<ResumeActivation, &'static str> {
         Err(UNAVAILABLE)
     }
@@ -31,7 +37,15 @@ impl DispatchGate {
     ) -> Result<(), &'static str> {
         Err(UNAVAILABLE)
     }
+    #[allow(
+        dead_code,
+        reason = "Frozen compatibility gate surface is unavailable in standalone; it cannot call the supplied effect or acquire state."
+    )]
     pub(crate) fn terminal(&self) {}
+    #[allow(
+        dead_code,
+        reason = "Frozen compatibility gate surface is unavailable in standalone; it cannot call the supplied effect or acquire state."
+    )]
     pub(crate) fn terminalize_if_accepted<T, E>(
         &self,
         _submit: impl FnOnce() -> Result<T, E>,
@@ -43,9 +57,6 @@ impl DispatchGate {
         _submit: impl FnOnce() -> Result<T, E>,
     ) -> Result<Result<T, E>, &'static str> {
         Err(UNAVAILABLE)
-    }
-    pub(super) async fn enter(self: &Arc<Self>) -> Option<DispatchPermit> {
-        None
     }
 }
 
@@ -62,14 +73,6 @@ impl Agent {
     pub(super) fn plantcore_dispatch_gate(&self) -> Option<Arc<DispatchGate>> {
         None
     }
-    pub(super) fn is_plantcore_mcp_dispatch(&self, name: &str) -> bool {
-        self.registry.is_mcp_effect(name)
-    }
-    pub(super) async fn enter_plantcore_external_dispatch(
-        &self,
-    ) -> Result<Option<DispatchPermit>, ()> {
-        Ok(None)
-    }
     pub(super) async fn cross_plantcore_logical_turn_gate(&self) -> Result<(), ()> {
         Ok(())
     }
@@ -83,13 +86,6 @@ impl Agent {
     pub(super) fn complete_plantcore_product(&mut self) -> Result<(), &'static str> {
         Ok(())
     }
-    pub(super) fn observe_plantcore_provider_attempt(
-        &mut self,
-        _turn: TurnId,
-        _accounting: &ProviderRouteAttemptAccounting,
-    ) -> Result<(), &'static str> {
-        Ok(())
-    }
     pub(super) fn plantcore_terminal(&self) -> Option<PlantcoreTerminal> {
         None
     }
@@ -99,21 +95,4 @@ impl Agent {
     pub(super) fn emit_plantcore_turn_usage(&mut self, _turn: TurnId) -> Result<(), KernelError> {
         Ok(())
     }
-    pub(super) fn request_plantcore_input_from_value(
-        &mut self,
-        _tool_use_id: &str,
-        _input: serde_json::Value,
-    ) -> Result<(), String> {
-        Err(UNAVAILABLE.into())
-    }
-    pub(super) async fn snapshot_plantcore_artifact(
-        &mut self,
-        _input: serde_json::Value,
-    ) -> Result<ArtifactDeclaration, String> {
-        Err(UNAVAILABLE.into())
-    }
-}
-
-pub(super) fn artifact_result_content(_artifact: &ArtifactDeclaration) -> String {
-    UNAVAILABLE.into()
 }

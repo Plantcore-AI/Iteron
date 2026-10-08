@@ -1,10 +1,19 @@
 //! Concrete non-registry call composition; executing domain work remains outside this factory.
+#[cfg(test)]
 use super::context_runtime::TurnResultProjectionBudget;
+#[cfg(test)]
 use super::kernel_tool_call::{KernelOutputProjection, KernelToolCall, KernelToolOutputScope};
+#[cfg(any(test, feature = "legacy-plantcore"))]
 use super::tool_execution_journal::ToolExecutionJournal;
+#[cfg(any(test, feature = "legacy-plantcore"))]
 use super::{Agent, KernelError};
-use iteron_protocol::{Capability, ToolResult, ToolUse, TurnId};
+#[cfg(test)]
+use iteron_protocol::{Capability, ToolUse};
+#[cfg(any(test, feature = "legacy-plantcore"))]
+use iteron_protocol::{ToolResult, TurnId};
+#[cfg(any(test, feature = "legacy-plantcore"))]
 impl Agent {
+    #[cfg(test)]
     pub(super) fn kernel_tool_call(
         &mut self,
         turn: TurnId,
@@ -45,6 +54,7 @@ impl Agent {
             capability,
         )
     }
+    #[cfg(test)]
     pub(super) fn complete_kernel_tool_call(
         &mut self,
         call: KernelToolCall,
@@ -52,6 +62,7 @@ impl Agent {
     ) -> Result<iteron_protocol::ToolResult, KernelError> {
         call.complete(&mut self.tool_execution_journal(), result)
     }
+    #[cfg(any(test, feature = "legacy-plantcore"))]
     /// Commit the terminal for a call that was **refused before dispatch** — a policy or gate
     /// denial, an ADR-003 dedup, an operator drain/interrupt, an exhausted deadline, a broken
     /// record — before projecting it into the live ledger. A failed durable append therefore
@@ -70,6 +81,7 @@ impl Agent {
         self.commit_refused_tool_result_with_reason(turn, tool, result, "refused_before_dispatch")
     }
 
+    #[cfg(any(test, feature = "legacy-plantcore"))]
     pub(super) fn commit_refused_tool_result_with_reason(
         &mut self,
         turn: TurnId,
@@ -82,6 +94,7 @@ impl Agent {
             .refused_result(turn, tool, result, reason_code, &events)
     }
 
+    #[cfg(any(test, feature = "legacy-plantcore"))]
     pub(super) fn tool_execution_journal(&mut self) -> ToolExecutionJournal<'_> {
         ToolExecutionJournal {
             rollout: &mut self.rollout,

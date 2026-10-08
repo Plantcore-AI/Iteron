@@ -1,6 +1,6 @@
 use super::*;
-use iteron_protocol::{Block, Role};
 
+#[cfg(test)]
 /// Retain at most one UTF-8 scalar beyond the interrupted-stream display limit. That extra
 /// scalar lets `strict_utf8_head` mark truncation without buffering an unbounded provider stream.
 pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, max_bytes: usize) {
@@ -157,47 +157,6 @@ impl Agent {
         kind: EventKind,
     ) -> Result<(), KernelError> {
         self.emit_durable_seq(turn, kind).map(|_| ())
-    }
-
-    /// Commit the final visible phase and run terminal as one semantic batch. `Done` is last by
-    /// construction, so `Rollout::append_batch` takes exactly one full terminal barrier and the UI
-    /// cannot observe Idle without the authoritative terminal in the same confirmed prefix.
-    pub(super) fn emit_durable_run_terminal(
-        &mut self,
-        turn: TurnId,
-        outcome: String,
-    ) -> Result<Seq, KernelError> {
-        #[cfg(test)]
-        if self.fail_next_durable_append == Some(DurableAppendFault::RunTerminal) {
-            self.fail_next_durable_append = None;
-            self.record_failed = true;
-            self.diagnostic_record_append_failed();
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::other("injected durable run-terminal append refusal"),
-            )));
-        }
-        let outcome_observation = outcome.clone();
-        let result = self.terminal_record.append_visible_terminal(
-            &mut self.rollout,
-            &mut self.ledger,
-            turn,
-            outcome,
-        );
-        result
-            .map_err(|error| {
-                self.record_failed = true;
-                self.diagnostic_record_append_failed();
-                KernelError::Record(error)
-            })
-            .inspect(|source| {
-                self.turn_publications.observe_committed(&Event {
-                    seq: *source,
-                    turn,
-                    kind: EventKind::Done {
-                        outcome: outcome_observation,
-                    },
-                });
-            })
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow
@@ -422,40 +381,6 @@ impl Agent {
         committed.map_err(|error| self.effect_boundary_failed(error))
     }
 
-    /// Run one lifecycle hook across the effect boundary.
-    ///
-    /// A hook is an operator-configured process the kernel starts, which makes it an externally
-    /// visible effect by every definition the boundary uses. Before #16 it was the largest
-    /// unbrokered class in the kernel — the comment beside the PostToolUse call site said so in as
-    /// many words — so a crash between spawning a hook and returning left no durable trace that
-    /// anything had been started.
-    ///
-    /// # Why a returning hook is a *proven* terminal
-    ///
-    /// `Hooks::run` always returns: a command that cannot spawn, exits non-zero, or overruns its
-    /// timeout is reaped and reported as "no opinion". So when it returns, the process lifecycle is
-    /// closed and the terminal is proven, even though the hook's *verdict* may be unknown — those
-    /// are different questions and only the first belongs to the boundary. The genuinely
-    /// unprovable case is the one the boundary already covers: if this process dies between the
-    /// intent and the terminal, recovery finds a pending intent and journals `EffectUnknown`.
-    ///
-    /// # Why a boundary failure is not swallowed here
-    ///
-    /// Every existing call site wrote `let _ = self.hooks.run(...)`, because a hook's opinion is
-    /// advisory. A *boundary* failure is not: it means either the durable log is broken or a caller
-    /// asked for an unrecordable dispatch, and continuing would report a clean outcome over a
-    /// broken audit trail.
-    pub(super) async fn brokered_hook(
-        &mut self,
-        turn: TurnId,
-        event: HookEvent,
-        context_json: &str,
-    ) -> Result<hooks::HookDecision, KernelError> {
-        self.hook_execution(turn)
-            .compatibility(event, context_json)
-            .await
-    }
-
     /// Assemble concrete independent hook, journal, measurement and projection owners. No
     /// executor receives mutable Agent state or provider/permission authority.
     pub(super) fn hook_execution(&mut self, turn: TurnId) -> hook_execution::HookExecution<'_> {
@@ -493,54 +418,6 @@ impl Agent {
         payload: LifecyclePayload,
     ) -> Result<hooks::LifecycleHookReport, KernelError> {
         let correlation = self.lifecycle_correlation(Some(turn));
-        self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, true)
-            .await
-    }
-
-    /// Ask a canonical Gate for its decision without projecting the protected source event yet.
-    /// Tool admission uses this form: the subsequent admitted/refused tool boundary publishes
-    /// `tool.call_proposed` exactly once with the final effect correlation.
-    pub(super) async fn brokered_lifecycle_gate_decision(
-        &mut self,
-        turn: TurnId,
-        event_id: &'static str,
-        payload: LifecyclePayload,
-    ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        let correlation = self.lifecycle_correlation(Some(turn));
-        self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, false)
-            .await
-    }
-
-    pub(super) async fn admit_tool_lifecycle_gate(
-        &mut self,
-        turn: TurnId,
-        tool: &str,
-    ) -> Result<Option<String>, KernelError> {
-        let report = self
-            .brokered_lifecycle_gate_decision(
-                turn,
-                "tool.call_proposed",
-                LifecyclePayload {
-                    reason_code: Some(tool.to_owned()),
-                    ..LifecyclePayload::default()
-                },
-            )
-            .await?;
-        Ok(match report.decision {
-            hooks::HookDecision::Allow => None,
-            hooks::HookDecision::Deny(reason) => Some(reason),
-        })
-    }
-
-    pub(super) async fn brokered_child_lifecycle_gate(
-        &mut self,
-        turn: TurnId,
-        event_id: &'static str,
-        subagent_id: &str,
-        payload: LifecyclePayload,
-    ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        let mut correlation = self.lifecycle_correlation(Some(turn));
-        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
         self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, true)
             .await
     }
@@ -741,6 +618,7 @@ impl Agent {
         }
     }
 
+    #[cfg(test)]
     /// Refuse blind replay across the edit/process crash window. A durable intent without a
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
@@ -753,91 +631,5 @@ impl Agent {
             self.diagnostic_record_append_failed();
         }
         result
-    }
-
-    /// Record a transcript message AND push it onto the working set — the two must stay in
-    /// lockstep so the rollout is a complete, resumable record.
-    /// Durably preserve what a failed turn had already streamed (I-39).
-    ///
-    /// A mid-stream disconnect used to return before the assistant message was appended, so every
-    /// token the operator had watched arrive was destroyed by the failure that interrupted it —
-    /// ambiguous transport failures are not retried, so a connection reset, a VPN drop and the
-    /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
-    /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
-    /// at all.
-    ///
-    /// This is that channel, and it writes two different things for two different readers:
-    /// the bounded coalesced delta prefix records what began appearing on screen, and the
-    /// interrupted assistant message is what resume and rewind replay into the next request.
-    /// Both are bounded, both are emitted only on
-    /// this path, and neither claims usage: **no billing semantics change here**. An append
-    /// failure is swallowed on purpose — the provider error is the one worth reporting, and
-    /// losing the record of a partial answer must not also lose the reason it was partial.
-    pub(super) fn preserve_interrupted_stream(
-        &mut self,
-        turn: TurnId,
-        messages: &mut Vec<Message>,
-        text: &str,
-        thinking: &str,
-    ) {
-        if text.is_empty() && thinking.is_empty() {
-            return;
-        }
-        let max_bytes = iteron_tunables::param_integer(
-            "cli.runtime.interrupted_stream_max_bytes",
-            INTERRUPTED_STREAM_MAX_BYTES,
-        )
-        .min(INTERRUPTED_STREAM_MAX_BYTES);
-        if !thinking.is_empty() {
-            let _ = self.emit_durable(
-                turn,
-                EventKind::Thinking {
-                    delta: strict_utf8_head(thinking, max_bytes),
-                },
-            );
-        }
-        if text.is_empty() {
-            return;
-        }
-        let delta = strict_utf8_head(text, max_bytes);
-        let _ = self.emit_durable(
-            turn,
-            EventKind::Text {
-                delta: delta.clone(),
-            },
-        );
-        // The marker is inside the text, not beside it: an assistant message that resume replays
-        // must tell the model where its own answer stopped, and a sibling field would be dropped
-        // the moment the transcript is serialized for a provider.
-        let interrupted = Message {
-            role: Role::Assistant,
-            content: vec![Block::Text {
-                text: format!("{delta}\n\n{INTERRUPTED_STREAM_MARKER}"),
-            }],
-        };
-        let _ = self.commit_message(turn, messages, interrupted);
-    }
-
-    pub(super) fn commit_message(
-        &mut self,
-        turn: TurnId,
-        messages: &mut Vec<Message>,
-        m: Message,
-    ) -> Result<(), KernelError> {
-        // The working transcript is a projection of durable state, never a parallel authority.
-        // If append/fsync fails, do not let the model-visible state advance past the journal.
-        let source = self.emit_durable_seq(turn, EventKind::message(m.clone()))?;
-        if m.role == Role::Assistant {
-            self.last_assistant_source = Some(source);
-        }
-        if let Some(trust) = Trust::governing(m.content.iter().filter_map(|block| match block {
-            Block::ToolResult(result) => Some(result.trust),
-            Block::ToolImage(image) => Some(image.trust()),
-            _ => None,
-        })) {
-            self.observed_trust = self.observed_trust.min(trust);
-        }
-        messages.push(m);
-        Ok(())
     }
 }

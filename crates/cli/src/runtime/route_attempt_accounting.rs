@@ -68,12 +68,6 @@ impl Agent {
             .reserve_provider_followup_if_needed(self.provider.as_ref(), request)
     }
 
-    pub(super) fn active_provider_cost_reservation(&self) -> Option<u64> {
-        self.usd_budget
-            .as_ref()
-            .and_then(|budget| budget.active_reservation_microusd())
-    }
-
     /// Conservative price for the exact request under the signed active card. The model context
     /// window bounds input; every cache class receives that full bound because adapters disagree
     /// about whether cached tokens are also included in `input`. Output and thinking share one

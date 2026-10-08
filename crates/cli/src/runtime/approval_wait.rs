@@ -404,8 +404,8 @@ impl ApprovalWait<'_> {
         }
     }
     fn retain(&mut self, steer: PendingSteer, turn: TurnId) {
-        if let Err(steer) = self.inbox.push(steer) {
-            if self
+        if let Err(steer) = self.inbox.push(steer)
+            && self
                 .journal
                 .append(
                     turn,
@@ -414,13 +414,12 @@ impl ApprovalWait<'_> {
                     },
                 )
                 .is_ok()
-                && let Some(id) = steer.submission_id.filter(|id| id.0 != 0)
-            {
-                self.events.present(UiEvent::SubmissionRejected {
-                    id,
-                    reason_code: "steering_queue_saturated",
-                });
-            }
+            && let Some(id) = steer.submission_id.filter(|id| id.0 != 0)
+        {
+            self.events.present(UiEvent::SubmissionRejected {
+                id,
+                reason_code: "steering_queue_saturated",
+            });
         }
     }
 }

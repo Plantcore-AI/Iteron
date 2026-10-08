@@ -176,6 +176,28 @@ pub(super) struct TurnResultProjectionBudget {
 }
 
 impl TurnResultProjectionBudget {
+    pub(super) fn from_component_allowances(
+        policy: &iteron_ctx::ContextBudgetPolicy,
+        inspection: ContextBudgetInspection,
+        ordinary_calls: usize,
+        lsp_calls: usize,
+        visible_bytes: usize,
+    ) -> Self {
+        Self {
+            tool_result_bytes: policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::ToolResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
+                ordinary_calls,
+                visible_bytes,
+            ),
+            lsp_result_bytes: policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::LspResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::LspResults),
+                lsp_calls,
+                visible_bytes,
+            ),
+        }
+    }
     pub(super) fn visible_bytes_for(self, tool_name: &str) -> usize {
         match iteron_ctx::result_budget_class(tool_name) {
             iteron_ctx::ContextBudgetClass::LspResults => self.lsp_result_bytes,
@@ -325,16 +347,6 @@ impl Agent {
             .push_back((turn, u64::try_from(tokens).unwrap_or(u64::MAX)));
     }
 
-    pub(super) fn take_token_estimate_baseline(&mut self, turn: TurnId) -> Option<u64> {
-        let index = self
-            .token_estimate_baselines
-            .iter()
-            .position(|(candidate, _)| *candidate == turn)?;
-        self.token_estimate_baselines
-            .remove(index)
-            .map(|(_, tokens)| tokens)
-    }
-
     pub(super) fn persist_token_calibration(&self) -> bool {
         if self.runtime_state_dir.as_os_str().is_empty() {
             return false;
@@ -383,6 +395,7 @@ impl Agent {
         ContextBudgetInspection { usage, violation }
     }
 
+    #[cfg(test)]
     /// Allocate the remaining transcript-owned result budgets fairly across the calls emitted in
     /// this model turn. This runs after the provider terminal, when the complete call set is known,
     /// but before any result terminal is recorded or appended to the next request.
@@ -403,19 +416,7 @@ impl Agent {
         .calculate(calls)
     }
 
-    pub(super) fn observe_tool_result_projection(&self, turn: TurnId, visible_bytes: usize) {
-        self.lifecycle_event(
-            "context.source.truncated",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(1),
-                magnitude: Some(u64::try_from(visible_bytes).unwrap_or(u64::MAX)),
-                reason_code: Some("tool_result_pressure_projection".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-    }
-
+    #[cfg(test)]
     /// Standard payload for component-triggered compaction. `magnitude` is the measured usage of
     /// the breached component at this stage and `count` is its fixed ceiling. Paired pre/post
     /// events therefore expose before/after tokens without recording transcript content.
@@ -429,24 +430,6 @@ impl Agent {
             magnitude: Some(u64::try_from(observed_tokens).unwrap_or(u64::MAX)),
             ..LifecyclePayload::default()
         }
-    }
-
-    /// Emit one non-gating recovery transition. `Considered` callers must use
-    /// `brokered_lifecycle_gate` with [`Self::context_budget_recovery_payload`] instead so Hooks
-    /// retain their existing ability to deny compaction. The terminal transition attributes
-    /// success/failure to the component budget without duplicating compaction's own terminal event.
-    pub(super) fn emit_context_budget_recovery_event(
-        &self,
-        turn: TurnId,
-        stage: ContextBudgetRecoveryStage,
-        violation: &iteron_ctx::ContextBudgetViolation,
-        observed_tokens: usize,
-    ) {
-        self.lifecycle_event(
-            stage.event_id(),
-            Some(turn),
-            Self::context_budget_recovery_payload(violation, observed_tokens),
-        );
     }
 
     /// Bind attachments to one admitted top-level submission. A route without verified image

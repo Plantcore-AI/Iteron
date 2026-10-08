@@ -229,7 +229,7 @@ impl<'a> CodingRunCoordinator<'a> {
                 let effort: EffortApplication =
                     provider.effort_application(&prepared.request.request);
                 self.driver.install_admitted_request(messages, recovery)?;
-                self.request = Some(self.driver.admitted(prepared, effort)?);
+                self.request = Some(self.driver.admitted(*prepared, effort)?);
                 self.port = Port::ProviderBegin;
                 Ok(None)
             }

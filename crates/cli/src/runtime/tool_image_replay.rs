@@ -103,10 +103,10 @@ pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
                 if witnesses.insert(witness_key.clone(), ()).is_none() {
                     witness_order.push_back(witness_key);
                 }
-                if witness_order.len() > MAX_WITNESSES {
-                    if let Some(old) = witness_order.pop_front() {
-                        witnesses.remove(&old);
-                    }
+                if witness_order.len() > MAX_WITNESSES
+                    && let Some(old) = witness_order.pop_front()
+                {
+                    witnesses.remove(&old);
                 }
             }
             EventKind::Message { message } | EventKind::MessageV2 { message } => {

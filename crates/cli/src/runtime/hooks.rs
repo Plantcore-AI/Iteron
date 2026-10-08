@@ -456,6 +456,7 @@ const SIGNAL_TERMINATED_EXIT_CODE: i32 = -1;
 /// without busy-waiting on the child.
 const HOOK_CANCEL_POLL: Duration = Duration::from_millis(25);
 
+#[cfg(any(test, feature = "legacy-plantcore"))]
 fn validate_plantcore_workspace_executable(path: &Path) -> Result<(), &'static str> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| "PlantCore workspace Hook executable is unavailable")?;
@@ -495,11 +496,13 @@ impl Hooks {
         })
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     pub(crate) fn preflight_plantcore_workspace_gate() -> Result<(), &'static str> {
         let _ = resolve_plantcore_workspace_executable()?;
         Ok(())
     }
 
+    #[cfg(any(test, feature = "legacy-plantcore"))]
     /// Replace every configurable hook with the release-owned PlantCore workspace gate.
     pub(crate) fn install_plantcore_workspace_gate(
         &mut self,
@@ -1159,6 +1162,7 @@ impl Hooks {
     }
 }
 
+#[cfg(any(test, feature = "legacy-plantcore"))]
 fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
     let current_executable =
         std::env::current_exe().map_err(|_| "current executable path is unavailable")?;

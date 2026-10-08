@@ -129,7 +129,7 @@ pub(super) struct CompletedProviderTurn {
 
 pub(super) enum ProviderPumpProgress {
     AwaitHedge,
-    Completed(Result<TurnResult, KernelError>),
+    Completed(Box<Result<TurnResult, KernelError>>),
 }
 
 pub(super) struct ProviderTurnDriver {
@@ -187,7 +187,7 @@ impl ProviderTurnDriver {
                 if !self.inclusion_confirmed() {
                     memory.unconfirmed();
                 }
-                return Ok(ProviderPumpProgress::Completed(result));
+                return Ok(ProviderPumpProgress::Completed(Box::new(result)));
             }
         }
     }

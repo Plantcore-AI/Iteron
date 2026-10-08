@@ -4,6 +4,7 @@ use super::Agent;
 #[cfg(test)]
 use super::workflow_preparation::normalize_workflow_script;
 impl Agent {
+    #[cfg(test)]
     pub(super) fn prepare_workflow(
         &mut self,
         input: &serde_json::Value,

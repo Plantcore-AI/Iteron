@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
 use super::*;
 
@@ -83,6 +84,7 @@ pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
 }
 
 impl Agent {
+    #[cfg(test)]
     /// Publish the logical projection of an already sealed physical usage receipt.
     pub(super) fn complete_provider_turn(
         &mut self,
@@ -156,14 +158,6 @@ impl Agent {
             .is_some_and(|budget| budget.requires_pricing())
             && matches!(self.ledger.cost_state(), CostState::Unknown { .. })
         {
-            self.mark_usd_unknown();
-        }
-    }
-
-    pub(super) fn merge_child_ledger(&mut self, child: &Ledger) {
-        let child_unknown = matches!(child.cost_state(), CostState::Unknown { .. });
-        self.ledger.merge(child);
-        if child_unknown || matches!(self.ledger.cost_state(), CostState::Unknown { .. }) {
             self.mark_usd_unknown();
         }
     }

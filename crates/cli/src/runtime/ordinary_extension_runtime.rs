@@ -198,6 +198,7 @@ impl Agent {
                 let owner = Arc::new(OrdinaryExtensionHost {
                     catalog_sha256: digest,
                     routes,
+                    #[cfg(test)]
                     directory: directory.frozen_client_snapshot(),
                     policy,
                     status,
@@ -251,6 +252,7 @@ impl Agent {
             }
         }
     }
+    #[cfg(test)]
     /// Trusted operator control, the same actual durable route/pricing owners as `/model`.
     /// A plugin never calls this through a lifecycle or status read handle.
     pub(crate) fn select_ordinary_extension_provider(

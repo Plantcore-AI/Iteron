@@ -1,10 +1,9 @@
 //! Composition of the existing operator verification gate. Mutable verification state, physical
 //! execution, journal, control, checkpoint and approval ownership live in concrete independent ports.
 use super::permission_transaction::PermissionTransaction;
-pub(super) use super::strong_verification::VerificationGateDisposition;
 use super::strong_verification::{StrongVerificationGate, VerificationScope};
 use super::verification_journal::{VerificationJournal, VerificationPolicyBootstrap};
-use super::{Agent, KernelError, investigation_convergence};
+use super::{Agent, KernelError};
 use iteron_protocol::TurnId;
 
 impl Agent {
@@ -93,17 +92,6 @@ impl Agent {
                 .checkpoint
                 .minimum_turn_interval,
         )
-    }
-    pub(super) async fn run_strong_verification_gate(
-        &mut self,
-        turn: TurnId,
-        command: &str,
-        candidate_state: investigation_convergence::CandidateDiffState,
-        convergence: &mut investigation_convergence::InvestigationConvergence,
-    ) -> Result<VerificationGateDisposition, KernelError> {
-        self.strong_verification_gate(TurnId(self.seq_turn))
-            .run(turn, command, candidate_state, convergence)
-            .await
     }
     #[cfg(test)]
     pub(super) async fn run_verification_policy(

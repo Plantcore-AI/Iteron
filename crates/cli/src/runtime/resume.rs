@@ -319,12 +319,12 @@ impl Agent {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
                         EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
                         kind @ EventKind::AgentInputAdmittedV1 { .. } => {
-                            super::persistent_agents::input_admission::replay_reference_trust(&kind)
+                            super::persistent_agents::input_admission::replay_reference_trust(kind)
                                 .into_iter()
                                 .collect()
                         }
                         kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
-                            super::memory_activation::replay_reference_trust(&kind)
+                            super::memory_activation::replay_reference_trust(kind)
                                 .into_iter()
                                 .collect()
                         }
@@ -612,7 +612,7 @@ impl Agent {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
                 EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
                 kind @ EventKind::AgentInputAdmittedV1 { .. } => {
-                    super::persistent_agents::input_admission::replay_reference_trust(&kind)
+                    super::persistent_agents::input_admission::replay_reference_trust(kind)
                         .into_iter()
                         .collect()
                 }
@@ -1554,6 +1554,13 @@ pub struct AdoptedRun {
     pub rollout_path: std::path::PathBuf,
     /// The run this session was on until the adoption. Its writer lock is released by then, so it
     /// can be adopted back (here or by another process).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Returned adoption receipt preserves the prior released writer identity; the adoption fixture observes it."
+        )
+    )]
     pub previous_run_id: String,
     /// Messages reconstructed from the adopted record — the transcript the next turn continues.
     pub messages: usize,

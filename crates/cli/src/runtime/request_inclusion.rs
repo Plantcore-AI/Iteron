@@ -20,10 +20,10 @@ pub(super) fn context_included(wire: &ProviderWireRequest<'_>) -> bool {
         AdapterKind::OpenAiResponses => (body.get("instructions"), body.get("input")),
         AdapterKind::OpenAiCompatibleChat => (None, body.get("messages")),
     };
-    if let Some(value) = system_value {
-        if !text_fields(value, &mut system) {
-            return false;
-        }
+    if let Some(value) = system_value
+        && !text_fields(value, &mut system)
+    {
+        return false;
     }
     let Some(messages) = messages.and_then(Value::as_array) else {
         return false;

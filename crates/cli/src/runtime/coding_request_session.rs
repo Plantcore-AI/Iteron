@@ -34,7 +34,7 @@ pub(super) struct CodingRequestSession<'a> {
 }
 pub(super) enum CodingRequestResult {
     Admitted {
-        prepared: PreparedModelTurn,
+        prepared: Box<PreparedModelTurn>,
         messages: Vec<Message>,
         recovery: super::context_runtime::ContextBudgetRecoveryGuard,
     },
@@ -81,7 +81,7 @@ impl CodingRequestSession<'_> {
             request.complete(self.configuration, self.publication)?;
         activity.complete();
         Ok(CodingRequestResult::Admitted {
-            prepared,
+            prepared: Box::new(prepared),
             messages,
             recovery,
         })

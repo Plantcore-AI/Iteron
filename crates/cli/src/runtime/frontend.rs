@@ -594,12 +594,6 @@ impl Agent {
         self.control.bind_interrupt(flag);
     }
 
-    /// Install the distinct escalated-cancellation authority. A frontend must set this only for an
-    /// explicit ForceCancel operation; cooperative Ctrl-C continues to use [`Self::set_interrupt`].
-    pub fn set_force_cancel(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.control.bind_force_cancel(flag);
-    }
-
     /// A child observes its caller-owned stop signal but cannot clear it at its own terminal.
     pub(crate) fn inherit_interrupt(
         &mut self,
@@ -691,6 +685,7 @@ impl Agent {
         sent
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     pub(crate) fn plantcore_ui(&self, event: super::PlantcoreUiEvent) -> bool {
         self.resident_ui_tx.as_ref().is_none_or(|tx| {
             self.frontend_saturation
@@ -719,31 +714,6 @@ impl Agent {
         tx: tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>,
     ) {
         self.workflow_progress_tx = Some(tx);
-    }
-
-    pub(super) fn workflow_progress(&self, event: crate::workflow::WorkflowRunUiEvent) -> bool {
-        if let Some(tx) = &self.workflow_progress_tx {
-            match tx.try_send(event) {
-                Ok(()) => return true,
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    let count = self.frontend_saturation.workflow_saturated();
-                    if count.is_power_of_two() {
-                        self.lifecycle_event(
-                            "queue.overflow",
-                            Some(self.current_turn_id()),
-                            iteron_protocol::LifecyclePayload {
-                                count: Some(count),
-                                reason_code: Some("runtime_workflow".into()),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     pub(crate) fn frontend_channel_port(&self) -> FrontendChannelHealth {

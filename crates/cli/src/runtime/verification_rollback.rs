@@ -208,15 +208,15 @@ impl StrongVerificationGate<'_> {
         }
         .run(request)
         .await?;
-        if decision.remember {
-            if let Err(error) = self.permission.remember(
+        if decision.remember
+            && let Err(error) = self.permission.remember(
                 &mut self.journal.approval(),
                 turn,
                 Capability::TrustMutating,
-            ) {
-                decision.policy_persist_failed(&events);
-                return Err(error);
-            }
+            )
+        {
+            decision.policy_persist_failed(&events);
+            return Err(error);
         }
         decision.publish(&events)
     }

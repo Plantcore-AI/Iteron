@@ -32,19 +32,15 @@ pub(super) fn ceiling(
     proof_required: bool,
 ) -> Result<u32, KernelError> {
     match provider.physical_output_token_ceiling(budget)? {
-        Some(0) => {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "physical_output_token_ceiling",
-                reason: "adapter attested a zero physical output bound",
-            });
-        }
+        Some(0) => Err(KernelError::InvalidRouteMetadata {
+            field: "physical_output_token_ceiling",
+            reason: "adapter attested a zero physical output bound",
+        }),
         Some(physical) => Ok(physical),
-        None if proof_required => {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "physical_output_token_ceiling",
-                reason: "hard provider budget requires an adapter-attested physical output bound",
-            });
-        }
+        None if proof_required => Err(KernelError::InvalidRouteMetadata {
+            field: "physical_output_token_ceiling",
+            reason: "hard provider budget requires an adapter-attested physical output bound",
+        }),
         None => Ok(budget.requested_max_tokens),
     }
 }

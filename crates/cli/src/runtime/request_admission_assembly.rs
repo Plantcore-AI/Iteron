@@ -5,9 +5,12 @@ use super::Agent;
 use super::context_preparation_events::ContextPreparationEvents;
 #[cfg(test)]
 use super::request_admission_journal::RequestAdmissionJournal;
+#[cfg(test)]
 use super::request_context_evidence::RequestContextScope;
+#[cfg(test)]
 use super::request_context_publication::RequestContextPublication;
 use super::request_preparation::RequestConfiguration;
+#[cfg(test)]
 use iteron_protocol::Message;
 #[cfg(test)]
 use iteron_protocol::TurnId;
@@ -34,6 +37,7 @@ impl Agent {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn request_context_publication(
         &self,
         messages: &[Message],

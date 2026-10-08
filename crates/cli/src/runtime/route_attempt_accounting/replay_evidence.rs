@@ -45,17 +45,16 @@ impl<'a> ProviderReplayEvidence<'a> {
                         result.invalid = true;
                         continue;
                     }
-                    if let Some(identity) = provider_route_attempt {
-                        if identity.validate().is_err()
+                    if let Some(identity) = provider_route_attempt
+                        && (identity.validate().is_err()
                             || !physical.insert((
                                 key.0,
                                 key.1,
                                 row.event.turn.0,
                                 identity.physical_attempt,
-                            ))
-                        {
-                            result.invalid = true;
-                        }
+                            )))
+                    {
+                        result.invalid = true;
                     }
                     let pricing_at = arguments
                         .get("provider_pricing_at_unix_secs")

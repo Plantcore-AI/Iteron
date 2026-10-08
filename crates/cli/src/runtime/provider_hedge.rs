@@ -125,8 +125,6 @@ enum AttemptTerminal {
     },
     Completed {
         index: u8,
-        ordinal: usize,
-        physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
         dispatch_permit: Option<ProviderExtensionPermit>,
@@ -572,8 +570,6 @@ impl Agent {
                 }
                 AttemptTerminal::Completed {
                     index,
-                    ordinal: _,
-                    physical_attempt: _,
                     ticket,
                     permit,
                     dispatch_permit,
@@ -883,8 +879,6 @@ async fn run_attempt(
     }
     AttemptTerminal::Completed {
         index: attempt.index,
-        ordinal: attempt.ordinal,
-        physical_attempt: attempt.physical_attempt,
         ticket: attempt.ticket,
         permit: attempt.permit,
         dispatch_permit,

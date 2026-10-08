@@ -8,7 +8,9 @@ use super::route_validation::replay_logical_rollout;
 use super::tool_presentation::ui_approval_arguments;
 use iteron_kernel::{effect_admission::EffectAdmissions, effect_class, effect_journal, effects};
 use iteron_obs::Ledger;
-use iteron_protocol::{Capability, Event, EventKind, Seq, ToolResult, ToolUse, TurnId};
+#[cfg(test)]
+use iteron_protocol::ToolResult;
+use iteron_protocol::{Capability, Event, EventKind, Seq, ToolUse, TurnId};
 use iteron_record::Rollout;
 use std::{future::Future, path::Path, time::Instant};
 
@@ -153,6 +155,7 @@ impl EffectJournalOwner {
         self.commit_settlement(rollout, ticket, settlement, blocks)
     }
 
+    #[cfg(test)]
     /// A definite tool completion uses the exact admitted ticket identity. The live ledger is
     /// downstream of this port; a failed terminal cannot manufacture reproducible tool counts.
     pub(super) fn settle_tool(

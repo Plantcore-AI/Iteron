@@ -1,18 +1,18 @@
 //! Thin composition for real approval, cancellation and finalization owners. These adapters bind
 //! existing permission/checkpoint/maintenance ports; the asynchronous controllers do not borrow Agent.
+#[cfg(test)]
 use super::approval_wait::{ApprovalJournal, ApprovalRequest, ApprovalWait};
 use super::control_terminal::ControlTerminal;
 use super::run_finalization::{FinalizationScope, RunFinalization};
 use super::session_control::InboundControl;
+#[cfg(test)]
 use super::tool_presentation::{
     strict_utf8_head, ui_approval_arguments, ui_verification_rollback_arguments,
 };
 use super::{Agent, KernelError, UiEvent, workspace_checkpoint};
-use iteron_protocol::{
-    Capability, LifecyclePayload, Outcome, Phase, RuntimePolicySource, SubmissionId, ToolUse,
-    TurnId,
-};
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use iteron_protocol::{Capability, RuntimePolicySource, SubmissionId, ToolUse};
+use iteron_protocol::{LifecyclePayload, Outcome, Phase, TurnId};
 
 impl Agent {
     pub(super) async fn finish_requested_control(
@@ -48,16 +48,6 @@ impl Agent {
     ) -> Result<Option<Outcome>, KernelError> {
         let _ = self.collect_inbound_ops(turn);
         self.finish_requested_control(turn).await
-    }
-    /// Re-publish only this waiting turn's canonical stop onto its own children. Detached agents
-    /// retain their separate lifetime controls and are never cancelled by this local handoff.
-    pub(super) fn pump_child_stop(&mut self, stop: &AtomicBool) -> InboundControl {
-        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-        let control = self.control.requested();
-        if control.interrupts() {
-            stop.store(true, Ordering::Relaxed);
-        }
-        control
     }
     pub(super) fn checkpoint_at_turn_end(
         &mut self,
@@ -166,6 +156,7 @@ impl Agent {
         activity.complete();
         Ok(finalized.into_outcome())
     }
+    #[cfg(test)]
     pub(super) async fn await_approval(
         &mut self,
         turn: TurnId,

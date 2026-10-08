@@ -30,9 +30,6 @@ impl SessionSubmissionInbox {
     pub(super) fn bind_receiver(&mut self, receiver: Receiver<TurnSubmission>) {
         self.receiver = Some(receiver);
     }
-    pub(super) fn receiver(&mut self) -> Option<&mut Receiver<TurnSubmission>> {
-        self.receiver.as_mut()
-    }
     /// Await ingress without moving its unique receiver out of the resident owner. Dropping an
     /// approval/provider future cancels only this recv borrow and cannot erase future input.
     pub(super) async fn recv(&mut self) -> Option<TurnSubmission> {
@@ -53,18 +50,19 @@ impl SessionSubmissionInbox {
     pub(super) fn product_turn(&self) -> Option<ProductTurnId> {
         self.active_product_turn
     }
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.pending.len()
     }
     pub(super) fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
-    pub(super) fn push(&mut self, steer: PendingSteer) -> Result<(), PendingSteer> {
+    pub(super) fn push(&mut self, steer: PendingSteer) -> Result<(), Box<PendingSteer>> {
         let bytes = steer.text.len();
         if self.pending.len() >= MAX_PENDING_STEERS
             || self.pending_bytes.saturating_add(bytes) > MAX_PENDING_STEER_BYTES
         {
-            return Err(steer);
+            return Err(Box::new(steer));
         }
         self.pending_bytes += bytes;
         self.pending.push_back(steer);
@@ -87,10 +85,10 @@ impl SessionSubmissionInbox {
     }
     pub(super) fn retire_memory(&mut self, id: &str) {
         self.pending.retain(|steer| {
-            !steer
+            steer
                 .memory
                 .as_ref()
-                .is_some_and(|activation| activation.id() == id)
+                .is_none_or(|activation| activation.id() != id)
         });
         self.pending_bytes = self.pending.iter().map(|steer| steer.text.len()).sum();
     }

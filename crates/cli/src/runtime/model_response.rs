@@ -110,7 +110,7 @@ impl ModelResponseInterpreter<'_> {
             }
             StopReason::Unknown(code) => ModelResponseDecision::Refused(
                 iteron_provider::ProviderError::UnknownStopReason {
-                    code: Box::new(code.clone()),
+                    code: Box::new(*code),
                 }
                 .into(),
             ),

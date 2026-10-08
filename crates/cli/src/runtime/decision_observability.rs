@@ -6,11 +6,8 @@ use iteron_ctx::{
     MemoryCandidateEvidence, MemoryDecisionTrace, MemoryFactId, MemoryInjectionEvidence,
     MemoryQueryEvidence, MemoryQueryId, MemoryRecallAudit, MemoryRecallExclusionKind,
     MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence, MemoryStoreEvidence,
-    MemoryTierClass, MemoryVisibilityEvidence, MemoryVisibilityState,
+    MemoryTierClass, MemoryVisibilityState,
 };
-
-/// Recalled fact count reported for a turn whose memory trace carries no injection.
-const NO_RECALLED_FACTS: u64 = 0;
 
 /// Query-rewrite count reported when the turn ran without a recall audit.
 const NO_QUERY_REWRITES: u16 = 0;
@@ -28,7 +25,7 @@ const ABSENT_CANDIDATE_RANK: u32 = 0;
 
 use iteron_obs::lifecycle::LifecycleCorrelation;
 use iteron_protocol::context::{ContextSegment, ContextSource};
-use iteron_protocol::{LifecyclePayload, TurnId, Usage};
+use iteron_protocol::{LifecyclePayload, TurnId};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
@@ -110,21 +107,6 @@ impl Agent {
             .map_err(|_| "memory was deleted, but the bounded refresh queue is full")?;
         Ok(())
     }
-    pub(super) fn record_memory_safe_point(
-        &mut self,
-        turn: TurnId,
-        source_turn: TurnId,
-        body_digest: [u8; 32],
-    ) {
-        self.session_memory_visibility
-            .schedule(MemoryVisibilityEvidence {
-                fact_id: memory_fact_id(body_digest),
-                fact_digest_sha256: body_digest,
-                source_turn,
-                destination_turn: turn,
-                state: MemoryVisibilityState::Scheduled,
-            });
-    }
 
     /// Make an operator-added fact part of this turn's in-process context. This is deliberately
     /// distinct from `Used`: a control request can still stop the turn before a provider transport
@@ -180,12 +162,6 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-    }
-
-    /// The actual native serialized buffer contains this context and its retained publication
-    /// succeeded. "Used" proves request inclusion; it does not prove remote processing.
-    pub(super) fn observe_memory_provider_refusal(&mut self, turn: TurnId) {
-        self.memory_request_exposure(turn).refused();
     }
 
     pub(crate) fn set_lifecycle_emitter(
@@ -250,18 +226,6 @@ impl Agent {
         }
     }
 
-    pub(super) fn child_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        subagent_id: &str,
-        payload: LifecyclePayload,
-    ) {
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
-        self.lifecycle_event_with_correlation(event_id, correlation, payload);
-    }
-
     pub(super) fn lifecycle_correlation(&self, turn_id: Option<TurnId>) -> LifecycleCorrelation {
         LifecycleCorrelation {
             session_id: Some(iteron_protocol::SessionId(format!(
@@ -283,43 +247,6 @@ impl Agent {
             lifecycle_hooks: self.lifecycle_hooks.clone(),
             correlation: self.lifecycle_correlation(Some(turn)),
         }
-    }
-
-    pub(super) fn tool_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        effect_id: Option<iteron_protocol::EffectId>,
-        payload: LifecyclePayload,
-    ) {
-        self.tool_events(turn_id).emit(event_id, effect_id, payload);
-    }
-
-    pub(super) fn observe_process_tool_started(
-        &self,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        call: &iteron_protocol::ToolUse,
-    ) {
-        if matches!(call.name.as_str(), "bash" | "process_start") {
-            self.tool_events(turn_id).emit(
-                "process.spawn_requested",
-                Some(effect_id),
-                LifecyclePayload::default(),
-            );
-        }
-    }
-
-    pub(super) fn observe_process_tool_terminal(
-        &self,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        tool: &str,
-        result: &ToolResult,
-        definite: bool,
-    ) {
-        self.tool_events(turn_id)
-            .process_terminal(effect_id, tool, result, definite);
     }
 
     /// Capture live context source decisions as digests and magnitudes before their bytes are
@@ -462,10 +389,6 @@ impl Agent {
     ) {
         self.request_context_publication(observation.messages)
             .publish(turn, observation);
-    }
-
-    pub(super) fn observe_context_usage(&mut self, turn: TurnId, usage: Usage) {
-        self.context_usage_reconciliation().observe(turn, usage);
     }
 
     fn observe_memory_resolution(&self, observation: &ResolvedContextObservation<'_>) {
