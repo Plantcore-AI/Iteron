@@ -837,13 +837,11 @@ pub(super) fn inline_identity_matches(
     let Some(krate) = path.split('/').nth(1) else {
         return false;
     };
-    identity.to_ascii_lowercase() == format!("{path}::{owner}::{symbol}").to_ascii_lowercase()
-        || identity.to_ascii_lowercase()
-            == format!(
-                "{path}::{owner}::{}",
-                stable_id(krate, path, &format!("{owner}.{symbol}.1"))
-            )
-            .to_ascii_lowercase()
+    identity.eq_ignore_ascii_case(&format!("{path}::{owner}::{symbol}"))
+        || identity.eq_ignore_ascii_case(&format!(
+            "{path}::{owner}::{}",
+            stable_id(krate, path, &format!("{owner}.{symbol}.1"))
+        ))
 }
 
 pub(super) fn public_proof_kind(

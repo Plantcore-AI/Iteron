@@ -1056,7 +1056,7 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
         assert!(source_form_invariant_matches(row), "{expected_id}");
         assert!(row.external_address.is_none());
         assert!(!row.applied);
-        validate(&[row.clone()]).unwrap();
+        validate(std::slice::from_ref(row)).unwrap();
         let mut wrong_value = row.clone();
         wrong_value.value = "not_the_admitted_literal".into();
         assert!(

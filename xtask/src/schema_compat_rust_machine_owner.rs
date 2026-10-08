@@ -161,11 +161,10 @@ fn merge(mut common: syn::File, writer: syn::File) -> Result<syn::File> {
             && matches!(i.self_ty.as_ref(),syn::Type::Path(p) if p.qself.is_none() && p.path.is_ident("StreamingScrubber"))
         {
             for m in &mut i.items {
-                if let syn::ImplItem::Fn(f) = m {
-                    if !matches!(f.vis,syn::Visibility::Restricted(ref v) if v.path.is_ident("crate"))
-                    {
-                        bail!("shared scrubber method has changed visibility authority")
-                    }
+                if let syn::ImplItem::Fn(f) = m
+                    && !matches!(f.vis,syn::Visibility::Restricted(ref v) if v.path.is_ident("crate"))
+                {
+                    bail!("shared scrubber method has changed visibility authority")
                 }
             }
         }
