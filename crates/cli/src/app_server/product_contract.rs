@@ -142,6 +142,7 @@ struct Projection {
     model_preferences: Option<Arc<super::model_preferences::PreferenceService>>,
     workspace_reads: Option<Arc<super::tunables_simulation::WorkspaceReadService>>,
     lab: Option<Arc<super::experiment_lab::LabService>>,
+    completion: Option<super::path_completion::CompletionBinding>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -244,6 +245,11 @@ impl ContractReader {
         let maintenance_port = agent.advisory_maintenance_port();
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.completion.as_ref()
+            {
+                projection.completion = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
             if let Some(snapshot) = projection.snapshot.as_ref()
                 && let Some(binding) = projection.export.as_ref()
                 && !binding.matches_scope(&snapshot.thread_id, agent.rollout.run_id())
@@ -380,6 +386,44 @@ impl ContractReader {
     ) {
         let binding = super::client_export::ExportBinding::capture(agent, self, activity);
         self.with_mut(|projection| projection.export = binding);
+        let completion = super::path_completion::CompletionBinding::capture(agent, self, activity);
+        self.with_mut(|projection| projection.completion = completion);
+    }
+
+    pub(super) fn refresh_path_completion(&self, agent: &crate::runtime::Agent) {
+        self.with_mut(|projection| {
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.completion.as_ref()
+            {
+                projection.completion = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
+        });
+    }
+    pub(super) fn completion_binding(&self) -> Option<super::path_completion::CompletionBinding> {
+        self.with_mut(|projection| projection.completion.clone())
+    }
+    pub(super) fn completion_is_current(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        revision: u64,
+    ) -> bool {
+        self.with_mut(|projection| {
+            projection
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.thread_id == *thread && snapshot.run_id == *run)
+                && projection
+                    .completion
+                    .as_ref()
+                    .is_some_and(|binding| binding.matches(thread, run, revision))
+        })
+    }
+    pub(super) async fn shutdown_path_completions(&self) -> bool {
+        match self.completion_binding() {
+            Some(binding) => binding.shutdown().await,
+            None => true,
+        }
     }
 
     pub(super) fn export_binding(&self) -> Option<super::client_export::ExportBinding> {

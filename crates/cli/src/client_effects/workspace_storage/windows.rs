@@ -62,6 +62,11 @@ impl NativeDirectory {
             .read_leaf(name, limit)
             .map_err(|_| StorageError::Unavailable)
     }
+    pub(crate) fn cache_key(&self) -> Result<[u64; 3], StorageError> {
+        self.reader
+            .identity()
+            .map_err(|_| StorageError::Unavailable)
+    }
     pub(crate) fn list(&self, limit: usize) -> Result<(Vec<(String, bool)>, bool), StorageError> {
         self.reader
             .list(limit)

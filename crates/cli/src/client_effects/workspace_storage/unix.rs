@@ -36,6 +36,16 @@ impl NativeDirectory {
                 .unwrap_or(false)
             && self.root.still_bound()
     }
+    pub(crate) fn cache_key(&self) -> Result<[u64; 3], StorageError> {
+        if !self.bound() {
+            return Err(StorageError::Unavailable);
+        }
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|_| StorageError::Unavailable)?;
+        Ok([metadata.dev(), metadata.ino(), 0])
+    }
     pub(crate) fn child(&self, name: &str, create: bool) -> Result<Option<Self>, StorageError> {
         leaf(name)?;
         if self.components.len() >= 128 || !self.bound() {

@@ -983,6 +983,7 @@ pub(super) async fn apply_control(
             apply_mcp_control(runtime.as_ref(), control).await
         }
     };
+    events.contract.refresh_path_completion(agent);
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let reply = if let Some((presentation, _admission)) = navigation {
         match reply {

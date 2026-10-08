@@ -107,6 +107,7 @@ mod client_export;
 mod client_shell;
 mod experiment_lab;
 mod model_preferences;
+mod path_completion;
 mod project_init;
 mod tunables_simulation;
 pub(crate) use client_bootstrap::{ClientBootstrapFactory, PromptHistoryWriterPort};
@@ -114,6 +115,9 @@ pub(crate) use client_export::{TranscriptExportPort, TranscriptExportV1};
 pub(crate) use client_shell::OperatorShellV1;
 pub(crate) use experiment_lab::{LabCommandV1, ScopedLabFactsV1};
 pub(crate) use model_preferences::{ModelPreferenceReadV1, PreferenceReceipt};
+pub(crate) use path_completion::PathCompletionPort;
+#[cfg(test)]
+pub(crate) use path_completion::tests::host_fixture as completion_fixture;
 pub(crate) use project_init::ProjectInitV1;
 pub(crate) use tunables_simulation::{ScopedTunablesSimulationV1, TunablesLoadV1};
 mod session_attachment;

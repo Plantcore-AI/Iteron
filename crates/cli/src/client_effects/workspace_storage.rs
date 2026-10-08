@@ -39,6 +39,9 @@ impl NativeDirectory {
     pub(crate) fn open(_: &std::path::Path) -> Result<Self, StorageError> {
         Err(StorageError::Unavailable)
     }
+    pub(crate) fn cache_key(&self) -> Result<[u64; 3], StorageError> {
+        Err(StorageError::Unavailable)
+    }
     pub(crate) fn child(&self, _: &str, _: bool) -> Result<Option<Self>, StorageError> {
         Err(StorageError::Unavailable)
     }

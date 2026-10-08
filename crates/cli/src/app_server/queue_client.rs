@@ -48,6 +48,16 @@ pub(crate) struct AppServerClient {
 }
 
 impl AppServerClient {
+    pub(crate) fn path_completion_port(
+        &self,
+        observed_run: &RunId,
+    ) -> Option<super::PathCompletionPort> {
+        super::PathCompletionPort::capture(
+            self.contract.completion_binding()?,
+            self.contract.clone(),
+            observed_run,
+        )
+    }
     pub(crate) fn transcript_export_port(
         &self,
         observed_run: &RunId,

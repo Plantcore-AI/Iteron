@@ -509,7 +509,10 @@ pub async fn run(
             workspace_command::apply(&mut app,&mut session,&providers,actions);
             redraw=true;
         }
-        app.completions.start_due(&app.editor, &repo, Instant::now());
+        let completion_port=if app.completions.due().is_some_and(|due|due<=Instant::now()) && !app.completions.has_worker() {
+            session.client.thread_snapshot_v1().and_then(|scope|session.client.path_completion_port(&scope.run_id))
+        } else {None};
+        app.completions.start_due(&app.editor, completion_port, Instant::now());
         redraw |= app.attachments.poll_progress();
         if let Some(update) = app.attachments.poll_ready().await {
             match update {

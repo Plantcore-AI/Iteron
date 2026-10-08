@@ -72,6 +72,19 @@ impl WindowsWorkspaceReader {
         directories.push(child);
         Ok(Some(Self { directories }))
     }
+    /// Identity of the actual held ordinary directory; this value is not an access capability.
+    pub fn identity(&self) -> Result<[u64; 3], WindowsStateError> {
+        let file = self
+            .directories
+            .last()
+            .ok_or(WindowsStateError::Unavailable)?;
+        let info = stamp(file, true)?;
+        Ok([
+            u64::from(info.volume),
+            u64::from(info.index_hi),
+            u64::from(info.index_lo),
+        ])
+    }
     pub fn read_leaf(&self, name: &str, limit: usize) -> Result<Vec<u8>, WindowsStateError> {
         if limit > MAX_READER_BYTES {
             return Err(WindowsStateError::Unavailable);

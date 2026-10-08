@@ -4,6 +4,7 @@
 pub(crate) mod capability_fs;
 pub(crate) mod experiment_lab;
 mod export;
+pub(crate) mod path_completion;
 mod payload;
 mod process;
 pub(crate) mod project_init;
