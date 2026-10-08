@@ -769,9 +769,16 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: ".run_bounded_verify_observed(",
-        allowed_in: &["dispatch_verify"],
-        guidance: "a verifier oracle runs repository-controlled code; reach it through \
-                   Agent::run_verify, which owns the intent/terminal pair",
+        allowed_in: &["dispatch_verify_task"],
+        guidance: "a verifier oracle runs repository-controlled code; the exact \
+                   StrongVerificationGate::run_verify owner must first commit its ticket and \
+                   bind the physical task, then dispatch and settle through VerificationJournal",
+    },
+    EffectPrimitive {
+        needle: ".dispatch_verify_task(",
+        allowed_in: &["run_verify"],
+        guidance: "the actual optional verifier caller must own the fsynced Verify ticket and \
+                   its exact VerificationTask before entering the physical dispatcher",
     },
     EffectPrimitive {
         needle: "self.launch_workflow(",
@@ -912,12 +919,305 @@ fn function_name(line: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Mask comments and literals before looking for executable ownership markers. In particular,
+/// an unused string mentioning a durable append must never authorize a physical dispatcher.
+fn executable_source(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = cursor;
+        let end = if bytes[cursor..].starts_with(b"//") {
+            bytes[cursor..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |offset| cursor + offset)
+        } else if bytes[cursor..].starts_with(b"/*") {
+            cursor += 2;
+            let mut depth = 1;
+            while cursor < bytes.len() && depth != 0 {
+                if bytes[cursor..].starts_with(b"/*") {
+                    depth += 1;
+                    cursor += 2;
+                } else if bytes[cursor..].starts_with(b"*/") {
+                    depth -= 1;
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+            }
+            cursor
+        } else if bytes[cursor] == b'r' {
+            let mut quote = cursor + 1;
+            while quote < bytes.len() && bytes[quote] == b'#' {
+                quote += 1;
+            }
+            if bytes.get(quote) != Some(&b'"') {
+                cursor += 1;
+                continue;
+            }
+            let hashes = quote - cursor - 1;
+            cursor = quote + 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'"'
+                    && bytes.get(cursor + 1..cursor + 1 + hashes) == Some(&bytes[start + 1..quote])
+                {
+                    cursor += 1 + hashes;
+                    break;
+                }
+                cursor += 1;
+            }
+            cursor
+        } else if bytes[cursor] == b'"' {
+            cursor += 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'\\' {
+                    cursor = (cursor + 2).min(bytes.len());
+                } else if bytes[cursor] == b'"' {
+                    cursor += 1;
+                    break;
+                } else {
+                    cursor += 1;
+                }
+            }
+            cursor
+        } else if bytes[cursor] == b'\''
+            && (bytes.get(cursor + 2) == Some(&b'\'')
+                || (bytes.get(cursor + 1) == Some(&b'\\') && bytes.get(cursor + 3) == Some(&b'\'')))
+        {
+            // Do not mask Rust lifetimes: unlike a character literal they have no closing quote.
+            cursor + if bytes[cursor + 1] == b'\\' { 4 } else { 3 }
+        } else {
+            cursor += 1;
+            continue;
+        };
+        for byte in &mut masked[start..end] {
+            if *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+        cursor = end;
+    }
+    String::from_utf8(masked).expect("masking complete comments/literals preserves UTF-8")
+}
+
+fn compact_source(source: &str) -> String {
+    source
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// Select an actual production method of the canonical imported owner. Comments, literals,
+/// fixture methods and an unrelated/unused Agent facade do not participate in this proof.
+fn verification_method(source: &str, wanted: &str) -> Result<String, &'static str> {
+    let source = executable_source(source);
+    let lines = production_lines(&source);
+    let import = "use super::strong_verification::StrongVerificationGate;";
+    let imports: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, line))| line.trim() == import)
+        .collect();
+    if imports.len() != 1
+        || (imports[0].0 != 0 && lines[imports[0].0 - 1].1.trim_start().starts_with("#["))
+    {
+        return Err("verifier must import its exact unconditional StrongVerificationGate owner");
+    }
+    let mut owner = None;
+    let mut depth = 0_i32;
+    let mut found = Vec::new();
+    let mut collecting: Option<(String, bool)> = None;
+    let mut pending_active_attribute = false;
+    let mut attribute_depth = 0_i32;
+    for (_, line) in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("#[") || attribute_depth != 0 {
+            let is_doc = trimmed.strip_prefix("#[doc").is_some_and(|suffix| {
+                suffix.chars().next().is_some_and(|character| {
+                    character.is_whitespace() || matches!(character, '=' | '(' | ']')
+                })
+            });
+            if attribute_depth == 0 && !is_doc {
+                pending_active_attribute = true;
+                if collecting.is_some() {
+                    return Err(
+                        "actual verifier executable markers cannot be conditional or attributed",
+                    );
+                }
+            }
+            attribute_depth += line.matches('[').count() as i32 - line.matches(']').count() as i32;
+            continue;
+        }
+        if pending_active_attribute
+            && (trimmed == import
+                || compact_source(trimmed) == "implStrongVerificationGate<'_>{"
+                || (owner
+                    .as_ref()
+                    .is_some_and(|(name, _)| name == "implStrongVerificationGate<'_>{")
+                    && function_name(line).as_deref() == Some(wanted)))
+        {
+            return Err(
+                "actual verifier owner/import/method must be unconditional and free of active attributes",
+            );
+        }
+        pending_active_attribute = false;
+        if trimmed.starts_with("impl ") {
+            owner = Some((compact_source(trimmed), depth + 1));
+        }
+        if collecting.is_none()
+            && owner.as_ref().is_some_and(|(name, level)| {
+                name == "implStrongVerificationGate<'_>{" && *level == depth
+            })
+            && function_name(line).as_deref() == Some(wanted)
+        {
+            collecting = Some((String::new(), false));
+        }
+        if let Some((body, armed)) = &mut collecting {
+            body.push_str(line);
+            body.push('\n');
+            *armed |= line.contains('{');
+        }
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        if collecting.as_ref().is_some_and(|(_, armed)| *armed)
+            && owner.as_ref().is_some_and(|(_, level)| depth == *level)
+        {
+            found.push(compact_source(
+                &collecting.take().expect("method collection exists").0,
+            ));
+        }
+        if owner.as_ref().is_some_and(|(_, level)| depth < *level) {
+            owner = None;
+        }
+    }
+    if found.len() != 1 {
+        return Err(
+            "verifier method must have exactly one actual production StrongVerificationGate owner",
+        );
+    }
+    Ok(found.pop().expect("one method"))
+}
+
+fn validate_verifier_source_owner(source: &str) -> Result<(), &'static str> {
+    let run = verification_method(source, "run_verify")?;
+    if run.matches(".dispatch_verify_task(").count() != 1
+        || run.matches("self.journal.open(").count() != 1
+    {
+        return Err(
+            "each optional verification owns exactly one intent and one physical dispatcher",
+        );
+    }
+    let markers = [
+        "letclass=effect_class::EffectClass::Verify;",
+        "letticket=self.journal.open(",
+        "lettask=matchself.tasks.begin(self.journal.rollout.run_id(),&ticket)",
+        "letdispatch=self.dispatch_verify_task(command,Some(&task)).await;",
+        "self.journal.settle(ticket,settlement)?;",
+        "task.settled(known_terminal,&verdict,observed);",
+    ];
+    let mut previous = None;
+    for marker in markers {
+        let positions: Vec<_> = run.match_indices(marker).map(|(index, _)| index).collect();
+        if positions.len() != 1 || previous.is_some_and(|prior| positions[0] <= prior) {
+            return Err(
+                "actual Verify ticket/task/dispatch/terminal observations must remain unique and ordered",
+            );
+        }
+        previous = Some(positions[0]);
+    }
+    let dispatch = verification_method(source, "dispatch_verify_task")?;
+    let oracle = dispatch
+        .find("iteron_verify::TestOracle::new(")
+        .ok_or("actual verifier dispatcher must build the sandbox oracle")?;
+    let physical = "self.run_bounded_verify_observed(std::sync::Arc::new(oracle),Some(output_observer),Some(output_receiver),task,).await";
+    let positions: Vec<_> = dispatch
+        .match_indices(physical)
+        .map(|(index, _)| index)
+        .collect();
+    if positions.len() != 1
+        || positions[0] <= oracle
+        || dispatch.matches(".run_bounded_verify_observed(").count() != 1
+    {
+        return Err(
+            "native verifier dispatch must retain this exact admitted task and sandbox oracle",
+        );
+    }
+    Ok(())
+}
+
+fn verifier_primitive_owner(needle: &str, relative: &std::path::Path, enclosing: &str) -> bool {
+    let required = match needle {
+        ".run_bounded_verify_observed(" => "dispatch_verify_task",
+        ".dispatch_verify_task(" => "run_verify",
+        _ => return true,
+    };
+    relative == std::path::Path::new("crates/cli/src/runtime/verification_execution.rs")
+        && enclosing == required
+}
+
+#[test]
+fn verifier_source_guard_tracks_the_actual_ticket_owner_and_rejects_facade_or_literal_bait() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+            .expect("real production verifier owner");
+    validate_verifier_source_owner(&source).expect("actual optional verifier owner");
+    let call = "let dispatch = self.dispatch_verify_task(command, Some(&task)).await;";
+    assert!(source.contains(call));
+    for broken in [
+        source.replace("impl StrongVerificationGate<'_> {", "#[documentary]\nimpl StrongVerificationGate<'_> {"),
+        source.replace("use super::strong_verification::StrongVerificationGate;", "#[cfg(any())]\n\nuse super::strong_verification::StrongVerificationGate;"),
+        source.replace("impl StrongVerificationGate<'_> {", "#[cfg(any())]\n\nimpl StrongVerificationGate<'_> {"),
+        source.replace("    pub(super) async fn run_verify(", "    #[cfg_attr(any(), allow(dead_code))]\n    pub(super) async fn run_verify("),
+        source.replace("        let ticket = self.journal.open(", "        #[cfg(any())]\n        let ticket = self.journal.open("),
+        source.replace("let ticket = self.journal.open(", "let escaped = self.dispatch_verify_task(command, None).await; let ticket = self.journal.open("),
+        source.replace(call, "let dispatch = self.dispatch_verify_task(command, None).await;"),
+        source.replace("self.journal.settle(ticket, settlement)?;", "task.settled(known_terminal, &verdict, observed); self.journal.settle(ticket, settlement)?;"),
+        source.replace("impl StrongVerificationGate<'_> {", "impl Agent {"),
+        source.replace("use super::strong_verification::StrongVerificationGate;", "use evil::StrongVerificationGate;"),
+        source.replace("self.journal.open(", "self.journal.open_without_commit("),
+        source.replace("    pub(super) async fn run_verify(", "    #[cfg(test)]\n    pub(super) async fn run_verify("),
+    ] {
+        assert!(validate_verifier_source_owner(&broken).is_err());
+    }
+    let no_ticket = source.replace(
+        "let ticket = self.journal.open(",
+        "let ticket = self.journal.not_a_durable_open(",
+    );
+    let bait = no_ticket.replace("let class = effect_class::EffectClass::Verify;", "let bait = r###\"let ticket = self.journal.open(\"###; let class = effect_class::EffectClass::Verify;");
+    assert!(
+        validate_verifier_source_owner(&bait).is_err(),
+        "raw literal cannot claim a durable ticket"
+    );
+    assert!(!verifier_primitive_owner(
+        ".run_bounded_verify_observed(",
+        std::path::Path::new("crates/cli/src/runtime/verification.rs"),
+        "dispatch_verify_task"
+    ));
+    assert!(!verifier_primitive_owner(
+        ".dispatch_verify_task(",
+        std::path::Path::new("crates/cli/src/runtime/verification_execution.rs"),
+        "dispatch_verify"
+    ));
+}
+
 #[test]
 fn no_effect_producing_call_site_bypasses_the_boundary() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("kernel is two directories below the repository root");
+    let verifier_source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+            .expect("actual verifier execution owner must be readable");
+    validate_verifier_source_owner(&verifier_source)
+        .expect("actual verifier owner must retain ticket/task/dispatch/terminal order");
     let mut violations = Vec::new();
     let mut found: BTreeMap<&str, usize> = BTreeMap::new();
 
@@ -941,7 +1241,13 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
                     .get(number)
                     .map(String::as_str)
                     .unwrap_or("<file scope>");
-                if !primitive.allowed_in.contains(&enclosing) {
+                let exact_verifier_owner = verifier_primitive_owner(
+                    primitive.needle,
+                    path.strip_prefix(root)
+                        .expect("effect source is in this workspace"),
+                    enclosing,
+                );
+                if !primitive.allowed_in.contains(&enclosing) || !exact_verifier_owner {
                     violations.push(format!(
                         "{relative}:{number} dispatches `{}` inside `{enclosing}`, which is not one \
                          of {:?}. {}",
