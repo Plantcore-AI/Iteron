@@ -6,9 +6,11 @@ mod registry;
 mod store;
 mod types;
 
+#[cfg(test)]
+pub(crate) use types::LiveWorkflowViewV1;
 pub(crate) use types::{
     LIVE_WORKFLOW_CONTRACT_VERSION, LiveWorkflowCommandV1, LiveWorkflowError, LiveWorkflowPolicy,
-    LiveWorkflowReplyV1, LiveWorkflowViewV1,
+    LiveWorkflowReplyV1,
 };
 use types::{MAX_BACKGROUND_TICKS, MAX_REQUESTS, MAX_WORKFLOWS};
 

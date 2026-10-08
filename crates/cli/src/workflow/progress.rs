@@ -1,7 +1,6 @@
 //! Progress delivery and bounded retained partial/degraded work owners.
 
 use super::projection::{UI_LABEL_MAX, WorkflowRunUiEvent, ui_safe_progress};
-use iteron_workflow::RunHandle;
 use iteron_workflow::events::{
     PREVIEW_MAX, PROGRESS_SINK_PORT_VERSION, ProgressEvent, ProgressSink, WorkflowState, fmt_count,
     fmt_duration, truncate_preview,
@@ -198,7 +197,7 @@ impl PartialWorkSink {
 
     /// Sample what the kill is about to interrupt.
     ///
-    /// Must be called BEFORE [`RunHandle::cancel`]: the engine retires in-flight rows as `stopped`
+    /// Must be called BEFORE [`iteron_workflow::RunHandle::cancel`]: the engine retires in-flight rows as `stopped`
     /// errors on its way out, so a sample taken afterwards reports that nothing was running and the
     /// answer silently understates what the operator threw away.
     ///

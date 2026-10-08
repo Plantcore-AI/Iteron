@@ -45,9 +45,9 @@ pub(crate) use policy_checkpoint::{
 };
 #[cfg(all(test, feature = "script-workflows"))]
 use projection::UI_LABEL_MAX;
-pub use projection::{
-    KernelActivityKind, WorkflowRunTerminal, WorkflowRunUiEvent, ui_safe_label, ui_safe_progress,
-};
+#[cfg(all(test, feature = "script-workflows"))]
+use projection::ui_safe_progress;
+pub use projection::{KernelActivityKind, WorkflowRunTerminal, WorkflowRunUiEvent, ui_safe_label};
 pub(crate) use tunables_checkpoint::{
     load as load_tunables_checkpoint, persist as persist_tunables_checkpoint,
 };
@@ -156,21 +156,21 @@ pub use launch::{
     Collected, DetachedRun, InTurnWorkflowLauncher, Launched, PreparedWorkflow, WorkflowLauncher,
     launch_prepared,
 };
-pub use progress::{
-    DegradedAgentSink, FanoutProgressSink, FinishedAgent, PartialWork, PartialWorkSink,
-    StdoutProgressSink, UiProgressSink, in_turn_progress_sink,
-};
+pub use progress::{DegradedAgentSink, StdoutProgressSink, in_turn_progress_sink};
+#[cfg(any(test, feature = "script-workflows"))]
+pub use progress::{FanoutProgressSink, UiProgressSink};
+#[cfg(all(test, feature = "script-workflows"))]
+use progress::{FinishedAgent, PartialWork, PartialWorkSink};
 pub(crate) use restored_inventory::{RestoredWorkflowInventory, restored_inventory};
-#[cfg(test)]
-pub(crate) use run_store::load_run_listing;
 pub use run_store::{
-    RunListing, RunManifest, RunResult, list_runs, load_manifest, load_result, load_script,
-    persist_inputs, persist_result, run_dir, valid_run_id,
+    RunListing, RunManifest, list_runs, load_manifest, load_script, persist_inputs, persist_result,
+    valid_run_id,
 };
-pub use summary::{
-    final_status_line, killed_run_summary, run_exit_code, run_result_summary, run_status,
-    unreported_run,
-};
+#[cfg(test)]
+pub use run_store::{load_result, run_dir};
+pub use summary::{final_status_line, run_exit_code, run_result_summary, unreported_run};
+#[cfg(all(test, feature = "script-workflows"))]
+use summary::{killed_run_summary, run_status};
 pub use supervisor::{
     RunSettled, SHUTDOWN_GRACE, ShutdownReport, SupervisedRunInfo, SupervisedRunStatus,
     WorkflowSupervisor,

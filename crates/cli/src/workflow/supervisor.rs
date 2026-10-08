@@ -6,7 +6,7 @@ use super::launch::{
 use super::progress::{DegradedAgentSink, FanoutProgressSink, PartialWorkSink};
 use super::projection::WorkflowRunTerminal;
 use super::run_store::{persist_result, run_dir};
-use super::summary::{killed_run_summary, run_result_summary, run_status, unreported_run};
+use super::summary::{killed_run_summary, run_result_summary, unreported_run};
 use iteron_workflow::{ProgressSink, RunHandle, RunReport, WorkflowEngine};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

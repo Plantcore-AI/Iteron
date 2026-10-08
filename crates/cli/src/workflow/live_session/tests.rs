@@ -8,17 +8,18 @@ use crate::runtime::persistent_agents::{
     AgentControlPort, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
     PersistentAgentRuntime,
 };
+use crate::runtime::test_tempdir as tempfile;
 use async_trait::async_trait;
 use iteron_agents::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
     AgentControllerSnapshot, AgentMailboxMessage, AgentWorkflowTerminal, ControllerError,
     ControllerStoreError,
 };
+use iteron_protocol::Capability;
 use iteron_protocol::agent_control::{
     AgentBudgetV1, AgentCommandV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1,
 };
 use iteron_protocol::capability_set::CapabilitySet;
-use iteron_protocol::{Capability, Message};
 use iteron_workflow::live_scheduler::{
     WorkflowNodeStateV1 as State, WorkflowNodeV1, WorkflowPlanChangeV1 as Change, WorkflowReplanV1,
     WorkflowStoreError,
@@ -71,11 +72,9 @@ impl PersistentAgentRuntime for Runtime {
             .filter_map(|input| input.text.as_deref())
             .collect::<Vec<_>>()
             .join("\n");
-        let messages: Vec<_> = initial
-            .iter()
-            .map(|input| Message::user_text(mailbox.render(input).unwrap()))
-            .collect();
-        mailbox.confirm_request(&messages).unwrap();
+        mailbox
+            .confirm_fixture_native_input(&initial, None)
+            .unwrap();
         self.requests.lock().unwrap().push(task.clone());
         if task == "work-a" {
             self.entered.notify_one();
@@ -87,6 +86,7 @@ impl PersistentAgentRuntime for Runtime {
             tokens: 1,
             cost_microusd: 0,
             effects_known: task != "unknown",
+            accounting_known: true,
             terminal: if task == "unknown" {
                 AgentWorkflowTerminal::StoppedRecovery
             } else {
