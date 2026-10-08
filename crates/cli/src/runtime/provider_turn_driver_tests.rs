@@ -313,7 +313,7 @@ async fn actual_semantic_disconnect_continues_only_from_retained_output_and_keep
         1
     );
     assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Message {message}
-        if message.role==iteron_protocol::Role::Assistant && message.content.iter().any(|block| matches!(block, Block::Text {text} if text.contains(crate::runtime::INTERRUPTED_STREAM_MARKER))))));
+        if message.role==iteron_protocol::Role::Assistant && message.content.iter().any(|block| matches!(block, Block::Text {text} if text.contains(crate::runtime::provider_response_recovery::INTERRUPTED_STREAM_MARKER))))));
 }
 #[tokio::test]
 async fn exhausted_semantic_recovery_preserves_exact_observed_prefix_before_error_and_reopen() {

@@ -120,14 +120,15 @@ impl RegistryStore {
                 }
                 self.platform.sync_directory()?;
             }
-            return WorkflowFileJournal::open_relative(&self.platform.directory, &component)
-                .map_err(|error| {
+            WorkflowFileJournal::open_relative(&self.platform.directory, &component).map_err(
+                |error| {
                     if active && error == WorkflowStoreError::Unavailable {
                         WorkflowStoreError::OutcomeUnknown.into()
                     } else {
                         error.into()
                     }
-                });
+                },
+            )
         }
         #[cfg(not(unix))]
         {

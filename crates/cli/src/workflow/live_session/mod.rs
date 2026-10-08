@@ -125,10 +125,10 @@ impl LiveWorkflowSession {
                 };
                 ticks += 1;
                 if !keep_running || ticks >= MAX_BACKGROUND_TICKS {
-                    if ticks >= MAX_BACKGROUND_TICKS {
-                        if let Some(registry) = state.as_mut() {
-                            registry.exhaust_driver();
-                        }
+                    if ticks >= MAX_BACKGROUND_TICKS
+                        && let Some(registry) = state.as_mut()
+                    {
+                        registry.exhaust_driver();
                     }
                     // Reset under the same owner lock used by command, preventing a lost wake.
                     owner.driver_running.store(false, Ordering::Release);
