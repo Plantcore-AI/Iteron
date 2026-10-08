@@ -213,7 +213,7 @@ fn actual_journal_current_epoch_engine_binding_excludes_completed_task_history()
             first.lease.epoch,
             "controller task completed; no provider IO in this attribution fixture",
             AgentUsageV1 {
-                turns: 1,
+                turns: 0,
                 tokens: 0,
                 cost_microusd: 0,
                 wall_ms: 1,
