@@ -663,6 +663,14 @@ fn collect_expression_sources(expression: &syn::Expr, sources: &mut Sources) {
         syn::Expr::Cast(cast) => collect_expression_sources(cast.expr.as_ref(), sources),
         syn::Expr::Await(awaited) => collect_expression_sources(awaited.base.as_ref(), sources),
         syn::Expr::Try(tried) => collect_expression_sources(tried.expr.as_ref(), sources),
+        // These standard iterator adapters retain the receiver's values. A take count does not
+        // become an event identifier, and arbitrary method payloads remain opaque.
+        syn::Expr::MethodCall(call)
+            if ((call.method == "iter" || call.method == "into_iter") && call.args.is_empty())
+                || (call.method == "take" && call.args.len() == 1) =>
+        {
+            collect_expression_sources(call.receiver.as_ref(), sources);
+        }
         syn::Expr::Match(matched) => {
             for arm in &matched.arms {
                 collect_expression_sources(arm.body.as_ref(), sources);
@@ -1083,6 +1091,41 @@ mod tests {
         assert!(!coverage.called.contains("session.md"));
         assert!(!coverage.called.contains("workflow.events.log_burst"));
         assert!(coverage.called.contains("workflow.stopped"));
+    }
+
+    #[test]
+    fn bounded_context_gate_iterator_retains_actual_event_values_without_its_count_payload() {
+        let coverage = source_coverage(
+            r#"
+            impl HookExecution {
+                async fn lifecycle(&mut self, event: &str) {
+                    hooks.run_lifecycle_cancellable_journaled(event, context(), None, None, journal()).await;
+                }
+            }
+            async fn owner(hooks: HookExecution, memory: bool) {
+                let gates = [("context.source.discovered", Some(1)), ("memory.query.created", None), ("memory.budget.requested", None)];
+                for (event, magnitude) in gates.into_iter().take(count("workflow.not_an_event")) {
+                    hooks.lifecycle(event).await;
+                }
+                for event in unknown_method("session.not_a_route") {
+                    hooks.lifecycle(event).await;
+                }
+                for event in ["session.unknown_method_bait"].unknown_method("session.not_a_route") {
+                    hooks.lifecycle(event).await;
+                }
+            }
+        "#,
+        );
+        for event in [
+            "context.source.discovered",
+            "memory.query.created",
+            "memory.budget.requested",
+        ] {
+            assert!(coverage.gate_routed.contains(event));
+        }
+        assert!(!coverage.gate_routed.contains("workflow.not_an_event"));
+        assert!(!coverage.gate_routed.contains("session.not_a_route"));
+        assert!(!coverage.gate_routed.contains("session.unknown_method_bait"));
     }
 
     #[test]
