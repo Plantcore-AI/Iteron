@@ -134,8 +134,8 @@ PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,�
 | 不变式 | 含义 | 结构后果 |
 |---|---|---|
 | **Bounded** | 每次执行都在显式的 budget / deadline / cancellation 之内 | budget 属于内核,module 不能放松它 |
-| **Recoverable** | 任何状态都能被确定性地 rollback 到已知点 | checkpoint/replay + kill/rollback 属于内核 |
-| **Reproducible** | 同一 pinned bundle + 同一输入 -> 同一结果 | pure reducer 无 I/O;per-run 精确 pin policy bundle |
+| **Recoverable** | 记录与内存状态可通过 checkpoint/replay 恢复；已派发 effect 的未确认终态保留为 Unknown，只有实际确认的回滚才报告成功 | checkpoint/replay、受控清理与未结算租约属于固定机制；不可逆外部 effect 不承诺撤销 |
+| **Reproducible** | 同一 pinned bundle 与同一已记录输入/观察序列，得到同一状态归约与提议 | pure reducer 无 I/O；per-run 精确 pin policy bundle，provider 与外部环境结果不承诺逐字重现 |
 | **Observable** | 每个 effect 都留下 tamper-evident 的证据 | SHA-256 hash-chained record,单一 effect broker journal |
 | **Security-bounded** | deny-by-default;权限只能取交、不能取并 | 五个独立 capability class + `CapabilitySet` 上限,intersection-only,capability-monotone |
 
@@ -154,6 +154,8 @@ PolicyManifest 是一个 **method-agnostic、versioned、diffable** 的工件,�
 
 ### 2.7 现状口径 (honest status)
 
-本节描述的三平面契约是**目标契约(target contract),不是已达成的一致性声明(conformance claim)。** Iteron 目前处于 **pre-alpha**:它是一个**可运行但仍为模块化单体(modular monolith)**的系统;工作区已按 protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等边界切分,且这些边界受机器校验(唯一路径责任、Cargo 依赖漂移检测),但**内核仍硬依赖 2 个具体 crate**(`iteron-protocol`/`iteron-record`),CLI/TUI 仍参与运行时组装。因此 Iteron **尚未**声称 microkernel 一致性。**运行时的自我进化(live self-evolution)激活为 NO-GO**,全部进化循环停留在离线、人工门控的路径内;本规范**不含任何首方基准数字**。
+本节描述的三平面契约是**目标契约(target contract),不是已达成的一致性声明(conformance claim)。** Iteron 目前处于 **pre-alpha**:它是一个**可运行但仍为模块化单体(modular monolith)**的系统;工作区已按 protocol / record / observability / provider / tools / sandbox / context / verification / MCP / scheduling / agents / kernel / CLI / evaluation / evolution-contract 等边界切分,且这些边界受机器校验(唯一路径责任、Cargo 依赖漂移检测),但**内核仍硬依赖 2 个具体工作区 crate**(`iteron-protocol`/`iteron-record`)，CLI host bootstrap 与 App Server 负责真实 provider、record writer 和 resident session 的组装；TUI 与外部客户端消费 typed queue、只读投影和 scoped receipt，不持有 provider/record 构造权限。因此这些源码边界**尚不能单独证明** microkernel 一致性。**运行时的自我进化(live self-evolution)激活为 NO-GO**,全部进化循环停留在离线、人工门控的路径内;本规范**不含任何首方基准数字**。
+
+当前普通执行由 `CodingRunDriver` 保留 transcript、phase 与物理义务，`CodingRunCoordinator` 借用该状态，按实际 typed port 消费 request、provider、tool 和 completion handoff。可选持久化 controller 持有真实 agent 身份、mailbox、预算和 epoch；`LiveWorkflowSession` 与 `WorkflowScheduler` 通过 exact task lease 和实际 child receipt 驱动图执行。它们复用同一 resident 子执行路径，前端不建立另一套模型/工具循环。普通 turn 没有默认 completion verifier 或额外双人审批；现有 `--verify` 仅由 operator 明确选择。`legacy-plantcore`、`ticket-investigation`、`script-workflows` 均默认关闭，不属于普通 standalone 启动的隐含步骤。
 
 成熟形态(mature form)的目标是一个体量与业界生产级 coding agent 相当的完整系统;但本节所述的规模与广度是**前瞻性的定位**,**MUST NOT** 被用来描述任何早期演示切片的范围。换言之,读者 **MUST** 把"成熟形态"的每一处描述读作目标契约,而 **MUST NOT** 据此推断当前切片已具备该规模;凡本节陈述与当前实现不符处,以本节所标 pre-alpha 现状为准。从当前模块化单体走向目标契约的抽取路径是明确的:(1) versioned canonical command/event envelope;(2) 产出 action request 的 pure state reducer;(3) 唯一的 capability + effect broker;(4) 注入式的 provider / world / context / verification / scheduler port;(5) 带 bounded flow control 的长驻 session runtime;(6) 供 CLI/TUI 及未来客户端使用的 versioned App Server。后续各节即沿这条路径逐块展开。
