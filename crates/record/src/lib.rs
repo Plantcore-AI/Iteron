@@ -1637,7 +1637,17 @@ impl Rollout {
         let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
             unreachable!("a successful projection initialization must be ready");
         };
-        projection.persist_at(self.durable_bytes)
+        if !projection.prepare_publication(self.durable_bytes)? {
+            return Ok(false);
+        }
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        session::write_meta(runs_dir, projection.publication_meta())?;
+        Ok(true)
     }
 
     /// Advisory records are accepted into a bounded buffer; no durable sequence is acknowledged.
@@ -1697,7 +1707,19 @@ impl Rollout {
         let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
             unreachable!();
         };
-        projection.persist_in_background(self.durable_bytes)
+        if !projection.prepare_publication(self.durable_bytes)? {
+            return Ok(false);
+        }
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        Ok(session_maintenance::enqueue(
+            runs_dir.to_owned(),
+            projection.publication_meta().clone(),
+        ))
     }
 
     fn ensure_session_projection(&mut self) -> Result<bool, RecordError> {

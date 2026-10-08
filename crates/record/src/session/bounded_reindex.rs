@@ -124,17 +124,7 @@ fn retained_bytes(meta: &super::SessionMeta) -> usize {
         bytes += rate_card_digest.capacity();
     }
     if let Some(parent) = &meta.parent {
-        bytes += parent.run_id.0.capacity()
-            + parent.parent_hashes.capacity() * std::mem::size_of::<String>()
-            + parent
-                .parent_hashes
-                .iter()
-                .map(String::capacity)
-                .sum::<usize>()
-            + parent
-                .effect_id
-                .as_ref()
-                .map_or(0, |effect| effect.0.capacity());
+        bytes += parent.parent_run.0.capacity() + parent.parent_hash_at_seq.capacity();
     }
     bytes
 }
@@ -178,6 +168,67 @@ mod tests {
             sentinel
         );
         assert!(!directory.join("sessions.reindex.pending").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn actual_fork_repair_preserves_pinned_parent_provenance() {
+        use iteron_protocol::{Effort, Event, EventKind, Message, RunId, Seq, TenantId, TurnId};
+        let directory = std::env::temp_dir().join(format!(
+            "iteron-bounded-fork-repair-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let tenant = TenantId("bounded-fork-repair".into());
+        let parent = RunId("actual-parent".into());
+        let mut writer = crate::Rollout::open(&directory, &parent, tenant.clone()).unwrap();
+        writer
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: directory.to_string_lossy().into(),
+                    model: "fixture".into(),
+                    effort: Effort::Low,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "actual-fixture".into(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        let at = writer
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text("actual parent history"),
+                },
+            })
+            .unwrap();
+        drop(writer);
+        let child = super::super::fork(&directory, &parent, at, &tenant).unwrap();
+        let before = super::super::meta(&directory, &child)
+            .unwrap()
+            .parent
+            .unwrap();
+        let receipt = reindex_bounded(&directory).unwrap();
+        assert_eq!(receipt.indexed, 2);
+        assert_eq!(receipt.unavailable, 0);
+        let after = super::super::meta(&directory, &child)
+            .unwrap()
+            .parent
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(after.parent_run, parent);
+        assert_eq!(after.forked_at, at);
+        assert!(!after.parent_hash_at_seq.is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
