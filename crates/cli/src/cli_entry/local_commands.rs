@@ -8,7 +8,7 @@ use crate::{config, maintenance, mcp, output, plugin, session_view, setup, tunab
 use iteron_protocol::{RunId, TenantId};
 
 pub(crate) async fn machine(cli: &Cli) -> anyhow::Result<Option<u8>> {
-    let code = match cli.command {
+    let code = match &cli.command {
         Some(LocalCommand::Setup {
             plan,
             byok,
@@ -63,7 +63,7 @@ pub(crate) async fn workspace(
     repo: &std::path::Path,
     runs_dir: &std::path::Path,
 ) -> anyhow::Result<Option<u8>> {
-    if let Some(LocalCommand::Record { action }) = cli.command {
+    if let Some(LocalCommand::Record { action }) = &cli.command {
         return run_record_command(runs_dir, action).map(Some);
     }
 
@@ -81,14 +81,14 @@ pub(crate) async fn workspace(
         older_than_days,
         keep_last,
         dry_run,
-    }) = cli.command
+    }) = &cli.command
     {
         return run_prune_command(runs_dir, *older_than_days, *keep_last, *dry_run).map(Some);
     }
 
     // `iteron workflow run <script.js>` — runs the ultracode-workflow engine directly. It needs a
     // provider but none of the rollout/agent/genesis machinery, so it branches out before that setup.
-    if let Some(LocalCommand::Workflow { action }) = cli.command {
+    if let Some(LocalCommand::Workflow { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
         return run_workflow_command(cli, repo, &user_file, action)
             .await
@@ -97,7 +97,7 @@ pub(crate) async fn workspace(
 
     // `iteron pricing …` — operator tooling. It opens no rollout and admits no provider effect, so
     // it branches out before the agent machinery exactly like `workflow` does.
-    if let Some(LocalCommand::Pricing { action }) = cli.command {
+    if let Some(LocalCommand::Pricing { action }) = &cli.command {
         let user_file = FileConfig::load_user()?;
         return run_pricing_command(cli, &user_file, action).await.map(Some);
     }
@@ -113,7 +113,7 @@ pub(crate) async fn workspace(
     }
     if let Some(LocalCommand::Support {
         output: support_output,
-    }) = cli.command
+    }) = &cli.command
     {
         return maintenance::run_support(
             repo,

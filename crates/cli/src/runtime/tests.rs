@@ -455,9 +455,10 @@ mod gate_integration_tests {
     use super::context_runtime::{
         IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON,
     };
+    use super::hooks::HookEvent;
+    use super::provider_response_recovery::INTERRUPTED_STREAM_MARKER;
     use super::provider_usage_journal::UNPRICEABLE_CACHE_CREATION_NOTICE;
     use super::*;
-    use sha2::Digest;
 
     /// Pin the registry-driven resolved tunable set onto a test agent.
     ///

@@ -60,7 +60,7 @@ mod provider_response_assembly;
 mod provider_response_commit;
 mod provider_response_commit_assembly;
 mod provider_response_recovery;
-use provider_response_recovery::{INTERRUPTED_STREAM_MARKER, INTERRUPTED_STREAM_MAX_BYTES};
+use provider_response_recovery::INTERRUPTED_STREAM_MAX_BYTES;
 mod provider_round;
 mod provider_route_binding;
 mod provider_stream_attempt;
@@ -320,7 +320,7 @@ use deferred_tools::declared_write_paths;
 #[cfg(test)]
 use deferred_tools::{scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
-use hooks::{HookDecision, HookEvent, Hooks};
+use hooks::{HookDecision, Hooks};
 pub(crate) use inbound_control::TurnSubmission;
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
