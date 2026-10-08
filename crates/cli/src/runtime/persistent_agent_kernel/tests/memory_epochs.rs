@@ -3,6 +3,7 @@ use super::{
     AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Store, Workspace,
     setup_with_financial_and_memory, spawn, until,
 };
+use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_ctx::{
     MemoryStore,
     memory_records::{MemoryInvalidation, MemoryRecordDraft, MemoryRecordOwner},
@@ -36,7 +37,7 @@ async fn current_memory_after_next_epoch(delete: bool) {
         .get(&child)
         .unwrap()
         .clone();
-    let run_id = resident.lock().await.run_id.clone();
+    let run_id = resident.lock().await.rollout.run_id().clone();
     if delete {
         assert!(store.remove_checked(&id).unwrap());
     } else {
@@ -87,7 +88,7 @@ async fn current_memory_after_next_epoch(delete: bool) {
         .unwrap()
         .clone();
     assert!(Arc::ptr_eq(&resident, &retained));
-    assert_eq!(resident.lock().await.run_id, run_id);
+    assert_eq!(resident.lock().await.rollout.run_id(), &run_id);
 }
 
 #[tokio::test]

@@ -15,9 +15,7 @@ pub(super) fn load(
     // symlink ancestors, devices and namespace substitution before returning bounded bytes.
     let roots = [PathBuf::from(&name), PathBuf::from("subagents").join(&name)];
     for relative in roots {
-        if let Ok(bytes) =
-            iteron_tools::contained_source::read_contained_utf8(state, &relative, MAX_ARCHIVE_BYTES)
-        {
+        if let Ok(bytes) = iteron_tools::read_contained_utf8(state, &relative, MAX_ARCHIVE_BYTES) {
             return iteron_record::native_child_context::read_reference(
                 bytes.as_bytes(),
                 reference,

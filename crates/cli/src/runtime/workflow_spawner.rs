@@ -25,8 +25,6 @@ use async_trait::async_trait;
 use iteron_agents::AgentCatalog;
 use iteron_obs::PricingPort;
 use iteron_protocol::capability_set::CapabilitySet;
-#[cfg(test)]
-use iteron_protocol::slot::StrategySlot;
 use iteron_protocol::{
     Budget, CostAttribution, Effort, Outcome, PermissionMode, PermissionRules, RunId, TenantId,
 };
@@ -500,7 +498,7 @@ impl KernelSpawner {
     /// Host-only persistent identity. The ordinal and resume selection come from the controller,
     /// never a workflow script/model path. Existing workflow construction stays fresh-only.
     pub(super) fn build_persistent_child(
-        &mut self,
+        &self,
         call: &AgentCall,
         view: &iteron_protocol::agent_control::AgentViewV1,
         writer_workspace: Option<&Path>,
@@ -527,21 +525,21 @@ impl KernelSpawner {
                 ));
             }
         }
-        let previous = self.cx.budget.clone();
-        self.cx.budget.max_turns = self
-            .cx
+        // Narrow a configuration snapshot for this exact durable identity. The retained native
+        // generation is immutable and can construct concurrent children through its shared Arc.
+        let mut context = self.cx.clone();
+        context.budget.max_turns = context
             .budget
             .max_turns
             .min(view.budget.turns.saturating_sub(view.reserved.turns));
-        self.cx.budget.max_tokens = Some(
-            self.cx
+        context.budget.max_tokens = Some(
+            context
                 .budget
                 .max_tokens
                 .unwrap_or(view.budget.tokens.saturating_sub(view.reserved.tokens))
                 .min(view.budget.tokens.saturating_sub(view.reserved.tokens)),
         );
-        self.cx.budget.max_wall_secs = self
-            .cx
+        context.budget.max_wall_secs = context
             .budget
             .max_wall_secs
             .min(view.budget.wall_ms.div_ceil(1_000));
@@ -550,17 +548,15 @@ impl KernelSpawner {
             .cost_microusd
             .saturating_sub(view.reserved.cost_microusd) as f64
             / 1_000_000.0;
-        self.cx.budget.max_usd = Some(self.cx.budget.max_usd.unwrap_or(ceiling).min(ceiling));
-        let built = self.build_child_in_mode(
+        context.budget.max_usd = Some(context.budget.max_usd.unwrap_or(ceiling).min(ceiling));
+        KernelSpawner::new(context).build_child_in_mode(
             call,
             view.agent_id.0,
             writer_workspace,
             true,
             execution,
             None,
-        );
-        self.cx.budget = previous;
-        built
+        )
     }
 
     pub(super) fn build_direct_child(

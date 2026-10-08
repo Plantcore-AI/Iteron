@@ -4,6 +4,7 @@ use super::{
     AgentActor, AgentStateV1, Arc, Ordering, ProviderFixture, Store, Workspace, setup_with_store,
     spawn, until,
 };
+use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::agent_control::{AgentMessageIdV1, AgentMessageStateV1};
 use iteron_protocol::{EventKind, ProviderRouteUsageTruth};
 
@@ -96,7 +97,7 @@ async fn retained_native_request_then_failed_controller_barrier_has_zero_dispatc
         &child.workspace,
     )
     .unwrap();
-    let thread = iteron_protocol::SessionId(child.run_id.0.clone());
+    let thread = iteron_protocol::SessionId(child.rollout.run_id().0.clone());
     let catalog = store
         .read(
             &thread,

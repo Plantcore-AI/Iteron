@@ -4,6 +4,7 @@ use super::{
     AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Workspace, setup,
     spawn, until,
 };
+use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::agent_control::{AgentIdV1, AgentMessageStateV1};
 use iteron_protocol::{Block, EventKind, Trust};
 use sha2::{Digest, Sha256};

@@ -11,6 +11,9 @@ pub(in crate::runtime::persistent_agents) struct Port {
     refuse: AtomicBool,
 }
 impl MailboxPort for Port {
+    fn controller_port(&self) -> Result<Arc<dyn super::super::AgentControlPort>, ControllerError> {
+        Err(ControllerError::Permission)
+    }
     fn provider_budget_port(
         &self,
         _: AgentIdV1,

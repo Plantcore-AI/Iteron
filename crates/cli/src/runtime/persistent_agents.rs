@@ -10,7 +10,7 @@ use iteron_protocol::agent_control::{
     AgentCommandV1, AgentControlReplyV1, AgentEpochV1, AgentIdV1, AgentMessageIdV1,
     AgentMessageStateV1, AgentStateV1, AgentUsageV1, AgentViewV1,
 };
-use iteron_protocol::{Block, Message, Role};
+use iteron_protocol::{Block, Capability, Message, Role};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,9 @@ use tokio::sync::{Semaphore, watch};
 #[cfg(test)]
 #[path = "persistent_agents/fixture_native_input.rs"]
 mod fixture_native_input;
+#[cfg(test)]
+#[path = "persistent_agents/host_tests.rs"]
+mod host_tests;
 #[path = "persistent_agents/input_admission.rs"]
 pub(super) mod input_admission;
 #[path = "persistent_agents/parent_turn.rs"]

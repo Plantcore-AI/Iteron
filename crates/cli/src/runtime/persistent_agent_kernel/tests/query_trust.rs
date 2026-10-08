@@ -3,6 +3,7 @@ use super::{
     AgentActor, AgentCommandV1, AgentIdV1, AgentStateV1, Arc, ProviderFixture, Workspace,
     register_agent_tools, setup, spawn, until,
 };
+use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::{ToolUse, Trust};
 
 #[tokio::test]

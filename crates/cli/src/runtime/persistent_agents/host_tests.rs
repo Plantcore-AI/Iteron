@@ -1,9 +1,11 @@
-//! Host/controller integration; the production kernel/provider journey is a separate gate.
+//! Real host/controller scheduling journeys in the runtime namespace. The fixture exercises
+//! native request-byte inclusion and sourced-input WAL barriers without claiming provider IO;
+//! actual kernel/provider journeys remain separate tests.
 
-#[allow(dead_code)]
-#[path = "../src/runtime/persistent_agents.rs"]
-mod persistent_agents;
-
+use super::{
+    AgentControlPort, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
+    PersistentAgentRuntime,
+};
 use async_trait::async_trait;
 use iteron_agents::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
@@ -14,11 +16,7 @@ use iteron_protocol::agent_control::{
     AgentViewV1,
 };
 use iteron_protocol::capability_set::CapabilitySet;
-use iteron_protocol::{Capability, Message};
-use persistent_agents::{
-    AgentControlPort, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
-    PersistentAgentRuntime,
-};
+use iteron_protocol::{Capability, RunId, TenantId};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,11 +41,22 @@ impl AgentControllerJournal for Store {
     }
 }
 
-#[derive(Default)]
 struct Runtime {
+    directory: crate::runtime::test_tempdir::TempDir,
     contexts: Mutex<BTreeMap<AgentIdV1, Vec<String>>>,
     requests: Mutex<BTreeMap<AgentIdV1, usize>>,
     finish: Mutex<BTreeMap<AgentIdV1, bool>>,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            directory: crate::runtime::test_tempdir::tempdir().unwrap(),
+            contexts: Default::default(),
+            requests: Default::default(),
+            finish: Default::default(),
+        }
+    }
 }
 
 impl Runtime {
@@ -56,22 +65,21 @@ impl Runtime {
         id: AgentIdV1,
         mailbox: &LiveAgentMailbox,
         inputs: Vec<AgentMailboxMessage>,
+        rollout: &mut iteron_record::Rollout,
     ) {
         let texts: Vec<_> = inputs
             .iter()
             .map(|input| mailbox.render(input).unwrap())
             .collect();
+        mailbox
+            .confirm_fixture_native_input(&inputs, Some(rollout))
+            .unwrap();
         self.contexts
             .lock()
             .unwrap()
             .entry(id)
             .or_default()
-            .extend(texts.clone());
-        let messages = texts
-            .into_iter()
-            .map(Message::user_text)
-            .collect::<Vec<_>>();
-        mailbox.confirm_request(&messages).unwrap();
+            .extend(texts);
         *self.requests.lock().unwrap().entry(id).or_default() += 1;
     }
 }
@@ -88,7 +96,13 @@ impl PersistentAgentRuntime for Runtime {
         initial: Vec<AgentMailboxMessage>,
         mailbox: LiveAgentMailbox,
     ) -> AgentSettlement {
-        self.included_request(agent.agent_id, &mailbox, initial);
+        let mut rollout = iteron_record::Rollout::open(
+            self.directory.path(),
+            &RunId(format!("host-fixture-{}", agent.agent_id.0)),
+            TenantId("host-fixture".into()),
+        )
+        .unwrap();
+        self.included_request(agent.agent_id, &mailbox, initial, &mut rollout);
         for _ in 0..500 {
             if mailbox.stop_requested()
                 || self.finish.lock().unwrap().get(&agent.agent_id) == Some(&true)
@@ -100,16 +114,17 @@ impl PersistentAgentRuntime for Runtime {
                 Err(_) => break,
             };
             if !input.is_empty() {
-                self.included_request(agent.agent_id, &mailbox, input);
+                self.included_request(agent.agent_id, &mailbox, input, &mut rollout);
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         AgentSettlement {
             turns: 1,
             summary: "physically settled fixture".into(),
-            tokens: 1,
+            tokens: 0,
             cost_microusd: 0,
             effects_known: true,
+            accounting_known: true,
             terminal: iteron_agents::AgentWorkflowTerminal::Succeeded,
         }
     }
@@ -238,6 +253,18 @@ async fn sibling_steer_interrupt_same_context_followup_and_idle_no_wake() {
         host.inspect(AgentActor::Operator, b).unwrap().state == AgentStateV1::Idle
     })
     .await;
+    let events = iteron_record::replay(
+        &runtime
+            .directory
+            .path()
+            .join(format!("host-fixture-{}.jsonl", b.0)),
+    )
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(&event.kind,
+        iteron_protocol::EventKind::AgentInputAdmittedV1 { admission }
+        if admission.receiver == b && admission.epoch == b_epoch
+            && admission.sources.iter().any(|source| source.sender == a
+                && source.message_id == sibling.message_id.unwrap()))));
     let before = runtime.requests.lock().unwrap()[&b];
     let queued = host
         .command(

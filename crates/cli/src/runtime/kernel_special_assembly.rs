@@ -30,9 +30,11 @@ impl Agent {
                 .agent_id;
             Some((control.clone(), root))
         } else if let Some(mailbox) = &self.persistent_mailbox {
-            mailbox
-                .child_controller()
-                .map_err(|_| "exact child controller identity unavailable")?
+            Some(
+                mailbox
+                    .child_controller()
+                    .map_err(|_| "exact child controller identity unavailable")?,
+            )
         } else {
             None
         };

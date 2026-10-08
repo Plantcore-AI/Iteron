@@ -129,7 +129,11 @@ impl DirectChildExecution {
         let stop = Arc::new(AtomicBool::new(false));
         let _stop_on_drop = StopOnDrop(stop.clone());
         control.child_stop(journal, turn, &stop);
-        let (result, terminal, receipt) = if let Some(child) = native.as_mut() {
+        let (result, terminal, receipt): (
+            Result<String, String>,
+            WorkflowChildOutcome,
+            Option<(RunId, Ledger)>,
+        ) = if let Some(child) = native.as_mut() {
             child.inherit_interrupt(stop.clone());
             let mut execution = Box::pin(child.run_leaf(&prompt));
             let outcome = loop {

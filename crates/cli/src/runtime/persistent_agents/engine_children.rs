@@ -1,8 +1,6 @@
 //! Actual user-authored engine calls use the same durable identity, ancestor reservations and
 //! physical runtime as public persistent agents. No second resident Agent is constructed here.
-use super::{
-    AgentActor, AgentControlPort, AgentControllerJournal, ControllerError, PersistentAgentHost,
-};
+use super::{AgentActor, AgentControllerJournal, ControllerError, PersistentAgentHost};
 use iteron_agents::{AgentWorkflowChildBinding, AgentWorkflowChildLease};
 use iteron_protocol::agent_control::AgentCommandV1;
 use std::time::{SystemTime, UNIX_EPOCH};

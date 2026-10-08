@@ -243,7 +243,7 @@ fn native_included(
             continue;
         }
         let mut joined = String::new();
-        let mut joined_ids = BTreeSet::new();
+        let mut joined_ids: BTreeSet<AgentMessageIdV1> = BTreeSet::new();
         for block in &message.content {
             fields = fields.checked_add(1).ok_or(RequestCaptureError::Bounds)?;
             if fields > MAX_FIELDS {

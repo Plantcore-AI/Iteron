@@ -1,8 +1,8 @@
 //! Actual current-route admission, live resident retention and exact native journal recovery.
 use super::parent_turn::main_runtime;
 use super::{
-    AgentActor, AgentCommandV1, AgentControlPort, Arc, KernelPersistentRuntime, ProviderFixture,
-    Workspace, budget, setup, until,
+    AgentActor, AgentCommandV1, AgentControlPort, Arc, ProviderFixture, Store, Workspace, budget,
+    setup, setup_with_store, until,
 };
 use crate::runtime::persistent_agents::AgentEngineRequest;
 use crate::runtime::persistent_native_generations::NativeGenerations;
@@ -10,7 +10,17 @@ use iteron_agents::{AgentEngineOrigin, AgentEngineParentSource};
 use iteron_protocol::agent_control::{AgentIdV1, AgentStateV1};
 use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Capability, PricingRoute, RunId, TurnId};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+fn committed_native_execution(
+    committed: &Mutex<Option<iteron_agents::AgentControllerSnapshot>>,
+    id: AgentIdV1,
+) -> iteron_agents::AgentEngineExecution {
+    // Read the actual submitted journal value, rather than opening the host's mutable owner.
+    let value = serde_json::to_value(committed.lock().unwrap().as_ref().unwrap()).unwrap();
+    serde_json::from_value(value["agents"][id.0.to_string()]["native_execution"].clone()).unwrap()
+}
 fn command(label: &str) -> AgentCommandV1 {
     AgentCommandV1::Spawn {
         parent_id: AgentIdV1(1),
@@ -58,7 +68,16 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
     let workspace = Workspace::new();
     let old = Arc::new(ProviderFixture::default());
     let new = Arc::new(ProviderFixture::default());
-    let (host, runtime, _, control) = setup(&workspace, old.clone(), false);
+    let committed = Arc::new(Mutex::new(None));
+    let (host, runtime, _, control) = setup_with_store(
+        &workspace,
+        old.clone(),
+        false,
+        Store {
+            committed_snapshot: Some(committed.clone()),
+            ..Default::default()
+        },
+    );
     let mut main = main_runtime(&runtime, control.clone());
     main.run("bind real root source").await.unwrap();
     main.kernel_controller_scope(TurnId(1), Instant::now() + Duration::from_secs(10))
@@ -73,14 +92,7 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
         .unwrap()
         .agent_id;
     until(|| host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle).await;
-    let old_execution = host
-        .shared
-        .controller
-        .lock()
-        .unwrap()
-        .ordinary_native_child(first)
-        .unwrap()
-        .unwrap();
+    let old_execution = committed_native_execution(&committed, first);
     let new_route = PricingRoute {
         model_id: "test-new-model".into(),
         ..old_route.clone()
@@ -105,14 +117,7 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
         .unwrap()
         .agent_id;
     until(|| host.inspect(AgentActor::Operator, second).unwrap().state == AgentStateV1::Idle).await;
-    let new_execution = host
-        .shared
-        .controller
-        .lock()
-        .unwrap()
-        .ordinary_native_child(second)
-        .unwrap()
-        .unwrap();
+    let new_execution = committed_native_execution(&committed, second);
     assert_ne!(old_execution.native_context, new_execution.native_context);
     assert_eq!(new_execution.model_id, "test-new-model");
     let old_child = runtime
@@ -263,7 +268,16 @@ async fn actual_nested_bare_spawn_inherits_resident_model_rules_and_exact_child_
     let workspace = Workspace::new();
     let old = Arc::new(ProviderFixture::default());
     let current = Arc::new(ProviderFixture::default());
-    let (host, runtime, _, control) = setup(&workspace, old, false);
+    let committed = Arc::new(Mutex::new(None));
+    let (host, runtime, _, control) = setup_with_store(
+        &workspace,
+        old,
+        false,
+        Store {
+            committed_snapshot: Some(committed.clone()),
+            ..Default::default()
+        },
+    );
     let mut main = main_runtime(&runtime, control.clone());
     main.run("bind actual nested Main").await.unwrap();
     let old_route = main.provider_selection.selected().unwrap().route.clone();
@@ -336,14 +350,7 @@ async fn actual_nested_bare_spawn_inherits_resident_model_rules_and_exact_child_
             == AgentStateV1::Idle
     })
     .await;
-    let binding = host
-        .shared
-        .controller
-        .lock()
-        .unwrap()
-        .ordinary_native_child(grandchild)
-        .unwrap()
-        .unwrap();
+    let binding = committed_native_execution(&committed, grandchild);
     let reference = binding.native_context.as_ref().unwrap();
     assert_eq!(reference.run, run.0);
     assert_eq!(binding.model_id, route.model_id);

@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 #[derive(Default)]
 struct Store {
     snapshot: Option<AgentControllerSnapshot>,
+    // Test observers retain only the immutable value accepted by the real journal commit port.
+    committed_snapshot: Option<Arc<Mutex<Option<AgentControllerSnapshot>>>>,
     fail_consumed: bool,
     fail_parent_delivery: bool,
     fail_parent_terminal: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -74,6 +76,9 @@ impl AgentControllerJournal for Store {
             return Err(ControllerStoreError::Unavailable);
         }
         self.snapshot = Some(next.clone());
+        if let Some(observed) = &self.committed_snapshot {
+            *observed.lock().unwrap() = Some(next.clone());
+        }
         Ok(())
     }
 }

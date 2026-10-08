@@ -3,11 +3,11 @@ use iteron_kernel::diagnostics::DiagnosticEmitter;
 use iteron_protocol::{Effort, RunId};
 use std::{path::PathBuf, time::Instant};
 
-pub(super) struct DirectChildIdentity {
-    pub(super) run: RunId,
-    pub(super) directory: PathBuf,
-    pub(super) depth: usize,
-    pub(super) effort: Effort,
-    pub(super) deadline: Instant,
-    pub(super) diagnostics: DiagnosticEmitter,
+pub(in crate::runtime) struct DirectChildIdentity {
+    pub(in crate::runtime) run: RunId,
+    pub(in crate::runtime) directory: PathBuf,
+    pub(in crate::runtime) depth: u8,
+    pub(in crate::runtime) effort: Effort,
+    pub(in crate::runtime) deadline: Instant,
+    pub(in crate::runtime) diagnostics: DiagnosticEmitter,
 }
