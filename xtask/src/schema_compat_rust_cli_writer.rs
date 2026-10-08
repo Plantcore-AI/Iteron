@@ -1,14 +1,12 @@
 use super::super::manifest::read_bounded;
 use super::MAX_SOURCE_BYTES;
-use super::cli_parse::parse_cli_output_source;
 use super::cli_writer_ast::*;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 use syn::visit::Visit;
 
 pub(super) fn validate_cli_writer_dataflow(root: &Path, source: &[u8]) -> Result<()> {
-    let source = std::str::from_utf8(source).context("CLI output source is not UTF-8")?;
-    let file = parse_cli_output_source(source)?;
+    let file = super::machine_owner::current_scope(root, source)?;
     super::cli_exact::validate(&file)?;
     validate_json_line_writer(&file)?;
     validate_stream_writer(&file)?;

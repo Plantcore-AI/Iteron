@@ -445,13 +445,34 @@ fn line_format_moved(previous: &Contract, candidate: &Contract) -> bool {
         let Some(new) = current.get(old.id.as_str()) else {
             return true;
         };
-        old.current_version != new.current_version
+        let corpus_only = additive_record_corpus(old, new);
+        (!corpus_only && old.current_version != new.current_version)
             || old.version_field != new.version_field
             || old.selector != new.selector
-            || old.fixtures != new.fixtures
+            || (!corpus_only && old.fixtures != new.fixtures)
             || old.compatibility_shims != new.compatibility_shims
             || !old.fields.iter().all(|field| new.fields.contains(field))
     })
+}
+
+// Versionless record inventory versions identify reviewed corpus generations, not a stamped
+// transport field. New current samples cannot move an old wire shape when every old fixture,
+// selector, direct field and shim remains exact. Source/typed corpus checks remain mandatory.
+fn additive_record_corpus(old: &Surface, new: &Surface) -> bool {
+    (old.id == "record.rollout"
+        || old.id == "record.event-envelope"
+        || old.id.starts_with("record.event-kind.")
+        || old.id.starts_with("record.named."))
+        && old.version_field.is_none()
+        && new.version_field.is_none()
+        && old.selector == new.selector
+        && old.fields == new.fields
+        && old.compatibility_shims == new.compatibility_shims
+        && new.current_version >= old.current_version
+        && old
+            .fixtures
+            .iter()
+            .all(|fixture| new.fixtures.contains(fixture))
 }
 
 pub(crate) fn validate_bootstrap_release(root: &Path) -> Result<()> {

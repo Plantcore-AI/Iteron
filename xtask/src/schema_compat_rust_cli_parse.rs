@@ -76,7 +76,6 @@ pub(super) fn parse_cli_output_source(source: &str) -> Result<syn::File> {
     reject_local_root_shadowing(&file, "serde_json")?;
     require_import(&file, "json", &["serde_json", "json"])?;
     require_import(&file, "Value", &["serde_json", "Value"])?;
-    require_import(&file, "Write", &["std", "io", "Write"])?;
     Ok(file)
 }
 

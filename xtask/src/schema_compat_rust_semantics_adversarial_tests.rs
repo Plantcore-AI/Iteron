@@ -17,6 +17,10 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         &source_root.join("crates/protocol/src"),
         &temp.join("crates/protocol/src"),
     );
+    copy_tree(
+        &source_root.join("crates/cli/src/cli_entry"),
+        &temp.join("crates/cli/src/cli_entry"),
+    );
     for relative in [
         "crates/record/src/lib.rs",
         "crates/kernel/src/diagnostics.rs",
@@ -24,6 +28,7 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         "crates/cli/src/runtime.rs",
         "crates/cli/src/runtime/frontend_events.rs",
         "crates/cli/src/output.rs",
+        "crates/cli/src/machine_projection.rs",
         "crates/cli/src/main.rs",
         "crates/eval/src/contract.rs",
         // Without this the fixture is missing a source `compare` insists on, every assertion below

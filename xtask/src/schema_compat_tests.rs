@@ -1261,3 +1261,33 @@ fn d1_02_only_a_moved_published_shape_obliges_a_protocol_version_bump() {
     dropped.surfaces.remove(0);
     assert!(super::line_format_moved(&base, &dropped));
 }
+
+#[test]
+fn versionless_record_corpus_addition_does_not_fabricate_a_wire_version() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let bytes = std::fs::read(root.join(super::CONTRACT_PATH)).unwrap();
+    let base = super::manifest::parse_contract(&bytes, "record corpus base").unwrap();
+    let index = base
+        .surfaces
+        .iter()
+        .position(|s| s.id == "record.event-envelope")
+        .unwrap();
+    let mut added = base.clone();
+    added.surfaces[index].current_version += 1;
+    let mut sample = added.surfaces[index].fixtures[0].clone();
+    sample.path = "governance/schema-compat/fixtures/record/future-corpus.jsonl".into();
+    sample.schema_version = added.surfaces[index].current_version;
+    added.surfaces[index].fixtures.push(sample);
+    assert!(!super::line_format_moved(&base, &added));
+    let mut changed = added.clone();
+    changed.surfaces[index].fields[0].name = "renamed_direct_field".into();
+    assert!(super::line_format_moved(&base, &changed));
+    let mut removed = added.clone();
+    removed.surfaces[index].fixtures.remove(0);
+    assert!(super::line_format_moved(&base, &removed));
+    let mut stamped = added;
+    stamped.surfaces[index].version_field = Some("version".into());
+    assert!(super::line_format_moved(&base, &stamped));
+}

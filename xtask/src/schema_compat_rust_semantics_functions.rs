@@ -186,6 +186,11 @@ pub(super) fn compare_critical_functions(
                 super::super::frontend_owner::runtime_scope(base_view)?,
                 super::super::frontend_owner::runtime_scope(candidate_view)?,
             )
+        } else if path == "crates/cli/src/output.rs" {
+            (
+                super::super::machine_owner::scope(base_view)?,
+                super::super::machine_owner::scope(candidate_view)?,
+            )
         } else {
             (
                 base_view.parse_file(path)?,
@@ -534,8 +539,12 @@ fn frozen_identifiers(
 }
 
 fn path_has_frozen_executable(path: &str) -> bool {
-    FREE_FUNCTIONS.iter().any(|group| group.path == path)
-        || METHODS.iter().any(|group| group.path == path)
+    FREE_FUNCTIONS
+        .iter()
+        .any(|group| group.path == path && !group.names.is_empty())
+        || METHODS
+            .iter()
+            .any(|group| group.path == path && !group.names.is_empty())
 }
 
 fn named_type<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::Item> {

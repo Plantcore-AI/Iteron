@@ -37,6 +37,8 @@ mod frontend_owner;
 mod json;
 #[path = "schema_compat_rust_kernel.rs"]
 mod kernel;
+#[path = "schema_compat_rust_machine_owner.rs"]
+mod machine_owner;
 #[path = "schema_compat_rust_parse.rs"]
 mod parse;
 #[path = "schema_compat_rust_record.rs"]
@@ -61,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
-const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/cli/src/output.rs";
+const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/cli/src/machine_projection.rs";
 const OP_SOURCE: &str = "crates/protocol/src/lib.rs";
 const OP_SIGNATURE: &str = "pub enum Op {";
 const OP_SURFACE_PREFIX: &str = "protocol.op.";
