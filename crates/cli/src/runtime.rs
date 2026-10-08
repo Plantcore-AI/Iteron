@@ -1784,14 +1784,6 @@ impl Agent {
         }
     }
 
-    async fn abort_early_pure_tools(
-        &mut self,
-        turn: TurnId,
-        pure: &mut Vec<PureToolInFlight>,
-    ) -> Result<(), KernelError> {
-        self.early_tool_collection(turn).abort_all(pure).await
-    }
-
     /// Host-only physical-effect observation; owned-tool shutdown/reap proof is an additional
     /// caller requirement. Unknown operator cancellation never becomes a known parent terminal.
     pub(crate) fn parent_effects_known(&self) -> bool {
@@ -1828,31 +1820,7 @@ impl Agent {
             .refused_result(turn, tool, result, reason_code, &events)
     }
 
-    /// Admit one model-declared tool call that does **not** go through
-    /// [`effects::execute_registry_tool`]: an ADR-004 pure read, an inline overflow read, a
-    /// subagent dispatch, an in-turn workflow launch.
-    ///
-    /// I-42 audited 71 journals and found 81 of 198 recorded completions with no `effect_id`, 77 of
-    /// them successful. These four paths are why: each committed its `ToolDone` locally, so real
-    /// work — reads of the operator's filesystem, children that spend provider budget — landed in
-    /// the record with nothing admitting it. They now cross the same boundary and mint the same
-    /// `RegistryTool` identity as every other tool call, keyed by the call's index in the turn, so
-    /// the terminal has an intent to point back at.
-    ///
-    /// The specialised inner effects stay exactly where they are: `spawn_subagent` still opens its
-    /// `Subagent` effect around the child, and the workflow branch still opens its `Workflow`
-    /// effect around the launch. This admits the *tool call*, which is a different fact.
-    /// Latch "this turn touched the workspace" from the capability a tool effect was admitted
-    /// under. This is the ONE place the classification is made, and it is deliberately
-    /// conservative: only [`Capability::ReadOnly`] is *proven* not to write. `CodeExecuting` covers
-    /// an opaque shell command, and `IrreversibleExternal` can still leave a local artifact behind
-    /// the egress, so both count. Latched at admission rather than at completion so a tool that
-    /// crossed the boundary and then died mid-write — the case that most wants a recovery point —
-    /// still earns the end-of-turn checkpoint.
-    fn note_tool_effect_capability(&mut self, capability: Capability) {
-        self.effect_journal.note_tool_capability(capability);
-    }
-
+    /// Exercise actual tool admission through the concrete journal in source fixtures.
     #[cfg(test)]
     fn open_tool_call_effect(
         &mut self,
