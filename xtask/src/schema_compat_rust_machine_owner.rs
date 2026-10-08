@@ -153,8 +153,9 @@ fn merge(mut common: syn::File, writer: syn::File) -> Result<syn::File> {
         }
         common.items.push(item);
     }
-    // Visibility changed solely to let the actual writer borrow this existing private owner.
-    // Its state fields, signature and executable bodies remain under the frozen comparison.
+    // The immutable v0.0.26 producer already declared these methods pub(crate). Keep that exact
+    // visibility, state, signature and body in the comparison view instead of inventing a private
+    // method fingerprint for the shared owner.
     for item in &mut common.items {
         if let syn::Item::Impl(i) = item
             && matches!(i.self_ty.as_ref(),syn::Type::Path(p) if p.qself.is_none() && p.path.is_ident("StreamingScrubber"))
@@ -165,7 +166,6 @@ fn merge(mut common: syn::File, writer: syn::File) -> Result<syn::File> {
                     {
                         bail!("shared scrubber method has changed visibility authority")
                     }
-                    f.vis = syn::Visibility::Inherited;
                 }
             }
         }
@@ -208,6 +208,48 @@ mod tests {
             use serde_json::{Value, json};
         )
     }
+    #[test]
+    fn shared_scrubber_comparison_retains_actual_crate_visibility() {
+        let mut source = common();
+        source.items.push(syn::parse_quote! {
+            impl StreamingScrubber {
+                pub(crate) fn push(&mut self, delta: &str) -> Option<String> {
+                    Some(delta.to_owned())
+                }
+            }
+        });
+        let merged = merge(source.clone(), writer()).unwrap();
+        let actual = merged
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Impl(owner) => owner.items.iter().find_map(|member| match member {
+                    syn::ImplItem::Fn(function) if function.sig.ident == "push" => Some(function),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(&actual.vis, syn::Visibility::Restricted(scope) if scope.path.is_ident("crate"))
+        );
+        for visibility in [
+            syn::parse_quote!(pub),
+            syn::parse_quote!(pub(super)),
+            syn::Visibility::Inherited,
+        ] {
+            let mut changed = source.clone();
+            let syn::Item::Impl(owner) = changed.items.last_mut().unwrap() else {
+                unreachable!()
+            };
+            let syn::ImplItem::Fn(function) = &mut owner.items[0] else {
+                unreachable!()
+            };
+            function.vis = visibility;
+            assert!(merge(changed, writer()).is_err());
+        }
+    }
+
     #[test]
     fn actual_forwarding_refuses_redirected_producer_and_unnamed_trait_authority() {
         merge(common(), writer()).unwrap();
