@@ -251,6 +251,147 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: check the workspace for Windows
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      - name: exact native owned-process proof on the selected branch
+        if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 25
+        env:
+          CARGO_BUILD_JOBS: 4
+          RUST_TEST_THREADS: 1
+          ITERON_TEST_TIMEOUT_SCALE: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-f]{40}$' -or $env:RUNNER_OS -ne 'Windows') {
+            throw 'native process gate requires the exact selected commit on Windows'
+          }
+          Write-Host "Native process source: $env:GITHUB_SHA; runner: $env:RUNNER_NAME"
+          # The source comes from the exact API materializer above. Reuse only this runner's
+          # target, with refreshed source mtimes; do not test another checkout or old executable.
+          if ([string]::IsNullOrEmpty($env:CARGO_TARGET_DIR)) { throw 'missing isolated Cargo target' }
+
+          function Read-PrerequisitePipe($reader) {
+            $buffer = New-Object char[] 1025
+            $read = $reader.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $read.Wait(2000) -or $read.Result -ge $buffer.Length) {
+              throw 'native prerequisite output unavailable or oversized'
+            }
+            $count = $read.Result
+            $tail = New-Object char[] 1
+            $end = $reader.ReadAsync($tail, 0, 1)
+            if (-not $end.Wait(2000) -or $end.Result -ne 0) {
+              throw 'native prerequisite output did not end at its bounded receipt'
+            }
+            if ($count -eq 0) { return '' }
+            return (-join $buffer[0..($count - 1)])
+          }
+          function Invoke-Prerequisite([string]$executable, [string]$arguments) {
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = $executable
+            $process.StartInfo.Arguments = $arguments
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            foreach ($key in @($process.StartInfo.EnvironmentVariables.Keys)) {
+              if ($key -in @('BASH_ENV', 'ENV', 'BASHOPTS', 'SHELLOPTS', 'PROMPT_COMMAND', 'LD_PRELOAD') -or
+                  $key.StartsWith('BASH_FUNC_')) {
+                $process.StartInfo.EnvironmentVariables.Remove($key)
+              }
+            }
+            try {
+              if (-not $process.Start()) { throw 'native prerequisite did not start' }
+              if (-not $process.WaitForExit(10000)) {
+                try { $process.Kill() } catch { }
+                $null = $process.WaitForExit(2000)
+                throw 'native prerequisite timed out; no platform proof recorded'
+              }
+              $stdout = Read-PrerequisitePipe $process.StandardOutput
+              $stderr = Read-PrerequisitePipe $process.StandardError
+              if ($process.ExitCode -ne 0 -or $stderr.Length -ne 0) {
+                throw 'native prerequisite refused; no platform proof recorded'
+              }
+              return $stdout
+            } finally { $process.Dispose() }
+          }
+          # Require the actual Git for Windows installation, then select its own Bash for the
+          # product fixtures. A WSL alias or merely finding some command named bash is insufficient.
+          $git = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+          $version = Invoke-Prerequisite $git '--version'
+          if ($version -notmatch '^git version [^\r\n]+\.windows\.[0-9]+\s*$') {
+            throw 'native shell gate requires Git for Windows'
+          }
+          $directory = [System.IO.Path]::GetDirectoryName($git)
+          $bash = $null
+          for ($depth = 0; $depth -lt 4 -and $directory -and -not $bash; $depth++) {
+            foreach ($relative in @('bin\bash.exe', 'usr\bin\bash.exe')) {
+              $candidate = Join-Path $directory $relative
+              if (Test-Path -LiteralPath $candidate -PathType Leaf) { $bash = $candidate; break }
+            }
+            $directory = [System.IO.Path]::GetDirectoryName($directory)
+          }
+          if (-not $bash) { throw 'Git for Windows Bash is unavailable' }
+          $probe = Invoke-Prerequisite $bash '--noprofile --norc -c "printf iteron-native-bash-prerequisite"'
+          if ($probe -cne 'iteron-native-bash-prerequisite') { throw 'actual Bash prerequisite failed' }
+          $env:PATH = "$(Split-Path -Parent $bash);$env:PATH"
+          $resolved = (Get-Command bash.exe -CommandType Application -ErrorAction Stop).Source
+          if ([System.IO.Path]::GetFullPath($resolved) -ne [System.IO.Path]::GetFullPath($bash)) {
+            throw 'product Bash resolution differs from its native prerequisite'
+          }
+          Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_MODE -ErrorAction SilentlyContinue
+          Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_ROOT -ErrorAction SilentlyContinue
+
+          function Invoke-NativeCases([string]$package, [string[]]$targetArgs, [string]$filter,
+                                      [string[]]$expected, [string]$helper = '') {
+            $arguments = @('test', '--locked', '-p', $package) + $targetArgs +
+              @('--target', 'x86_64-pc-windows-msvc', $filter)
+            $listing = @(& cargo @arguments -- --list --color never)
+            if ($LASTEXITCODE -ne 0) { throw "$package native case listing failed" }
+            if ($listing.Count -gt 4096) { throw "$package native listing exceeds its bound" }
+            $actual = @($listing | Where-Object { $_ -match '^\S+: test$' } |
+              ForEach-Object { $_ -replace ': test$', '' } | Sort-Object)
+            $required = @($expected | Sort-Object)
+            if ($actual.Count -eq 0 -or $actual.Count -ne $required.Count -or
+                (@(Compare-Object $required $actual)).Count -ne 0) {
+              throw "$package native case set is missing or changed; cfg-empty/helper-only is not proof"
+            }
+            $runArgs = @('--test-threads=1', '--include-ignored', '--color', 'never')
+            $physicalCount = $required.Count
+            if ($helper) { $runArgs += @('--skip', $helper); $physicalCount-- }
+            & cargo @arguments -- @runArgs | Tee-Object -Variable observed
+            if ($LASTEXITCODE -ne 0) { throw "$package actual native execution failed" }
+            $summaries = @($observed | Where-Object {
+              $_ -match '^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured;'
+            })
+            if ($summaries.Count -ne 1 -or
+                $summaries[0] -notmatch "^test result: ok\. $physicalCount passed; 0 failed; 0 ignored; 0 measured;") {
+              throw "$package did not execute the exact substantive native case count"
+            }
+          }
+          $support = 'owned_windows_job::tests::'
+          $helper = "${support}owned_windows_job_child_fixture"
+          Invoke-NativeCases 'iteron-support' @('--lib') 'owned_windows_job_' @(
+            "${support}owned_windows_job_assigns_before_exact_primary_resume_and_observes_actual_exit",
+            "${support}owned_windows_job_pre_resume_refusal_reaps_without_running_user_code",
+            "${support}owned_windows_job_stdio_refusal_preserves_suspended_custody_until_real_reap",
+            "${support}owned_windows_job_noninitial_resume_count_refuses_and_cleans_the_exact_tree",
+            "${support}owned_windows_job_redirected_descendant_requires_actual_job_zero_after_leader_exit",
+            "${support}owned_windows_job_future_drop_terminates_retained_members_with_real_job_observation",
+            "${support}owned_windows_job_native_host_exit_uses_kill_on_close_without_rust_destructors",
+            "${support}owned_windows_job_string_projection_retains_actual_unassigned_suspended_process_cleanup",
+            "${support}owned_windows_job_string_projection_closes_actual_assigned_tree_after_error_drop",
+            $helper
+          ) $helper
+          $sandbox = 'windows_job_tests::'
+          Invoke-NativeCases 'iteron-sandbox' @('--lib') 'owned_windows_job_collector_' @(
+            "${sandbox}owned_windows_job_collector_preserves_failed_status_with_known_real_tree_cleanup",
+            "${sandbox}owned_windows_job_collector_ordinary_observer_does_not_fabricate_cleanup_proof",
+            "${sandbox}owned_windows_job_collector_actual_configured_shell_releases_known_writer_cleanup"
+          )
+          $shell = 'client_effects::shell::windows_tests::'
+          Invoke-NativeCases 'iteron-cli' @('--bin', 'iteron') 'owned_windows_job_operator_shell_' @(
+            "${shell}owned_windows_job_operator_shell_actual_failed_command_is_completed_and_cleanup_known",
+            "${shell}owned_windows_job_operator_shell_redirected_background_is_stopped_before_lease_release",
+            "${shell}owned_windows_job_operator_shell_cancel_retains_unknown_effects_after_actual_tree_reap"
+          )
       - name: native private journal fault and restart oracles
         timeout-minutes: 10
         run: |
