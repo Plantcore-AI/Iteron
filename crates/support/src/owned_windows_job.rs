@@ -30,6 +30,9 @@ use windows_sys::Win32::System::Threading::{
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
+#[path = "owned_windows_job/custody.rs"]
+mod custody;
+
 const MAX_ACTIVE_PROCESSES: u32 = 256;
 const MAX_THREAD_ROWS: usize = 65_536;
 const MAX_THREAD_SCAN: Duration = Duration::from_secs(1);
@@ -114,6 +117,7 @@ impl fmt::Debug for OwnedWindowsJob {
 pub struct OwnedWindowsChild {
     child: Option<StdChild>,
     original_pid: u32,
+    custody: Option<custody::Admission>,
     job: Arc<OwnedWindowsJob>,
     status: Option<ExitStatus>,
     pub stdout: Option<ChildStdout>,
@@ -140,6 +144,9 @@ impl OwnedWindowsChild {
         command: &mut StdCommand,
         before_resume: Option<&(dyn Fn(&StdChild, &OwnedWindowsJob) -> io::Result<()> + Sync)>,
     ) -> Result<Self, WindowsJobLaunchError> {
+        let custody = custody::Admission::acquire().map_err(|error| {
+            WindowsJobLaunchError::before_creation("physical cleanup admission", error)
+        })?;
         let job = Arc::new(OwnedWindowsJob::create().map_err(|error| {
             WindowsJobLaunchError::before_creation("private Job creation", error)
         })?);
@@ -151,6 +158,7 @@ impl OwnedWindowsChild {
         let mut owned = Self {
             original_pid: child.id(),
             child: Some(child),
+            custody: Some(custody),
             job,
             status: None,
             stdout: None,
@@ -294,6 +302,11 @@ impl Drop for OwnedWindowsChild {
     fn drop(&mut self) {
         // Future drop owns both real handles; never signal a numeric PID after a consumed wait.
         let _ = self.start_kill();
+        if self.child.is_some() || self.job.active_processes().ok() != Some(0) {
+            if let Some(custody) = self.custody.take() {
+                custody.defer(self.child.take(), self.job.clone(), self.status.is_some());
+            }
+        }
     }
 }
 

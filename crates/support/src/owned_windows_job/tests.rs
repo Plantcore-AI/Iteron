@@ -258,3 +258,68 @@ async fn owned_windows_job_native_host_exit_uses_kill_on_close_without_rust_dest
     drop(observed);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn owned_windows_job_string_projection_retains_actual_unassigned_suspended_process_cleanup() {
+    let root = workspace("unassigned-string-projection");
+    let admission = custody::Admission::acquire().unwrap();
+    let job = Arc::new(OwnedWindowsJob::create().unwrap());
+    let mut launch = command(&root, "marker");
+    launch.creation_flags(CREATE_SUSPENDED);
+    let child = launch.spawn().unwrap();
+    let observed = own_handle(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.id()) }).unwrap();
+    // Real native process, intentionally not assigned/resumed, as after assignment refusal.
+    // The actual consumer projects only the public message and drops its error capsule.
+    let owned = OwnedWindowsChild {
+        original_pid: child.id(),
+        child: Some(child),
+        custody: Some(admission),
+        job: job.clone(),
+        status: None,
+        stdout: None,
+        stderr: None,
+    };
+    let error = WindowsJobLaunchError {
+        stage: "unobserved assignment refusal fixture",
+        os_error: None,
+        execution_may_have_started: false,
+        cleanup_known: false,
+        custody: Some(Box::new(owned)),
+    };
+    assert!(!error.not_dispatched());
+    let _public_message = error.to_string();
+    drop(error);
+    assert_eq!(
+        unsafe { WaitForSingleObject(observed.as_raw_handle(), 2000) },
+        WAIT_OBJECT_0
+    );
+    assert!(!root.join("ran").exists());
+    assert!(job.confirm_empty(Duration::from_secs(1)).await);
+    drop(observed);
+    drop(job);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn owned_windows_job_string_projection_closes_actual_assigned_tree_after_error_drop() {
+    let root = workspace("assigned-string-projection");
+    let child = OwnedWindowsChild::spawn(&mut command(&root, "wait"))
+        .await
+        .unwrap();
+    marker(&root, "alive").await;
+    let observed = child.job();
+    let error = WindowsJobLaunchError {
+        stage: "unobserved post-resume fixture",
+        os_error: None,
+        execution_may_have_started: true,
+        cleanup_known: false,
+        custody: Some(Box::new(child)),
+    };
+    let _public_message = error.to_string();
+    drop(error);
+    // The observer retains only the Job, so zero also requires the custody worker to release
+    // its actual process reference after try_wait; last Job close cannot fake this observation.
+    assert!(observed.confirm_empty(Duration::from_secs(1)).await);
+    drop(observed);
+    std::fs::remove_dir_all(root).unwrap();
+}
