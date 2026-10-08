@@ -345,7 +345,7 @@ fn public_inventory_freezes_catalog_and_resolves_only_matching_host_route_identi
     let before = owner.read(&query).unwrap();
     let record = &before["records"][0];
     let mut request = ClientModelSelectionV1 {
-        inventory_digest_sha256: owner.digest().into(),
+        inventory_digest_sha256: owner.digest(),
         provider_id: selected.provider_id.clone(),
         model_id: selected.model_id.clone(),
         catalog_digest_sha256: record["catalog_digest_sha256"].as_str().unwrap().into(),

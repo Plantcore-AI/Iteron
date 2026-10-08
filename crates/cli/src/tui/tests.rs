@@ -2145,8 +2145,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 file_input::FileAttachments::default(),
                 Some(metadata),
             )
-            .err()
-            .expect("full lane returns the draft");
+            .expect_err("full lane returns the draft");
         assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
         editor.clear();
         assert!(
@@ -4624,7 +4623,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         // Activity is immediate, but the transcript waits out the anti-flash reveal delay.
-        assert!(!app.tools.revealed_block("t1").is_some());
+        assert!(app.tools.revealed_block("t1").is_none());
         assert_eq!(app.tools.pending_len(), 1);
         assert_eq!(app.history.blocks().len(), before_start);
         assert!(app.tools.has_active("t1"));
@@ -4763,7 +4762,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.history.blocks().len(), base + 1);
         assert!(app.tools.pending_len() == 0);
         assert!(app.tools.active_len() == 0);
-        assert!(!app.tools.revealed_block("fast-read").is_some());
+        assert!(app.tools.revealed_block("fast-read").is_none());
         let block::BlockKind::Tool(card) = &app.history.blocks().last().unwrap().kind else {
             panic!("expected a settled tool card");
         };
