@@ -206,11 +206,21 @@ impl MemStore {
         }
     }
 
+    fn read_root(&self) -> &Path {
+        // The operator home is the provenance anchor, not permission to read arbitrary home
+        // files through a memory symlink. User links may resolve only inside this memory store.
+        if self.tier == MemTier::User {
+            &self.root
+        } else {
+            &self.source_root
+        }
+    }
+
     fn read_source(&self, path: &Path, max_bytes: usize) -> Result<Option<String>, SourceError> {
         if self.is_stripped() {
             return Ok(None);
         }
-        read_bounded_utf8(&self.source_root, path, max_bytes, self.source_scope())
+        read_bounded_utf8(self.read_root(), path, max_bytes, self.source_scope())
     }
 
     /// The store's index entries. When a `MEMORY.md` index is present it is parsed line by line
@@ -279,7 +289,7 @@ impl MemStore {
     /// occurs in `read_body` before any selected bytes enter model context.
     fn list_facts(&self) -> Vec<FactRef> {
         let Ok(Some(listing)) = list_directory_bounded(
-            &self.source_root,
+            self.read_root(),
             &self.root,
             iteron_tunables::param_usize("ctx.memory.max_memory_files", MAX_MEMORY_FILES),
             self.source_scope(),
@@ -418,7 +428,7 @@ impl MemStore {
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return false;
         }
-        match (self.source_root.canonicalize(), path.canonicalize()) {
+        match (self.read_root().canonicalize(), path.canonicalize()) {
             (Ok(root), Ok(resolved)) => resolved.starts_with(root),
             _ => false,
         }

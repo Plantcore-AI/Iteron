@@ -382,6 +382,12 @@ impl MaterialSource {
         self.truncated |= truncated;
         self
     }
+    pub(crate) fn is_memory_record(&self) -> bool {
+        matches!(
+            self.version,
+            Some(ContextMaterialVersionV1::MemoryRecord { .. })
+        )
+    }
     pub(crate) fn without_bytes(mut self) -> Self {
         self.bytes = None;
         self.unavailable = Some(ContextMaterialUnavailableV1::RetentionBound);

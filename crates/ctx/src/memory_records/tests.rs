@@ -32,6 +32,33 @@ fn draft(workspace: &std::path::Path) -> MemoryRecordDraft {
     .unwrap()
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn busy_writer_is_definite_before_publication_and_release_preserves_the_snapshot() {
+    let workspace = workspace("writer-busy");
+    let store_root = root(&workspace);
+    let mut first = MemoryRecordOwner::open(&store_root).unwrap();
+    let error = match MemoryRecordOwner::open(&store_root) {
+        Ok(_) => panic!("one namespace must never admit two actual writers"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(error.to_string(), "memory writer lease is busy");
+    assert_eq!(first.records().count(), 0);
+    let id = first
+        .add("known writer owns this fact", draft(&workspace))
+        .unwrap();
+    drop(first);
+    let mut next = MemoryRecordOwner::open(&store_root).unwrap();
+    assert_eq!(next.records().count(), 1);
+    assert_eq!(next.records().next().unwrap().id, id);
+    next.add("released lease admits the next writer", draft(&workspace))
+        .unwrap();
+    drop(next);
+    assert_eq!(MemoryRecordOwner::read(&store_root).unwrap().len(), 2);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
 #[test]
 fn real_seed_write_recall_update_delete_and_restart_share_one_owner() {
     let workspace = workspace("journey");

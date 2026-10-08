@@ -160,6 +160,38 @@ pub struct Fact {
 }
 
 impl Fact {
+    fn from_material(
+        slug: String,
+        title: String,
+        raw_body: String,
+        material: MaterialSource,
+        index_material: MaterialSource,
+        trust: Trust,
+    ) -> Self {
+        // Durable records retain their full admitted body. Every model-visible fact uses the
+        // same existing head ceiling as a legacy file, without altering conflict/source evidence.
+        let source_bytes = raw_body.len();
+        let body = if material.is_memory_record() {
+            iteron_protocol::text::head(
+                &raw_body,
+                iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
+            )
+        } else {
+            // The file owner has already projected and cached its bounded head. Applying the
+            // marker-producing UTF-8 helper twice can change a partially aligned final line.
+            raw_body
+        };
+        Self {
+            material: material.mark_truncated(body.len() < source_bytes),
+            index_material,
+            slug,
+            title,
+            bytes: body.len(),
+            body,
+            trust,
+        }
+    }
+
     pub fn slug(&self) -> &str {
         &self.slug
     }
@@ -1120,15 +1152,14 @@ impl FileMemory {
             .iter()
             .filter_map(|candidate| {
                 let body = candidate.body.clone()?;
-                let fact = Fact {
-                    material: candidate.material.clone(),
-                    index_material: candidate.index_material.clone(),
-                    slug: candidate.fact_ref.slug.clone(),
-                    title: candidate.fact_ref.title.clone(),
-                    bytes: body.len(),
+                let fact = Fact::from_material(
+                    candidate.fact_ref.slug.clone(),
+                    candidate.fact_ref.title.clone(),
                     body,
-                    trust: candidate.trust,
-                };
+                    candidate.material.clone(),
+                    candidate.index_material.clone(),
+                    candidate.trust,
+                );
                 let memory_candidate = MemoryCandidate {
                     slug: fact.slug.clone(),
                     text: format!(
@@ -1304,15 +1335,14 @@ impl MemoryStrategy for FileMemory {
                     .read_body_materialized(slug)
                     .ok_or_else(|| MemError::NotFound(slug.into()))?
             };
-            return Ok(Fact {
-                index_material: candidate.index_material,
-                material,
-                slug: slug.into(),
-                title: candidate.fact_ref.title,
-                bytes: body.len(),
+            return Ok(Fact::from_material(
+                slug.into(),
+                candidate.fact_ref.title,
                 body,
-                trust: Trust::Untrusted,
-            });
+                material,
+                candidate.index_material,
+                Trust::Untrusted,
+            ));
         }
         Err(MemError::NotFound(slug.to_string()))
     }
@@ -1824,7 +1854,9 @@ mod tests {
             "cachetune",
             "Tuning the cache read ratio improves cache economics greatly.",
         );
-        let store = MemStore::new(root, MemTier::User, true);
+        // Repository-discovered legacy facts remain eligible reference data; unscoped legacy
+        // user files are deliberately private and cannot serve as this recall fixture.
+        let store = MemStore::new(root, MemTier::Project, false);
         let seg = FileMemory.recall(
             &[store],
             "how does the prompt cache prefix behave",
@@ -1849,6 +1881,7 @@ mod tests {
         );
         // The recorded byte count equals the rendered length (REC-INJECT contract).
         assert_eq!(seg.bytes(), seg.render().len());
+        assert_eq!(seg.governing_trust(), Trust::Untrusted);
     }
 
     #[test]
@@ -1858,7 +1891,7 @@ mod tests {
         write_fact(&root, "a", &format!("cache tuning {big}"));
         write_fact(&root, "b", &format!("cache prefix {big}"));
         write_fact(&root, "c", &format!("cache ratio {big}"));
-        let store = MemStore::new(root, MemTier::User, true);
+        let store = MemStore::new(root, MemTier::Project, false);
         let tight = MemBudget {
             index_bytes: 25_000,
             recall_bytes: 2_500,
@@ -1908,7 +1941,7 @@ mod tests {
     fn recall_with_no_task_overlap_injects_index_only() {
         let root = tmp("recall-none").join("mem");
         write_fact(&root, "cache", "append-only prefix discipline");
-        let store = MemStore::new(root, MemTier::User, true);
+        let store = MemStore::new(root, MemTier::Project, false);
         let seg = FileMemory.recall(
             &[store],
             "unrelated quantum chromodynamics",
@@ -1949,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn governing_trust_is_the_min_over_included_tiers() {
+    fn reference_facts_do_not_gain_instruction_trust_from_tier_approval() {
         let user_root = tmp("gov-user").join("mem");
         write_fact(&user_root, "cache", "cache prefix append-only");
         let user = MemStore::new(user_root, MemTier::User, true);
@@ -1958,12 +1991,13 @@ mod tests {
         write_fact(&proj_root, "cachetwo", "cache ratio tuning notes");
         let proj_unapproved = MemStore::new(proj_root.clone(), MemTier::Project, false);
 
-        // User alone -> Trusted.
+        // Legacy user files carry no consent/scope evidence and are not included at all.
         let seg_user =
             FileMemory.recall(std::slice::from_ref(&user), "cache", &MemBudget::default());
+        assert!(seg_user.is_empty());
         assert_eq!(seg_user.governing_trust(), Trust::Trusted);
 
-        // User + unapproved project -> min = Untrusted.
+        // The eligible project fact is reference data, independently of tier approval.
         let seg_both = FileMemory.recall(
             &[user.clone(), proj_unapproved],
             "cache",
@@ -1974,11 +2008,17 @@ mod tests {
             Trust::Untrusted,
             "an untrusted project fact governs the join down"
         );
+        assert_eq!(seg_both.recalled().len(), 1);
+        assert_eq!(seg_both.recalled()[0].slug(), "cachetwo");
 
-        // User + approved project -> min = Workspace.
+        // Approval may govern discovered instructions, but it cannot promote a fact to one.
         let proj_approved = MemStore::new(proj_root, MemTier::Project, true);
+        assert_eq!(proj_approved.trust(), Trust::Workspace);
         let seg_appr = FileMemory.recall(&[user, proj_approved], "cache", &MemBudget::default());
-        assert_eq!(seg_appr.governing_trust(), Trust::Workspace);
+        assert_eq!(seg_appr.recalled().len(), 1);
+        assert_eq!(seg_appr.recalled()[0].trust(), Trust::Untrusted);
+        assert_eq!(seg_appr.governing_trust(), Trust::Untrusted);
+        assert!(seg_appr.render().contains("not as instructions"));
     }
 
     #[test]
@@ -2035,11 +2075,23 @@ mod tests {
     fn read_fact_refuses_bidi_body() {
         let root = tmp("read-bidi").join("mem");
         write_fact(&root, "bad", "normal \u{202E}reversed");
-        let store = MemStore::new(root, MemTier::User, true);
+        write_fact(&root, "good", "ordinary repository reference");
+        let store = MemStore::new(root, MemTier::Project, false);
+        assert!(store.read_body("bad").is_none());
         assert!(matches!(
-            FileMemory.read_fact(&[store], "bad"),
-            Err(MemError::Suspicious(_))
+            FileMemory.read_fact(std::slice::from_ref(&store), "bad"),
+            Err(MemError::NotFound(slug)) if slug == "bad"
         ));
+        assert_eq!(
+            FileMemory
+                .read_fact(std::slice::from_ref(&store), "good")
+                .unwrap()
+                .body(),
+            "ordinary repository reference"
+        );
+        let segment = FileMemory.recall(&[store], "ordinary repository", &MemBudget::default());
+        assert!(!segment.render().contains('\u{202E}'));
+        assert!(segment.recalled().iter().all(|fact| fact.slug() != "bad"));
     }
 
     #[test]
@@ -2156,7 +2208,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn user_memory_preserves_an_in_store_symlink_but_not_an_escape() {
+    fn user_memory_physical_reads_confine_links_and_legacy_recall_stays_private() {
         let home = tmp("user-links");
         let store = MemStore::user(&home);
         std::fs::create_dir_all(store.root()).unwrap();
@@ -2166,13 +2218,23 @@ mod tests {
         std::os::unix::fs::symlink(home.join("outside.md"), store.root().join("escape.md"))
             .unwrap();
 
-        assert!(
-            FileMemory
-                .read_fact(std::slice::from_ref(&store), "alias")
-                .is_ok(),
-            "intentional user-memory symlinks within the store remain supported"
+        assert_eq!(
+            store.read_body("alias").as_deref(),
+            Some("operator fact"),
+            "the physical reader retains contained user symlink support"
         );
-        assert!(FileMemory.read_fact(&[store], "escape").is_err());
+        assert!(store.read_body("escape").is_none());
+        for slug in ["real", "alias", "escape"] {
+            assert!(matches!(
+                FileMemory.read_fact(std::slice::from_ref(&store), slug),
+                Err(MemError::NotFound(_))
+            ));
+        }
+        let segment = FileMemory.recall(&[store], "operator fact", &MemBudget::default());
+        assert!(
+            segment.is_empty(),
+            "no unknown private scope may enter recall"
+        );
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -2312,13 +2374,24 @@ mod tests {
         }
         assert!(started, "parent did not release the writer start barrier");
 
-        let store = MemStore::new(base.join("mem"), MemTier::User, true);
-        FileMemory
-            .add(
-                &store,
-                &format!("# Writer {id}\nUnique fact from writer process {id}."),
-            )
-            .unwrap();
+        let store =
+            MemStore::new(base.join("mem"), MemTier::User, true).with_recall_workspace(&base);
+        let body = format!("# Writer {id}\nUnique fact from writer process {id}.");
+        // The actual versioned journal is nonwaiting. A caller may retry only the definite
+        // pre-publication busy lease; every other error, including unknown publication, is final.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match FileMemory.add(&store, &body) {
+                Ok(_) => break,
+                Err(MemError::Io(reason))
+                    if reason == "memory writer lease is busy"
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                result => panic!("actual versioned writer did not publish: {result:?}"),
+            }
+        }
     }
 
     #[test]
@@ -2372,34 +2445,65 @@ mod tests {
             );
         }
 
-        let index = std::fs::read_to_string(base.join("mem/MEMORY.md")).unwrap();
+        let records = crate::memory_records::MemoryRecordOwner::read(&base.join("mem")).unwrap();
         assert_eq!(
-            index.lines().count(),
+            records.len(),
             WRITERS,
-            "one index line must survive for every racing writer:\n{index}"
+            "each racing writer must survive in the authoritative snapshot"
         );
         for id in 0..WRITERS {
             assert_eq!(
-                index.matches(&format!("[Writer {id}]")).count(),
+                records
+                    .iter()
+                    .filter(|record| {
+                        record.body
+                            == format!("# Writer {id}\nUnique fact from writer process {id}.")
+                            && record.revision == 1
+                            && !record.deleted
+                    })
+                    .count(),
                 1,
-                "writer {id}'s index line is present exactly once"
+                "writer {id}'s durable body is present exactly once"
             );
         }
 
-        let store = MemStore::new(base.join("mem"), MemTier::User, true);
-        assert_eq!(store.index_entries().len(), WRITERS);
+        assert!(!base.join("mem/MEMORY.md").exists());
+        let store =
+            MemStore::new(base.join("mem"), MemTier::User, true).with_recall_workspace(&base);
+        let segment = FileMemory.recall(&[store], "writer process", &MemBudget::default());
+        for record in records {
+            assert!(segment.index_block().contains(&record.id));
+        }
+        assert_eq!(segment.governing_trust(), Trust::Untrusted);
         std::fs::remove_dir_all(base).ok();
     }
 
     #[test]
-    fn add_writes_body_and_index_line_idempotently() {
+    fn add_publishes_one_idempotent_record_and_a_recall_index() {
         let root = tmp("add").join("mem");
-        let store = MemStore::new(root.clone(), MemTier::User, true);
-        let slug = FileMemory
-            .add(&store, "# Cache rule\nKeep the prefix append-only.")
-            .unwrap();
-        assert!(root.join(format!("{slug}.md")).exists());
-        let index = std::fs::read_to_string(root.join("MEMORY.md")).unwrap();
+        let store = MemStore::new(root.clone(), MemTier::Project, false);
+        let body = "# Cache rule\nKeep the prefix append-only.";
+        let slug = FileMemory.add(&store, body).unwrap();
+        assert!(root.join("records-v1.json").is_file());
+        assert!(!root.join(format!("{slug}.md")).exists());
+        assert!(!root.join("MEMORY.md").exists());
+        let records = crate::memory_records::MemoryRecordOwner::read(&root).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, slug);
+        assert_eq!(records[0].body, body);
+        assert_eq!(records[0].revision, 1);
+        assert!(!records[0].deleted);
+        assert!(
+            records[0]
+                .eligibility(Some(&root), crate::memory_records::now_unix_seconds())
+                .is_ok()
+        );
+        let segment = FileMemory.recall(
+            std::slice::from_ref(&store),
+            "cache prefix",
+            &MemBudget::default(),
+        );
+        let index = segment.index_block();
         assert!(
             index.contains(&format!("]({slug}.md)")),
             "the index gains a line"
@@ -2408,14 +2512,23 @@ mod tests {
             index.contains("Cache rule"),
             "the heading becomes the title"
         );
-        // Idempotent: same text -> same slug, no duplicate index line.
-        let slug2 = FileMemory
-            .add(&store, "# Cache rule\nKeep the prefix append-only.")
-            .unwrap();
+        // Idempotence preserves the actual record revision, age, expiry and source receipt.
+        let committed = std::fs::read(root.join("records-v1.json")).unwrap();
+        let slug2 = FileMemory.add(&store, body).unwrap();
         assert_eq!(slug, slug2);
-        let index2 = std::fs::read_to_string(root.join("MEMORY.md")).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("records-v1.json")).unwrap(),
+            committed
+        );
+        assert_eq!(
+            crate::memory_records::MemoryRecordOwner::read(&root).unwrap(),
+            records
+        );
         assert_eq!(index.matches(&format!("]({slug}.md)")).count(), 1);
-        assert_eq!(index, index2);
+        let reopened = MemStore::new(root, MemTier::Project, false);
+        let fact = FileMemory.read_fact(&[reopened], &slug).unwrap();
+        assert_eq!(fact.body(), body);
+        assert_eq!(fact.trust(), Trust::Untrusted);
         // Bidi and stripped-store writes are refused.
         assert!(matches!(
             FileMemory.add(&store, "x\u{202E}y"),
@@ -2491,7 +2604,8 @@ mod tests {
         let error = FileMemory
             .add(&store, "this must remain inside the repository")
             .unwrap_err();
-        assert!(matches!(error, MemError::Refused(_)));
+        assert!(matches!(error, MemError::Io(_)));
+        assert!(store.index_entries().is_empty());
         assert!(
             std::fs::read_dir(&outside).unwrap().next().is_none(),
             "the outside directory must receive no fact, index, lock, or temp file"
@@ -2505,9 +2619,10 @@ mod tests {
         let root = base.join("memory");
         let store = MemStore::new(root.clone(), MemTier::User, true);
 
-        let oversized = "x".repeat(MAX_FACT_BYTES + 1);
+        // Durable record bytes and model-visible head bytes are separate actual ceilings.
+        let oversized = "x".repeat(crate::memory_records::MAX_RECORD_BODY_BYTES + 1);
         let error = FileMemory.add(&store, &oversized).unwrap_err();
-        assert!(matches!(error, MemError::Refused(reason) if reason.contains("limit")));
+        assert!(matches!(error, MemError::Refused(reason) if reason.contains("oversized")));
         assert!(matches!(
             FileMemory.add(&store, "visible\u{202E}reversed"),
             Err(MemError::Suspicious(_))
@@ -2520,10 +2635,73 @@ mod tests {
     }
 
     #[test]
+    fn versioned_fact_projection_preserves_the_full_source_and_existing_head_budget() {
+        let root = tmp("record-projection-head").join("mem");
+        let store = MemStore::new(root.clone(), MemTier::Project, false);
+        let body = format!(
+            "cache {}",
+            "x".repeat(crate::memory_records::MAX_RECORD_BODY_BYTES - "cache ".len())
+        );
+        let id = FileMemory.add(&store, &body).unwrap();
+        let records = crate::memory_records::MemoryRecordOwner::read(&root).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].body, body);
+        let fact = FileMemory
+            .read_fact(std::slice::from_ref(&store), &id)
+            .unwrap();
+        let expected = iteron_protocol::text::head(&body, MAX_FACT_BYTES);
+        assert_eq!(fact.body(), expected);
+        assert_eq!(fact.bytes(), expected.len());
+        assert_eq!(fact.trust(), Trust::Untrusted);
+        let render = fact.render_materialized();
+        let materials = render.admit(1, &render.text, render.text.len(), Trust::Untrusted);
+        let retained = materials
+            .iter()
+            .find(|material| material.view().source_truncated)
+            .expect("the exact retained record must disclose model head truncation");
+        let source: crate::memory_records::MemoryRecord =
+            serde_json::from_str(retained.source_bytes().unwrap()).unwrap();
+        assert_eq!(source, records[0]);
+        let budget = MemBudget::default();
+        let segment = FileMemory.recall(&[store], "cache", &budget);
+        let recalled = segment
+            .recalled()
+            .iter()
+            .find(|fact| fact.slug() == id)
+            .expect("the budget admits the actually projected record");
+        assert_eq!(recalled.body(), expected);
+        assert!(recalled.framed().len() <= budget.recall_bytes);
+        assert!(segment.bytes() <= budget.total);
+        assert_eq!(segment.bytes(), segment.render().len());
+        assert_eq!(
+            crate::memory_records::MemoryRecordOwner::read(&root).unwrap(),
+            records
+        );
+
+        let legacy_root = tmp("legacy-projection-head").join("mem");
+        let legacy_body = format!("cache {}", "猫".repeat(3_000));
+        write_fact(&legacy_root, "legacy", &legacy_body);
+        let legacy_store = MemStore::new(legacy_root, MemTier::Project, false);
+        let first_projection = legacy_store.read_body("legacy").unwrap();
+        assert_eq!(
+            first_projection,
+            iteron_protocol::text::head(&legacy_body, MAX_FACT_BYTES)
+        );
+        assert_eq!(
+            FileMemory
+                .read_fact(&[legacy_store], "legacy")
+                .unwrap()
+                .body(),
+            first_projection,
+            "an already bounded legacy head must not be projected a second time"
+        );
+    }
+
+    #[test]
     fn added_fact_round_trips_through_index_and_recall() {
         let root = tmp("add-recall").join("mem");
-        let store = MemStore::new(root, MemTier::User, true);
-        FileMemory
+        let store = MemStore::new(root, MemTier::Project, false);
+        let id = FileMemory
             .add(&store, "The compaction boundary rebuilds the prefix once.")
             .unwrap();
         let seg = FileMemory.recall(
@@ -2532,8 +2710,11 @@ mod tests {
             &MemBudget::default(),
         );
         assert!(seg.index_block().contains("compaction") || !seg.recalled().is_empty());
+        assert!(seg.index_block().contains(&id));
         let fact = seg.recalled().first().expect("the added fact is recalled");
+        assert_eq!(fact.slug(), id);
         assert!(fact.body().contains("compaction boundary"));
+        assert_eq!(fact.trust(), Trust::Untrusted);
     }
 
     #[test]
@@ -2542,15 +2723,31 @@ mod tests {
         write_fact(&a, "zeta", "z");
         write_fact(&a, "alpha", "a");
         let b = tmp("merge-b").join("mem");
-        write_fact(&b, "alpha", "a-override");
+        write_fact(&b, "alpha", "a");
         let stores = [
-            MemStore::new(a, MemTier::User, true),
-            MemStore::new(b, MemTier::Project, true),
+            MemStore::new(a, MemTier::Project, false),
+            MemStore::new(b.clone(), MemTier::Project, false),
         ];
         let idx = merged_index(&stores);
         let slugs: Vec<&str> = idx.entries().iter().map(|e| e.slug()).collect();
         assert_eq!(slugs, vec!["alpha", "zeta"], "deduped by slug, sorted");
         assert!(idx.total_bytes() > 0);
+        // Identical evidence can be deduplicated; location precedence cannot settle a conflict.
+        write_fact(&b, "alpha", "contradictory claim");
+        let audit = FileMemory::merge_with_audit(&stores, 0);
+        assert_eq!(audit.merged.len(), 1);
+        assert_eq!(audit.merged[0].fact_ref.slug(), "zeta");
+        assert_eq!(
+            audit
+                .excluded
+                .iter()
+                .filter(
+                    |candidate| candidate.kind == MemoryRecallExclusionKind::Contradiction
+                        && candidate.slug == "alpha"
+                )
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -2573,28 +2770,36 @@ mod tests {
     #[test]
     fn recall_audit_explains_rewrite_supersession_contradiction_expiry_and_scope_denial() {
         let user_root = tmp("audit-user").join("mem");
-        std::fs::create_dir_all(&user_root).unwrap();
+        write_fact(
+            &user_root,
+            "private",
+            "private user reference without scope evidence",
+        );
+
+        let earlier_project = tmp("audit-earlier-project").join("mem");
+        std::fs::create_dir_all(&earlier_project).unwrap();
         std::fs::write(
-            user_root.join("MEMORY.md"),
-            "- [Policy](old.md) — old claim\n- [Stable](same.md) — user claim\n",
+            earlier_project.join("MEMORY.md"),
+            "- [Policy](old.md) — old claim\n- [Stable](same.md) — identical reference\n",
         )
         .unwrap();
-        write_fact(&user_root, "old", "old policy body");
-        write_fact(&user_root, "same", "user stable body");
+        write_fact(&earlier_project, "old", "old policy body");
+        write_fact(&earlier_project, "same", "same stable reference body");
 
         let project_root = tmp("audit-project").join("mem");
         std::fs::create_dir_all(&project_root).unwrap();
         std::fs::write(
             project_root.join("MEMORY.md"),
-            "- [Gone](gone.md) — stale index\n- [Policy](new.md) — replacement claim\n- [Stable](same.md) — project claim\n",
+            "- [Gone](gone.md) — stale index\n- [Policy](new.md) — replacement claim\n- [Stable](same.md) — identical reference\n",
         )
         .unwrap();
         write_fact(&project_root, "new", "new policy body");
-        write_fact(&project_root, "same", "project stable body");
+        write_fact(&project_root, "same", "same stable reference body");
 
         let stores = [
             MemStore::new(user_root, MemTier::User, true),
-            MemStore::new(project_root, MemTier::Project, true),
+            MemStore::new(earlier_project, MemTier::Project, false),
+            MemStore::new(project_root, MemTier::Project, false),
         ];
         let audit = FileMemory::audit_recall_with_slot_in_scope(
             &stores,
@@ -2619,6 +2824,15 @@ mod tests {
                 "missing {kind:?}"
             );
         }
+        assert!(audit.excluded_candidates.iter().any(|candidate| {
+            candidate.slug == "private" && candidate.kind == MemoryRecallExclusionKind::ScopeDenied
+        }));
+        assert!(audit.excluded_candidates.iter().any(|candidate| {
+            candidate.slug == "same" && candidate.kind == MemoryRecallExclusionKind::Superseded
+        }));
+        assert!(audit.excluded_candidates.iter().any(|candidate| {
+            candidate.slug == "gone" && candidate.kind == MemoryRecallExclusionKind::Expired
+        }));
         assert!(audit.selected.is_empty(), "isolated scope recalls nothing");
     }
 }

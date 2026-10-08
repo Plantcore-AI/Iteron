@@ -43,7 +43,14 @@ impl Journal {
                 path,
                 "records-v1",
             )
-            .map_err(platform_error)?;
+            .map_err(|error| match error {
+                // This phase has not loaded or published a snapshot. The actual exclusive
+                // writer refusal is definite and may be retried by a bounded caller.
+                iteron_support::durable_windows_state::WindowsStateError::Conflict => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "memory writer lease is busy")
+                }
+                error => platform_error(error),
+            })?;
             Ok(Self {
                 poisoned: false,
                 windows,
