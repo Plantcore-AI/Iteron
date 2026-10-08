@@ -60,28 +60,28 @@ impl<J: AgentControllerJournal> AgentController<J> {
                 .and_then(|room| room.checked_sub(record.reserved_cost))
                 .ok_or(ControllerError::Budget)?,
         };
-        if let Some(epoch) = epoch {
-            if let Some(budget) = workflow_claim::provider_task_budget(&self.snapshot, id, epoch) {
-                let used = provider_budget::admitted_epoch_usage(&self.snapshot, id, epoch)?;
-                allowance.turns = allowance.turns.min(
-                    budget
-                        .turns
-                        .checked_sub(used.turns)
-                        .ok_or(ControllerError::Budget)?,
-                );
-                allowance.tokens = allowance.tokens.min(
-                    budget
-                        .tokens
-                        .checked_sub(used.tokens)
-                        .ok_or(ControllerError::Budget)?,
-                );
-                allowance.cost_microusd = allowance.cost_microusd.min(
-                    budget
-                        .cost_microusd
-                        .checked_sub(used.cost_microusd)
-                        .ok_or(ControllerError::Budget)?,
-                );
-            }
+        if let Some(epoch) = epoch
+            && let Some(budget) = workflow_claim::provider_task_budget(&self.snapshot, id, epoch)
+        {
+            let used = provider_budget::admitted_epoch_usage(&self.snapshot, id, epoch)?;
+            allowance.turns = allowance.turns.min(
+                budget
+                    .turns
+                    .checked_sub(used.turns)
+                    .ok_or(ControllerError::Budget)?,
+            );
+            allowance.tokens = allowance.tokens.min(
+                budget
+                    .tokens
+                    .checked_sub(used.tokens)
+                    .ok_or(ControllerError::Budget)?,
+            );
+            allowance.cost_microusd = allowance.cost_microusd.min(
+                budget
+                    .cost_microusd
+                    .checked_sub(used.cost_microusd)
+                    .ok_or(ControllerError::Budget)?,
+            );
         }
         Ok(allowance)
     }

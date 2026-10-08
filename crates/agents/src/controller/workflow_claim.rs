@@ -339,15 +339,14 @@ impl<J: AgentControllerJournal> AgentController<J> {
                     .saturating_sub(record.wall_used_ms),
             )
             .ok_or(ControllerError::Capacity)?;
-        Ok(self
-            .snapshot
+        self.snapshot
             .workflow_claims
             .values()
             .filter(|receipt| receipt.claim.assigned_agent == id && receipt.epoch == epoch)
             .map(|receipt| receipt.claim.deadline_unix_ms)
             .chain(std::iter::once(lifetime))
             .min()
-            .ok_or(ControllerError::RecoveryRequired)?)
+            .ok_or(ControllerError::RecoveryRequired)
     }
     pub fn claim_workflow_task(
         &mut self,
@@ -572,6 +571,9 @@ pub(super) fn settlement_fits(
                 && usage.wall_ms <= receipt.claim.budget.wall_ms
         })
 }
+// Private journal assembly copies the exact epoch, usage, physical/accounting observations and
+// terminal into one already-owned snapshot transaction. Keep these distinct receipt facts explicit.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn record_completion(
     snapshot: &mut AgentControllerSnapshot,
     id: AgentIdV1,

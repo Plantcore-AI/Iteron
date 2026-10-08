@@ -7,7 +7,7 @@ use iteron_agents::{
 use iteron_protocol::agent_control::{
     AgentBudgetV1, AgentCommandV1, AgentIdV1, AgentStateV1, AgentUsageV1,
 };
-use iteron_protocol::{Capability, CapabilitySet};
+use iteron_protocol::{Capability, capability_set::CapabilitySet};
 use std::os::unix::fs::DirBuilderExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -111,7 +111,8 @@ fn known_physical_terminal_survives_actual_restart_while_unknown_accounting_reta
             AgentActor::Operator,
             "try-close",
             AgentCommandV1::Close {
-                agent_id: actual_id
+                agent_id: actual_id,
+                include_descendants: false,
             }
         ),
         Err(ControllerError::RecoveryRequired)

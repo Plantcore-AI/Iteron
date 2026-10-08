@@ -858,7 +858,7 @@ fn engine_profile_and_physical_parent_are_bound_in_the_same_durable_claim() {
     );
     assert_eq!(admitted.claim.execution, binding.execution);
     let mut changed = binding.clone();
-    changed.execution.as_mut().unwrap().effort = iteron_protocol::Effort::Default;
+    changed.execution.as_mut().unwrap().effort = iteron_protocol::Effort::Medium;
     assert_eq!(
         controller
             .existing_workflow_child(

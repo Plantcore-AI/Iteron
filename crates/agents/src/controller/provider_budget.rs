@@ -282,47 +282,46 @@ impl<J: AgentControllerJournal> AgentController<J> {
         {
             return Err(ControllerError::Budget);
         }
-        if let Some(epoch) = request.epoch {
-            if let Some(budget) =
+        if let Some(epoch) = request.epoch
+            && let Some(budget) =
                 workflow_claim::provider_task_budget(&self.snapshot, request.agent_id, epoch)
-            {
-                let mut used = AgentUsageV1 {
-                    turns: prior.len() as u32,
-                    ..Default::default()
+        {
+            let mut used = AgentUsageV1 {
+                turns: prior.len() as u32,
+                ..Default::default()
+            };
+            for receipt in &prior {
+                let (tokens, cost) = match receipt.terminal {
+                    Some(AgentProviderBudgetTerminal::Known {
+                        tokens,
+                        cost_microusd,
+                    }) => (tokens, cost_microusd),
+                    Some(AgentProviderBudgetTerminal::NotDispatched) => (0, 0),
+                    _ => (
+                        receipt.request.max_tokens,
+                        receipt.request.max_cost_microusd,
+                    ),
                 };
-                for receipt in &prior {
-                    let (tokens, cost) = match receipt.terminal {
-                        Some(AgentProviderBudgetTerminal::Known {
-                            tokens,
-                            cost_microusd,
-                        }) => (tokens, cost_microusd),
-                        Some(AgentProviderBudgetTerminal::NotDispatched) => (0, 0),
-                        _ => (
-                            receipt.request.max_tokens,
-                            receipt.request.max_cost_microusd,
-                        ),
-                    };
-                    used.tokens = used
-                        .tokens
-                        .checked_add(tokens)
-                        .ok_or(ControllerError::Budget)?;
-                    used.cost_microusd = used
-                        .cost_microusd
-                        .checked_add(cost)
-                        .ok_or(ControllerError::Budget)?;
-                }
-                if used.turns >= budget.turns
-                    || used
-                        .tokens
-                        .checked_add(request.max_tokens)
-                        .is_none_or(|tokens| tokens > budget.tokens)
-                    || used
-                        .cost_microusd
-                        .checked_add(request.max_cost_microusd)
-                        .is_none_or(|cost| cost > budget.cost_microusd)
-                {
-                    return Err(ControllerError::Budget);
-                }
+                used.tokens = used
+                    .tokens
+                    .checked_add(tokens)
+                    .ok_or(ControllerError::Budget)?;
+                used.cost_microusd = used
+                    .cost_microusd
+                    .checked_add(cost)
+                    .ok_or(ControllerError::Budget)?;
+            }
+            if used.turns >= budget.turns
+                || used
+                    .tokens
+                    .checked_add(request.max_tokens)
+                    .is_none_or(|tokens| tokens > budget.tokens)
+                || used
+                    .cost_microusd
+                    .checked_add(request.max_cost_microusd)
+                    .is_none_or(|cost| cost > budget.cost_microusd)
+            {
+                return Err(ControllerError::Budget);
             }
         }
         let mut next = self.snapshot.clone();
@@ -730,19 +729,18 @@ pub(super) fn validate(snapshot: &AgentControllerSnapshot) -> Result<(), Control
                 "provider run assigned to multiple agents",
             ));
         }
-        if let Some(baseline) = &binding.baseline {
-            if *id != AgentIdV1(1)
+        if let Some(baseline) = &binding.baseline
+            && (*id != AgentIdV1(1)
                 || !valid_sha(&baseline.history_sha256)
                 || baseline.usage.wall_ms != 0
                 || baseline.usage.turns > 1_000_000
                 || baseline.usage.tokens > 1_000_000_000_000
                 || baseline.usage.cost_microusd > 1_000_000_000_000
-                || snapshot.config.root_budget.cost_microusd > baseline.financial_room_microusd
-            {
-                return Err(ControllerError::Invalid(
-                    "invalid immutable provider genesis baseline",
-                ));
-            }
+                || snapshot.config.root_budget.cost_microusd > baseline.financial_room_microusd)
+        {
+            return Err(ControllerError::Invalid(
+                "invalid immutable provider genesis baseline",
+            ));
         }
     }
     let mut physical = std::collections::BTreeSet::new();
