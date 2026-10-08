@@ -314,7 +314,8 @@ pub(super) fn adopted_transcript_blocks(
     let mut results: std::collections::HashMap<String, AdoptedTool> =
         std::collections::HashMap::new();
     for event in events {
-        let EventKind::Message { message } = &event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) = &event.kind
+        else {
             continue;
         };
         for block in &message.content {
@@ -333,7 +334,8 @@ pub(super) fn adopted_transcript_blocks(
 
     let mut blocks = Vec::new();
     for event in events {
-        let EventKind::Message { message } = &event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) = &event.kind
+        else {
             continue;
         };
         for block in &message.content {

@@ -109,8 +109,10 @@ pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
                     }
                 }
             }
-            EventKind::Message { message } => retain_witnessed(message, &witnesses),
-            EventKind::Compaction { messages } => {
+            EventKind::Message { message } | EventKind::MessageV2 { message } => {
+                retain_witnessed(message, &witnesses)
+            }
+            EventKind::Compaction { messages } | EventKind::CompactionV2 { messages } => {
                 for message in messages {
                     retain_witnessed(message, &witnesses);
                 }
@@ -158,10 +160,10 @@ pub(super) fn remove_unverified_images(events: &mut Vec<Event>) {
     events.retain(|event| !matches!(event.kind, EventKind::ToolImageObservedV1 { .. }));
     for event in events {
         match &mut event.kind {
-            EventKind::Message { message } => message
+            EventKind::Message { message } | EventKind::MessageV2 { message } => message
                 .content
                 .retain(|block| !matches!(block, Block::ToolImage(_))),
-            EventKind::Compaction { messages } => {
+            EventKind::Compaction { messages } | EventKind::CompactionV2 { messages } => {
                 for message in messages {
                     message
                         .content

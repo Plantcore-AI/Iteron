@@ -34,6 +34,7 @@ pub mod erasure;
 pub mod event;
 pub mod extension_dispatch;
 pub mod ids;
+mod image_record;
 pub mod intent;
 pub mod lifecycle;
 pub mod memory_reference;

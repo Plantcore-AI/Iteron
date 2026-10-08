@@ -68,7 +68,9 @@ pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
     let mut selected = VecDeque::new();
     let mut total = 0_usize;
     for scoped in events {
-        let EventKind::Message { message } = &scoped.event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) =
+            &scoped.event.kind
+        else {
             continue;
         };
         for block in &message.content {
@@ -97,7 +99,9 @@ pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
         .collect::<HashSet<_>>();
     let mut results: HashMap<(&str, u32, &str), Option<&ToolResult>> = HashMap::new();
     for scoped in events {
-        let EventKind::Message { message } = &scoped.event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) =
+            &scoped.event.kind
+        else {
             continue;
         };
         for block in &message.content {

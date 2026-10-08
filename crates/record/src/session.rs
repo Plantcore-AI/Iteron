@@ -432,7 +432,7 @@ impl SessionProjection {
                 self.meta.model = model_id.clone();
             }
             EventKind::EffortChanged { effort, .. } => self.meta.effort = *effort,
-            EventKind::Message { message }
+            EventKind::Message { message } | EventKind::MessageV2 { message }
                 if self.title.is_empty() && message.role == Role::User =>
             {
                 self.title = title_from_message(message);

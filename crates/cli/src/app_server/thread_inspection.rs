@@ -46,7 +46,9 @@ pub(super) fn inspect(runs: &Path, meta: &SessionMeta, workspace: &Path) -> Resu
         return Err("session inspection exceeds its verified scope or event bound".into());
     }
     let goal = events.iter().rev().find_map(|scoped| {
-        let EventKind::Message { message } = &scoped.event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) =
+            &scoped.event.kind
+        else {
             return None;
         };
         if message.role != Role::User {

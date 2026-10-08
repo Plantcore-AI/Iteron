@@ -659,9 +659,7 @@ pub(super) fn expire_restored(
     }
     child.emit_durable(
         iteron_protocol::TurnId(child.seq_turn),
-        EventKind::Compaction {
-            messages: messages.clone(),
-        },
+        EventKind::compaction(messages.clone()),
     )?;
     child.transcript_state.replace_restored(Some(messages));
     child.context_estimator.invalidate_transcript();
@@ -683,9 +681,7 @@ pub(super) fn expire_unrequested(
     }
     child.emit_durable(
         iteron_protocol::TurnId(child.seq_turn),
-        EventKind::Compaction {
-            messages: messages.clone(),
-        },
+        EventKind::compaction(messages.clone()),
     )?;
     child.transcript_state.replace_working(Some(messages));
     child.context_estimator.invalidate_transcript();

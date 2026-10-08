@@ -2,13 +2,20 @@
 //! (invariant #4, observable). The phase is the point: the harness is the only layer that
 //! knows what phase it is in (the phase-oracle thesis).
 
+use crate::agent_cohort::AgentCohortInstallationV1;
+use crate::agent_input::AgentInputAdmissionV1;
 use crate::artifact::ArtifactRef;
 use crate::ids::{EffectId, Seq, SubmissionId, TurnId};
+use crate::memory_reference::MemoryReferenceAdmissionV1;
 use crate::message::{Message, Usage};
+use crate::native_child_context::NativeChildContextV1;
 use crate::permission::Verdict;
 use crate::policy_evidence::{PolicyDecisionEvidence, PolicyOutcomeEvidence};
 use crate::pricing::{CostProjection, SignedRateCard};
+use crate::task_plan::TaskPlanSnapshotV1;
 use crate::tool::{Capability, ToolResult, ToolUse};
+use crate::tool_image::ToolImageObservationV1;
+use crate::turn_publication::TurnPublicationFactV1;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -843,14 +850,14 @@ pub enum EventKind {
     /// Actual immutable ordinary SDK catalog published by the verified host before dispatch.
     /// Authenticated host installation; no arbitrary journal path is carried in this locator.
     AgentCohortInstalledV1 {
-        installation: crate::agent_cohort::AgentCohortInstallationV1,
+        installation: AgentCohortInstallationV1,
     },
     OrdinaryExtensionBindingsV1 {
         catalog_sha256: String,
         bindings: u32,
     },
     TaskPlanUpdatedV1 {
-        plan: crate::task_plan::TaskPlanSnapshotV1,
+        plan: TaskPlanSnapshotV1,
     },
     /// A phase transition. The load-bearing telemetry.
     Phase {
@@ -876,10 +883,18 @@ pub enum EventKind {
     Message {
         message: Message,
     },
+    /// Captured pixels are new nested vocabulary; released readers skip this complete tag.
+    MessageV2 {
+        message: Message,
+    },
     /// Compaction rewrote the working message set (a rare "cache bomb"). Recorded as a full
     /// snapshot so resume reconstructs the in-memory compacted state exactly rather than the
     /// pre-compaction history (code review: without this, resume diverges from what ran).
     Compaction {
+        messages: Vec<Message>,
+    },
+    /// Compaction retaining captured pixels uses the same explicit V2 reader boundary.
+    CompactionV2 {
         messages: Vec<Message>,
     },
     /// The model produced streamed text (surfaced incrementally to the operator).
@@ -929,7 +944,7 @@ pub enum EventKind {
     },
     /// Private scoped pixels observed after the matching definite ToolDone was confirmed.
     ToolImageObservedV1 {
-        observation: crate::tool_image::ToolImageObservationV1,
+        observation: ToolImageObservationV1,
     },
     /// Write-ahead admission for one effecting tool call. This event must be fsynced before the
     /// registry executor is entered. `(turn, id)` is the correlation key; arguments/workspace are
@@ -1184,20 +1199,20 @@ pub enum EventKind {
         mode: crate::PermissionMode,
         rules: crate::PermissionRules,
     },
-    /// Exact host-resolved agent-data intent before initial/steer Message publication. This
-    /// lowers trust; Accepted/Delivered/Consumed remain separate controller-owned receipts.
     /// Actual host configuration publication used by a child; the native transport remains a
     /// separately held object and cannot be reconstructed from this journal's strings.
     NativeChildContextCapturedV1 {
-        context: crate::native_child_context::NativeChildContextV1,
+        context: NativeChildContextV1,
     },
+    /// Exact host-resolved agent-data intent before initial/steer Message publication. This
+    /// lowers trust; Accepted/Delivered/Consumed remain separate controller-owned receipts.
     AgentInputAdmittedV1 {
-        admission: crate::agent_input::AgentInputAdmissionV1,
+        admission: AgentInputAdmissionV1,
     },
     /// Host-resolved low-trust reference admission intent, written before its Message.
     /// This is not request consumption and never replaces the stable context snapshot.
     MemoryReferenceAdmittedV1 {
-        admission: crate::memory_reference::MemoryReferenceAdmissionV1,
+        admission: MemoryReferenceAdmissionV1,
     },
     /// The exact context (environment + instructions + memory/skills) injected into the stable
     /// prefix this run
@@ -1271,7 +1286,7 @@ pub enum EventKind {
     /// Answer availability with an exact earlier committed Message source. The live terminal
     /// publication reuses the existing Done sequence; it does not append another terminal event.
     TurnPublicationV1 {
-        fact: crate::turn_publication::TurnPublicationFactV1,
+        fact: TurnPublicationFactV1,
     },
     /// The run ended.
     Done {
@@ -1297,6 +1312,7 @@ impl EventKind {
     /// new top-level tag because an already-released serde reader can skip an unknown tag, but it
     /// cannot recover from a new enum value or `null` timing nested inside a known V1 tag.
     pub fn validate_compatibility_tag(&self) -> Result<(), &'static str> {
+        self.validate_message_vocabulary()?;
         match self {
             Self::ToolImageObservedV1 { observation } => observation.validate(),
             Self::Workflow {

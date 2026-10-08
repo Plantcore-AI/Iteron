@@ -180,9 +180,7 @@ impl CompactionCommitJournal<'_> {
         ledger.compaction = Some(compaction.clone());
         let sequence = self.append_compaction(
             turn,
-            EventKind::Compaction {
-                messages: iteron_ctx::compaction_seed(plan, summary),
-            },
+            EventKind::compaction(iteron_ctx::compaction_seed(plan, summary)),
         )?;
         scope.context_ledgers.publish(ledger);
         state.committed(turn);

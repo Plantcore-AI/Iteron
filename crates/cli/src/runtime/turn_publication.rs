@@ -89,7 +89,7 @@ impl PublicationRecovery {
 
     fn observe(&mut self, event: &Event) -> Result<(), KernelError> {
         let fact = match &event.kind {
-            EventKind::Message { message } => {
+            EventKind::Message { message } | EventKind::MessageV2 { message } => {
                 self.witness = eligible_answer(message).then_some(AnswerWitness {
                     turn: event.turn,
                     source: event.seq,

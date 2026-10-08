@@ -45,7 +45,7 @@ fn project_verified_messages(events: Vec<Event>) -> Vec<Message> {
 
     for event in events {
         match event.kind {
-            EventKind::Message { message } => {
+            EventKind::Message { message } | EventKind::MessageV2 { message } => {
                 let has_tool_use = matches!(message.role, Role::Assistant)
                     && message
                         .content
@@ -58,6 +58,9 @@ fn project_verified_messages(events: Vec<Event>) -> Vec<Message> {
                 pending_turn = has_tool_use.then_some(event.turn);
             }
             EventKind::Compaction {
+                messages: compacted,
+            }
+            | EventKind::CompactionV2 {
                 messages: compacted,
             } => {
                 // The seed range is measured in reconciled projection coordinates. Reconcile

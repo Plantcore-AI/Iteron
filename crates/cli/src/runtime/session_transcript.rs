@@ -108,7 +108,7 @@ impl TranscriptAdmissionJournal<'_> {
         self.append(turn, EventKind::Notice { text })
     }
     pub(super) fn message(&mut self, turn: TurnId, message: Message) -> Result<Seq, KernelError> {
-        self.append(turn, EventKind::Message { message })
+        self.append(turn, EventKind::message(message))
     }
     pub(super) fn tool_image(
         &mut self,

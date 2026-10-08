@@ -266,8 +266,11 @@ impl Agent {
                     .map_or(0, |turn| turn.saturating_add(1));
                 self.compaction_state
                     .restore_same_run(events.iter().rev().find_map(|event| {
-                        matches!(event.kind, EventKind::Compaction { .. })
-                            .then_some(u64::from(event.turn.0))
+                        matches!(
+                            event.kind,
+                            EventKind::Compaction { .. } | EventKind::CompactionV2 { .. }
+                        )
+                        .then_some(u64::from(event.turn.0))
                     }));
                 self.approval_seq = events
                     .iter()
@@ -324,15 +327,17 @@ impl Agent {
                                 .into_iter()
                                 .collect()
                         }
-                        EventKind::Message { message } => message
-                            .content
-                            .into_iter()
-                            .filter_map(|block| match block {
-                                Block::ToolResult(result) => Some(result.trust),
-                                Block::ToolImage(image) => Some(image.trust()),
-                                _ => None,
-                            })
-                            .collect(),
+                        EventKind::Message { message } | EventKind::MessageV2 { message } => {
+                            message
+                                .content
+                                .into_iter()
+                                .filter_map(|block| match block {
+                                    Block::ToolResult(result) => Some(result.trust),
+                                    Block::ToolImage(image) => Some(image.trust()),
+                                    _ => None,
+                                })
+                                .collect()
+                        }
                         _ => Vec::new(),
                     }
                 }))
@@ -555,7 +560,11 @@ impl Agent {
             .runtime_policy_provenance
             .replay_preserving_handle(&events, RuntimePolicyObservation::ResumeReplay);
         let last_compaction_turn = events.iter().rev().find_map(|event| {
-            matches!(event.kind, EventKind::Compaction { .. }).then_some(u64::from(event.turn.0))
+            matches!(
+                event.kind,
+                EventKind::Compaction { .. } | EventKind::CompactionV2 { .. }
+            )
+            .then_some(u64::from(event.turn.0))
         });
         let approval_seq = events
             .iter()
@@ -611,7 +620,7 @@ impl Agent {
                         .into_iter()
                         .collect()
                 }
-                EventKind::Message { message } => message
+                EventKind::Message { message } | EventKind::MessageV2 { message } => message
                     .content
                     .iter()
                     .filter_map(|block| match block {

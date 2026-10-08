@@ -13,12 +13,12 @@ pub(super) fn visit_content_fields<E>(
         return Ok(());
     };
     match kind.as_str() {
-        "message" => {
+        "message" | "message_v2" => {
             if let Some(message) = event.get_mut("message") {
                 visit_message(message, &mut visit)?;
             }
         }
-        "compaction" => {
+        "compaction" | "compaction_v2" => {
             if let Some(messages) = event.get_mut("messages").and_then(Value::as_array_mut) {
                 for message in messages {
                     visit_message(message, &mut visit)?;

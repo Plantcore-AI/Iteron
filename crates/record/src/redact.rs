@@ -101,6 +101,12 @@ pub fn redact_event(event: &Event) -> Event {
         EventKind::Message { message } => EventKind::Message {
             message: redact_message(message),
         },
+        EventKind::MessageV2 { message } => EventKind::MessageV2 {
+            message: redact_message(message),
+        },
+        EventKind::CompactionV2 { messages } => EventKind::CompactionV2 {
+            messages: messages.iter().map(redact_message).collect(),
+        },
         EventKind::Compaction { messages } => EventKind::Compaction {
             messages: messages.iter().map(redact_message).collect(),
         },
