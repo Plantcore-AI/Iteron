@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 impl Agent {
     /// Spawn a READ-ONLY subagent to investigate a subtask, returning its compressed summary

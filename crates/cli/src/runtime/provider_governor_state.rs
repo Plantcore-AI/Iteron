@@ -2,6 +2,7 @@
 
 use super::*;
 use iteron_provider::AttemptPermit;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteObjectiveRank {

@@ -1,6 +1,7 @@
 //! First-class file submission admission and content-free context provenance.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// Content-free provenance for file bytes carried by one top-level submission.
 ///

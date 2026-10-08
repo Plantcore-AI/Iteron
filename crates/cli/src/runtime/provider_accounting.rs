@@ -1,4 +1,3 @@
-#[cfg(test)]
 use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
 use super::*;
 

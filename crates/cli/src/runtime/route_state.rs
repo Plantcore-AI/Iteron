@@ -1,5 +1,6 @@
 use super::*;
 use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
+use sha2::{Digest, Sha256};
 
 pub(super) const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 

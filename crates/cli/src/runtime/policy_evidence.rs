@@ -6,6 +6,7 @@ use iteron_protocol::{
     PolicyTerminalOutcome, PolicyVerifierOutcome, slot::SlotId,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 pub(super) const CONTEXT_SLOT: &str = "core/context";
 pub(super) const TOOL_POLICY_SLOT: &str = "core/tool_policy";

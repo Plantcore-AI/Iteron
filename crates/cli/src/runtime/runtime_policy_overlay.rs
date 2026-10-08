@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// How this process learned a runtime-policy value. The durable event source remains separate:
 /// an operator-authored event replayed after restart is still operator-authored, but the frontend

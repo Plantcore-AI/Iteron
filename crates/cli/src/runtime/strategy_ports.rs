@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// Byte ceiling on a benchmark memory scope identifier. Only its digest is retained, so the string
 /// itself only needs to hold a corpus identifier, never corpus content.
