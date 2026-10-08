@@ -1701,9 +1701,11 @@ impl Agent {
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut driver = coding_run_driver::CodingRunDriver::new(messages);
-        let outcome = self
-            .drive_admitted_loop(&mut driver, relevance_task, input_images)
-            .await;
+        // Keep the finite run dispatcher on the heap at its owner boundary. Embedding its
+        // future in every invocation wrapper multiplies native poll-stack frames; this retains
+        // the same exclusive Agent/driver borrow, cancellation and settlement order.
+        let outcome =
+            Box::pin(self.drive_admitted_loop(&mut driver, relevance_task, input_images)).await;
         self.transcript_state
             .replace_working(Some(driver.into_messages()?));
         outcome
