@@ -101,13 +101,13 @@ impl Custody {
             drop(lease);
         }
         state.active = false;
-        if self.started {
-            if let Some(revision) = state.revision.checked_add(1) {
-                state.revision = revision;
-                if let Some(last) = &mut state.last {
-                    last.revision = revision;
-                    last.status = status;
-                }
+        if self.started
+            && let Some(revision) = state.revision.checked_add(1)
+        {
+            state.revision = revision;
+            if let Some(last) = &mut state.last {
+                last.revision = revision;
+                last.status = status;
             }
         }
         self.service.settled.notify_waiters();
@@ -183,7 +183,7 @@ pub(super) async fn select_default(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .active = false;
             service.settled.notify_waiters();
-            let _ = reply.send(ControlReply::Refused(reason.into()));
+            let _ = reply.send(ControlReply::Refused(reason));
             return;
         }
     };

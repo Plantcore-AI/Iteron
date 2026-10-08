@@ -225,7 +225,7 @@ where
             if mapped_action == Some(keymap::Action::TranscriptViewer)
                 && app.permission_prompt.read().is_none()
             {
-                open_transcript_viewer(app, &transcript_effects, "");
+                open_transcript_viewer(app, transcript_effects, "");
                 return Ok(true);
             }
 

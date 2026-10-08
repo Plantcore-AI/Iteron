@@ -142,13 +142,13 @@ impl ClientInventoryOwner {
             };
             // No invalid catalog enters either executable owner. Close the discovery projection
             // over the retained admitted directory, rather than leaving a false pending spinner.
-            if let Some(reason) = failure {
-                if let Err(error) = owner.retain_discovery_failure(&reason) {
-                    eprintln!(
-                        "warning: provider inventory terminal could not be published: {}",
-                        crate::client_inventory::safe(&error)
-                    );
-                }
+            if let Some(reason) = failure
+                && let Err(error) = owner.retain_discovery_failure(&reason)
+            {
+                eprintln!(
+                    "warning: provider inventory terminal could not be published: {}",
+                    crate::client_inventory::safe(&error)
+                );
             }
         });
         Ok(self.catalog_view())

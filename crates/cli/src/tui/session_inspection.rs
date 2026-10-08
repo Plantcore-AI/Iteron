@@ -1,8 +1,10 @@
 //! Session preview and trace consume the same scoped public control as external clients.
 
 use super::{App, SessionPreview, app_server, block, kv, ui_safe_text};
+#[cfg(test)]
+use iteron_protocol::Outcome;
+use iteron_protocol::RunId;
 use iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1;
-use iteron_protocol::{Outcome, RunId};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
@@ -40,6 +42,7 @@ pub(super) async fn request(
     }
 }
 
+#[cfg(test)]
 pub(super) fn recorded_outcome_label(outcome: Option<&Outcome>) -> &'static str {
     match outcome {
         Some(Outcome::Done) => "done",

@@ -39,8 +39,6 @@ pub(crate) struct SessionFacts {
     /// nothing asks would be a lie, and one this project's own truth overlay exists to prevent.
     pub(crate) bypass_permissions: bool,
     pub(crate) registry_tools: Vec<ToolFact>,
-    /// Exact verified dependency skill roots pinned into the runtime at composition time.
-    pub(crate) dependency_skill_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// The exact immutable `Arc` the runtime resolves child definitions against. Keeping object
     /// identity across the attach boundary prevents `/agents` from presenting filesystem drift as
     /// executable state while the resident runtime continues using its pinned catalog.
@@ -48,7 +46,6 @@ pub(crate) struct SessionFacts {
     /// Exact immutable runtime checkpoint. Production composition always supplies V2; Option is
     /// retained only for narrow wire tests that construct an unbound Agent.
     pub(crate) tunables_checkpoint: Option<iteron_record::TunablesCheckpoint>,
-    pub(crate) client_inventory_digest: Option<String>,
     pub(crate) provider_catalog: Option<crate::providers::ProviderCatalogSubscription>,
     pub(crate) client_bootstrap: Option<Arc<super::ClientBootstrapFactory>>,
 }
@@ -168,12 +165,8 @@ pub(super) fn attach_with_plantcore(
                 capability: spec.capability,
             })
             .collect(),
-        dependency_skill_dirs: agent.dependency_skill_dirs().to_vec(),
         agent_catalog: agent.agent_catalog_snapshot(),
         tunables_checkpoint: agent.tunables_checkpoint().ok().cloned(),
-        client_inventory_digest: agent
-            .client_inventory_owner()
-            .map(|owner| owner.digest().to_owned()),
         provider_catalog: agent
             .client_inventory_owner()
             .map(|owner| owner.catalog_subscription()),

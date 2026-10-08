@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
+#[cfg(feature = "legacy-plantcore")]
 use sha2::Digest as _;
 use std::collections::VecDeque;
 use std::io;
@@ -18,6 +19,7 @@ const MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOGICAL_SERVER_FRAME_BYTES: usize =
     (MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES * 6) + MAX_SERVER_FRAME_BYTES;
 const FRAME_CHUNK_SOURCE_BYTES: usize = 512 * 1024;
+#[cfg(feature = "legacy-plantcore")]
 const RECORDING_CHUNK_EVENT_BYTES: usize = MAX_SERVER_FRAME_BYTES + 1;
 const FRAME_CHUNK_CHANNEL_CAPACITY: usize = 2;
 const FRAME_CHUNK_OVERHEAD_CHARGE: usize = 1024;
@@ -690,6 +692,7 @@ pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
     }
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_chunk_event() -> Result<Value> {
     let mut event = serde_json::json!({"recording_probe": ""});
     let base = serde_json::to_vec(&event).context("measure fixed recording chunk event")?;
@@ -703,6 +706,7 @@ fn recording_chunk_event() -> Result<Value> {
     Ok(event)
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     let mut event = serde_json::json!({
         "schema_version": 7,
@@ -732,6 +736,7 @@ fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     })
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_success_result(seq: u64) -> ServerFrame {
     ServerFrame::Result {
         protocol_version: iteron_protocol::PROTOCOL_VERSION,

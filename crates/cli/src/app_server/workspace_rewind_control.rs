@@ -16,7 +16,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 pub(super) enum RewindControlResult {
     Observed(WorkspaceRewindReplyV1),
     Adopt {
-        native: AdoptRun,
+        native: Box<AdoptRun>,
         presentation: NavigationPresentation,
         admission: SubmissionExclusionLease,
         reply: WorkspaceRewindReplyV1,
@@ -59,8 +59,8 @@ pub(super) async fn prepare(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<RewindControlResult, String> {
     let mut prepared = match factory.prepare_rewind(origin, command, cancel).await? {
-        RewindPreparation::Observed(reply) => return Ok(RewindControlResult::Observed(reply)),
-        RewindPreparation::Apply(prepared) => prepared,
+        RewindPreparation::Observed(reply) => return Ok(RewindControlResult::Observed(*reply)),
+        RewindPreparation::Apply(prepared) => *prepared,
     };
     if prepared.is_cancelled() {
         prepared.reply_mut().execution.as_mut().expect("apply").reason=Some("rewind cancelled before host adoption or working-file mutation; any created branch is retained unselected".into());
@@ -192,7 +192,7 @@ fn finish(
     let (reply, native, admission) = prepared.into_parts();
     if adopt && let Some((native, presentation)) = native {
         Ok(RewindControlResult::Adopt {
-            native,
+            native: Box::new(native),
             presentation,
             admission,
             reply,

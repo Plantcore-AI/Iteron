@@ -564,10 +564,7 @@ pub(super) async fn apply_control(
                     reply,
                 }) => {
                     rewind_presentation = Some(reply);
-                    (
-                        Control::AdoptRun(Box::new(native)),
-                        Some((presentation, admission)),
-                    )
+                    (Control::AdoptRun(native), Some((presentation, admission)))
                 }
                 Err(reason) => {
                     let _ = request.reply.send(ControlReply::Refused(reason));
@@ -834,9 +831,6 @@ pub(super) async fn apply_control(
                     Err(error) => ControlReply::Refused(error.public_summary()),
                 }
             }
-        }
-        Control::SelectModel(selection) => {
-            super::model_control::apply(agent, events, *selection).await
         }
         Control::Compact { focus } => {
             let reply = match agent.compact_now(focus).await {

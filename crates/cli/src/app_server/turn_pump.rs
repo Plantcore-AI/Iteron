@@ -111,12 +111,12 @@ impl RunningTurnPump<'_> {
                 }
                 Some(runtime_event) = runtime_ui_rx.recv() => {
                     publish_runtime_event(
-                        events, pending_kernel_submissions, &frontend_channels, runtime_event,
+                        events, pending_kernel_submissions, frontend_channels, runtime_event,
                     ).await;
                 }
                 runtime_event = frontend_channels.recv_authoritative() => {
                     publish_runtime_event(
-                        events, pending_kernel_submissions, &frontend_channels, runtime_event,
+                        events, pending_kernel_submissions, frontend_channels, runtime_event,
                     ).await;
                 }
                 Some(progress) = workflow_rx.recv() => {
@@ -275,7 +275,7 @@ impl RunningTurnPump<'_> {
                         if let Some(context) = legacy_user_prompt_context(op, submission_id) {
                             run_legacy_hook(
                                 HookExecution {
-                                    hooks: &lifecycle_gate_hooks,
+                                    hooks: lifecycle_gate_hooks,
                                     journal: hook_journal.as_ref(),
                                     events,
                                     cancel: hook_cancel.as_deref(),
@@ -301,7 +301,7 @@ impl RunningTurnPump<'_> {
                         if let Some(gate_event) = gate_event
                             && let Err(reason) = run_lifecycle_gate(
                                 HookExecution {
-                                    hooks: &lifecycle_gate_hooks,
+                                    hooks: lifecycle_gate_hooks,
                                     journal: hook_journal.as_ref(),
                                     events,
                                     cancel: hook_cancel.as_deref(),

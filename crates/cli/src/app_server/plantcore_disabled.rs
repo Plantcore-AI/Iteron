@@ -4,10 +4,7 @@ use iteron_protocol::{Op, PlantcoreRunBootstrapV1};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PlantcoreBootstrapAccepted {
-    pub(crate) run_id: String,
-    pub(crate) payload_digest_sha256: String,
-}
+pub(crate) struct PlantcoreBootstrapAccepted;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlantcoreProtocolError {
     pub(crate) code: &'static str,

@@ -32,6 +32,7 @@ pub const EXIT_BUDGET: u8 = 3;
 pub const EXIT_STUCK: u8 = 4;
 pub const EXIT_INTERRUPTED: u8 = 130;
 
+#[cfg(feature = "legacy-plantcore")]
 pub(crate) fn canonical_v7_event_bytes(value: &Value) -> io::Result<Vec<u8>> {
     v7::canonical_bytes(value)
 }

@@ -70,7 +70,7 @@ impl CompletionOwner {
         port: Option<PathCompletionPort>,
         now: Instant,
     ) {
-        if self.job.is_some() || !self.due.is_some_and(|due| due <= now) {
+        if self.job.is_some() || self.due.is_none_or(|due| due > now) {
             return;
         }
         self.due = None;

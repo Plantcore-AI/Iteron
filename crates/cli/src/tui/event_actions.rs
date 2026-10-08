@@ -221,7 +221,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             }
             if route_changed {
                 app.telemetry
-                    .bind_model_capacity(directory.and_then(|_| app.route.context_window_tokens));
+                    .bind_model_capacity(directory.and(app.route.context_window_tokens));
             }
             session.adopt(*snapshot);
 

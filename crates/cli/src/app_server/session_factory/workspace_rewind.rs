@@ -18,8 +18,8 @@ use std::sync::{Arc, atomic::AtomicBool};
 const MAX_POINTS: usize = 30;
 const MAX_PATH_DISPLAY: usize = 120;
 pub(in crate::app_server) enum RewindPreparation {
-    Observed(WorkspaceRewindReplyV1),
-    Apply(PreparedRewind),
+    Observed(Box<WorkspaceRewindReplyV1>),
+    Apply(Box<PreparedRewind>),
 }
 pub(in crate::app_server) struct PreparedRewind {
     owner: Arc<SessionFactory>,
@@ -100,7 +100,7 @@ impl SessionFactory {
                     })
                     .collect();
                 reply.omitted_points = points.count();
-                return Ok(RewindPreparation::Observed(reply));
+                return Ok(RewindPreparation::Observed(Box::new(reply)));
             }
             WorkspaceRewindCommandV1::Preview {
                 target,
@@ -196,7 +196,7 @@ impl SessionFactory {
             },
         });
         if !apply {
-            return Ok(RewindPreparation::Observed(reply));
+            return Ok(RewindPreparation::Observed(Box::new(reply)));
         }
         if reply
             .preview
@@ -253,14 +253,14 @@ impl SessionFactory {
             conversation_adopted: false,
             reason: None,
         });
-        Ok(RewindPreparation::Apply(PreparedRewind {
+        Ok(RewindPreparation::Apply(Box::new(PreparedRewind {
             owner: self.clone(),
             reply,
             snapshot,
             child,
             admission,
             cancel,
-        }))
+        })))
     }
 }
 impl PreparedRewind {

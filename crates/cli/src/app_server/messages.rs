@@ -401,8 +401,6 @@ pub(crate) enum Control {
         tool: String,
         verdict: iteron_protocol::Verdict,
     },
-    /// `/model` — one transaction: durable audit append, capability fields, rate-card rebind.
-    SelectModel(Box<ModelSelection>),
     /// `/compact`
     Compact {
         focus: Option<String>,
@@ -531,6 +529,7 @@ pub(crate) enum ControlReply {
     OrdinaryExtensions(serde_json::Value),
     PluginManagement(serde_json::Value),
     ActivityCenter(serde_json::Value),
+    #[cfg(feature = "legacy-plantcore")]
     PlantcoreBootstrapAccepted(plantcore::PlantcoreBootstrapAccepted),
     PlantcoreProtocolError(plantcore::PlantcoreProtocolError),
     /// The current runtime state. Answers `Snapshot` and every successful mutation.

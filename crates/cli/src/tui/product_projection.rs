@@ -103,14 +103,13 @@ impl ProductProjection {
         } else {
             self.thread_id = Some(page.thread_id.clone());
         }
-        if self.run_id.is_none() {
-            if let Some(first) = page
+        if self.run_id.is_none()
+            && let Some(first) = page
                 .events
                 .iter()
                 .find(|event| event.thread_id == page.thread_id)
-            {
-                self.select_run(app, first.run_id.clone());
-            }
+        {
+            self.select_run(app, first.run_id.clone());
         }
         if let Some(gap) = page.gap
             && gap.oldest_available > self.cursor.saturating_add(1)

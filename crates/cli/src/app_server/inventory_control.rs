@@ -19,13 +19,13 @@ impl InventorySurface {
         }
     }
     pub(super) fn refresh(&self, agent: &Agent) {
-        if let Some(owner) = &self.catalog {
-            if let Err(reason) = owner.refresh() {
-                eprintln!(
-                    "warning: provider inventory refresh refused: {}",
-                    crate::client_inventory::safe(&reason)
-                );
-            }
+        if let Some(owner) = &self.catalog
+            && let Err(reason) = owner.refresh()
+        {
+            eprintln!(
+                "warning: provider inventory refresh refused: {}",
+                crate::client_inventory::safe(&reason)
+            );
         }
         *self
             .inventory

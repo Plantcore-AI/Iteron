@@ -244,9 +244,6 @@ impl ProviderCatalogView {
     pub(crate) fn entries(&self) -> &[ProviderCatalogEntry] {
         &self.entries
     }
-    pub(crate) fn offerable_entries(&self) -> impl Iterator<Item = &ProviderCatalogEntry> {
-        self.entries.iter().filter(|entry| entry.is_offerable())
-    }
     pub(crate) fn entry(&self, id: &str) -> Option<&ProviderCatalogEntry> {
         self.entries.iter().find(|entry| entry.id == id)
     }

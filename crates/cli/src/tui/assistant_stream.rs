@@ -37,6 +37,7 @@ impl AssistantStream {
     pub(super) fn has_text(&self) -> bool {
         self.text_nonempty
     }
+    #[cfg(test)]
     pub(super) fn text(&self) -> &str {
         &self.text
     }
@@ -161,11 +162,11 @@ impl AssistantStream {
     }
     pub(super) fn prepare_layout(&mut self, context: LiveMarkdownRenderContext<'_>) {
         self.ensure_document();
-        if let Some(document) = &self.document {
-            if self.text_nonempty {
-                self.layout
-                    .update(document, &self.parser, &self.text, context);
-            }
+        if let Some(document) = &self.document
+            && self.text_nonempty
+        {
+            self.layout
+                .update(document, &self.parser, &self.text, context);
         }
     }
     pub(super) fn reconcile(&mut self, authoritative: &str) -> Reconciliation {

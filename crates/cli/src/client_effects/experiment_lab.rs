@@ -31,7 +31,7 @@ pub(crate) struct NativeExperimentLab {
 enum PreparedAction {
     List,
     Request {
-        request: ExperimentRequest,
+        request: Box<ExperimentRequest>,
         bytes: Vec<u8>,
     },
     Compare {
@@ -63,7 +63,13 @@ impl NativeExperimentLab {
                     name: "write_file".into(),
                     input: serde_json::json!({"path":path,"content":std::str::from_utf8(&bytes).map_err(|_|"request encoding unavailable")?}),
                 };
-                (PreparedAction::Request { request, bytes }, call)
+                (
+                    PreparedAction::Request {
+                        request: Box::new(request),
+                        bytes,
+                    },
+                    call,
+                )
             }
             LabActionV1::Compare {
                 bundle_id,

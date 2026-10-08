@@ -201,6 +201,7 @@ impl RunPresentation {
     pub(super) fn observe_terminal_result(&mut self, result: serde_json::Value) {
         self.result = Some(result);
     }
+    #[cfg(test)]
     pub(super) fn terminal_result(&self) -> Option<&serde_json::Value> {
         self.result.as_ref()
     }

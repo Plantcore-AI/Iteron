@@ -308,7 +308,7 @@ async fn unavailable_target_and_safety_trees_produce_real_unknown_and_forbid_aut
         ticket.take_permit().is_none(),
         "an admitted effect cannot mint a second physical dispatch"
     );
-    let (authorized, safety) = prepared.create_safety(permit).await.unwrap();
+    let (authorized, safety) = (*prepared).create_safety(permit).await.unwrap();
     let mut safety = safety.unwrap();
     let snapshot = safety.clone();
     agent.publish_rewind_safety(&ticket, &mut safety).unwrap();

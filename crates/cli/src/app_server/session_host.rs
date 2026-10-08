@@ -219,7 +219,7 @@ impl AppServer {
 
         enum TurnTrigger {
             Submission {
-                queued: QueuedSubmission,
+                queued: Box<QueuedSubmission>,
                 preprocessed: bool,
             },
             Runtime(String),
@@ -241,12 +241,12 @@ impl AppServer {
                     },
                 );
                 TurnTrigger::Submission {
-                    queued,
+                    queued: Box::new(queued),
                     preprocessed: false,
                 }
             } else if let Some(queued) = pending_turns.pop_front() {
                 TurnTrigger::Submission {
-                    queued,
+                    queued: Box::new(queued),
                     preprocessed: true,
                 }
             } else if let Some(notification) = pending_runtime.pop_front() {
@@ -267,7 +267,7 @@ impl AppServer {
                                 ..LifecyclePayload::default()
                             },
                         );
-                        TurnTrigger::Submission { queued, preprocessed: false }
+                        TurnTrigger::Submission { queued: Box::new(queued), preprocessed: false }
                     }
                     request = control.recv() => {
                         match request {
@@ -357,7 +357,7 @@ impl AppServer {
                                         ..LifecyclePayload::default()
                                     },
                                 );
-                                TurnTrigger::Submission { queued, preprocessed: false }
+                                TurnTrigger::Submission { queued: Box::new(queued), preprocessed: false }
                             }
                             None => break,
                         }
@@ -370,6 +370,7 @@ impl AppServer {
                     queued,
                     preprocessed,
                 } => {
+                    let queued = *queued;
                     let expected_product_turn_id = queued.envelope.expected_product_turn_id;
                     let envelope = queued.into_envelope();
                     let version = envelope.protocol_version;

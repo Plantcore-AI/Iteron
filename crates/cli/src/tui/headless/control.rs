@@ -599,6 +599,7 @@ pub(super) async fn receive(pending: &mut Option<Pending>) -> Result<(u64, Contr
 
 pub(super) fn reply_value(reply: ControlReply) -> Value {
     match reply {
+        #[cfg(feature = "legacy-plantcore")]
         ControlReply::PlantcoreBootstrapAccepted(accepted) => json!({
             "type": "plantcore_run_bootstrap_accepted_v1",
             "run_id": accepted.run_id,

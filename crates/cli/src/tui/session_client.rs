@@ -131,6 +131,7 @@ impl Session {
         self.facts.tunables_checkpoint.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn tunables_effective_digest(&self) -> Option<&str> {
         match self.tunables_checkpoint()? {
             iteron_record::TunablesCheckpoint::V1(snapshot) => {
@@ -142,6 +143,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime_profile_id(&self) -> Option<&'static str> {
         crate::runtime_tunables::effective_view::checkpoint_runtime_profile(
             self.tunables_checkpoint()?,
@@ -185,6 +187,7 @@ impl Session {
         self.state.rate_limit.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn compaction_trigger_tokens(&self) -> usize {
         self.facts.compaction_trigger_tokens
     }
@@ -241,10 +244,8 @@ impl Session {
                 bypass_permissions: false,
                 initial_model_context_window: None,
                 registry_tools: Vec::new(),
-                dependency_skill_dirs: Vec::new(),
                 agent_catalog: Arc::new(iteron_agents::AgentCatalog::builtin_only()),
                 tunables_checkpoint: None,
-                client_inventory_digest: None,
                 provider_catalog: None,
                 client_bootstrap: None,
             },
@@ -253,10 +254,6 @@ impl Session {
 
     pub(crate) fn registry_tools(&self) -> &[app_server::ToolFact] {
         &self.facts.registry_tools
-    }
-
-    pub(crate) fn dependency_skill_dirs(&self) -> &[(std::path::PathBuf, std::path::PathBuf)] {
-        &self.facts.dependency_skill_dirs
     }
 
     /// The execution catalog captured by the App Server at attach time. This is deliberately not

@@ -59,10 +59,10 @@ impl McpRuntimeControl {
                 ManagedServer::Stdio(server) => &server.extension_dispatch,
                 ManagedServer::Http(server) => &server.extension_dispatch,
             };
-            if let Some(current) = slot.get() {
-                if !Arc::ptr_eq(current, &policy) {
-                    return Err("MCP extension dispatch policy already installed");
-                }
+            if let Some(current) = slot.get()
+                && !Arc::ptr_eq(current, &policy)
+            {
+                return Err("MCP extension dispatch policy already installed");
             }
         }
         for server in self.servers.values() {
@@ -297,6 +297,7 @@ impl McpRuntimeControl {
             .collect()
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     pub(crate) fn is_exact_plantcore_run_gateway(
         &self,
         expected_url: &str,

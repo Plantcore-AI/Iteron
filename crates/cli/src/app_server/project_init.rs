@@ -131,7 +131,7 @@ pub(super) fn dispatch(
     let submissions = match exclusion.try_exclude() {
         Ok(submissions) => submissions,
         Err(reason) => {
-            let _ = reply.send(ControlReply::Refused(reason.into()));
+            let _ = reply.send(ControlReply::Refused(reason));
             return;
         }
     };
