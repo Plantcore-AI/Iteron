@@ -326,8 +326,6 @@ pub(crate) use inbound_control::TurnSubmission;
 use iteron_ctx::estimate_request_context;
 use iteron_obs::{CostState, Ledger, PricingPort};
 #[cfg(test)]
-use iteron_obs::{ProjectionAdmissionError, admit_verified_projection};
-#[cfg(test)]
 use iteron_protocol::StopReason;
 use iteron_protocol::capability_set::CapabilitySet;
 #[cfg(any(test, feature = "legacy-plantcore"))]
@@ -361,8 +359,6 @@ use provider_accounting::{
     bounded_provider_notice, bounded_provider_run_notice, elapsed_us,
     provider_run_notice_key_from_text, unix_now_secs,
 };
-#[cfg(test)]
-use route_validation::validate_pricing_route_digest;
 use route_validation::{
     replay_logical_rollout, replay_scoped_rollout, validate_route_digest, validate_route_identifier,
 };

@@ -452,6 +452,10 @@ mod reconcile_tests {
 mod gate_integration_tests {
     //! Integration tests for the permission-gate wiring: drive one turn with a scripted provider
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
+    use super::context_runtime::{
+        IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON,
+    };
+    use super::provider_usage_journal::UNPRICEABLE_CACHE_CREATION_NOTICE;
     use super::*;
 
     /// Pin the registry-driven resolved tunable set onto a test agent.
