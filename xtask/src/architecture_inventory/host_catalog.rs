@@ -3,6 +3,17 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/protocol/src/image_record.rs",
+        boundary: "protocol-compat",
+        responsibilities: &[
+            "select versioned durable message and compaction tags for captured pixels while preserving ordinary record vocabulary",
+            "refuse new nested pixel blocks under old writable tags before native record publication",
+        ],
+        next_seams: &[
+            "same-candidate compiler, actual old-reader and native replay evidence remain required",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/app_server/experiment_lab.rs",
         boundary: "cli-host",
         responsibilities: &[

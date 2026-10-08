@@ -550,6 +550,7 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/agents/src/controller/native_spawn.rs",
         "crates/record/src/native_child_context.rs",
         "crates/protocol/src/native_child_context.rs",
+        "crates/protocol/src/image_record.rs",
         "crates/cli/src/runtime/workflow_spawner/writer_settlement.rs",
         "crates/cli/src/runtime/workflow_spawner/worktree/evidence.rs",
         "crates/tools/src/contained_source.rs",
