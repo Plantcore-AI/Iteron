@@ -396,6 +396,17 @@ fn new_closed_schema_keywords_reject_open_unsupported_or_malformed_constraints()
         serde_json::json!({"type":"string","maxLength":-1}),
         serde_json::json!({"type":"string","maxLength":2.5}),
         serde_json::json!({"type":"string","maxLength":"2"}),
+        serde_json::json!({"type":"integer","minLength":1}),
+        serde_json::json!({"type":"string","minLength":-1}),
+        serde_json::json!({"type":"string","minLength":1.5}),
+        serde_json::json!({"type":"string","minLength":"1"}),
+        serde_json::json!({"type":"string","minLength":3,"maxLength":2}),
+        serde_json::json!({"type":"string","maximum":10}),
+        serde_json::json!({"type":"integer","maximum":2.5}),
+        serde_json::json!({"type":"integer","maximum":"2"}),
+        serde_json::json!({"type":"integer","maximum":u64::MAX}),
+        serde_json::json!({"type":"integer","minimum":3,"maximum":2}),
+        serde_json::json!({"type":"integer","exclusiveMaximum":2}),
     ] {
         let root = temp_root("closed-registration-refused");
         let mut registry = Registry::read_only(&root).unwrap();
@@ -416,4 +427,96 @@ fn new_closed_schema_keywords_reject_open_unsupported_or_malformed_constraints()
         assert!(registry.purity_of("invalid_closed_probe").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[tokio::test]
+async fn bounded_host_schema_enforces_minimum_string_and_maximum_integer_before_executor() {
+    let root = temp_root("host-bounded-input");
+    let mut registry = Registry::read_only(&root).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    registry
+        .register_external(
+            ToolSpec {
+                name: "bounded_host_probe".into(),
+                description: "same enforced constraints used by resident agent tools".into(),
+                input_schema: serde_json::json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties": {
+                        "request_id":{"type":"string","minLength":1,"maxLength":2},
+                        "timeout_ms":{"type":"integer","minimum":1,"maximum":60000}
+                    }, "required":["request_id","timeout_ms"]
+                }),
+                purity: Purity::Effecting,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                boxfut::box_it(async move { ok_result(call.id, "executed".into()) })
+            },
+        )
+        .unwrap();
+    for input in [
+        serde_json::json!({"request_id":"界","timeout_ms":1}),
+        serde_json::json!({"request_id":"界界","timeout_ms":60000}),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "bounded-valid".into(),
+                name: "bounded_host_probe".into(),
+                input,
+            })
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+    }
+    for (input, kind) in [
+        (
+            serde_json::json!({"request_id":"","timeout_ms":1}),
+            "string_too_short",
+        ),
+        (
+            serde_json::json!({"request_id":"界界界","timeout_ms":1}),
+            "string_too_long",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":0}),
+            "below_minimum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":60001}),
+            "above_maximum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":u64::MAX}),
+            "above_maximum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":1.5}),
+            "type_mismatch",
+        ),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "bounded-refused".into(),
+                name: "bounded_host_probe".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        let error: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(error["kind"], kind);
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+    }
+    // Signed bounds must handle the full unsigned input domain without a lossy i64 cast.
+    let negative = serde_json::json!({"type":"integer","maximum":-1});
+    schema::validate_schema(&negative).unwrap();
+    assert!(schema::validate_arguments(&negative, &serde_json::json!(-1)).is_ok());
+    assert!(schema::validate_arguments(&negative, &serde_json::json!(i64::MIN)).is_ok());
+    for input in [serde_json::json!(0), serde_json::json!(u64::MAX)] {
+        assert!(matches!(
+            schema::validate_arguments(&negative, &input),
+            Err(schema_error::ArgumentError::AboveMaximum { .. })
+        ));
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -491,6 +491,91 @@ async fn until(predicate: impl Fn() -> bool) {
 }
 
 #[tokio::test]
+async fn actual_agent_tools_register_and_reject_bounds_before_controller_admission() {
+    let root = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, _, _, port) = setup(&root, provider.clone(), false);
+    let rollout = iteron_record::Rollout::open(
+        &root.0.join("operator"),
+        &iteron_protocol::RunId("bounded-agent-tools".into()),
+        iteron_protocol::TenantId("tenant".into()),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        provider.clone(),
+        iteron_tools::Registry::read_only(root.0.join("repo")).unwrap(),
+        rollout,
+        "test-model".into(),
+        "bounded registry fixture".into(),
+        iteron_protocol::Budget::default(),
+    );
+    agent.install_persistent_agents(port, AgentIdV1(1)).unwrap();
+    for name in [
+        "agent_control",
+        "agent_task",
+        "agent_inspect",
+        "agent_message_receipt",
+        "agent_list",
+        "agent_wait",
+    ] {
+        assert!(agent.registry.specs().iter().any(|spec| spec.name == name));
+    }
+    let before = host
+        .wait(AgentActor::Operator, 0, 1)
+        .await
+        .unwrap()
+        .revision;
+    for (name, input, expected_kind) in [
+        (
+            "agent_control",
+            serde_json::json!({"request_id":"","command":{}}),
+            "string_too_short",
+        ),
+        (
+            "agent_task",
+            serde_json::json!({"request_id":"x".repeat(129),"command":{}}),
+            "string_too_long",
+        ),
+        (
+            "agent_wait",
+            serde_json::json!({"after_revision":0,"timeout_ms":60001}),
+            "above_maximum",
+        ),
+    ] {
+        let result = agent
+            .registry
+            .dispatch(ToolUse {
+                id: format!("refused-{name}"),
+                name: name.into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        let error: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(error["error"], "invalid_tool_arguments");
+        assert_eq!(error["kind"], expected_kind);
+        assert_eq!(
+            host.wait(AgentActor::Operator, before, 1)
+                .await
+                .unwrap()
+                .revision,
+            before
+        );
+    }
+    let observed = agent
+        .registry
+        .dispatch(ToolUse {
+            id: "actual-agent-list".into(),
+            name: "agent_list".into(),
+            input: serde_json::json!({}),
+        })
+        .await;
+    assert!(!observed.is_error, "{}", observed.content);
+    assert_eq!(observed.trust, Trust::Untrusted);
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn real_agent_retains_context_and_exact_identity_across_followups() {
     let root = Workspace::new();
     let provider = Arc::new(ProviderFixture::default());

@@ -87,8 +87,10 @@ fn validate_schema_at(
                 | "maxItems"
                 | "description"
                 | "minimum"
+                | "maximum"
                 | "enum"
                 | "additionalProperties"
+                | "minLength"
                 | "maxLength"
         ) {
             return Err(SchemaError::new(
@@ -170,14 +172,23 @@ fn validate_schema_at(
         ));
     }
 
-    if object.contains_key("maxLength") {
-        if declared_type != Some("string") {
-            return Err(SchemaError::new(
-                &format!("{path}.maxLength"),
-                "`maxLength` requires `type: string` in the supported subset",
-            ));
+    for keyword in ["minLength", "maxLength"] {
+        if object.contains_key(keyword) {
+            if declared_type != Some("string") {
+                return Err(SchemaError::new(
+                    &format!("{path}.{keyword}"),
+                    format!("`{keyword}` requires `type: string` in the supported subset"),
+                ));
+            }
+            schema_item_count(object, keyword, path)?;
         }
-        schema_item_count(object, "maxLength", path)?;
+    }
+    if let (Some(minimum), Some(maximum)) = (
+        schema_item_count(object, "minLength", path)?,
+        schema_item_count(object, "maxLength", path)?,
+    ) && minimum > maximum
+    {
+        return Err(SchemaError::new(path, "`minLength` exceeds `maxLength`"));
     }
 
     if object.contains_key("properties") || object.contains_key("required") {
@@ -250,19 +261,28 @@ fn validate_schema_at(
         }
     }
 
-    if let Some(minimum) = object.get("minimum") {
-        if declared_type != Some("integer") {
-            return Err(SchemaError::new(
-                &format!("{path}.minimum"),
-                "`minimum` requires `type: integer` in the supported subset",
-            ));
+    for keyword in ["minimum", "maximum"] {
+        if let Some(bound) = object.get(keyword) {
+            if declared_type != Some("integer") {
+                return Err(SchemaError::new(
+                    &format!("{path}.{keyword}"),
+                    format!("`{keyword}` requires `type: integer` in the supported subset"),
+                ));
+            }
+            if bound.as_i64().is_none() {
+                return Err(SchemaError::new(
+                    &format!("{path}.{keyword}"),
+                    format!("`{keyword}` must be an integer representable as i64"),
+                ));
+            }
         }
-        if minimum.as_i64().is_none() {
-            return Err(SchemaError::new(
-                &format!("{path}.minimum"),
-                "`minimum` must be an integer representable as i64",
-            ));
-        }
+    }
+    if let (Some(minimum), Some(maximum)) = (
+        object.get("minimum").and_then(Value::as_i64),
+        object.get("maximum").and_then(Value::as_i64),
+    ) && minimum > maximum
+    {
+        return Err(SchemaError::new(path, "`minimum` exceeds `maximum`"));
     }
 
     if (object.contains_key("items")
@@ -398,22 +418,34 @@ fn validate_arguments_at(schema: &Value, input: &Value, path: &str) -> Result<()
         }
     }
 
-    if declared_type == Some("string")
-        && let Some(maximum) = schema
-            .get("maxLength")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-    {
+    if declared_type == Some("string") {
         let text = input
             .as_str()
             .expect("type was checked before string constraints");
-        // JSON Schema length counts Unicode scalar values. The task-plan owner separately
-        // retains its stricter byte ceiling before durable publication.
-        if text.chars().nth(maximum).is_some() {
-            return Err(ArgumentError::StringTooLong {
+        if let Some(minimum) = schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            && text.chars().take(minimum).count() < minimum
+        {
+            return Err(ArgumentError::StringTooShort {
                 field: display_path(path),
-                maximum,
+                minimum,
             });
+        }
+        if let Some(maximum) = schema
+            .get("maxLength")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+        {
+            // JSON Schema length counts Unicode scalar values. Concrete host owners retain
+            // their stricter byte ceilings before command admission/durable publication.
+            if text.chars().nth(maximum).is_some() {
+                return Err(ArgumentError::StringTooLong {
+                    field: display_path(path),
+                    maximum,
+                });
+            }
         }
     }
 
@@ -468,6 +500,27 @@ fn validate_arguments_at(schema: &Value, input: &Value, path: &str) -> Result<()
             return Err(ArgumentError::BelowMinimum {
                 field: display_path(path),
                 minimum,
+                actual: input.clone(),
+            });
+        }
+    }
+
+    if declared_type == Some("integer")
+        && let Some(maximum) = schema.get("maximum").and_then(Value::as_i64)
+    {
+        let number = input
+            .as_number()
+            .expect("integer type was checked before maximum");
+        let above = match (number.as_i64(), number.as_u64()) {
+            (Some(actual), _) => actual > maximum,
+            (None, Some(_)) if maximum < 0 => true,
+            (None, Some(actual)) => actual > maximum as u64,
+            (None, None) => false,
+        };
+        if above {
+            return Err(ArgumentError::AboveMaximum {
+                field: display_path(path),
+                maximum,
                 actual: input.clone(),
             });
         }
