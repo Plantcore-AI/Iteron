@@ -782,6 +782,52 @@ impl Agent {
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
         if self.transcript_state.working().is_none() {
+            if let Some(control) = self.persistent_agents.clone()
+                && let Some(owner) = self.transcript_state.live_owner(&self.rollout)
+            {
+                self.require_installed_cohort()?;
+                if let Some(mailbox) = &self.persistent_mailbox {
+                    let (_, active_owner) = mailbox
+                        .child_controller()
+                        .map_err(KernelError::AgentControl)?;
+                    if active_owner != owner {
+                        return Err(KernelError::AgentControl(
+                            iteron_agents::ControllerError::StaleEpoch,
+                        ));
+                    }
+                } else if control
+                    .inspect(iteron_agents::AgentActor::Agent(owner), owner)
+                    .map_err(KernelError::AgentControl)?
+                    .state
+                    != iteron_protocol::agent_control::AgentStateV1::Idle
+                {
+                    return Err(KernelError::AgentControl(
+                        iteron_agents::ControllerError::RecoveryRequired,
+                    ));
+                }
+                let recovered = self
+                    .effect_journal
+                    .guard_recovery(&mut self.rollout, &mut self.ledger);
+                if matches!(&recovered, Err(KernelError::Record(_))) {
+                    self.record_failed = true;
+                    self.diagnostic_record_append_failed();
+                }
+                recovered?;
+                if !self.parent_effects_known() {
+                    return Err(KernelError::AgentControl(
+                        iteron_agents::ControllerError::RecoveryRequired,
+                    ));
+                }
+                // The writer lease and private live witness bind this exact current run. Rebuild
+                // only its verified transcript; controller, financial/policy owners and card
+                // epochs remain live. Public cross-owner set_resume stays prohibited.
+                let prior = Self::messages_from_rollout(self.rollout.path())?;
+                self.advance_turn().await?;
+                self.transcript_state
+                    .replace_restored(Some(reconcile_transcript(prior)));
+                self.effect_journal.retain_live_followup();
+                return Ok(());
+            }
             // A failed intake can leave no working transcript even after the operator has
             // committed and priced a new route. Verified adoption must still clear the card;
             // re-authenticate that previously bound selection in its new epoch, through the

@@ -19,7 +19,7 @@ impl Agent {
     ) -> Result<InvocationAdmission, KernelError> {
         let turn = TurnId(self.seq_turn);
         let events = self.tool_events(turn);
-        InvocationAdmissionSession {
+        let admission = InvocationAdmissionSession {
             funding: InvocationFundingTransaction {
                 journal: TranscriptAdmissionJournal {
                     rollout: &mut self.rollout,
@@ -57,7 +57,17 @@ impl Agent {
             file: &mut self.input_file_evidence,
             compaction_closed: self.compaction_state.failed_closed(),
         }
-        .prepare(mode, turn, file)
+        .prepare(mode, turn, file)?;
+        // This exact host epoch was active during successful intake. A later pre-working
+        // refusal may stage the same held transcript without reconstructing this controller.
+        if self.persistent_agents.is_some()
+            && let Some(mailbox) = &self.persistent_mailbox
+            && let Ok((_, owner)) = mailbox.child_controller()
+        {
+            self.transcript_state
+                .observe_live_admission(&self.rollout, owner);
+        }
+        Ok(admission)
     }
     pub(super) fn stage_invocation(
         &mut self,

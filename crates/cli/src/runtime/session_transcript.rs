@@ -8,7 +8,7 @@ use super::transcript::merge_adjacent_user_message;
 use super::turn_publication::TurnPublicationOwner;
 use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_obs::Ledger;
-use iteron_protocol::{Event, EventKind, Message, Seq, TurnId};
+use iteron_protocol::{Event, EventKind, Message, RunId, Seq, TenantId, TurnId};
 use iteron_record::{RecordError, Rollout};
 use std::time::Instant;
 
@@ -16,6 +16,14 @@ use std::time::Instant;
 pub(super) struct SessionTranscriptOwner {
     restored: Option<Vec<Message>>,
     working: Option<Vec<Message>>,
+    // One successful same-process invocation intake, scoped to its actual held writer and
+    // controller identity. This is staging evidence only, never budget or execution authority.
+    live_admission: Option<LiveTranscriptAdmission>,
+}
+struct LiveTranscriptAdmission {
+    tenant: TenantId,
+    run: RunId,
+    owner: iteron_protocol::agent_control::AgentIdV1,
 }
 
 pub(super) struct TranscriptAdmissionJournal<'a> {
@@ -29,6 +37,28 @@ pub(super) struct TranscriptAdmissionJournal<'a> {
 }
 
 impl SessionTranscriptOwner {
+    pub(super) fn observe_live_admission(
+        &mut self,
+        rollout: &Rollout,
+        owner: iteron_protocol::agent_control::AgentIdV1,
+    ) {
+        self.live_admission = Some(LiveTranscriptAdmission {
+            tenant: rollout.tenant().clone(),
+            run: rollout.run_id().clone(),
+            owner,
+        });
+    }
+    pub(super) fn live_owner(
+        &self,
+        rollout: &Rollout,
+    ) -> Option<iteron_protocol::agent_control::AgentIdV1> {
+        self.live_admission
+            .as_ref()
+            .filter(|admitted| {
+                &admitted.tenant == rollout.tenant() && &admitted.run == rollout.run_id()
+            })
+            .map(|admitted| admitted.owner)
+    }
     pub(super) fn restored(&self) -> &Option<Vec<Message>> {
         &self.restored
     }
@@ -49,6 +79,9 @@ impl SessionTranscriptOwner {
     }
 
     pub(super) fn replace_working(&mut self, messages: Option<Vec<Message>>) {
+        if messages.is_none() {
+            self.live_admission = None;
+        }
         if messages.is_some() {
             self.restored = None;
         }

@@ -417,3 +417,158 @@ async fn actual_engine_profile_preserves_effort_parent_and_native_cost_attributi
     );
     assert_eq!(provider.requests.load(Ordering::SeqCst), before);
 }
+
+fn unsupported_main_image() -> iteron_protocol::ContentSegments {
+    iteron_protocol::ContentSegments::new(vec![
+        iteron_protocol::ContentSegment::Text {
+            text: "unsupported image must not reach the model".into(),
+        },
+        iteron_protocol::ContentSegment::Image {
+            image: iteron_protocol::ImageContent::new(
+                iteron_protocol::ImageMediaType::Png,
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            )
+            .unwrap(),
+        },
+    ])
+    .unwrap()
+}
+
+#[tokio::test]
+async fn actual_installed_main_retries_a_preworking_refusal_without_reconstructing_its_owners() {
+    let workspace = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, control) = setup(&workspace, provider.clone(), false);
+    let mut main = main_runtime(&runtime, control.clone());
+    assert!(matches!(
+        main.run_content(&unsupported_main_image()).await,
+        Err(crate::runtime::KernelError::InvalidSubmission(reason))
+            if reason == crate::runtime::context_runtime::IMAGE_INPUT_UNSUPPORTED_REASON
+    ));
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    assert!(main.transcript_state.working().is_none());
+    assert_eq!(
+        main.transcript_state.live_owner(&main.rollout),
+        Some(AgentIdV1(1))
+    );
+    let budget = main.budget.clone();
+    let card = main.provider_selection.card().cloned();
+    let turn = main.current_turn_id();
+    let pin = main
+        .tunables_pin
+        .as_ref()
+        .unwrap()
+        .resolution_digest_sha256()
+        .to_owned();
+    let bytes = std::fs::read(main.rollout.path()).unwrap();
+    assert!(matches!(
+        main.set_resume(vec![iteron_protocol::Message::user_text(
+            "another projection"
+        )]),
+        Err(crate::runtime::KernelError::AgentControl(
+            iteron_agents::ControllerError::Invalid(_)
+        ))
+    ));
+    assert_eq!(std::fs::read(main.rollout.path()).unwrap(), bytes);
+    assert_eq!(
+        host.inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .state,
+        AgentStateV1::Idle
+    );
+    assert_eq!(
+        main.follow_up("actual same Main retry").await.unwrap(),
+        Outcome::Done
+    );
+    assert!(main.current_turn_id().0 > turn.0);
+    assert_eq!(main.budget, budget);
+    assert_eq!(main.provider_selection.card(), card.as_ref());
+    assert_eq!(
+        main.tunables_pin
+            .as_ref()
+            .unwrap()
+            .resolution_digest_sha256(),
+        pin
+    );
+    assert!(Arc::ptr_eq(
+        main.persistent_agents.as_ref().unwrap(),
+        &control
+    ));
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
+    let view = host.inspect(AgentActor::Operator, AgentIdV1(1)).unwrap();
+    assert_eq!(view.state, AgentStateV1::Idle);
+    assert_eq!(view.usage.turns, 1);
+    assert!(
+        !runtime
+            .residents
+            .lock()
+            .unwrap()
+            .contains_key(&AgentIdV1(1))
+    );
+    let events = iteron_record::replay(main.rollout.path()).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::RunStart { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider")).count(), 1);
+    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Message { message } | EventKind::MessageV2 { message, .. }
+        if text(std::slice::from_ref(message)).contains("actual same Main retry"))));
+}
+
+#[tokio::test]
+async fn installed_main_staging_requires_a_live_witness_and_refuses_unconfirmed_effects() {
+    let workspace = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (_, runtime, _, control) = setup(&workspace, provider.clone(), false);
+    let mut main = main_runtime(&runtime, control);
+    assert!(main.transcript_state.live_owner(&main.rollout).is_none());
+    let before = std::fs::read(main.rollout.path()).unwrap();
+    assert!(matches!(
+        main.follow_up("cold instance is not a live staging proof")
+            .await,
+        Err(crate::runtime::KernelError::AgentControl(
+            iteron_agents::ControllerError::Invalid(_)
+        ))
+    ));
+    assert_eq!(std::fs::read(main.rollout.path()).unwrap(), before);
+    assert!(matches!(
+        main.run_content(&unsupported_main_image()).await,
+        Err(crate::runtime::KernelError::InvalidSubmission(_))
+    ));
+    let turn = main.current_turn_id();
+    // A real admitted journal intent with no terminal is uncertainty even if this fixture did
+    // not dispatch its executor. Recovery must retain it, never create a successful result.
+    let call = iteron_protocol::ToolUse {
+        id: "unclosed-live-main-effect".into(),
+        name: "read_file".into(),
+        input: serde_json::json!({"path":"pending.txt"}),
+    };
+    let _ticket = main
+        .open_tool_call_effect(turn, &call, iteron_protocol::Capability::ReadOnly)
+        .unwrap();
+    main.effect_journal.adopt_journal();
+    assert!(matches!(
+        main.follow_up("must not bypass unknown physical history")
+            .await,
+        Err(crate::runtime::KernelError::UnknownEffects { .. })
+            | Err(crate::runtime::KernelError::AgentControl(
+                iteron_agents::ControllerError::RecoveryRequired
+            ))
+    ));
+    assert_eq!(main.current_turn_id(), turn);
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    assert!(!main.parent_effects_known());
+    let events = iteron_record::replay(main.rollout.path()).unwrap();
+    assert!(events.iter().any(
+        |event| matches!(&event.kind, EventKind::EffectUnknown { tool, .. } if tool == "read_file")
+    ));
+    assert!(!events.iter().any(
+        |event| matches!(&event.kind, EventKind::EffectDone { tool, .. } if tool == "read_file")
+    ));
+    assert!(!events.iter().any(
+        |event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider")
+    ));
+}
