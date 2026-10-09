@@ -12,6 +12,9 @@ use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResu
 use iteron_record::Rollout;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(unix)]
+#[path = "ordinary_extensions_tests/paid_native.rs"]
+mod paid_native;
 struct NativeToolJourney {
     calls: AtomicUsize,
 }
