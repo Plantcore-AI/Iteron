@@ -18387,11 +18387,12 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert!(provider.requests.lock().unwrap().is_empty());
 
+        // The refused initial run produced no resident transcript. Stage the real cold record
+        // before rebinding: verified adoption deliberately starts a new pricing-card epoch.
+        agent.stage_follow_up_transcript().await.unwrap();
+        assert!(agent.provider_selection.card().is_none());
         assert!(agent.bind_selected_rate_card().unwrap());
-        assert_eq!(
-            agent.follow_up("now dispatch").await.unwrap(),
-            Outcome::Done
-        );
+        assert_eq!(agent.run("now dispatch").await.unwrap(), Outcome::Done);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert!(matches!(agent.ledger.cost_state(), CostState::Known { .. }));
 

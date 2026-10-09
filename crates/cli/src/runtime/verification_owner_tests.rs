@@ -317,15 +317,23 @@ async fn explicit_outer_attestation_reaches_actual_native_oracle_with_one_wal_ta
     // This fixture explicitly attests its outer boundary and runs a literal no-write command.
     // It is native process evidence, not a claim that this test exercised platform confinement.
     agent.verify_preconfined = true;
+    // The genuine checkpoint's schema-boundary sample retains only two oracle-feedback bytes.
+    // Keep that ceiling and put a one-byte native marker at the end of stderr; stdout is
+    // separated from stderr by the oracle's literal newline before its bounded tail is served.
+    assert_eq!(
+        agent
+            .verification_state
+            .policy()
+            .feedback
+            .oracle_output_bytes,
+        2
+    );
     let mut gate = agent.strong_verification_gate(TurnId(0));
     gate.scope.deadline = Some(Instant::now() + Duration::from_secs(2));
-    let verdict = gate
-        .run_verify("printf 'independent-native-verifier\\n'")
-        .await
-        .unwrap();
+    let verdict = gate.run_verify("printf V >&2").await.unwrap();
     drop(gate);
     assert_eq!(verdict.outcome, VerificationOutcome::Pass);
-    assert!(verdict.detail.contains("independent-native-verifier"));
+    assert_eq!(verdict.detail, "\nV");
     let tasks = agent.verification_tasks.list(agent.rollout.run_id());
     assert_eq!(tasks["tasks"][0]["state"], "settled");
     let id = tasks["tasks"][0]["task_id"].as_str().unwrap();
@@ -333,12 +341,9 @@ async fn explicit_outer_attestation_reaches_actual_native_oracle_with_one_wal_ta
         .verification_tasks
         .inspect(agent.rollout.run_id(), id)
         .unwrap();
-    assert!(
-        served["output"]["verdict_detail"]
-            .as_str()
-            .unwrap()
-            .contains("independent-native-verifier")
-    );
+    assert_eq!(served["output"]["verdict_detail"], "\nV");
+    assert_eq!(served["output"]["source"], "observed_oracle_feedback");
+    assert_eq!(served["output"]["full_process_output"], false);
     let events = iteron_record::replay(agent.rollout.path()).unwrap();
     assert_eq!(
         events
