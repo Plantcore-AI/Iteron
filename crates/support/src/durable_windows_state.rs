@@ -55,7 +55,7 @@ use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 mod contained_read;
 pub(crate) mod workspace_directory_read;
-pub use contained_read::WindowsWorkspaceReader;
+pub use contained_read::{WindowsWorkspaceReader, WindowsWorkspaceSource};
 /// Ordinary bounded local-NTFS source reading. No private ACL or write authority is requested.
 pub fn read_contained_regular_file(
     root: &Path,

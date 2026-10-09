@@ -1,12 +1,14 @@
 //! Live, lazy LSP query tools over the accepted `iteron-lsp` protocol/state substrate.
 //!
-//! Known language adapters are admitted as CodeExecuting, confined by Linux bubblewrap or macOS
-//! Seatbelt, and owned by one bounded session/workspace pool. Requests recheck target bytes and
+//! Known language adapters are admitted as CodeExecuting through the platform confinement
+//! backend, and owned by one bounded session/workspace pool. Requests recheck target bytes and
 //! carry explicit dependency-freshness attribution; timeout, cancellation, restart, and cleanup
 //! stay owner-held.
 
 #[cfg(unix)]
 pub(crate) mod capability;
+#[cfg(windows)]
+mod capability_windows;
 mod input;
 mod multiplex;
 mod policy;
@@ -242,9 +244,9 @@ pub(crate) fn register(
     registry: &mut Registry,
     configured: Vec<LanguageServerRoute>,
 ) -> Result<Option<LspControl>, ToolError> {
-    // A tool that is guaranteed to refuse is prompt pollution, not a capability. Windows needs a
-    // Job Object + pipe owner before this long-lived CodeExecuting surface can be admitted.
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+    // Registration follows the implemented platform source/pipe owners. Native OS isolation is
+    // still checked at the actual server launch, before an unavailable backend can dispatch code.
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         return Ok(None);
     }
     let policy = LspRuntimePolicy::with_command_overrides(configured).map_err(|error| {
@@ -299,7 +301,7 @@ async fn execute(
     launcher: Arc<Launcher>,
     sensitive_env_names: Vec<String>,
 ) -> Result<String, (LspToolError, bool)> {
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         return Err((LspToolError::SandboxUnavailable, false));
     }
     let policy = launcher.policy();
@@ -495,3 +497,6 @@ fn success(id: String, content: String) -> ToolResult {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod windows_tests;

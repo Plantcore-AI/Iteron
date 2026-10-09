@@ -7,7 +7,9 @@ use iteron_lsp::documents::DocumentStore;
 use iteron_lsp::intel::{Query, ensure_fresh};
 use iteron_lsp::lifecycle::{Event, RestartPolicy, Session, State};
 use iteron_lsp::pending::{PendingRequests, ReplyDisposition};
-use iteron_sandbox::{ConfinedProcess, PersistentBackend};
+use iteron_sandbox::{
+    ConfinedProcess, ConfinedProcessError, ConfinedProcessInput, PersistentBackend,
+};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,7 +50,7 @@ impl RunFailure {
 
 pub(super) struct Driver {
     process: AsyncMutex<Option<ConfinedProcess>>,
-    stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
+    stdin: Arc<AsyncMutex<Option<ConfinedProcessInput>>>,
     responses: ResponseRouter,
     stderr_task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
     stderr_limit_hit: Arc<AtomicBool>,
@@ -66,7 +68,7 @@ pub(super) struct Driver {
 struct RequestLease<'a> {
     pending: &'a Mutex<PendingRequests>,
     documents: &'a Mutex<DocumentStore>,
-    stdin: Arc<AsyncMutex<Option<tokio::process::ChildStdin>>>,
+    stdin: Arc<AsyncMutex<Option<ConfinedProcessInput>>>,
     clock: &'a Instant,
     generation: u64,
     id: u32,
@@ -474,7 +476,7 @@ where
     tokio::join!(process, stderr)
 }
 
-async fn drain_stderr(mut stderr: tokio::process::ChildStderr, limit_hit: Arc<AtomicBool>) {
+async fn drain_stderr(mut stderr: ConfinedProcessError, limit_hit: Arc<AtomicBool>) {
     let mut observed = 0_u64;
     let mut buffer = [0_u8; 8 * 1024];
     loop {

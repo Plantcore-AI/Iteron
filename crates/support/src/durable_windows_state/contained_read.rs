@@ -32,6 +32,8 @@ use windows_sys::{
 };
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_READER_BYTES: usize = 32 * 1024 * 1024;
+mod retained_source;
+pub use retained_source::WindowsWorkspaceSource;
 #[derive(PartialEq, Eq)]
 struct FileStamp {
     volume: u32,
