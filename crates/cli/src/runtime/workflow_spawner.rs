@@ -1270,7 +1270,7 @@ pub(super) mod tests {
             .err()
             .expect("an unavailable role model must refuse before spawning");
         assert!(
-            error.contains("model override is absent from the pinned role-specific model map"),
+            error.contains("agent definition model has no admitted native role route"),
             "{error}"
         );
         let _ = std::fs::remove_dir_all(root);
