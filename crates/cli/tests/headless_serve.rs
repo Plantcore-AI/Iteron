@@ -1730,4 +1730,5 @@ mod mcp_input_journey;
 #[path = "headless_serve/final_evidence_journey.rs"]
 mod final_evidence_journey;
 
+#[path = "headless_serve/resident_service_journey.rs"]
 mod resident_service_journey;

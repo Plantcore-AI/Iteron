@@ -191,3 +191,6 @@ fn disconnected_client_leaves_paid_turn_live_and_new_client_reuses_the_same_serv
         && event.turn == message.turn
         && matches!(&event.kind,iteron_protocol::EventKind::Done{outcome}if outcome=="Done")));
 }
+
+#[cfg(unix)]
+mod tui_attach_journey;
