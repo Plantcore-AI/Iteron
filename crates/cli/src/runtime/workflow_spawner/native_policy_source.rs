@@ -24,10 +24,14 @@ impl NativePolicySource {
             return Ok(None);
         };
         let row = |key: &str| {
+            let family = iteron_tunables::families()
+                .iter()
+                .find(|family| family.id == key)
+                .ok_or("native policy family is unavailable")?;
             snapshot
                 .entries
                 .iter()
-                .find(|row| row.semantic_key == key)
+                .find(|row| row.family_id == family.id && row.semantic_key == family.semantic_key)
                 .and_then(|row| row.effective_value.as_ref())
                 .ok_or("native policy source is unavailable")
         };
@@ -150,5 +154,72 @@ impl NativePolicySource {
     }
     pub(crate) fn has_role(&self, name: &str) -> bool {
         self.roles.contains_key(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResult};
+
+    struct NoDispatch;
+    #[async_trait::async_trait]
+    impl Provider for NoDispatch {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
+        async fn turn(
+            &self,
+            _: &TurnRequest,
+            _: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            panic!("native policy capture must not dispatch")
+        }
+    }
+
+    #[test]
+    fn captured_v2_policy_uses_canonical_family_identity_and_keeps_owner_narrowing() {
+        let root = crate::runtime::test_tempdir::tempdir().unwrap();
+        let mut context = KernelSpawnerContext::new(
+            Arc::new(NoDispatch),
+            "test-model".into(),
+            "test-provider".into(),
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+            root.path().to_owned(),
+            root.path().join("runs"),
+            iteron_protocol::TenantId("tenant".into()),
+            "parent".into(),
+            "native-policy-fixture".into(),
+        );
+        crate::runtime::workflow_spawner::tests::pin_context(root.path(), &mut context);
+        let pin = context.tunables_pin.as_ref().unwrap();
+        let TunablesCheckpoint::V2(snapshot) = pin.checkpoint() else {
+            panic!("real resolver fixture must provide V2")
+        };
+        for name in [
+            "per_agent_model",
+            "role_specific_model_map",
+            "per_agent_tool_profile",
+        ] {
+            let row = snapshot
+                .entries
+                .iter()
+                .find(|entry| entry.family_id == name)
+                .unwrap();
+            assert_ne!(
+                row.semantic_key, name,
+                "semantic identities are not family names"
+            );
+            assert!(row.effective_value.is_some());
+        }
+        let source = NativePolicySource::capture(Some(pin)).unwrap().unwrap();
+        source.validate(&context).unwrap();
+        context.execution_policy.per_agent_model =
+            crate::runtime_tunables::execution_policy::PerAgentModelIdentity::from_route(
+                "test-provider:unbound-model",
+            )
+            .unwrap();
+        assert!(source.validate(&context).is_err());
     }
 }
