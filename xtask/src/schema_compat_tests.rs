@@ -376,6 +376,128 @@ fn d13_14_additive_change_passes_only_with_new_version_and_frozen_fixture() {
 }
 
 #[test]
+fn current_fixture_coverage_preserves_wire_version_and_every_frozen_byte() {
+    for stamped in [false, true] {
+        let repo = GitRepo::new();
+        let (old_bytes, new_bytes, fields) = if stamped {
+            (
+                br#"{"version":1,"old":"original"}"#.as_slice(),
+                br#"{"version":1,"old":"additional coverage"}"#.as_slice(),
+                vec![field("version", None), field("old", None)],
+            )
+        } else {
+            (
+                br#"{"type":"text","text":"original"}"#.as_slice(),
+                br#"{"type":"text","text":"additional coverage"}"#.as_slice(),
+                vec![field("type", None), field("text", None)],
+            )
+        };
+        repo.write(V1, old_bytes);
+        let mut previous = contract(1, 1, fields, vec![fixture(V1, 1)], vec![]);
+        if !stamped {
+            previous["surfaces"][0]["id"] = json!("record.block.text");
+            previous["surfaces"][0]["version_field"] = Value::Null;
+            previous["surfaces"][0]["selector"] = json!({"field": "type", "value": "text"});
+        }
+        repo.write_contract(&previous);
+        let base = repo.commit_base();
+        repo.write(V1_ALT, new_bytes);
+        let mut added = previous.clone();
+        added["release_ordinal"] = json!(2);
+        added["surfaces"][0]["fixtures"] = json!([fixture(V1, 1), fixture(V1_ALT, 1)]);
+        repo.write_contract(&added);
+        validate_release_against_base(&repo.root, &base).unwrap();
+        assert!(!wire_line_format_changed(&repo.root, &base).unwrap());
+
+        // Coverage cannot suppress the existing exact Git-byte comparison, even when rewritten
+        // historical bytes still have the same valid current field shape.
+        repo.write(V1, new_bytes);
+        let error = validate_release_against_base(&repo.root, &base).unwrap_err();
+        assert!(error.to_string().contains("was rewritten"), "{error:#}");
+        repo.write(V1, old_bytes);
+
+        // New samples still undergo complete current shape validation before comparison.
+        repo.write(V1_ALT, br#"{"unexpected":"not current coverage"}"#);
+        assert!(validate_release_against_base(&repo.root, &base).is_err());
+        repo.write(V1_ALT, new_bytes);
+
+        for hostile in [
+            json!([fixture(V1_ALT, 1)]),                 // Drop the published path.
+            json!([fixture(V1_ALT, 1), fixture(V2, 1)]), // Redirect the published path.
+            json!([fixture(V1, 2), fixture(V1_ALT, 1)]), // Restamp the old sample.
+            json!([fixture(V1, 1), fixture(V1_ALT, 2)]), // Claim a new version, no actual bump.
+        ] {
+            let mut changed = added.clone();
+            changed["surfaces"][0]["fixtures"] = hostile;
+            repo.write_contract(&changed);
+            assert!(validate_release_against_base(&repo.root, &base).is_err());
+            assert!(wire_line_format_changed(&repo.root, &base).unwrap());
+        }
+    }
+}
+
+#[test]
+fn fixture_only_coverage_cannot_change_shape_identity_or_migration_authority() {
+    let original = serde_json::from_value::<Surface>(
+        contract(
+            1,
+            1,
+            vec![field("version", None)],
+            vec![fixture(V1, 1)],
+            vec![],
+        )["surfaces"][0]
+            .clone(),
+    )
+    .unwrap();
+    let mut covered = original.clone();
+    covered
+        .fixtures
+        .push(serde_json::from_value(fixture(V1_ALT, 1)).unwrap());
+    assert!(additive_current_fixture_coverage(&original, &covered));
+    let mut wrong_id = covered.clone();
+    wrong_id.id = "another.surface".into();
+    let mut wrong_version = covered.clone();
+    wrong_version.current_version = 2;
+    let mut wrong_stamp = covered.clone();
+    wrong_stamp.version_field = None;
+    let mut wrong_selector = covered.clone();
+    wrong_selector.selector = Some(manifest::Selector {
+        field: "version".into(),
+        value: "1".into(),
+    });
+    let mut wrong_field = covered.clone();
+    wrong_field.fields[0].name = "renamed".into();
+    let mut wrong_history = covered.clone();
+    wrong_history.fields[0].introduced_release = 2;
+    let mut wrong_optional = covered.clone();
+    wrong_optional.fields[0].optional = true;
+    let mut wrong_format = covered.clone();
+    wrong_format.fixtures[0].format = manifest::FixtureFormat::Jsonl;
+    let mut wrong_shim = covered.clone();
+    wrong_shim.compatibility_shims.push(
+        serde_json::from_value(json!({
+            "old_field": "old", "replacement": null, "deprecated_release": 1,
+            "target_version": 1, "target_fields": ["version"], "fixtures": [V1],
+            "migrator": "caller_supplied"
+        }))
+        .unwrap(),
+    );
+    for hostile in [
+        wrong_id,
+        wrong_version,
+        wrong_stamp,
+        wrong_selector,
+        wrong_field,
+        wrong_history,
+        wrong_optional,
+        wrong_format,
+        wrong_shim,
+    ] {
+        assert!(!additive_current_fixture_coverage(&original, &hostile));
+    }
+}
+
+#[test]
 fn d13_14_rename_requires_prior_deprecation_live_shim_and_migrator() {
     let repo = GitRepo::new();
     repo.write(V1, br#"{"version":1,"old":"v1"}"#);

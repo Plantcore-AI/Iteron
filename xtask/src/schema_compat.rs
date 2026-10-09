@@ -445,7 +445,8 @@ fn line_format_moved(previous: &Contract, candidate: &Contract) -> bool {
         let Some(new) = current.get(old.id.as_str()) else {
             return true;
         };
-        let corpus_only = additive_record_corpus(old, new);
+        let corpus_only =
+            additive_record_corpus(old, new) || additive_current_fixture_coverage(old, new);
         (!corpus_only && old.current_version != new.current_version)
             || old.version_field != new.version_field
             || old.selector != new.selector
@@ -453,6 +454,26 @@ fn line_format_moved(previous: &Contract, candidate: &Contract) -> bool {
             || old.compatibility_shims != new.compatibility_shims
             || !old.fields.iter().all(|field| new.fields.contains(field))
     })
+}
+
+// Additional samples of the same current wire shape are coverage, not a schema evolution.
+// This predicate changes no type, field, selector, version or migration authority. The caller
+// still validates every new sample and compares every previously published fixture byte to Git.
+fn additive_current_fixture_coverage(old: &Surface, new: &Surface) -> bool {
+    old.id == new.id
+        && old.current_version == new.current_version
+        && old.version_field == new.version_field
+        && old.selector == new.selector
+        && old.fields == new.fields
+        && old.compatibility_shims == new.compatibility_shims
+        && new.fixtures.len() > old.fixtures.len()
+        && old
+            .fixtures
+            .iter()
+            .all(|fixture| new.fixtures.contains(fixture))
+        && new.fixtures.iter().all(|fixture| {
+            old.fixtures.contains(fixture) || fixture.schema_version == old.current_version
+        })
 }
 
 // Versionless record inventory versions identify reviewed corpus generations, not a stamped
@@ -664,6 +685,7 @@ fn compare_surface(
     if candidate != previous
         && candidate.current_version <= previous.current_version
         && !is_additive_optional_append(previous, candidate, candidate_contract.release_ordinal)
+        && !additive_current_fixture_coverage(previous, candidate)
     {
         bail!(
             "schema surface `{}` changed without a version bump",
