@@ -36,6 +36,20 @@ fn session() -> (Session, mpsc::Receiver<ControlRequest>) {
     (session, received)
 }
 
+async fn next_host_request(host: &mut mpsc::Receiver<ControlRequest>) -> ControlRequest {
+    tokio::time::timeout(std::time::Duration::from_secs(3), host.recv())
+        .await
+        .expect("the actual host request must be dispatched within the fixture bound")
+        .expect("the host request channel must remain open")
+}
+
+async fn next_effect(effects: &mut transcript_effect::Supervisor) -> transcript_effect::Event {
+    tokio::time::timeout(std::time::Duration::from_secs(3), effects.recv())
+        .await
+        .expect("the observed host reply must settle within the fixture bound")
+        .expect("the effect completion channel must remain open")
+}
+
 #[tokio::test]
 async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
     let (session, mut host) = session();
@@ -54,7 +68,7 @@ async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
             model_id: "m".into(),
         },
     );
-    let request = host.recv().await.unwrap();
+    let request = next_host_request(&mut host).await;
     assert!(matches!(
         request.control,
         Control::ProviderCatalog(ProviderCatalogControl::Retry(_))
@@ -69,7 +83,7 @@ async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
             &"2".repeat(64),
         ))))
         .unwrap();
-    let effect = effects.recv().await.unwrap();
+    let effect = next_effect(&mut effects).await;
     assert!(
         complete_retry(
             &mut app,
@@ -81,7 +95,7 @@ async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
         )
         .is_none()
     );
-    let selected = host.recv().await.unwrap();
+    let selected = next_host_request(&mut host).await;
     match selected.control {
         Control::SelectModelDefaultV1(request) => {
             assert_eq!(request.inventory_digest_sha256, "2".repeat(64));
@@ -96,7 +110,7 @@ async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
             "fixture ends at the actual selection boundary".into(),
         ))
         .unwrap();
-    assert!(effects.recv().await.is_some());
+    let _ = next_effect(&mut effects).await;
 }
 
 #[tokio::test]
@@ -117,7 +131,7 @@ async fn cancelled_health_retry_does_not_dispatch_a_model_change() {
             model_id: "m".into(),
         },
     );
-    let request = host.recv().await.unwrap();
+    let request = next_host_request(&mut host).await;
     assert!(effects.cancel());
     request
         .reply
@@ -125,7 +139,7 @@ async fn cancelled_health_retry_does_not_dispatch_a_model_change() {
             &"2".repeat(64),
         ))))
         .unwrap();
-    let effect = effects.recv().await.unwrap();
+    let effect = next_effect(&mut effects).await;
     assert!(
         complete_retry(
             &mut app,
@@ -145,7 +159,7 @@ async fn cancelled_health_retry_does_not_dispatch_a_model_change() {
 async fn first_frame_is_only_an_observed_typed_host_control() {
     let (sender, mut host) = mpsc::channel(1);
     let observed = first_frame(sender);
-    let request = host.recv().await.unwrap();
+    let request = next_host_request(&mut host).await;
     assert!(matches!(
         request.control,
         Control::ProviderCatalog(ProviderCatalogControl::FirstFrame)
@@ -201,9 +215,8 @@ async fn refused_real_first_frame_never_releases_automatic_input_and_preserves_l
     let receipt = first_frame(sender);
     let mut gate = InitialTaskGate::new(Some("exact CLI task".into()));
     assert!(gate.take_ready().is_none());
-    host.recv()
+    next_host_request(&mut host)
         .await
-        .unwrap()
         .reply
         .send(ControlReply::Refused("host not prepared".into()))
         .unwrap();
@@ -226,9 +239,8 @@ async fn actual_success_receipt_releases_initial_input_exactly_once() {
     let (sender, mut host) = mpsc::channel(1);
     let receipt = first_frame(sender);
     let mut gate = InitialTaskGate::new(Some("exact CLI task".into()));
-    host.recv()
+    next_host_request(&mut host)
         .await
-        .unwrap()
         .reply
         .send(ControlReply::ProviderCatalog(Box::new(view(
             &"1".repeat(64),

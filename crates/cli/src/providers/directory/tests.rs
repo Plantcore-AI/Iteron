@@ -330,6 +330,7 @@ fn public_inventory_freezes_catalog_and_resolves_only_matching_host_route_identi
         provider_id: "inventory-fixture".into(),
         model_id: "model-a".into(),
     };
+    let native_digests = directory.selection_digests(&selected);
     let owner = crate::client_inventory::ClientInventoryOwner::capture(
         &directory,
         &crate::plugin_runtime::RuntimePlugins::default(),
@@ -351,10 +352,25 @@ fn public_inventory_freezes_catalog_and_resolves_only_matching_host_route_identi
         catalog_digest_sha256: record["catalog_digest_sha256"].as_str().unwrap().into(),
         capability_digest_sha256: record["capability_digest_sha256"].as_str().unwrap().into(),
     };
+    request.validate().unwrap();
+    assert_eq!(request.catalog_digest_sha256.len(), 64);
+    assert_eq!(request.capability_digest_sha256.len(), 64);
+    let resolved = owner.resolve(&request).unwrap();
+    assert_eq!(resolved.provider_id, selected.provider_id);
+    assert_eq!(resolved.catalog_digest, native_digests.0);
+    assert_eq!(resolved.capability_digest, native_digests.1);
     assert_eq!(
-        owner.resolve(&request).unwrap().provider_id,
-        selected.provider_id
+        resolved.catalog_digest,
+        format!("sha256:{}", request.catalog_digest_sha256)
     );
+    assert_eq!(
+        resolved.capability_digest,
+        format!("sha256:{}", request.capability_digest_sha256)
+    );
+    let mut tagged_wire_request = request.clone();
+    tagged_wire_request.catalog_digest_sha256 = resolved.catalog_digest;
+    assert!(tagged_wire_request.validate().is_err());
+    assert!(owner.resolve(&tagged_wire_request).is_err());
     Arc::make_mut(&mut directory.entries)[0].catalog = Some(snapshot(
         "inventory-fixture",
         vec![descriptor(

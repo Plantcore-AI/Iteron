@@ -185,8 +185,12 @@ impl ProviderCatalogView {
                 };
                 let mut capabilities =
                     directory.entry_selection_capabilities(entry, &selection, descriptor);
-                let digests =
+                let (catalog_digest, capability_digest) =
                     catalog_identity.for_model(entry, &selection, capabilities.clone(), descriptor);
+                let digests = (
+                    client_sha256(catalog_digest)?,
+                    client_sha256(capability_digest)?,
+                );
                 capabilities.source = capabilities.source.as_deref().map(display);
                 capabilities.version = capabilities.version.as_deref().map(display);
                 capabilities.image_input_source =
@@ -347,6 +351,21 @@ impl ProviderCatalogView {
         }
         view
     }
+}
+/// Native route journals retain their tagged commitment; public `*_sha256` fields carry only
+/// its exact lowercase hexadecimal payload. This changes the representation, never the hash.
+fn client_sha256(mut native: String) -> Result<String, String> {
+    let valid = native.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !valid {
+        return Err("native route commitment is not a canonical SHA-256 identity".into());
+    }
+    native.replace_range(..7, "");
+    Ok(native)
 }
 fn identity(value: &str) -> Result<(), String> {
     if value.is_empty()
