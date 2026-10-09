@@ -27,6 +27,8 @@ mod host_tests;
 pub(super) mod input_admission;
 #[path = "persistent_agents/parent_turn.rs"]
 mod parent_turn;
+#[path = "persistent_agents/partial_output.rs"]
+mod partial_output;
 #[path = "persistent_agents/prepared_mailbox.rs"]
 pub(super) mod prepared_mailbox;
 #[path = "persistent_agents/weak_mailbox.rs"]
@@ -202,6 +204,7 @@ pub(crate) struct AgentHostLimits {
 #[derive(Debug, Clone)]
 pub(crate) struct AgentObservation {
     pub revision: u64,
+    pub durable_revision: u64,
     pub agents: Vec<AgentViewV1>,
     pub timed_out: bool,
 }
@@ -287,6 +290,17 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 }
 
 trait MailboxPort: Send + Sync {
+    fn partial_output(
+        &self,
+        _id: AgentIdV1,
+        _epoch: AgentEpochV1,
+        _task: AgentMessageIdV1,
+        _source: &iteron_protocol::agent_output::AgentOutputSourceV1,
+        _served_delta: &str,
+    ) -> Result<(), ControllerError> {
+        Err(ControllerError::Permission)
+    }
+
     fn engine_execution(
         &self,
         _id: AgentIdV1,
@@ -330,12 +344,27 @@ trait MailboxPort: Send + Sync {
 pub(crate) struct LiveAgentMailbox {
     id: AgentIdV1,
     epoch: AgentEpochV1,
+    task: Option<AgentMessageIdV1>,
     port: Arc<dyn MailboxPort>,
     witnesses: Arc<Mutex<prepared_mailbox::MailboxWitnesses>>,
     deferred: Arc<Mutex<Vec<AgentMailboxMessage>>>,
 }
 
 impl LiveAgentMailbox {
+    pub(super) fn publish_partial(
+        &self,
+        source: &iteron_protocol::agent_output::AgentOutputSourceV1,
+        served_delta: &str,
+    ) -> Result<(), ControllerError> {
+        self.port.partial_output(
+            self.id,
+            self.epoch,
+            self.task.ok_or(ControllerError::UnknownMessage)?,
+            source,
+            served_delta,
+        )
+    }
+
     pub(super) fn engine_execution(
         &self,
     ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
@@ -562,6 +591,7 @@ struct Shared<J> {
     permits: Arc<Semaphore>,
     parallel: usize,
     changed: watch::Sender<u64>,
+    partial_outputs: Mutex<iteron_agents::AgentPartialOutputOwner>,
     parent_stop: Mutex<Option<parent_turn::ParentStop>>,
     pending_settlements: Mutex<BTreeMap<AgentIdV1, (AgentEpochV1, AgentSettlement, u64)>>,
 }
@@ -594,6 +624,8 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         tokio::runtime::Handle::try_current()
             .map_err(|_| ControllerError::Invalid("agent host requires a running executor"))?;
         let (changed, _) = watch::channel(controller.revision());
+        let partial_outputs =
+            iteron_agents::AgentPartialOutputOwner::new(controller.config().max_agents);
         Ok(Self {
             shared: Arc::new(Shared {
                 controller: Mutex::new(controller),
@@ -601,6 +633,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 permits: Arc::new(Semaphore::new(parallel)),
                 parallel,
                 changed,
+                partial_outputs: Mutex::new(partial_outputs),
                 parent_stop: Mutex::new(None),
                 pending_settlements: Mutex::new(BTreeMap::new()),
             }),
@@ -609,8 +642,10 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
     fn notify(&self, revision: u64) {
         self.shared.changed.send_if_modified(|current| {
-            if revision > *current {
-                *current = revision;
+            // This is an observation cursor, not a durable receipt. Partial updates must wake
+            // the same readers even when no controller transaction was committed.
+            if let Some(next) = current.checked_add(1) {
+                *current = next.max(revision);
                 true
             } else {
                 false
@@ -682,6 +717,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         let mailbox = LiveAgentMailbox {
             id: view.agent_id,
             epoch,
+            task: partial_output::task_id(&initial),
             port: Arc::new(weak_mailbox::WeakMailbox::new(self)),
             witnesses: Arc::new(Mutex::new(prepared_mailbox::MailboxWitnesses::default())),
             deferred: Arc::new(Mutex::new(Vec::new())),
@@ -1122,19 +1158,25 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
     }
 
     fn list(&self, actor: AgentActor) -> Result<Vec<AgentViewV1>, ControllerError> {
-        self.shared
+        let controller = self
+            .shared
             .controller
             .lock()
-            .map_err(|_| ControllerError::Poisoned)?
-            .list(actor)
+            .map_err(|_| ControllerError::Poisoned)?;
+        let mut views = controller.list(actor)?;
+        self.decorate_outputs(&mut views)?;
+        Ok(views)
     }
 
     fn inspect(&self, actor: AgentActor, id: AgentIdV1) -> Result<AgentViewV1, ControllerError> {
-        self.shared
+        let controller = self
+            .shared
             .controller
             .lock()
-            .map_err(|_| ControllerError::Poisoned)?
-            .inspect(actor, id)
+            .map_err(|_| ControllerError::Poisoned)?;
+        let mut view = controller.inspect(actor, id)?;
+        self.decorate_outputs(std::slice::from_mut(&mut view))?;
+        Ok(view)
     }
 
     fn message(
@@ -1168,17 +1210,20 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
                 .controller
                 .lock()
                 .map_err(|_| ControllerError::Poisoned)?;
-            Ok::<_, ControllerError>((controller.revision(), controller.list(actor)?))
+            let mut agents = controller.list(actor)?;
+            self.decorate_outputs(&mut agents)?;
+            Ok::<_, ControllerError>((*self.shared.changed.borrow(), controller.revision(), agents))
         };
-        let (revision, agents) = observe()?;
+        let (revision, durable_revision, agents) = observe()?;
         if after_revision > revision {
             return Err(ControllerError::Invalid(
-                "agent wait cursor is ahead of durable state",
+                "agent wait cursor is ahead of this host observation stream",
             ));
         }
         if revision > after_revision {
             return Ok(AgentObservation {
                 revision,
+                durable_revision,
                 agents,
                 timed_out: false,
             });
@@ -1186,9 +1231,10 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
         let timed_out = tokio::time::timeout(Duration::from_millis(timeout_ms), changed.changed())
             .await
             .is_err();
-        let (revision, agents) = observe()?;
+        let (revision, durable_revision, agents) = observe()?;
         Ok(AgentObservation {
             revision,
+            durable_revision,
             agents,
             timed_out,
         })
@@ -1196,6 +1242,17 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
 }
 
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for PersistentAgentHost<J> {
+    fn partial_output(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+        task: AgentMessageIdV1,
+        source: &iteron_protocol::agent_output::AgentOutputSourceV1,
+        served_delta: &str,
+    ) -> Result<(), ControllerError> {
+        self.append_partial_output(id, epoch, task, source, served_delta)
+    }
+
     fn engine_execution(
         &self,
         id: AgentIdV1,

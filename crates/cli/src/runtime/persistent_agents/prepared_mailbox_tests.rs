@@ -89,6 +89,7 @@ pub(in crate::runtime::persistent_agents) fn mailbox_with_sender(
         LiveAgentMailbox {
             id: port.input.receiver,
             epoch,
+            task: None,
             port: port.clone(),
             witnesses: Arc::new(Mutex::new(MailboxWitnesses::default())),
             deferred: Arc::new(Mutex::new(Vec::new())),

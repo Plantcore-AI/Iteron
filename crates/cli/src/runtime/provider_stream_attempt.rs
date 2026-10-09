@@ -66,6 +66,7 @@ impl ProviderStreamAttempt<'_> {
             )
             .await
         };
+        self.observer.finish_partial();
         ProviderAttemptReceipt { result, quota }
     }
 }

@@ -25,6 +25,7 @@ pub(super) struct ProviderStreamScope {
     pub(super) lifecycle: Option<LifecycleEmitter>,
     pub(super) lifecycle_hooks: Option<LifecycleHookDispatcher>,
     pub(super) correlation: LifecycleCorrelation,
+    pub(super) partial_mailbox: Option<super::persistent_agents::LiveAgentMailbox>,
 }
 
 pub(super) enum ObservedStreamItem {
@@ -38,6 +39,7 @@ pub(super) struct ProviderStreamObserver {
     scope: ProviderStreamScope,
     awaiting_token: Option<ActivitySpan>,
     decode: Option<ActivitySpan>,
+    partial: Option<super::agent_partial_stream::AgentPartialStream>,
 }
 impl ProviderStreamObserver {
     pub(super) fn new(scope: ProviderStreamScope) -> Self {
@@ -46,6 +48,26 @@ impl ProviderStreamObserver {
             scope,
             awaiting_token: None,
             decode: None,
+            partial: None,
+        }
+    }
+
+    pub(super) fn bind_partial_source(
+        &mut self,
+        source: Option<iteron_protocol::agent_output::AgentOutputSourceV1>,
+    ) {
+        self.partial = self
+            .scope
+            .partial_mailbox
+            .clone()
+            .zip(source)
+            .map(|(mailbox, source)| {
+                super::agent_partial_stream::AgentPartialStream::new(mailbox, source)
+            });
+    }
+    pub(super) fn finish_partial(&mut self) {
+        if let Some(partial) = &mut self.partial {
+            partial.finish();
         }
     }
 
@@ -102,6 +124,9 @@ impl ProviderStreamObserver {
         match item {
             StreamItem::TextDelta(delta) => {
                 self.evidence.append_text(&delta);
+                if let Some(partial) = &mut self.partial {
+                    partial.observe(&delta);
+                }
                 if !already_forwarded {
                     self.present(UiEvent::Text(iteron_record::redact::scrub(&delta)));
                 }

@@ -93,6 +93,16 @@ struct ProviderFixture {
     serialized_caps: Mutex<Vec<u64>>,
     omit_native_user: bool,
     unsupported_capture: bool,
+    stream_partial: bool,
+    partial_started: AtomicUsize,
+    partial_release: tokio::sync::Notify,
+    child_sources: Mutex<
+        Vec<(
+            iteron_protocol::TenantId,
+            iteron_protocol::RunId,
+            std::path::PathBuf,
+        )>,
+    >,
 }
 
 #[async_trait]
@@ -182,10 +192,21 @@ impl Provider for ProviderFixture {
     async fn turn(
         &self,
         request: &TurnRequest,
-        _: &mut (dyn FnMut(StreamItem) + Send),
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         self.requests.fetch_add(1, Ordering::SeqCst);
         self.systems.lock().unwrap().push(request.system.clone());
+        if self.stream_partial {
+            on_item(StreamItem::TextDelta("Progress sk-an".into()));
+            on_item(StreamItem::TextDelta(
+                "t-abcdefghijklmnopqrstuv ready ".into(),
+            ));
+            self.partial_started.fetch_add(1, Ordering::SeqCst);
+            self.partial_release.notified().await;
+            on_item(StreamItem::TextDelta("next partial ".into()));
+            self.partial_started.fetch_add(1, Ordering::SeqCst);
+            self.partial_release.notified().await;
+        }
         let texts = request
             .messages
             .iter()
@@ -428,6 +449,18 @@ fn setup_with_financial_and_memory(
             child.context_home_dir = None;
         }));
     }
+    let previous_fixture = runtime.fixture.take();
+    let source_observer = provider.clone();
+    runtime.fixture = Some(Arc::new(move |child| {
+        source_observer.child_sources.lock().unwrap().push((
+            child.rollout.tenant().clone(),
+            child.rollout.run_id().clone(),
+            child.rollout.path().to_path_buf(),
+        ));
+        if let Some(previous) = &previous_fixture {
+            previous(child);
+        }
+    }));
     // Explicit compatibility for this older provider-free Main fixture only. Production never
     // accepts a missing scoped native publication, and missing child scope never uses this flag.
     runtime
@@ -807,3 +840,101 @@ mod query_trust;
 
 #[path = "tests/native_generations.rs"]
 mod native_generations;
+
+#[tokio::test]
+async fn actual_resident_stream_is_shared_before_terminal_and_bound_to_physical_wal() {
+    use iteron_protocol::agent_output::AgentPartialStateV1;
+    let root = Workspace::new();
+    let provider = Arc::new(ProviderFixture {
+        stream_partial: true,
+        ..Default::default()
+    });
+    let (host, runtime, _, port) = setup(&root, provider.clone(), false);
+    let id = spawn(&host, "stream partial response");
+    until(|| provider.partial_started.load(Ordering::SeqCst) == 1).await;
+    let view = port.inspect(AgentActor::Operator, id).unwrap();
+    let partial = view
+        .partial_output
+        .clone()
+        .expect("actual provider delta observation");
+    assert_eq!(partial.state, AgentPartialStateV1::Observed);
+    assert!(matches!(view.state, AgentStateV1::Running { .. }));
+    assert!(view.last_summary.is_none());
+    assert_eq!(partial.agent_id, id);
+    assert_eq!(partial.epoch, view.state.epoch().unwrap());
+    assert_eq!(partial.trust, Trust::Untrusted);
+    let text = partial.text.as_deref().unwrap();
+    assert!(text.contains("Progress") && text.contains("ready"));
+    assert!(!text.contains("abcdefghijklmnopqrstuv"));
+    let source = partial.source.as_ref().unwrap();
+    let resident = runtime.residents.lock().unwrap().get(&id).unwrap().clone();
+    let child = resident.try_lock();
+    assert!(
+        child.is_err(),
+        "live resident execution owns the real Agent"
+    );
+    // Read the independently fsynced WAL while the provider is blocked, using its actual scope.
+    let (tenant, run, path) = provider
+        .child_sources
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!((&source.tenant, &source.run_id), (&tenant, &run));
+    let events = iteron_record::replay(&path).unwrap();
+    assert!(events.iter().any(|event| event.seq.0 == source.provider_intent_seq
+        && event.turn == source.turn
+        && matches!(&event.kind, EventKind::EffectIntent { id: effect, .. } if effect == &source.effect_id)));
+    assert_eq!(
+        port.list(AgentActor::Operator)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.agent_id == id)
+            .unwrap()
+            .partial_output,
+        Some(partial.clone())
+    );
+    let observation = port.wait(AgentActor::Operator, 0, 20).await.unwrap();
+    assert!(observation.revision >= observation.durable_revision);
+    assert_eq!(
+        observation
+            .agents
+            .into_iter()
+            .find(|v| v.agent_id == id)
+            .unwrap()
+            .partial_output,
+        Some(partial)
+    );
+    let durable_revision = observation.durable_revision;
+    let cursor = observation.revision;
+    provider.partial_release.notify_one();
+    until(|| provider.partial_started.load(Ordering::SeqCst) == 2).await;
+    let next = port.wait(AgentActor::Operator, cursor, 20).await.unwrap();
+    assert!(!next.timed_out && next.revision > cursor);
+    assert_eq!(
+        next.durable_revision, durable_revision,
+        "partial output does not invent a WAL transition"
+    );
+    assert!(
+        next.agents
+            .iter()
+            .find(|v| v.agent_id == id)
+            .unwrap()
+            .partial_output
+            .as_ref()
+            .unwrap()
+            .text
+            .as_ref()
+            .unwrap()
+            .contains("next partial")
+    );
+    provider.partial_release.notify_one();
+    until(|| port.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle).await;
+    assert!(
+        port.inspect(AgentActor::Operator, id)
+            .unwrap()
+            .last_summary
+            .is_some()
+    );
+}

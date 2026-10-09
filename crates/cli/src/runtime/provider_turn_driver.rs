@@ -267,6 +267,7 @@ impl ProviderTurnDriver {
             lifecycle: start.events.lifecycle.clone(),
             lifecycle_hooks: start.events.hooks.clone(),
             correlation: start.events.correlation.clone(),
+            partial_mailbox: start.execution.events.partial_mailbox.clone(),
         });
         Ok(Self {
             route: start.route,

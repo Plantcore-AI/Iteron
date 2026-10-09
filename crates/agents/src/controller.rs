@@ -944,6 +944,7 @@ fn record(
             write_paths,
             queued_messages: 0,
             last_summary: None,
+            partial_output: None,
             usage: AgentUsageV1::default(),
             reserved: AgentUsageV1::default(),
         },

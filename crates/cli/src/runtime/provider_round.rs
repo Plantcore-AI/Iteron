@@ -50,6 +50,12 @@ impl ProviderRoundOwner {
             stream_started,
         }
     }
+    pub(super) fn bind_partial_source(
+        &mut self,
+        source: Option<iteron_protocol::agent_output::AgentOutputSourceV1>,
+    ) {
+        self.observations.bind_partial_source(source);
+    }
     /// The pump remains owned until an actual physical settlement consumes it. A second
     /// dispatch while the prior result lacks a terminal cannot enter this coordinator.
     pub(super) async fn run_attempt(

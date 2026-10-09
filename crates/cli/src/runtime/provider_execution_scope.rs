@@ -138,6 +138,22 @@ impl ProviderExecutionScope {
         refusal: Option<KernelError>,
     ) -> Result<(), KernelError> {
         let configuration = &self.configuration;
+        // Only a real ordinary physical ticket attributes a stream. Hedged aggregates must not
+        // be mislabeled as one guessed winner intent.
+        let partial_source = if hedged.is_none() {
+            route.ticket().map(
+                |ticket| iteron_protocol::agent_output::AgentOutputSourceV1 {
+                    tenant: journal.rollout.tenant().clone(),
+                    run_id: journal.rollout.run_id().clone(),
+                    turn: ticket.turn(),
+                    provider_intent_seq: ticket.intent_sequence().0,
+                    effect_id: ticket.effect_id().clone(),
+                },
+            )
+        } else {
+            None
+        };
+        round.bind_partial_source(partial_source);
         round
             .run_attempt(
                 route,

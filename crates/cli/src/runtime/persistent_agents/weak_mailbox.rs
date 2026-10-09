@@ -25,6 +25,17 @@ impl<J> WeakMailbox<J> {
     }
 }
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for WeakMailbox<J> {
+    fn partial_output(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+        task: AgentMessageIdV1,
+        source: &iteron_protocol::agent_output::AgentOutputSourceV1,
+        served_delta: &str,
+    ) -> Result<(), ControllerError> {
+        MailboxPort::partial_output(&self.host()?, id, epoch, task, source, served_delta)
+    }
+
     fn engine_execution(
         &self,
         id: AgentIdV1,

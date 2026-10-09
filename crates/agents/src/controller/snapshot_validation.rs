@@ -45,6 +45,7 @@ pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<()
             || record.next_turn > u64::from(record.turns_used) + 1
             || !record.view.capabilities.contains(Capability::ReadOnly)
             || record.view.queued_messages != 0
+            || record.view.partial_output.is_some()
             || record.view.usage != iteron_protocol::agent_control::AgentUsageV1::default()
             || record.view.reserved != iteron_protocol::agent_control::AgentUsageV1::default()
             || record.view.workspace_scope != snapshot.config.workspace_scope

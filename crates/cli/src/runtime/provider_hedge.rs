@@ -481,6 +481,27 @@ impl Agent {
             )
             .clamp(1, max_aggregate_bytes),
         ));
+        // Only real admitted tickets supply child-output attribution. The selected physical
+        // stream is published live without pretending aggregate hedge usage belongs to it.
+        let partial_mailbox = self.persistent_mailbox.clone();
+        let partial_sources = partial_mailbox.as_ref().map(|_| {
+            prepared
+                .iter()
+                .map(|attempt| {
+                    (
+                        attempt.index,
+                        iteron_protocol::agent_output::AgentOutputSourceV1 {
+                            tenant: self.rollout.tenant().clone(),
+                            run_id: self.rollout.run_id().clone(),
+                            turn: attempt.ticket.turn(),
+                            provider_intent_seq: attempt.ticket.intent_sequence().0,
+                            effect_id: attempt.ticket.effect_id().clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let mut partial_stream: Option<super::agent_partial_stream::AgentPartialStream> = None;
         let mut attempts = prepared
             .into_iter()
             .map(|attempt| {
@@ -514,12 +535,19 @@ impl Agent {
                         );
                         if selected_index.is_none() && selects_winner {
                             selected_index = Some(live.index);
+                            partial_stream = partial_mailbox.clone().zip(partial_sources.as_ref()
+                                .and_then(|sources| sources.get(&live.index)).cloned())
+                                .map(|(mailbox, source)| super::agent_partial_stream::AgentPartialStream::new(mailbox, source));
                             for (other, cancel) in &cancellation {
                                 if *other != live.index {
                                     cancel.store(true, Ordering::Release);
                                 }
                             }
                         }
+                        if selected_index == Some(live.index)
+                            && let StreamItem::TextDelta(text) = &live.item
+                            && let Some(partial) = &mut partial_stream
+                        { partial.observe(text); }
                         if selected_index == Some(live.index)
                             && (self.resident_ui_tx.is_some() || self.ui_tx.is_some())
                         {
@@ -596,6 +624,26 @@ impl Agent {
                             aggregate.observe_success(result.usage);
                             if selected_index.is_none() {
                                 selected_index = Some(index);
+                                partial_stream = partial_mailbox
+                                    .clone()
+                                    .zip(
+                                        partial_sources
+                                            .as_ref()
+                                            .and_then(|sources| sources.get(&index))
+                                            .cloned(),
+                                    )
+                                    .map(|(mailbox, source)| {
+                                        super::agent_partial_stream::AgentPartialStream::new(
+                                            mailbox, source,
+                                        )
+                                    });
+                                if let Some(partial) = &mut partial_stream {
+                                    for item in &items {
+                                        if let StreamItem::TextDelta(text) = item {
+                                            partial.observe(text);
+                                        }
+                                    }
+                                }
                                 for (other, cancel) in &cancellation {
                                     if *other != index {
                                         cancel.store(true, Ordering::Release);
@@ -641,6 +689,9 @@ impl Agent {
             }
         }
 
+        if let Some(partial) = &mut partial_stream {
+            partial.finish();
+        }
         let (result, items) = if let Some((_index, mut result, items)) = winner {
             result.usage = aggregate.report();
             (Ok(result), items)

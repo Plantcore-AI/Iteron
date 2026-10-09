@@ -133,6 +133,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             mailbox: LiveAgentMailbox {
                 id,
                 epoch,
+                task: super::partial_output::task_id(&initial),
                 port: Arc::new(weak_mailbox::WeakMailbox::new(self)),
                 witnesses: Arc::new(Mutex::new(
                     super::prepared_mailbox::MailboxWitnesses::default(),

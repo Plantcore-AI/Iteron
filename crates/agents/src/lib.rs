@@ -23,6 +23,7 @@ mod controller_file_windows;
 mod decompose;
 mod def;
 mod mailbox;
+mod partial_output;
 mod planner;
 mod policy;
 mod reduce;
@@ -50,6 +51,7 @@ pub use def::{
     MIN_SUBAGENT_TURNS, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling,
 };
 pub use mailbox::AgentMailboxMessage;
+pub use partial_output::AgentPartialOutputOwner;
 pub use planner::{
     PLANNER_SLOT_VERSION, PlannerDecision, PlannerError, PlannerObservation, PlannerPlan,
     PlannerProposal, PlannerStrategy,

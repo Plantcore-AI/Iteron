@@ -246,6 +246,7 @@ impl Agent {
             lifecycle: self.lifecycle_emitter.clone(),
             lifecycle_hooks: self.lifecycle_hooks.clone(),
             correlation: self.lifecycle_correlation(Some(turn)),
+            partial_mailbox: self.persistent_mailbox.clone(),
         }
     }
 

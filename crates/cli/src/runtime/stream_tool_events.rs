@@ -17,6 +17,7 @@ pub(super) struct StreamToolEvents {
     pub(super) lifecycle: Option<LifecycleEmitter>,
     pub(super) lifecycle_hooks: Option<LifecycleHookDispatcher>,
     pub(super) correlation: LifecycleCorrelation,
+    pub(super) partial_mailbox: Option<super::persistent_agents::LiveAgentMailbox>,
 }
 impl StreamToolEvents {
     pub(super) fn declared(&self, call: &ToolUse) {

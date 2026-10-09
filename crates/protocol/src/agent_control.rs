@@ -238,6 +238,9 @@ pub struct AgentViewV1 {
     pub write_paths: Vec<String>,
     pub queued_messages: usize,
     pub last_summary: Option<String>,
+    /// Ephemeral actual stream observation, distinct from the durable terminal summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_output: Option<crate::agent_output::AgentPartialOutputV1>,
     #[serde(default)]
     pub usage: AgentUsageV1,
     /// Lifetime budget reserved for admitted descendants, unavailable to this agent itself.
