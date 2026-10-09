@@ -17,6 +17,7 @@ impl Agent {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
+        self.validate_provider_request_route(&request)?;
         request.controls = self.provider_controls_for(self.provider.as_ref());
         request.cache_system =
             request.controls.prompt_cache.breakpoint != iteron_provider::CacheBreakpoint::None;

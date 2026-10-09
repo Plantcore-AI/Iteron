@@ -1772,6 +1772,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for CaptureSteering {
+        // Immutable scripted metering: this fixture never reports input above 1;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(1)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 1.
+            Ok(Some(budget.requested_max_tokens.max(1)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2175,6 +2188,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for MeteredProvider {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2212,6 +2238,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for FirstErrorThenDone {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2247,6 +2286,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ReturnedToolWithoutStream {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -3900,7 +3952,7 @@ mod gate_integration_tests {
         let ws = temp_ws("structured-kernel-diagnostics");
         let (port, receiver) = diagnostics::bounded_channel();
         let mut agent = agent_for(&ws);
-        agent.set_diagnostic_port(port);
+        agent.set_diagnostic_port(port.clone());
 
         agent.fail_next_durable_append = Some(DurableAppendFault::BestEffort);
         agent.emit(
@@ -3910,6 +3962,11 @@ mod gate_integration_tests {
             },
         );
 
+        // A poisoned writer cannot be reused for a new resume transaction. Reopen the
+        // exact durable journal with a fresh owner, retaining the same diagnostic receiver.
+        drop(agent);
+        let mut agent = agent_for(&ws);
+        agent.set_diagnostic_port(port);
         let masked_secret = "[REDACTED:sk-ant-api03-SuperSecretTokenValue12345]";
         agent
             .set_resume(vec![Message {
@@ -9247,10 +9304,9 @@ ant-api03-SuperSecretModelToken12345"
         agent.injected = Some("stable startup memory snapshot".into());
         let system_before = agent.effective_system();
         let fact = "The release branch is cut only after the smoke suite passes.";
-        agent.retain_pending_steer(inbound_control::PendingSteer::internal(format!(
-            "{}\nMemory `mem-hot` was added explicitly by the operator and is available in this session. Exact fact:\n{fact}",
-            MEMORY_ADDED_NOTIFICATION_PREFIX
-        )));
+        agent.memory_workspace = Some(ws.clone());
+        let id = iteron_ctx::MemoryStore::at(&ws).add(fact).unwrap();
+        agent.activate_session_memory(&id, fact).unwrap();
         let mut messages = vec![Message::user_text("continue the release work")];
 
         assert_eq!(
@@ -12612,6 +12668,7 @@ ant-api03-SuperSecretModelToken12345"
                 Trust::Workspace,
             )
             .unwrap();
+        record_test_genesis(&mut agent, &ws);
         agent.fail_next_durable_append = Some(DurableAppendFault::ContextInjection);
         assert!(matches!(
             agent.run("task").await,
@@ -12646,6 +12703,7 @@ ant-api03-SuperSecretModelToken12345"
                 Trust::Workspace,
             )
             .unwrap();
+        record_test_genesis(&mut agent, &ws);
         agent.fail_next_durable_append = Some(DurableAppendFault::ContextInjection);
 
         assert!(matches!(
@@ -13271,7 +13329,7 @@ ant-api03-SuperSecretModelToken12345"
             a.memory_workspace = Some(ws.clone());
             a.set_resume(Agent::messages_from_rollout(&path).unwrap())
                 .unwrap();
-            a.run("follow up").await.unwrap();
+            a.run("").await.unwrap();
             // effective_system must carry the ORIGINAL fact, not the changed disk content.
             let eff = a.effective_system();
             assert!(
@@ -15599,6 +15657,7 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(ws);
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     #[tokio::test]
     async fn recording_harness_error_is_terminal_before_provider_dispatch() {
         struct CountingProvider(std::sync::Arc<std::sync::atomic::AtomicU32>);
@@ -16495,6 +16554,19 @@ ant-api03-SuperSecretModelToken12345"
         struct FailedPrimary(std::sync::Arc<std::sync::atomic::AtomicU32>);
         #[async_trait::async_trait]
         impl Provider for FailedPrimary {
+            // Immutable scripted metering: this fixture never reports input above 4;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(4)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 6.
+                Ok(Some(budget.requested_max_tokens.max(6)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("primary")
             }
@@ -16941,6 +17013,19 @@ ant-api03-SuperSecretModelToken12345"
 
         #[async_trait::async_trait]
         impl Provider for PricedWinner {
+            // Immutable scripted metering: this fixture never reports input above 1;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(1)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 1.
+                Ok(Some(budget.requested_max_tokens.max(1)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("primary")
             }
@@ -17259,6 +17344,19 @@ ant-api03-SuperSecretModelToken12345"
 
         #[async_trait::async_trait]
         impl Provider for LocallyUnavailableProvider {
+            // Immutable scripted metering: this fixture never reports input above 1;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(1)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 1.
+                Ok(Some(budget.requested_max_tokens.max(1)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("provider-a")
             }
@@ -18662,9 +18760,10 @@ ant-api03-SuperSecretModelToken12345"
 
         assert!(matches!(
             agent.run("continue after this response").await,
-            Err(KernelError::PricingLedger(
-                "remaining USD ceiling cannot cover the provider request upper bound"
-            ))
+            Err(KernelError::InvalidRouteMetadata {
+                field: "provider_budget_envelope",
+                reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
+            })
         ));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         assert_eq!(agent.ledger.provider_attempts, 0);

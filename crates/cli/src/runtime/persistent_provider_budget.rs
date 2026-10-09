@@ -52,6 +52,10 @@ impl Agent {
         &self,
         budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
     ) -> Result<u32, KernelError> {
+        // A quote must describe the same executable route already committed by the host.
+        // Do not let a missing bound on an unauthorized replacement mask that refusal.
+        self.provider_selection
+            .validate_live(&self.provider, &self.model)?;
         if self.persistent_mailbox.is_none()
             && self.persistent_agents.is_none()
             && self

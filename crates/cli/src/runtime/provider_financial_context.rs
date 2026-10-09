@@ -98,12 +98,16 @@ impl ProviderFinancialContext {
             return Err(KernelError::UnpricedUsdCeiling);
         };
         port.verify_rate_card(card)?;
-        if now < card.rate_card.issued_at_unix_secs
-            || now >= card.rate_card.expires_at_unix_secs
-            || format!(
-                "{}:{}",
-                card.rate_card.route.provider_id, card.rate_card.route.model_id
-            ) != route_id
+        if now < card.rate_card.issued_at_unix_secs {
+            return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
+        }
+        if now >= card.rate_card.expires_at_unix_secs {
+            return Err(iteron_obs::PricingError::RateCardExpired.into());
+        }
+        if format!(
+            "{}:{}",
+            card.rate_card.route.provider_id, card.rate_card.route.model_id
+        ) != route_id
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
@@ -131,12 +135,16 @@ impl ProviderFinancialContext {
             return Err(KernelError::UnpricedUsdCeiling);
         };
         pricing.verify_rate_card(card)?;
-        if now < card.rate_card.issued_at_unix_secs
-            || now >= card.rate_card.expires_at_unix_secs
-            || format!(
-                "{}:{}",
-                card.rate_card.route.provider_id, card.rate_card.route.model_id
-            ) != route_id
+        if now < card.rate_card.issued_at_unix_secs {
+            return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
+        }
+        if now >= card.rate_card.expires_at_unix_secs {
+            return Err(iteron_obs::PricingError::RateCardExpired.into());
+        }
+        if format!(
+            "{}:{}",
+            card.rate_card.route.provider_id, card.rate_card.route.model_id
+        ) != route_id
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
