@@ -333,9 +333,34 @@ jobs:
           }
           # Require the actual Git for Windows installation, then select its own Bash for the
           # product fixtures. A WSL alias or merely finding some command named bash is insufficient.
-          $git = [System.IO.Path]::GetFullPath(
-            (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
-          )
+          function Resolve-NativeApplication([string]$name) {
+            $commands = @(Get-Command -Name $name -CommandType Application -TotalCount 1 -ErrorAction Stop)
+            if ($commands.Count -ne 1 -or
+                $commands[0] -isnot [System.Management.Automation.ApplicationInfo]) {
+              throw "native prerequisite requires one selected application: $name"
+            }
+            # Never coerce a command collection into a path passed to .NET. Retain enough
+            # nonsecret selection evidence to distinguish lookup from normalization failures.
+            $path = $commands[0].Path
+            if ($path -isnot [string] -or [string]::IsNullOrEmpty($path)) {
+              throw "native prerequisite selected application has no scalar path: $name"
+            }
+            Write-Host "Native prerequisite selected command: $name; count: $($commands.Count); type: ApplicationInfo; path length: $($path.Length)"
+            if (-not [System.IO.Path]::IsPathRooted($path)) {
+              throw "native prerequisite selected application path is not rooted: $name"
+            }
+            try {
+              $path = [System.IO.Path]::GetFullPath($path)
+            } catch {
+              $failureType = $_.Exception.GetBaseException().GetType().Name
+              throw "native prerequisite selected path normalization failed: command=$name; type=$failureType; length=$($path.Length)"
+            }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "native prerequisite selected application is absent: $name"
+            }
+            return $path
+          }
+          $git = Resolve-NativeApplication 'git.exe'
           $version = Invoke-Prerequisite $git '--version'
           if ($version -notmatch '^git version [^\r\n]+\.windows\.[0-9]+\s*$') {
             throw 'native shell gate requires Git for Windows'
@@ -354,8 +379,8 @@ jobs:
           $probe = Invoke-Prerequisite $bash '--noprofile --norc -c "printf iteron-native-bash-prerequisite"'
           if ($probe -cne 'iteron-native-bash-prerequisite') { throw 'actual Bash prerequisite failed' }
           $env:PATH = "$(Split-Path -Parent $bash);$env:PATH"
-          $resolved = (Get-Command bash.exe -CommandType Application -ErrorAction Stop).Source
-          if ([System.IO.Path]::GetFullPath($resolved) -ne [System.IO.Path]::GetFullPath($bash)) {
+          $resolved = Resolve-NativeApplication 'bash.exe'
+          if ($resolved -ne $bash) {
             throw 'product Bash resolution differs from its native prerequisite'
           }
           Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_MODE -ErrorAction SilentlyContinue
