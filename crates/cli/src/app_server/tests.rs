@@ -1558,6 +1558,16 @@ impl iteron_provider::Provider for ToolThenPauseProvider {
 }
 
 fn pin_test_tunables(agent: &mut Agent, orchestrated: bool, provider_id: &str, model_id: &str) {
+    pin_test_tunables_with_hooks(agent, orchestrated, provider_id, model_id, None);
+}
+
+fn pin_test_tunables_with_hooks(
+    agent: &mut Agent,
+    orchestrated: bool,
+    provider_id: &str,
+    model_id: &str,
+    hooks: Option<&crate::runtime::hooks::Hooks>,
+) {
     const FIXED_ARTIFACT_FAMILIES: &[&str] = &[
         "hooks_map",
         "operator_prompt_stream",
@@ -1570,13 +1580,52 @@ fn pin_test_tunables(agent: &mut Agent, orchestrated: bool, provider_id: &str, m
         "oauth_auth_lifecycle_policy",
         "web_search_backend_catalog",
     ];
+    let hooks_identity = hooks
+        .filter(|hooks| !hooks.is_empty())
+        .map(|hooks| hooks.catalog_identity());
     let mut input = iteron_record::resolved_fixture::input();
+    let retained = |family: &str| {
+        !FIXED_ARTIFACT_FAMILIES.contains(&family)
+            || (family == "hooks_map" && hooks_identity.is_some())
+    };
     input
         .declared_values
-        .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+        .retain(|value| retained(&value.family));
     input
         .constraint_evidence
-        .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+        .retain(|value| retained(&value.family));
+    if let Some(identity) = hooks_identity {
+        let value = iteron_tunables::ResolutionValue::CatalogRef {
+            catalog_id: "iteron://tunables/catalogs/hooks_map-v1".into(),
+            digest_sha256: identity.digest_sha256,
+            entry_count: u64::try_from(identity.entry_count).unwrap(),
+            canonical_bytes: u64::try_from(identity.canonical_bytes).unwrap(),
+        };
+        input
+            .declared_values
+            .iter_mut()
+            .find(|entry| entry.family == "hooks_map")
+            .unwrap()
+            .value = value.clone();
+        for evidence in input
+            .constraint_evidence
+            .iter_mut()
+            .filter(|entry| entry.family == "hooks_map")
+        {
+            let iteron_tunables::ConstraintValue::Domain {
+                allowed_values,
+                preferred,
+                ..
+            } = &mut evidence.value
+            else {
+                panic!("hook identity must retain its operator-attested domain")
+            };
+            *allowed_values = Some([value.clone()].into_iter().collect());
+            if preferred.is_some() {
+                *preferred = Some(value.clone());
+            }
+        }
+    }
 
     let context_window = iteron_tunables::ResolutionValue::Integer { value: 120_000 };
     let window = input
@@ -1852,6 +1901,12 @@ fn pin_test_tunables(agent: &mut Agent, orchestrated: bool, provider_id: &str, m
 }
 
 fn agent_in(workspace: &std::path::Path) -> Agent {
+    let mut agent = unbound_agent_in(workspace);
+    pin_test_tunables(&mut agent, false, "provider-a", "m");
+    agent
+}
+
+fn unbound_agent_in(workspace: &std::path::Path) -> Agent {
     let rollout = iteron_record::Rollout::open(
         &workspace.join(".iteron/runs"),
         &iteron_protocol::RunId("control-plane".into()),
@@ -1873,7 +1928,6 @@ fn agent_in(workspace: &std::path::Path) -> Agent {
         },
     );
     agent.workspace = workspace.to_path_buf();
-    pin_test_tunables(&mut agent, false, "provider-a", "m");
     agent
 }
 
@@ -2942,12 +2996,10 @@ async fn plugin_public_control_binds_actual_signed_owner_and_refuses_stale_disab
     use iteron_protocol::plugin_control::PluginControlV1;
     let (package_root, mut plugins) = crate::plugin_runtime::installed_fixture();
     let workspace = temp_workspace("plugin-public-owner");
-    let mut agent = agent_in(&workspace);
-    agent
-        .install_hooks(crate::runtime::hooks::Hooks::from_user_config(Some(
-            &plugins.hooks,
-        )))
-        .unwrap();
+    let mut agent = unbound_agent_in(&workspace);
+    let hooks = crate::runtime::hooks::Hooks::from_user_config(Some(&plugins.hooks));
+    pin_test_tunables_with_hooks(&mut agent, false, "provider-a", "m", Some(&hooks));
+    agent.install_hooks(hooks).unwrap();
     let owner = plugins.management_port().unwrap().unwrap();
     agent.install_plugin_management(owner.clone()).unwrap();
     let (_handle, mut ends) = wire().unwrap();
