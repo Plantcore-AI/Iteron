@@ -79,6 +79,10 @@ async fn native_setup_binding_refusal_retires_its_reserved_lease_without_creatio
     };
     assert_eq!(error.stage, "native isolation setup");
     assert!(error.not_dispatched() && error.cleanup_known());
+    assert_eq!(
+        error.refusal_origin(),
+        Some(WindowsLaunchFailureOrigin::Isolation)
+    );
     assert!(isolation.validate_scope_still_bound().is_err());
     assert!(isolation.reserve_launch().is_err());
     assert_eq!(
@@ -124,6 +128,10 @@ async fn native_sandbox_scratch_is_create_only_and_never_deletes_an_existing_dir
         Err(error) => error,
     };
     assert!(error.not_dispatched() && error.cleanup_known());
+    assert_eq!(
+        error.refusal_origin(),
+        Some(WindowsLaunchFailureOrigin::Resource)
+    );
     assert_eq!(std::fs::read(&original).unwrap(), b"caller-owned source");
     assert_eq!(
         std::fs::read_dir(workspace.0.join("workspace"))
@@ -195,6 +203,10 @@ async fn native_sandbox_workspace_capability_mismatch_retires_only_its_created_s
         Err(error) => error,
     };
     assert!(error.not_dispatched() && error.cleanup_known());
+    assert_eq!(
+        error.refusal_origin(),
+        Some(WindowsLaunchFailureOrigin::Isolation)
+    );
     assert!(!scratch.try_exists().unwrap());
     assert!(workspace.0.join("workspace").is_dir());
     assert!(workspace.0.join("scratch").is_dir());

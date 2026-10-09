@@ -1,5 +1,6 @@
 //! Bounded native ABI projection for owned terminal or pipe transport and a frozen environment.
 //! The application path is explicit; CreateProcess cannot search ambient PATH/current-directory.
+use super::LaunchFailure;
 use super::conpty::console::Console;
 use crate::windows_process_isolation::WindowsProcessIsolation;
 use std::ffi::{OsStr, OsString};
@@ -136,9 +137,11 @@ impl Launch {
         &mut self,
         transport: Transport<'_>,
         isolation: Option<&WindowsProcessIsolation>,
-    ) -> io::Result<PROCESS_INFORMATION> {
+    ) -> Result<PROCESS_INFORMATION, LaunchFailure> {
         if let Some(isolation) = isolation {
-            isolation.validate_scope_still_bound()?;
+            isolation
+                .validate_scope_still_bound()
+                .map_err(LaunchFailure::isolation)?;
         }
         let lpac_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
         let (console, handles) = match transport {
@@ -182,7 +185,9 @@ impl Launch {
             )
         };
         if created == 0 {
-            return Err(io::Error::last_os_error());
+            // CreateProcess can fail for resource, token, file, or other OS reasons. A raw code
+            // alone is not an authenticated isolation verdict.
+            return Err(LaunchFailure::unknown(io::Error::last_os_error()));
         }
         Ok(information)
     }
@@ -198,7 +203,7 @@ impl Attributes {
         handles: Option<&[windows_sys::Win32::Foundation::HANDLE; 3]>,
         isolation: Option<&WindowsProcessIsolation>,
         lpac_policy: &u32,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, LaunchFailure> {
         let count = 1
             + u32::from(isolation.is_some())
             + u32::from(isolation.is_some_and(WindowsProcessIsolation::is_lpac));
@@ -207,9 +212,7 @@ impl Attributes {
             InitializeProcThreadAttributeList(null_mut(), count, 0, &mut bytes);
         }
         if bytes == 0 || bytes > MAX_ATTRIBUTE_BYTES {
-            return Err(io::Error::other(
-                "native process attribute envelope unavailable",
-            ));
+            return Err(io::Error::other("native process attribute envelope unavailable").into());
         }
         let mut attributes = Self {
             buffer: vec![0; bytes.div_ceil(size_of::<usize>())],
@@ -218,7 +221,7 @@ impl Attributes {
         if unsafe { InitializeProcThreadAttributeList(attributes.pointer(), count, 0, &mut bytes) }
             == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(io::Error::last_os_error().into());
         }
         attributes.initialized = true;
         let (attribute, value, size) = if let Some(console) = console {
@@ -248,7 +251,7 @@ impl Attributes {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(io::Error::last_os_error().into());
         }
         if let Some(isolation) = isolation {
             if unsafe {
@@ -263,7 +266,7 @@ impl Attributes {
                 )
             } == 0
             {
-                return Err(io::Error::last_os_error());
+                return Err(LaunchFailure::isolation(io::Error::last_os_error()));
             }
             if isolation.is_lpac()
                 && unsafe {
@@ -278,7 +281,7 @@ impl Attributes {
                     )
                 } == 0
             {
-                return Err(io::Error::last_os_error());
+                return Err(LaunchFailure::isolation(io::Error::last_os_error()));
             }
         }
         Ok(attributes)

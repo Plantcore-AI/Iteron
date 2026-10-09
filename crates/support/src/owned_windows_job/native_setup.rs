@@ -1,7 +1,8 @@
 //! One bounded pre-native isolation transaction. Observer cancellation cannot drop a partially
 //! installed grant: this guard retains its sole sealed reservation and physical custody slot.
 use super::{
-    LaunchCustody, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError,
+    LaunchCustody, LaunchFailure, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError,
+    WindowsLaunchFailureOrigin,
     conpty::console::Console,
     custody,
     native_retirement::{NativeLaunchRetirement, RetirementCompletion},
@@ -112,7 +113,7 @@ impl WindowsSandboxLaunch {
             .observation();
         let work = tokio::task::spawn_blocking(move || {
             let mut prepared = prepared;
-            let result = (|| {
+            let result = (|| -> Result<(), LaunchFailure> {
                 let retirement = prepared.retirement.as_mut().expect("retained");
                 retirement.bind_scratch(WindowsPrivateScratch::bind(&captured.scratch)?);
                 retirement.provision_scratch()?;
@@ -120,15 +121,23 @@ impl WindowsSandboxLaunch {
                     Some(workspace) => WindowsProcessIsolation::prepare_from_workspace(
                         captured.policy(),
                         workspace,
-                    )?,
-                    None => WindowsProcessIsolation::prepare(captured.policy())?,
+                    )
+                    .map_err(LaunchFailure::isolation)?,
+                    None => WindowsProcessIsolation::prepare(captured.policy())
+                        .map_err(LaunchFailure::isolation)?,
                 };
                 // The scratch handle is held without delete sharing throughout scope admission.
                 let _ = retirement.scratch_file()?;
-                retirement.bind_isolation(&isolation)?;
-                isolation.validate_launch(&captured.executable, &captured.workspace)?;
-                isolation.validate_environment(&captured.environment)?;
-                retirement.install()
+                retirement
+                    .bind_isolation(&isolation)
+                    .map_err(LaunchFailure::isolation)?;
+                isolation
+                    .validate_launch(&captured.executable, &captured.workspace)
+                    .map_err(LaunchFailure::isolation)?;
+                isolation
+                    .validate_environment(&captured.environment)
+                    .map_err(LaunchFailure::isolation)?;
+                retirement.install().map_err(LaunchFailure::isolation)
             })();
             (prepared, captured, result)
         });
@@ -137,15 +146,16 @@ impl WindowsSandboxLaunch {
                 prepared: Some(prepared),
                 captured,
             }),
-            Ok(Ok((prepared, _, Err(error)))) => {
-                Err(prepared.refuse("native sandbox preparation", error).await)
-            }
+            Ok(Ok((prepared, _, Err(error)))) => Err(prepared
+                .refuse_failure("native sandbox preparation", error)
+                .await),
             Ok(Err(_)) | Err(_) => Err(WindowsJobLaunchError {
                 stage: "native sandbox preparation observation",
                 os_error: None,
                 execution_may_have_started: false,
                 cleanup_known: false,
                 custody: Some(LaunchCustody::Setup(observation)),
+                origin: WindowsLaunchFailureOrigin::Unknown,
             }),
         }
     }
@@ -169,6 +179,15 @@ impl WindowsSandboxLaunch {
     ) -> WindowsJobLaunchError {
         self.take().refuse(stage, error).await
     }
+    pub(super) async fn refuse_isolation(
+        self,
+        stage: &'static str,
+        error: io::Error,
+    ) -> WindowsJobLaunchError {
+        self.take()
+            .refuse_failure(stage, LaunchFailure::isolation(error))
+            .await
+    }
 }
 impl Prepared {
     pub(super) async fn admit(
@@ -183,7 +202,14 @@ impl Prepared {
         let retirement =
             NativeLaunchRetirement::new(None, setup.as_ref().map(|setup| setup.isolation.clone()))
                 .map_err(|error| {
-                    WindowsJobLaunchError::before_creation("native isolation reservation", error)
+                    WindowsJobLaunchError::before_creation_failure(
+                        "native isolation reservation",
+                        if setup.is_some() {
+                            LaunchFailure::isolation(error)
+                        } else {
+                            error.into()
+                        },
+                    )
                 })?;
         let prepared = Self {
             job,
@@ -221,15 +247,16 @@ impl Prepared {
         });
         match tokio::time::timeout(MAX_SETUP_WAIT, work).await {
             Ok(Ok((prepared, Ok(())))) => Ok(prepared),
-            Ok(Ok((prepared, Err(error)))) => {
-                Err(prepared.refuse("native isolation setup", error).await)
-            }
+            Ok(Ok((prepared, Err(error)))) => Err(prepared
+                .refuse_failure("native isolation setup", LaunchFailure::isolation(error))
+                .await),
             Ok(Err(_)) | Err(_) => Err(WindowsJobLaunchError {
                 stage: "native isolation setup observation",
                 os_error: None,
                 execution_may_have_started: false,
                 cleanup_known: false,
                 custody: Some(LaunchCustody::Setup(observation)),
+                origin: WindowsLaunchFailureOrigin::Unknown,
             }),
         }
     }
@@ -257,9 +284,16 @@ impl Prepared {
         )
     }
     pub(super) async fn refuse(
-        mut self,
+        self,
         stage: &'static str,
         error: io::Error,
+    ) -> WindowsJobLaunchError {
+        self.refuse_failure(stage, error.into()).await
+    }
+    pub(super) async fn refuse_failure(
+        mut self,
+        stage: &'static str,
+        failure: LaunchFailure,
     ) -> WindowsJobLaunchError {
         let observation = self
             .retirement
@@ -270,10 +304,11 @@ impl Prepared {
         let cleanup_known = observation.observe(MAX_CLEANUP_WAIT).await;
         WindowsJobLaunchError {
             stage,
-            os_error: error.raw_os_error(),
+            os_error: failure.error.raw_os_error(),
             execution_may_have_started: false,
             cleanup_known,
             custody: (!cleanup_known).then_some(LaunchCustody::Setup(observation)),
+            origin: failure.origin,
         }
     }
     fn defer(&mut self) {

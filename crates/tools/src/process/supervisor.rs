@@ -460,7 +460,16 @@ fn spawn_error(error: SandboxError) -> ActionError {
         ),
         #[cfg(windows)]
         SandboxError::WindowsLaunch(ref launch) if launch.not_dispatched() => ActionError::Refused(
-            iteron_protocol::refusal::RefusalReasonV1::ResourceUnavailable,
+            match launch.refusal_origin() {
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Isolation) => {
+                    iteron_protocol::refusal::RefusalReasonV1::SandboxProfileRefused
+                }
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Resource) => {
+                    iteron_protocol::refusal::RefusalReasonV1::ResourceUnavailable
+                }
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Unknown)
+                | None => iteron_protocol::refusal::RefusalReasonV1::Unknown,
+            },
             error.to_string(),
         ),
         #[cfg(windows)]
@@ -863,5 +872,76 @@ mod refusal_provenance_tests {
         );
         assert_eq!(lock(&supervisor.state).next_sequence, before);
         assert!(lock(&supervisor.state).jobs.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn native_windows_scope_refusal_and_opaque_create_failure_have_distinct_sources() {
+        use iteron_support::owned_windows_job::{OwnedWindowsPipes, WindowsSandboxLaunch};
+        use iteron_support::windows_process_isolation::WindowsIsolationPolicy;
+        let root = std::env::temp_dir().join(format!(
+            "iteron-process-refusal-source-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let scratch = root.join("created-scratch");
+        let executable = std::env::current_exe().unwrap();
+        let wrong_workspace = std::fs::File::open(&executable).unwrap();
+        let error = match WindowsSandboxLaunch::prepare(
+            WindowsIsolationPolicy {
+                workspace: &root,
+                scratch: &scratch,
+                executable: &executable,
+                environment: &[],
+                write_roots: &[],
+                read_only_roots: &[],
+                allow_egress: false,
+            },
+            Some(&wrong_workspace),
+        )
+        .await
+        {
+            Ok(_) => panic!("a held executable file cannot authorize a workspace directory"),
+            Err(error) => error,
+        };
+        assert!(error.not_dispatched() && error.cleanup_known());
+        let captured = super::super::action_result::<serde_json::Value>(
+            "exact-scope-refusal".into(),
+            Err(spawn_error(SandboxError::WindowsLaunch(Box::new(error)))),
+        );
+        assert_eq!(
+            captured.refusal_reason(),
+            Some(RefusalReasonV1::SandboxProfileRefused)
+        );
+        assert!(matches!(
+            captured.execution,
+            crate::ToolExecution::Definite(_)
+        ));
+        assert!(!scratch.exists());
+        let error = OwnedWindowsPipes::spawn_with_isolation(
+            &root.join("missing.exe"),
+            &[],
+            &root,
+            &[],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.not_dispatched() && error.cleanup_known());
+        let captured = super::super::action_result::<serde_json::Value>(
+            "exact-create-refusal".into(),
+            Err(spawn_error(SandboxError::WindowsLaunch(Box::new(error)))),
+        );
+        assert_eq!(captured.refusal_reason(), Some(RefusalReasonV1::Unknown));
+        assert!(matches!(
+            captured.execution,
+            crate::ToolExecution::Definite(_)
+        ));
+        drop(wrong_workspace);
+        std::fs::remove_dir(&root).unwrap();
     }
 }

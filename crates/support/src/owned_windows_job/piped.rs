@@ -3,7 +3,8 @@
 //! it does not grant confinement merely because a Job exists.
 mod channels;
 use super::{
-    CLEANUP_POLL, LaunchCustody, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError, custody,
+    CLEANUP_POLL, LaunchCustody, LaunchFailure, MAX_CLEANUP_WAIT, OwnedWindowsJob,
+    WindowsJobLaunchError, custody,
     native_launch::{Launch, Transport},
     native_process::NativeProcess,
     native_retirement::{NativeLaunchRetirement, RetirementCompletion},
@@ -94,7 +95,7 @@ impl OwnedWindowsPipes {
     ) -> Result<Self, WindowsJobLaunchError> {
         if !sandbox.matches(executable, directory, environment) {
             return Err(sandbox
-                .refuse(
+                .refuse_isolation(
                     "native sandbox launch binding",
                     io::Error::other("native sandbox launch differs from its frozen scope"),
                 )
@@ -197,7 +198,7 @@ impl OwnedWindowsPipes {
             Err(error) => {
                 drop(channels.child_handles);
                 return Err(owned
-                    .refuse("pipe suspended process creation", error, false)
+                    .refuse_failure("pipe suspended process creation", error, false)
                     .await);
             }
         };
@@ -207,13 +208,14 @@ impl OwnedWindowsPipes {
             .child
             .as_ref()
             .ok_or_else(|| io::Error::other("pipe process missing"))
+            .map_err(LaunchFailure::from)
             .and_then(|child| {
                 let process = child.handle()?;
                 let pid = child
                     .id()
                     .ok_or_else(|| io::Error::other("pipe process retired"))?;
                 if unsafe { GetProcessIdOfThread(primary.as_raw_handle()) } != pid {
-                    return Err(io::Error::other("pipe primary thread identity mismatch"));
+                    return Err(io::Error::other("pipe primary thread identity mismatch").into());
                 }
                 owned
                     .job
@@ -224,14 +226,16 @@ impl OwnedWindowsPipes {
                     .as_ref()
                     .and_then(NativeLaunchRetirement::isolation)
                 {
-                    isolation.verify_child(process.as_handle())?;
+                    isolation
+                        .verify_child(process.as_handle())
+                        .map_err(LaunchFailure::isolation)?;
                 }
                 Ok(())
             });
         if let Err(error) = prepared {
             drop(primary);
             return Err(owned
-                .refuse("pipe suspended Job/token membership", error, false)
+                .refuse_failure("pipe suspended Job/token membership", error, false)
                 .await);
         }
         #[cfg(test)]
@@ -339,9 +343,18 @@ impl OwnedWindowsPipes {
         }
     }
     async fn refuse(
-        mut self,
+        self,
         stage: &'static str,
         error: io::Error,
+        execution_may_have_started: bool,
+    ) -> WindowsJobLaunchError {
+        self.refuse_failure(stage, error.into(), execution_may_have_started)
+            .await
+    }
+    async fn refuse_failure(
+        mut self,
+        stage: &'static str,
+        failure: LaunchFailure,
         execution_may_have_started: bool,
     ) -> WindowsJobLaunchError {
         self.input = None;
@@ -353,10 +366,11 @@ impl OwnedWindowsPipes {
             .is_ok_and(|result| result.is_ok());
         WindowsJobLaunchError {
             stage,
-            os_error: error.raw_os_error(),
+            os_error: failure.error.raw_os_error(),
             execution_may_have_started,
             cleanup_known,
             custody: (!cleanup_known).then(|| LaunchCustody::Pipes(Box::new(self))),
+            origin: failure.origin,
         }
     }
 }

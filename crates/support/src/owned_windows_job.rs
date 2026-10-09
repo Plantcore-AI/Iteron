@@ -57,6 +57,42 @@ const MAX_CLEANUP_WAIT: Duration = Duration::from_secs(1);
 const CLEANUP_POLL: Duration = Duration::from_millis(10);
 const CLEANUP_EXIT_CODE: u32 = 1;
 
+/// Closed operation domains captured at the actual native failure site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsLaunchFailureOrigin {
+    Unknown,
+    Resource,
+    Isolation,
+}
+
+/// Internal call-site evidence, never derived from an OS message or a displayed stage label.
+struct LaunchFailure {
+    origin: WindowsLaunchFailureOrigin,
+    error: io::Error,
+}
+impl LaunchFailure {
+    fn isolation(error: io::Error) -> Self {
+        Self {
+            origin: WindowsLaunchFailureOrigin::Isolation,
+            error,
+        }
+    }
+    fn unknown(error: io::Error) -> Self {
+        Self {
+            origin: WindowsLaunchFailureOrigin::Unknown,
+            error,
+        }
+    }
+}
+impl From<io::Error> for LaunchFailure {
+    fn from(error: io::Error) -> Self {
+        Self {
+            origin: WindowsLaunchFailureOrigin::Resource,
+            error,
+        }
+    }
+}
+
 /// A launch refusal is known before execution only after the suspended child is also reaped.
 /// An uncertain ResumeThread result or cleanup can never become NotDispatched.
 #[derive(Debug)]
@@ -66,6 +102,7 @@ pub struct WindowsJobLaunchError {
     execution_may_have_started: bool,
     cleanup_known: bool,
     custody: Option<LaunchCustody>,
+    origin: WindowsLaunchFailureOrigin,
 }
 
 impl WindowsJobLaunchError {
@@ -75,6 +112,12 @@ impl WindowsJobLaunchError {
 
     pub fn cleanup_known(&self) -> bool {
         self.cleanup_known
+    }
+
+    /// A source label cannot establish execution certainty. Unconfirmed cleanup/resume keeps
+    /// this observation unavailable, even when the exact failed operation was an isolation check.
+    pub fn refusal_origin(&self) -> Option<WindowsLaunchFailureOrigin> {
+        self.not_dispatched().then_some(self.origin)
     }
 
     /// Retry only the retained physical cleanup; this cannot clear uncertain dispatched effects.
@@ -102,12 +145,17 @@ impl WindowsJobLaunchError {
     }
 
     fn before_creation(stage: &'static str, error: io::Error) -> Self {
+        Self::before_creation_failure(stage, error.into())
+    }
+
+    fn before_creation_failure(stage: &'static str, failure: LaunchFailure) -> Self {
         Self {
             stage,
-            os_error: error.raw_os_error(),
+            os_error: failure.error.raw_os_error(),
             execution_may_have_started: false,
             cleanup_known: true,
             custody: None,
+            origin: failure.origin,
         }
     }
 }
@@ -183,7 +231,10 @@ impl OwnedWindowsChild {
         // No running-start or BREAKAWAY_FROM_JOB caller flag survives this constructor.
         command.creation_flags(CREATE_SUSPENDED);
         let child = command.spawn().map_err(|error| {
-            WindowsJobLaunchError::before_creation("suspended process creation", error)
+            WindowsJobLaunchError::before_creation_failure(
+                "suspended process creation",
+                LaunchFailure::unknown(error),
+            )
         })?;
         let mut owned = Self {
             original_pid: child.id(),
@@ -325,6 +376,7 @@ impl OwnedWindowsChild {
             execution_may_have_started,
             cleanup_known,
             custody: (!cleanup_known).then(|| LaunchCustody::Standard(Box::new(self))),
+            origin: WindowsLaunchFailureOrigin::Resource,
         }
     }
 }

@@ -53,6 +53,22 @@ async fn spawn(root: &Path, mode: &str) -> OwnedWindowsPipes {
     .await
     .unwrap()
 }
+
+#[tokio::test]
+async fn native_missing_executable_retains_unknown_origin_after_real_empty_job_cleanup() {
+    let root = Workspace::new("missing-executable-origin");
+    let missing = root.0.join("never-created.exe");
+    let error = OwnedWindowsPipes::spawn_with_isolation(&missing, &[], &root.0, &[], None)
+        .await
+        .unwrap_err();
+    assert!(error.not_dispatched() && error.cleanup_known());
+    assert_eq!(
+        error.refusal_origin(),
+        Some(super::super::WindowsLaunchFailureOrigin::Unknown)
+    );
+    assert!(std::fs::read_dir(&root.0).unwrap().next().is_none());
+}
+
 #[test]
 fn native_piped_child_fixture() {
     let Some(mode) = std::env::var_os(MODE) else {

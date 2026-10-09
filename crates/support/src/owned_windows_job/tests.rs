@@ -285,8 +285,10 @@ async fn owned_windows_job_string_projection_retains_actual_unassigned_suspended
         execution_may_have_started: false,
         cleanup_known: false,
         custody: Some(super::LaunchCustody::Standard(Box::new(owned))),
+        origin: super::WindowsLaunchFailureOrigin::Resource,
     };
     assert!(!error.not_dispatched());
+    assert!(error.refusal_origin().is_none());
     let _public_message = error.to_string();
     drop(error);
     assert_eq!(
@@ -314,7 +316,9 @@ async fn owned_windows_job_string_projection_closes_actual_assigned_tree_after_e
         execution_may_have_started: true,
         cleanup_known: false,
         custody: Some(super::LaunchCustody::Standard(Box::new(child))),
+        origin: super::WindowsLaunchFailureOrigin::Resource,
     };
+    assert!(error.refusal_origin().is_none());
     let _public_message = error.to_string();
     drop(error);
     // The observer retains only the Job, so zero also requires the custody worker to release
