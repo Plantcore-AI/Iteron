@@ -114,6 +114,22 @@ impl ProviderFinancialContext {
         Ok(())
     }
 
+    /// Read-only tariff evidence for the exact admitted physical route and timestamp. Logical
+    /// feedback must not claim a paid missing component from the current selection or label.
+    pub(super) fn cache_creation_tariff_nonzero(&self, route_id: &str, admitted_at: u64) -> bool {
+        let (Some(port), Some(card)) = (&self.pricing_port, &self.pricing) else {
+            return false;
+        };
+        card.rate_card.rates.cache_creation_microusd_per_million != 0
+            && admitted_at >= card.rate_card.issued_at_unix_secs
+            && admitted_at < card.rate_card.expires_at_unix_secs
+            && format!(
+                "{}:{}",
+                card.rate_card.route.provider_id, card.rate_card.route.model_id
+            ) == route_id
+            && port.verify_rate_card(card).is_ok()
+    }
+
     /// Frozen signed prices and current independent monetary/controller headroom. This reads no
     /// config or model-supplied assertion; an Unknown owner prevents even an advisory selection.
     /// Quote only a NEW unreserved physical request. An already reserved hedge primary keeps

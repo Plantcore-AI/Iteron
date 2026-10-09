@@ -47,6 +47,7 @@ pub(super) struct ProviderPhysicalUsageReceipt {
     turn: TurnId,
     intent_sequence: Seq,
     pricing_at_unix_secs: Option<u64>,
+    cache_creation_tariff_nonzero: bool,
     accounting: ProviderRouteAttemptAccounting,
 }
 
@@ -59,6 +60,9 @@ impl ProviderPhysicalUsageReceipt {
     }
     pub(super) fn pricing_at_unix_secs(&self) -> Option<u64> {
         self.pricing_at_unix_secs
+    }
+    pub(super) fn cache_creation_tariff_nonzero(&self) -> bool {
+        self.cache_creation_tariff_nonzero
     }
     pub(super) fn accounting(&self) -> &ProviderRouteAttemptAccounting {
         &self.accounting
@@ -264,6 +268,10 @@ impl ProviderAttemptJournal<'_> {
             turn,
             intent_sequence,
             pricing_at_unix_secs,
+            cache_creation_tariff_nonzero: pricing_at_unix_secs.is_some_and(|admitted_at| {
+                self.financial
+                    .cache_creation_tariff_nonzero(observed.route_id, admitted_at)
+            }),
             accounting: accounting.clone(),
         };
         Ok((accounting, safe, receipt))

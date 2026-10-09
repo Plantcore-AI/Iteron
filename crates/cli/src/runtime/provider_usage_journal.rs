@@ -66,7 +66,10 @@ impl ProviderUsageJournal<'_> {
             self.close_usd_if_physical_charge_is_unproved(turn);
             return Err(error);
         }
-        if !cache_creation_reported {
+        if !cache_creation_reported
+            && matches!(evidence, ProviderLogicalUsageEvidence::Single(receipt)
+                if receipt.cache_creation_tariff_nonzero())
+        {
             let notice = iteron_tunables::param_str(
                 "cli.runtime.unpriceable_cache_creation_notice",
                 UNPRICEABLE_CACHE_CREATION_NOTICE,
