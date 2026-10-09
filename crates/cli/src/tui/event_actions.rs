@@ -50,6 +50,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::Refusal(value) => super::refusal::show(app, &value),
         app_server::ServerEvent::HostFinalEvidence(fact) => {
             super::final_evidence::apply(app, session, fact)
         }

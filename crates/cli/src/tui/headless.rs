@@ -289,6 +289,7 @@ impl Shared {
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_)
+                | ServerEvent::Refusal(_)
                 | ServerEvent::HostFinalEvidence(_)
         ) {
             return Ok((turn, assistant, legacy));
@@ -372,6 +373,7 @@ impl Shared {
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_)
+                | ServerEvent::Refusal(_)
                 | ServerEvent::HostFinalEvidence(_) => {
                     unreachable!("unpublished EQ variants were filtered before projection")
                 }

@@ -20,6 +20,7 @@ pub(super) async fn publish_runtime_event(
         }
         RuntimeFrontendEvent::Plantcore(event) => ServerEvent::Plantcore(event),
         RuntimeFrontendEvent::TurnPublication(event) => ServerEvent::TurnPublication(event),
+        RuntimeFrontendEvent::Refusal(event) => ServerEvent::Refusal(event),
         RuntimeFrontendEvent::HostFinalEvidence(event) => ServerEvent::HostFinalEvidence(event),
     };
     // Presentation disconnection does not drop the resident future in the middle of an effect.

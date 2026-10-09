@@ -130,6 +130,7 @@ pub(crate) use session_attachment::{
 };
 mod event_publisher;
 mod final_evidence;
+pub(crate) mod refusal_projection;
 pub(crate) use event_publisher::EventPublisher;
 
 mod queue_wiring;

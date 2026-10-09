@@ -97,7 +97,7 @@ pub(super) fn enable(agent: &mut Agent, command: ClientAgentControlV1) -> Contro
     };
     let workspace_scope = match agent.persistent_agent_workspace_scope() {
         Ok(scope) => scope,
-        Err(error) => return ControlReply::Refused(error.public_summary()),
+        Err(error) => return ControlReply::refused_by(&error),
     };
     let config = AgentControllerConfig {
         workspace_scope,
@@ -115,7 +115,7 @@ pub(super) fn enable(agent: &mut Agent, command: ClientAgentControlV1) -> Contro
                 json!({"type":"agents_enabled_v1","contract_version":1,"agents":[],"observation_unavailable":true}),
             ),
         },
-        Err(error) => ControlReply::Refused(error.public_summary()),
+        Err(error) => ControlReply::refused_by(&error),
     }
 }
 

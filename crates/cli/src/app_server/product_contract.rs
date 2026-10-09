@@ -137,6 +137,7 @@ struct Projection {
     maintenance_gaps: u64,
     mcp_inputs: Option<super::mcp_input_public::InputBinding>,
     final_evidence: super::final_evidence::FinalEvidenceReader,
+    refusals: super::refusal_projection::RefusalReader,
     export: Option<super::client_export::ExportBinding>,
     submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
     shell: Option<Arc<super::client_shell::ShellService>>,
@@ -188,6 +189,20 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn refusals_v1(
+        &self,
+        command: iteron_protocol::client_refusal::RefusalsReadV1,
+    ) -> Value {
+        self.with_mut(|projection| {
+            if projection.snapshot.as_ref().is_none_or(|scope| {
+                scope.thread_id != command.thread_id || scope.run_id != command.run_id
+            }) {
+                return json!({"type":"refusals_refused_v1","reason_code":"scope_changed"});
+            }
+            projection.refusals.read(command)
+        })
+    }
+
     pub(super) fn host_final_evidence_v1(
         &self,
         command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
@@ -295,6 +310,11 @@ impl ContractReader {
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
             if let Some(snapshot) = projection.snapshot.as_ref() {
+                projection.refusals.bind(
+                    snapshot.thread_id.clone(),
+                    agent.rollout.tenant().clone(),
+                    agent.rollout.run_id().clone(),
+                );
                 projection.final_evidence.bind(
                     snapshot.thread_id.clone(),
                     agent.rollout.tenant().clone(),
@@ -1053,6 +1073,9 @@ impl Projection {
         };
         snapshot.source_event_seq = seq;
         match event {
+            ServerEvent::Refusal(refusal) => {
+                self.refusals.observe(seq, refusal);
+            }
             ServerEvent::HostFinalEvidence(fact) => {
                 self.final_evidence.observe(fact);
             }

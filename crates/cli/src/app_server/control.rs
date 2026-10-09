@@ -1076,6 +1076,11 @@ pub(super) async fn apply_control(
     } else {
         reply
     };
+    if let ControlReply::RefusedWithOrigin { refusal, .. } = &reply {
+        let _ = events
+            .publish(ServerEvent::Refusal((**refusal).clone()))
+            .await;
+    }
     let _ = request.reply.send(reply);
 }
 

@@ -1141,6 +1141,7 @@ async fn a_saturated_eq_coalesces_every_delta_and_never_loses_the_terminal_event
             | ServerEvent::WorkflowRun(_)
             | ServerEvent::Activity(_)
             | ServerEvent::McpInputRequested(_)
+            | ServerEvent::Refusal(_)
             | ServerEvent::HostFinalEvidence(_)
             | ServerEvent::TurnPublication(_)
             | ServerEvent::AdvisoryMaintenance(_)
@@ -1221,7 +1222,8 @@ async fn a_flooded_eq_delivers_every_authoritative_event_and_only_drops_deltas()
             | ServerEvent::WorkflowRun(_)
             | ServerEvent::Activity(_)
             | ServerEvent::McpInputRequested(_) => deltas += 1,
-            ServerEvent::HostFinalEvidence(_)
+            ServerEvent::Refusal(_)
+            | ServerEvent::HostFinalEvidence(_)
             | ServerEvent::TurnPublication(_)
             | ServerEvent::AdvisoryMaintenance(_)
             | ServerEvent::MaintenanceAvailability(_) => {}

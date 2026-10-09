@@ -49,6 +49,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    RefusalsV1 {
+        command: iteron_protocol::client_refusal::RefusalsReadV1,
+    },
     HostFinalEvidenceV1 {
         command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
     },
@@ -309,7 +312,10 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
-        if matches!(self, Self::HostFinalEvidenceV1 { .. }) {
+        if matches!(
+            self,
+            Self::HostFinalEvidenceV1 { .. } | Self::RefusalsV1 { .. }
+        ) {
             return true;
         }
         if let Self::McpInputsV1 { command } = self {
@@ -364,6 +370,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::RefusalsV1 { .. } => {
+                unreachable!("refusal observations address the captured readonly owner")
+            }
             Self::HostFinalEvidenceV1 { .. } => {
                 unreachable!("host evidence reads address the actual receipt projection")
             }
@@ -687,10 +696,12 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "type": "state",
             "state": snapshot_value(&snapshot),
         }),
-        ControlReply::Refused(message) => json!({
-            "type": "refused",
-            "message": message,
-        }),
+        ControlReply::RefusedWithOrigin { message, refusal } => {
+            crate::app_server::refusal_projection::reply_value(message, *refusal)
+        }
+        ControlReply::Refused(message) => {
+            crate::app_server::refusal_projection::unknown_reply(message)
+        }
         ControlReply::Compacted { report, snapshot } => json!({
             "type": "compacted",
             "before": report.before,

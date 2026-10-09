@@ -810,6 +810,11 @@ impl AppServer {
             let (outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
+                    // The error's closed type identifies its actual source. No guessed WAL tail
+                    // or text-derived administrator/sandbox origin is added to this observation.
+                    let _ = events
+                        .publish(ServerEvent::Refusal(error.refusal_observation()))
+                        .await;
                     let error = error.public_summary();
                     (Outcome::HarnessError, Some(error))
                 }

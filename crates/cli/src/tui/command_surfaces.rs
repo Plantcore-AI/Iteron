@@ -739,6 +739,9 @@ pub(super) fn apply_transcript_effect_event(
                 }
                 app.panel("+", "project initialization", rows);
             }
+            (_, Some(app_server::ControlReply::RefusedWithOrigin { refusal, .. })) => {
+                super::refusal::show(app, &refusal)
+            }
             (kind, Some(app_server::ControlReply::Refused(reason))) => {
                 let action = kind.label();
                 let prefix = if control.cancellation_requested {
@@ -748,7 +751,7 @@ pub(super) fn apply_transcript_effect_event(
                 };
                 app.note(
                     block::NoticeLevel::Warn,
-                    format!("{action} {prefix}: {reason}"),
+                    format!("{action} {prefix} (source unavailable): {reason}"),
                 );
             }
             (_, Some(app_server::ControlReply::State(snapshot))) => session.adopt(*snapshot),

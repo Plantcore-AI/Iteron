@@ -78,6 +78,7 @@ pub(crate) mod hyperlink;
 mod inline_shell;
 mod input_dispatch;
 mod input_lanes;
+mod refusal;
 use input_lanes::{PendingInput, SubmissionAdmission};
 mod history_client;
 mod inventory;

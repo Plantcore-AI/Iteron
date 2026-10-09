@@ -413,6 +413,14 @@ impl EventPublisher {
             return Err(());
         }
         match &event {
+            ServerEvent::Refusal(value)
+                if value
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| self.run_id.as_ref() != Some(&source.run_id)) =>
+            {
+                return Err(());
+            }
             ServerEvent::HostFinalEvidence(event)
                 if self.run_id.as_ref() != Some(&event.run_id) =>
             {

@@ -230,6 +230,7 @@ pub(crate) enum ServerEvent {
     /// and not a permission decision; only the dedicated correlated response port can answer it.
     McpInputRequested(McpInputPrompt),
     HostFinalEvidence(iteron_protocol::final_evidence::HostFinalEvidenceV1),
+    Refusal(iteron_protocol::refusal::HostRefusalV1),
 }
 
 impl ServerEvent {
@@ -304,6 +305,7 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
             ),
         ServerEvent::Notice(text) => text.len(),
         ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
+        ServerEvent::Refusal(value) => super::refusal_projection::heap_bytes(value),
         ServerEvent::HostFinalEvidence(fact) => 512_usize
             .saturating_add(fact.tenant.0.len())
             .saturating_add(fact.run_id.0.len()),
@@ -556,6 +558,10 @@ pub(crate) enum ControlReply {
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.
     Refused(String),
+    RefusedWithOrigin {
+        message: String,
+        refusal: Box<iteron_protocol::refusal::HostRefusalV1>,
+    },
     /// `/compact` finished.
     Compacted {
         report: Box<crate::runtime::CompactionReport>,

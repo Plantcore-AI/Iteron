@@ -296,6 +296,14 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
             app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::Refusal(value) => runtime::UiEvent::Notice(format!(
+                "refusal source={}: {}",
+                serde_json::to_value(value.origin())
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into()),
+                value.summary()
+            )),
             app_server::ServerEvent::HostFinalEvidence(fact) => runtime::UiEvent::Notice(
                 iteron_protocol::client_final_evidence::description(&fact).into(),
             ),
@@ -340,6 +348,14 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
             app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::Refusal(value) => runtime::UiEvent::Notice(format!(
+                "refusal source={}: {}",
+                serde_json::to_value(value.origin())
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into()),
+                value.summary()
+            )),
             app_server::ServerEvent::HostFinalEvidence(fact) => runtime::UiEvent::Notice(
                 iteron_protocol::client_final_evidence::description(&fact).into(),
             ),

@@ -211,3 +211,23 @@ fn confirmed_final_evidence_refusal_does_not_poison_the_run_or_leak_queue_bytes(
     assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::HostFinalEvidence(fact)));
     assert!(!health.take_structural_refusal());
 }
+
+#[test]
+fn native_refusal_presentation_failure_does_not_change_the_run_or_authority() {
+    use iteron_protocol::refusal::{HostRefusalV1, RefusalReasonV1};
+    let refusal = HostRefusalV1::unscoped(RefusalReasonV1::SandboxUnavailable);
+    let health = FrontendChannelHealth {
+        ui_bytes: std::sync::Arc::new(FrontendUiByteBudget::new(1)),
+        ..FrontendChannelHealth::default()
+    };
+    health.ui_bytes.enable();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::Refusal(refusal.clone())));
+    assert!(!health.take_structural_refusal());
+    assert_eq!(health.ui_bytes.used(), 0);
+    assert!(refusal.source.is_none());
+    drop(rx);
+    let health = FrontendChannelHealth::default();
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::Refusal(refusal)));
+    assert!(!health.take_structural_refusal());
+}

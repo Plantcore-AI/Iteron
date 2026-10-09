@@ -526,6 +526,10 @@ impl<'a> ConnectionSession<'a> {
                             }
                             drop(input_guard);
                             match control {
+                                control::WireControl::RefusalsV1 {command}=>{
+                                    let reply=shared.client.refusals_v1(command);
+                                    send_frame(&mut self.writer,shared.outbound_budget,shared.frame_preparers,shared.fragment_encoders,ServerFrame::ControlReply {protocol_version,request_id,reply}).await?;
+                                }
                                 control::WireControl::HostFinalEvidenceV1 { command } => {
                                     let reply=shared.client.host_final_evidence_v1(command);
                                     send_frame(&mut self.writer,shared.outbound_budget,shared.frame_preparers,shared.fragment_encoders,

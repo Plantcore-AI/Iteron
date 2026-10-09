@@ -318,6 +318,12 @@ impl AppServerClient {
     pub(crate) fn model_preference_after(&self, revision: u64) -> Option<super::PreferenceReceipt> {
         self.contract.model_preference_after(revision)
     }
+    pub(crate) fn refusals_v1(
+        &self,
+        command: iteron_protocol::client_refusal::RefusalsReadV1,
+    ) -> serde_json::Value {
+        self.contract.refusals_v1(command)
+    }
     pub(crate) fn host_final_evidence_v1(
         &self,
         command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,

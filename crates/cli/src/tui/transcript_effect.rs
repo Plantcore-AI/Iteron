@@ -442,6 +442,11 @@ async fn run(
                     };
                     (Some(shell), outcome, message.to_owned())
                 }
+                Some(crate::app_server::ControlReply::RefusedWithOrigin { message, .. }) => (
+                    None,
+                    Disposition::KnownFailure,
+                    format!("shell refused: {message}"),
+                ),
                 Some(crate::app_server::ControlReply::Refused(reason)) => (
                     None,
                     Disposition::KnownFailure,
@@ -512,8 +517,13 @@ async fn run(
                 .ok()
                 .and_then(Result::ok);
             let cancellation_requested = *cancelled.borrow();
-            let outcome = if matches!(&reply, Some(crate::app_server::ControlReply::Refused(_)))
-                || reply.is_none()
+            let outcome = if matches!(
+                &reply,
+                Some(
+                    crate::app_server::ControlReply::Refused(_)
+                        | crate::app_server::ControlReply::RefusedWithOrigin { .. }
+                )
+            ) || reply.is_none()
             {
                 Disposition::KnownFailure
             } else {

@@ -76,8 +76,6 @@ pub(super) async fn apply(
                 }
             }
         }
-        Err(error) => ControlReply::Refused(format!(
-            "cannot record model switch; old selection retained: {error}"
-        )),
+        Err(error) => ControlReply::refused_by(&error),
     }
 }
