@@ -13,6 +13,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt as _;
 
+#[cfg(windows)]
+use super::clipboard_image::trusted_windows_directory;
 use super::transcript_effect::{ProcessRegistry, ReapOutcome, RegisteredChild};
 
 const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
@@ -374,7 +376,7 @@ fn platform_commands() -> Vec<CommandSpec> {
 
 #[cfg(windows)]
 fn platform_commands() -> Vec<CommandSpec> {
-    let Some(root) = super::trusted_windows_directory().map(PathBuf::from) else {
+    let Some(root) = trusted_windows_directory().map(PathBuf::from) else {
         return Vec::new();
     };
     installed([CommandSpec::new(

@@ -234,7 +234,7 @@ impl RegisteredChild {
             .and_then(|child| child.stdin.take())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
         self.registry
             .lock()

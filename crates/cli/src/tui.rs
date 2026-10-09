@@ -220,8 +220,6 @@ use session_picker::{
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ffi::OsString;
-#[cfg(windows)]
-use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
