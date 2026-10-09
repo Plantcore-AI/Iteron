@@ -27,6 +27,7 @@ const IMAGE_SHA: &str = "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f3
 struct Driver {
     endpoint: String,
     requests: Arc<AtomicUsize>,
+    screenshots: Arc<AtomicUsize>,
     html: String,
     worker: tokio::task::JoinHandle<()>,
 }
@@ -41,6 +42,8 @@ impl Driver {
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
         let requests = Arc::new(AtomicUsize::new(0));
         let count = requests.clone();
+        let screenshots = Arc::new(AtomicUsize::new(0));
+        let observed_screenshots = screenshots.clone();
         let html = format!(
             "<html><body>{}<p>tail-actual-full-html</p></body></html>",
             "actual-dom-fixture-".repeat(8192)
@@ -52,6 +55,7 @@ impl Driver {
                     break;
                 };
                 let count = count.clone();
+                let screenshots = observed_screenshots.clone();
                 let source = source.clone();
                 tokio::spawn(async move {
                     let transaction = async {
@@ -105,7 +109,10 @@ impl Driver {
                             ("POST", "/session/actual-driver-1/url") => Value::Null,
                             ("GET", "/session/actual-driver-1/url") => json!(ORIGIN),
                             ("GET", "/session/actual-driver-1/source") => json!(source),
-                            ("GET", "/session/actual-driver-1/screenshot") => json!(PNG),
+                            ("GET", "/session/actual-driver-1/screenshot") => {
+                                screenshots.fetch_add(1, Ordering::SeqCst);
+                                json!(PNG)
+                            }
                             ("DELETE", "/session/actual-driver-1") => Value::Null,
                             _ => json!({"error":"unsupported fixture driver action"}),
                         };
@@ -125,6 +132,7 @@ impl Driver {
         Self {
             endpoint,
             requests,
+            screenshots,
             html,
             worker,
         }
@@ -408,6 +416,24 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
             Outcome::Done
         );
         let observed = provider.observed.lock().await;
+        if name == "browser" {
+            // The declared browser surface does not admit a screenshot action. That belongs to
+            // the independent computer tool, even after a real browser session is established.
+            assert!(observed.is_empty());
+            assert_eq!(driver.screenshots.load(Ordering::SeqCst), 0);
+            let events = iteron_record::replay(agent.rollout.path()).unwrap();
+            assert!(events.iter().any(|event| matches!(&event.kind,
+                EventKind::ToolDone { result, .. }
+                    if result.tool_use_id == "pixels-actual" && result.is_error)));
+            assert!(!events.iter().any(|event| matches!(&event.kind,
+                EventKind::ToolImageObservedV1 { observation }
+                    if observation.tool_use_id == "pixels-actual")));
+            drop(observed);
+            drop(agent);
+            std::fs::remove_dir_all(workspace).unwrap();
+            continue;
+        }
+        assert_eq!(driver.screenshots.load(Ordering::SeqCst), 1);
         assert_eq!(observed.len(), 1);
         let Block::ToolImage(image) = &observed[0] else {
             panic!()

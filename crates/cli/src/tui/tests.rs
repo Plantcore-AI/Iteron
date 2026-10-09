@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(picker.query, "route_selection");
         assert_eq!(picker.visible_indices(), vec![0]);
         let l0 = render_text(&mut app, 110, 26);
-        assert!(l0.contains("tunables · catalog"));
+        assert!(l0.contains("tunables · simulation only · catalog"));
         assert!(l0.contains("provider"));
         assert!(l0.contains("simulation only"));
 
@@ -7332,7 +7332,6 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         use ratatui::backend::TestBackend;
         let mut app = App::new();
         app.run.submission_accepted(SubmissionId(1), Instant::now());
-        app.status = "thinking".into();
         for _ in 0..4 {
             apply_event(
                 &mut app,
@@ -7346,6 +7345,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 ),
             );
         }
+        // Those completed provider turns legitimately change the live phase. This next actual
+        // frontend phase observation starts the reasoning displayed by the active shelf.
+        apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
         app.effort = Effort::Ultracode;
 
         // At narrower widths lower-priority metrics intentionally yield to route identity.

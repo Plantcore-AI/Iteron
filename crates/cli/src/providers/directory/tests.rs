@@ -780,7 +780,7 @@ async fn host_first_frame_publishes_discovery_and_factory_from_the_same_admitted
     use iteron_protocol::client_inventory::{
         ClientInventoryKindV1, ClientInventoryQueryV1, ClientModelSelectionV1,
     };
-    let body = serde_json::json!({"data":[{"id":"host-discovered-model"}]}).to_string();
+    let body = serde_json::json!({"data":[{"id":"gpt-host-discovered-model"},{"id":"unknown-discovered-model"}]}).to_string();
     let (api_root, accepts, server) = spawn_counting_json_server(body);
     let directory = ProviderDirectory::discover_entries_eagerly(
         vec![policy_entry("host-discovery", &api_root)],
@@ -791,7 +791,7 @@ async fn host_first_frame_publishes_discovery_and_factory_from_the_same_admitted
     .unwrap();
     let selected = ModelSelection {
         provider_id: "host-discovery".into(),
-        model_id: "host-discovered-model".into(),
+        model_id: "gpt-host-discovered-model".into(),
     };
     let owner = crate::client_inventory::ClientInventoryOwner::capture(
         &directory,
@@ -835,7 +835,24 @@ async fn host_first_frame_publishes_discovery_and_factory_from_the_same_admitted
         catalog_digest_sha256: catalog,
         capability_digest_sha256: capability,
     };
-    assert!(owner.resolve(&request).is_ok());
+    owner
+        .resolve(&request)
+        .expect("the discovered coding route must resolve through the host");
+    // A discovered name without coding compatibility is still read-only inventory, not an
+    // executable route. Retain its true digests and prove the host refuses selection.
+    let unknown = ModelSelection {
+        provider_id: selected.provider_id.clone(),
+        model_id: "unknown-discovered-model".into(),
+    };
+    let (unknown_catalog, unknown_capability) = after.selection_digests(&unknown);
+    let unknown_request = ClientModelSelectionV1 {
+        inventory_digest_sha256: after.inventory_digest().into(),
+        provider_id: unknown.provider_id.clone(),
+        model_id: unknown.model_id,
+        catalog_digest_sha256: unknown_catalog,
+        capability_digest_sha256: unknown_capability,
+    };
+    assert!(owner.resolve(&unknown_request).is_err());
     assert!(
         owner
             .session_directory()

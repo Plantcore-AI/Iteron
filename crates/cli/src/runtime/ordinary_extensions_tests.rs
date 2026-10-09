@@ -20,7 +20,7 @@ impl Provider for NativeToolJourney {
     async fn turn(
         &self,
         request: &TurnRequest,
-        _: &mut (dyn FnMut(StreamItem) + Send),
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         let index = self.calls.fetch_add(1, Ordering::AcqRel);
         let blocks = if index == 0 {
@@ -35,6 +35,13 @@ impl Provider for NativeToolJourney {
                 text: "native SDK journey completed".into(),
             }]
         };
+        for block in &blocks {
+            match block {
+                Block::ToolUse(call) => on_item(StreamItem::ToolUseComplete(call.clone())),
+                Block::Text { text } => on_item(StreamItem::TextDelta(text.clone())),
+                _ => unreachable!("the native recipe fixture has only a tool or final text"),
+            }
+        }
         Ok(TurnResult {
             blocks,
             stop_reason: if index == 0 {
@@ -393,7 +400,7 @@ fn actual_emitter_rebind_uses_the_new_bus_and_keeps_old_bus_events_unavailable()
 }
 #[cfg(unix)]
 #[tokio::test]
-async fn native_provider_export_uses_signed_route_and_cannot_dispatch_over_a_financial_ceiling() {
+async fn native_provider_export_uses_signed_route_and_refuses_unproved_input_before_io() {
     use std::os::unix::fs::PermissionsExt;
     let root = gate_integration_tests::temp_ws("sdk-native-budget");
     let credential = root.with_extension("sdk-credential");
@@ -504,12 +511,18 @@ async fn native_provider_export_uses_signed_route_and_cannot_dispatch_over_a_fin
         .snapshot()
         .unwrap();
     assert_eq!(snapshot.providers[0].host_provider_id, "sdk-native");
+    // This actual native compatibility endpoint/model has no shipped physical input proof.
+    // A signed price is not a bound on its consumption, so refuse before any funding/IO.
+    let refused = owner
+        .run("must not exceed the signed budget")
+        .await
+        .unwrap_err();
     assert!(matches!(
-        owner
-            .run("must not exceed the signed budget")
-            .await
-            .unwrap(),
-        Outcome::BudgetExhausted(_)
+        refused,
+        KernelError::InvalidRouteMetadata {
+            field: "physical_input_token_ceiling",
+            ..
+        }
     ));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
@@ -522,11 +535,10 @@ async fn native_provider_export_uses_signed_route_and_cannot_dispatch_over_a_fin
             .iter()
             .any(|event| matches!(event.kind, EventKind::RateCardBound { .. }))
     );
-    assert!(
-        !replay
-            .iter()
-            .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
-    );
+    assert!(!replay.iter().any(|event| matches!(
+        event.kind,
+        EventKind::EffectIntent { .. } | EventKind::TurnStart { .. }
+    )));
     drop(owner);
     std::fs::remove_file(credential).unwrap();
     std::fs::remove_dir_all(root).unwrap();

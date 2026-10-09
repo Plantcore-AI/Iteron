@@ -619,9 +619,20 @@ mod tests {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         assert!(registered.is_subset(&declared));
-        assert_eq!(declared.len(), registered.len() + 2);
-        assert!(declared.contains("plantcore-run-gateway__tool_search"));
-        assert!(declared.contains("plantcore-run-gateway__tool_call"));
+        let mut compatibility_only = std::collections::BTreeSet::from([
+            "plantcore-run-gateway__tool_search".to_owned(),
+            "plantcore-run-gateway__tool_call".to_owned(),
+        ]);
+        if !cfg!(feature = "script-workflows") {
+            compatibility_only.insert(iteron_tools::WORKFLOW_TOOL.to_owned());
+        }
+        assert_eq!(
+            declared
+                .difference(&registered)
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            compatibility_only
+        );
     }
 
     #[test]
