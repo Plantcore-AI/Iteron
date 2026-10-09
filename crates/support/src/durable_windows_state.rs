@@ -54,7 +54,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 mod contained_read;
-mod workspace_directory_read;
+pub(crate) mod workspace_directory_read;
 pub use contained_read::WindowsWorkspaceReader;
 /// Ordinary bounded local-NTFS source reading. No private ACL or write authority is requested.
 pub fn read_contained_regular_file(
@@ -319,7 +319,7 @@ fn provision_directory_with_barrier(
 fn pin_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
     pin_directory_chain_mode(path, true)
 }
-fn pin_read_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
+pub(crate) fn pin_read_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
     pin_directory_chain_mode(path, false)
 }
 fn pin_directory_chain_mode(
@@ -779,7 +779,7 @@ fn open_relative(
     )
 }
 
-fn filename_units(name: &std::ffi::OsStr) -> Result<Vec<u16>, WindowsStateError> {
+pub(crate) fn filename_units(name: &std::ffi::OsStr) -> Result<Vec<u16>, WindowsStateError> {
     let units = name.encode_wide().take(256).collect::<Vec<_>>();
     // A single Win32 filename; aliases/ADS/device syntax cannot escape its pinned parent.
     if units.is_empty()

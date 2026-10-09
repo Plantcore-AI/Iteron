@@ -16,6 +16,26 @@ pub(super) fn list(
     if limit == 0 || limit > 4096 {
         return Err(WindowsStateError::Unavailable);
     }
+    list_bounded(directory, limit, false)
+}
+
+/// Permission retirement inspects a reparse object itself; it never follows that entry.
+/// Ordinary readonly source enumeration keeps its existing stricter 4096/reparse refusal.
+pub(crate) fn list_permission_scope(
+    directory: &File,
+    limit: usize,
+) -> Result<(Vec<(String, bool)>, bool), WindowsStateError> {
+    if limit == 0 || limit > 65_536 {
+        return Err(WindowsStateError::Unavailable);
+    }
+    list_bounded(directory, limit, true)
+}
+
+fn list_bounded(
+    directory: &File,
+    limit: usize,
+    allow_reparse_inspection: bool,
+) -> Result<(Vec<(String, bool)>, bool), WindowsStateError> {
     let mut rows = Vec::with_capacity(limit.min(128));
     let mut buffer = vec![0u64; BUFFER_BYTES / size_of::<u64>()];
     let mut first = true;
@@ -77,7 +97,9 @@ pub(super) fn list(
                 unsafe { std::slice::from_raw_parts(entry.FileName.as_ptr(), name_bytes / 2) };
             let name = String::from_utf16(units).map_err(|_| WindowsStateError::Unavailable)?;
             if name != "." && name != ".." {
-                if entry.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                if !allow_reparse_inspection
+                    && entry.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                {
                     return Err(WindowsStateError::Unavailable);
                 }
                 if rows.len() == limit {
