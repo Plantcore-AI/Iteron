@@ -94,10 +94,13 @@ impl EffectJournalOwner {
         rollout: &mut Rollout,
         effect: effects::BrokeredEffect,
     ) -> Result<effects::EffectTicket, effects::BrokerError> {
-        let write_capable = matches!(
-            effect.capability,
-            Capability::ReversibleLocal | Capability::CodeExecuting
-        );
+        let write_capable = match effect.capability {
+            Capability::ReadOnly => false,
+            Capability::ReversibleLocal
+            | Capability::CodeExecuting
+            | Capability::TrustMutating
+            | Capability::IrreversibleExternal => true,
+        };
         match effects::open_effect(rollout, &mut self.admissions, effect) {
             Ok(ticket) => {
                 self.pending = self.pending.saturating_add(1);

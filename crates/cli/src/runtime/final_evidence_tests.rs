@@ -228,3 +228,59 @@ fn bounded_answer_tail_cannot_hide_a_final_unsupported_test_claim() {
             .is_none()
     );
 }
+
+#[test]
+fn actual_trust_and_external_intent_receipts_report_admission_without_claiming_a_diff() {
+    for capability in [Capability::TrustMutating, Capability::IrreversibleExternal] {
+        let dir = crate::runtime::test_tempdir::tempdir().unwrap();
+        let mut rollout = Rollout::open(
+            dir.path(),
+            &RunId("evidence-write-authority".into()),
+            TenantId::default(),
+        )
+        .unwrap();
+        let mut owner = EffectJournalOwner::default();
+        owner
+            .guard_recovery(&mut rollout, &mut iteron_obs::Ledger::default())
+            .unwrap();
+        owner.begin_operator_turn(TurnId(1));
+        let call = ToolUse {
+            id: "actual-write-admission".into(),
+            name: "write_file".into(),
+            input: serde_json::json!({"path":"AGENTS.md","content":"rule"}),
+        };
+        let ticket = owner
+            .open_tool(&mut rollout, dir.path(), TurnId(1), 0, &call, capability)
+            .unwrap();
+        let admitted = ticket.intent_sequence();
+        // The fixture observes a real admission and a known pre-execution refusal; it never
+        // fabricates an actual write or treats permission as successful mutation.
+        let result = ToolResult {
+            tool_use_id: call.id.clone(),
+            content: "executor refused before write".into(),
+            is_error: true,
+            trust: Trust::Workspace,
+            latency_ms: 0,
+        };
+        owner
+            .settle_tool(&mut rollout, ticket, &call.name, &result)
+            .unwrap();
+        let done = rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+        let evidence = owner
+            .publish_final_evidence(&rollout, TurnId(1), done, true, "request finished")
+            .unwrap();
+        assert!(evidence.write_capable_effect_admitted);
+        assert!(!evidence.workspace_diff_inspected);
+        assert_eq!(evidence.observed_tool_failures, 1);
+        assert!(iteron_record::replay(rollout.path()).unwrap().iter().any(|event| event.seq == admitted && matches!(event.kind, EventKind::EffectIntent { capability: actual, .. } if actual == capability)));
+        assert!(!dir.path().join("AGENTS.md").exists());
+    }
+}
