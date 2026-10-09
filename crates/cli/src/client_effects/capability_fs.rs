@@ -82,7 +82,7 @@ pub(crate) fn open_regular_nonblocking(parent: &File, leaf: &str) -> io::Result<
     // SAFETY: a successful `openat` returns one owned descriptor.
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
-    if metadata.mode() & libc::S_IFMT != libc::S_IFREG {
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "leaf is not a regular file",

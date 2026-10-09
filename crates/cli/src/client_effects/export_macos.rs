@@ -6,7 +6,7 @@
 use super::capability_fs;
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::fs::MetadataExt as _;
 
