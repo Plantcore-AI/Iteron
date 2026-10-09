@@ -220,6 +220,19 @@ impl McpInputOwner {
                 pending
             })
             .collect::<VecDeque<_>>();
+        // Every retained request, including a queued form, keeps its immutable schema and
+        // completeness. A later snapshot cannot upgrade a redacted request into an approval.
+        if self.remote_scope.as_ref() == Some(&scope) {
+            for held in self.pending.iter().chain(self.queued.iter()) {
+                if let Some(candidate) = candidates
+                    .iter()
+                    .find(|candidate| candidate.prompt.request_id == held.prompt.request_id)
+                    && (held.prompt != candidate.prompt || held.complete != candidate.complete)
+                {
+                    return Err("pending input metadata changed");
+                }
+            }
+        }
         // Validate immutable metadata before replacing any queued form or its owned draft.
         let retained = if self.remote_scope.as_ref() == Some(&scope) {
             if let Some(current) = &self.pending {
@@ -688,6 +701,28 @@ mod tests {
         app.mcp_form
             .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
             .unwrap();
+        for changed in ["schema", "prompt", "complete"] {
+            let mut forged = snapshot.clone();
+            match changed {
+                "schema" => {
+                    forged.pending[1].fields[0].schema = serde_json::json!({"type":"boolean"})
+                }
+                "prompt" => forged.pending[1].fields[0].prompt = "changed request".into(),
+                _ => forged.pending[1].prompt_complete = true,
+            }
+            assert!(
+                app.mcp_form
+                    .observe_remote(&forged, &snapshot.thread_id, &snapshot.run_id)
+                    .is_err(),
+                "queued {changed}"
+            );
+            assert!(!app.mcp_form.queued.front().unwrap().complete);
+            assert!(
+                active_editor(&mut app)
+                    .text()
+                    .contains("private-form-value")
+            );
+        }
         app.mcp_form.remote_handoff(3);
         assert!(app.mcp_form.is_waiting());
         handle_paste(&mut app, r#"{"name":"hidden-schema"}"#);
