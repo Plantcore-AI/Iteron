@@ -53,7 +53,7 @@ fn confirmed_images_and_compaction_keep_actual_order_through_private_cas_and_reo
             id: effect_id.clone(),
             tool_use_id: "image-call".into(),
             tool: "browser".into(),
-            capability: Capability::ExternalEffect,
+            capability: Capability::CodeExecuting,
             arguments: serde_json::json!({ "action": "observe" }),
             workspace: root.to_string_lossy().into_owned(),
             provider_route_attempt: None,
