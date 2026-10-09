@@ -96,6 +96,15 @@ impl ToolPresentations {
     pub(super) fn bind_revealed(&mut self, id: String, block_id: u64) {
         self.revealed.insert(id, block_id);
     }
+    pub(super) fn observe_arguments(&mut self, id: &str, args: serde_json::Value) {
+        if let Some(pending) = self
+            .pending
+            .iter_mut()
+            .find(|pending| pending.reveal.id == id)
+        {
+            pending.reveal.args = ui_safe_json(&args);
+        }
+    }
     pub(super) fn revealed_block(&self, id: &str) -> Option<u64> {
         self.revealed.get(id).copied()
     }

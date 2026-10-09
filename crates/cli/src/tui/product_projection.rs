@@ -14,9 +14,16 @@ pub(super) struct ProductProjection {
     cursor: u64,
     thread_id: Option<iteron_protocol::SessionId>,
     run_id: Option<iteron_protocol::RunId>,
+    remote_tools: Option<super::product_tools::ProductTools>,
 }
 
 impl ProductProjection {
+    pub(super) fn remote() -> Self {
+        Self {
+            remote_tools: Some(super::product_tools::ProductTools::default()),
+            ..Self::default()
+        }
+    }
     pub(super) fn cursor(&self) -> u64 {
         self.cursor
     }
@@ -83,6 +90,9 @@ impl ProductProjection {
     pub(super) fn select_run(&mut self, app: &mut App, run_id: iteron_protocol::RunId) {
         if self.run_id.as_ref() == Some(&run_id) {
             return;
+        }
+        if let Some(tools) = self.remote_tools.as_mut() {
+            tools.select_run(app, &run_id);
         }
         app.product.select_run(&run_id);
         self.run_id = Some(run_id);
@@ -151,6 +161,9 @@ impl ProductProjection {
                 continue;
             }
             let reached_terminal = matches!(&event.event, ProductEventKindV1::TurnEnded { .. });
+            if let Some(tools) = self.remote_tools.as_mut() {
+                tools.observe(app, &event);
+            }
             self.apply_event(app, event.event);
             // TurnStarted has no source EQ sequence. A producer can admit the next turn while the
             // TUI is still reading this run's terminal envelope; do not let its unsequenced start

@@ -102,6 +102,7 @@ struct View {
     poll_events: bool,
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
+    expected_submission: Option<SubmissionId>,
 }
 impl View {
     fn scope(&self) -> Value {
@@ -368,6 +369,7 @@ impl View {
                     self.models = None;
                     self.queued.clear();
                     self.accepted = None;
+                    self.expected_submission = None;
                     app.telemetry.observe_remote_cost(None);
                     app.history.clear();
                     app.history.bind_selected_run(&snapshot.run_id);
@@ -400,6 +402,7 @@ impl View {
                 if page.thread_id != self.service.scope.thread_id || page.events.len() > 64 {
                     bail!("product page scope or bound changed");
                 }
+                let terminal = page.latest_terminal.clone();
                 let source = page
                     .events
                     .iter()
@@ -417,6 +420,35 @@ impl View {
                 }
                 self.product.ingest_page(app, page, source);
                 self.product_cursor = self.product.cursor();
+                if let Some(terminal) = terminal {
+                    let matches = self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.turn.as_ref())
+                        .is_some_and(|turn| {
+                            turn.turn_id == terminal.turn_id
+                                && self
+                                    .expected_submission
+                                    .is_none_or(|expected| turn.submission_id == Some(expected))
+                        });
+                    if terminal.thread_id == self.service.scope.thread_id
+                        && terminal.run_id == self.service.current_run_id
+                        && terminal.event_seq > 0
+                        && matches
+                    {
+                        app.finish_text_boundary();
+                        if let Some(text) = app.product.take_terminal() {
+                            app.reconcile_terminal_assistant(&text);
+                        }
+                        app.flush_text();
+                        app.flush_think();
+                        app.permission_prompt.clear();
+                        app.settle_unfinished_tools();
+                        app.run.run_ended(Instant::now());
+                        self.expected_submission = None;
+                        app.status = "completed · backend remains available".into();
+                    }
+                }
                 self.poll_events = false;
             }
             Kind::Submit { draft, revision } => {
@@ -425,6 +457,11 @@ impl View {
                         .as_u64()
                         .filter(|v| *v > 0)
                         .context("submission receipt unavailable")?;
+                    if self.active_turn().is_none() {
+                        self.expected_submission = Some(SubmissionId(id));
+                        app.run
+                            .submission_accepted(SubmissionId(id), Instant::now());
+                    }
                     self.accepted = Some(AcceptedDraft {
                         id: SubmissionId(id),
                         draft,
@@ -482,6 +519,7 @@ impl View {
                     self.service.current_run_id = navigation.run_id.clone();
                     self.models = None;
                     self.accepted = None;
+                    self.expected_submission = None;
                     app.history.bind_selected_run(&navigation.run_id);
                     app.run.select_verified_run();
                     super::session_adoption::project_host_transcript(app, &navigation.transcript);
@@ -494,59 +532,9 @@ impl View {
         Ok(())
     }
 }
-/// Machine events preserve the shared renderer's tool and phase semantics. Product content is
-/// read separately through its scoped cursor; it is never appended again from legacy deltas.
-fn apply_live_observation(app: &mut App, event: &Value) -> Result<()> {
-    match event["type"].as_str() {
-        Some("tool_start") => {
-            let id = event["tool_use_id"]
-                .as_str()
-                .context("tool identity unavailable")?;
-            let name = event["name"].as_str().context("tool name unavailable")?;
-            app.tool_start(id.to_owned(), name.to_owned(), event["args"].clone());
-        }
-        Some("tool_end") => {
-            let id = event["tool_use_id"]
-                .as_str()
-                .context("tool identity unavailable")?;
-            let ok = event["ok"].as_bool().context("tool outcome unavailable")?;
-            let exit_code = event["exit_code"]
-                .as_i64()
-                .and_then(|code| i32::try_from(code).ok());
-            let output = event["output"]
-                .as_str()
-                .context("tool output unavailable")?;
-            let diff = if event["diff"].is_null() {
-                None
-            } else {
-                Some(
-                    serde_json::from_value(event["diff"].clone())
-                        .context("tool diff observation invalid")?,
-                )
-            };
-            app.tool_end(id, ok, exit_code, output.to_owned(), diff);
-        }
-        Some("phase") => {
-            if let Some(phase) = event["phase"].as_str() {
-                app.status = ui_safe_text(phase);
-                if phase == "model" {
-                    app.assistant.begin_model_turn();
-                }
-            }
-        }
-        Some("turn_end") => app
-            .telemetry
-            .observe_remote_cost(event["cost_usd"].as_f64()),
-        Some("notice") => app.note(
-            block::NoticeLevel::Info,
-            event["message"].as_str().unwrap_or("service notice"),
-        ),
-        // This signal is provisional. Only the separate actual RunEnded result releases input.
-        Some("run_done") => app.status = "finalizing · recording outcome…".into(),
-        _ => {}
-    }
-    Ok(())
-}
+/// Historical machine events have a presentation cursor but no physical run identity. They are
+/// not projected by a reattach client. Its Product pages carry the actual thread/run/item scope.
+fn ignore_unscoped_event(_event: &Value) {}
 fn show_reply(app: &mut App, reply: &Value) {
     if let Ok(refusal) =
         serde_json::from_value::<iteron_protocol::refusal::HostRefusalV1>(reply["refusal"].clone())
@@ -672,7 +660,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
     let mut view = View {
         service,
         snapshot: None,
-        product: ProductProjection::default(),
+        product: ProductProjection::remote(),
         pending: None,
         queued: std::collections::VecDeque::new(),
         models: None,
@@ -680,6 +668,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         poll_events: false,
         last_live_seq: 0,
         accepted: None,
+        expected_submission: None,
     };
     view.snapshot_request()?;
     let mut tick = tokio::time::interval(POLL_PERIOD);
@@ -704,14 +693,9 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                     Some("control_reply")=>view.reply(&mut app,frame["request_id"].as_u64().context("reply identity unavailable")?,frame["reply"].clone())?,
                     Some("event")|Some("result")=>{
                         let seq=frame["seq"].as_u64().filter(|v|*v>view.last_live_seq).context("service presentation sequence did not advance")?;view.last_live_seq=seq;
-                        if frame["type"]=="result" && frame["result"]["run_id"]==view.service.current_run_id.0 {
-                            let result=frame["result"].clone();
-                            if let Some(text)=result["assistant_text"].as_str(){app.finish_text_boundary();app.reconcile_terminal_assistant(text);}
-                            app.telemetry.observe_remote_cost(result["cost_usd"].as_f64());app.run.observe_terminal_result(result);app.run.run_ended(Instant::now());app.status="completed · backend remains available".into();
-                        } else if frame["type"]=="event" {
-                            let event=&frame["event"];
-                            apply_live_observation(&mut app, event)?;
-                        }
+                        // Frozen machine frames lack Product turn scope. Neither an old result
+                        // nor an old tool event can mutate this selected run or release input.
+                        if frame["type"]=="event" {ignore_unscoped_event(&frame["event"]);}
                     },
                     Some("error")=>{show_reply(&mut app,&frame);},
                     _=>{},
@@ -774,7 +758,7 @@ mod tests {
                 shutdown_completed: false,
             },
             snapshot: None,
-            product: ProductProjection::default(),
+            product: ProductProjection::remote(),
             pending: None,
             queued: Default::default(),
             models: None,
@@ -782,6 +766,7 @@ mod tests {
             poll_events: false,
             last_live_seq: 0,
             accepted: None,
+            expected_submission: None,
         }
     }
     #[test]
@@ -805,7 +790,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.editor.text(), "the original task");
-        assert!(!app.run.running());
+        assert!(
+            app.run.running(),
+            "the actual SQ receipt reserves input until real host termination"
+        );
         view.observe_submission(&mut app, SubmissionId(8), SubmissionLifecycleState::Applied);
         assert!(view.accepted.is_some());
         app.editor.clear();
@@ -840,13 +828,98 @@ mod tests {
         assert!(view.queued.is_empty());
     }
     #[test]
-    fn actual_machine_tool_projection_keeps_start_end_correlation_and_not_done_authority() {
+    fn delayed_old_machine_event_after_navigation_cannot_contaminate_selected_run() {
         let mut app = App::new();
-        apply_live_observation(&mut app,&json!({"type":"tool_start","tool_use_id":"call","name":"read_file","args":{"path":"src/lib.rs"}})).unwrap();
-        apply_live_observation(&mut app,&json!({"type":"tool_end","tool_use_id":"call","ok":true,"exit_code":null,"output":"actual retained output","diff":null})).unwrap();
+        let mut view = view();
         app.run.submission_accepted(SubmissionId(1), Instant::now());
-        apply_live_observation(&mut app, &json!({"type":"run_done"})).unwrap();
+        view.service.current_run_id = iteron_protocol::RunId("new-run".into());
+        app.history.clear();
+        app.history.bind_selected_run(&view.service.current_run_id);
+        view.product
+            .select_run(&mut app, view.service.current_run_id.clone());
+        let before = app.history.revision();
+        ignore_unscoped_event(
+            &json!({"type":"tool_start","tool_use_id":"old-call","name":"write_file","args":{"path":"old-run.txt"}}),
+        );
+        ignore_unscoped_event(
+            &json!({"type":"tool_end","tool_use_id":"old-call","ok":true,"output":"old secret output"}),
+        );
+        ignore_unscoped_event(&json!({"type":"run_done"}));
+        assert_eq!(app.history.revision(), before);
         assert!(app.run.running());
-        assert!(app.history.blocks().iter().any(|block|matches!(&block.kind,block::BlockKind::Tool(card) if card.output=="actual retained output" && matches!(card.status,block::ToolStatus::Ok))));
+        use iteron_protocol::product_contract::{
+            ItemContentChannelV1, ItemKindV1, ItemStateV1, ProductEventKindV1, ProductEventV1,
+            ProductEventsPageV1, ProductTurnId,
+        };
+        let make = |seq, run: &str, event| ProductEventV1 {
+            event_seq: seq,
+            source_event_seq: Some(seq),
+            thread_id: view.service.scope.thread_id.clone(),
+            run_id: iteron_protocol::RunId(run.into()),
+            turn_id: Some(ProductTurnId(1)),
+            item_id: Some("same-item-id".into()),
+            event,
+        };
+        let page = ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: view.service.scope.thread_id.clone(),
+            requested_after: 0,
+            oldest_available: 1,
+            latest_cursor: 5,
+            next_cursor: 5,
+            latest_terminal: None,
+            gap: None,
+            events: vec![
+                make(
+                    1,
+                    "old-run",
+                    ProductEventKindV1::ItemStarted {
+                        kind: ItemKindV1::ToolCall,
+                        title: Some("write_file".into()),
+                    },
+                ),
+                make(
+                    2,
+                    "old-run",
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::ToolOutput,
+                        content: "old secret output".into(),
+                    },
+                ),
+                make(
+                    3,
+                    "new-run",
+                    ProductEventKindV1::ItemStarted {
+                        kind: ItemKindV1::ToolCall,
+                        title: Some("read_file".into()),
+                    },
+                ),
+                make(
+                    4,
+                    "new-run",
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::ToolOutput,
+                        content: "same scoped public bytes".into(),
+                    },
+                ),
+                make(
+                    5,
+                    "new-run",
+                    ProductEventKindV1::ItemEnded {
+                        state: ItemStateV1::Completed,
+                    },
+                ),
+            ],
+        };
+        view.product.ingest_page(&mut app, page, 5);
+        let text = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<String>();
+        assert!(text.contains("same scoped public bytes"));
+        assert!(!text.contains("old secret output"));
+        assert!(!text.contains("write_file"));
     }
 }

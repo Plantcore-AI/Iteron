@@ -1,7 +1,7 @@
 use super::tool_presentations::ToolReveal;
 use super::{
     App, Duration, FIRST_TOKEN_SLOW_AFTER, FIRST_TOKEN_STALL_AFTER, FirstTokenStall,
-    FirstTokenState, Instant, block, ui_safe_text,
+    FirstTokenState, Instant, block, ui_safe_json, ui_safe_text,
 };
 
 impl App {
@@ -158,6 +158,15 @@ impl App {
         };
         let bid = self.push_block(block::BlockKind::Tool(card));
         self.tools.bind_revealed(id, bid);
+    }
+
+    pub(super) fn observe_tool_arguments(&mut self, id: &str, args: serde_json::Value) {
+        let args = ui_safe_json(&args);
+        if let Some(block) = self.tools.revealed_block(id) {
+            self.history.observe_tool_arguments(block, args);
+        } else {
+            self.tools.observe_arguments(id, args);
+        }
     }
 
     /// A tool finished: mutate its originating card by id (R2), or append one if the start was missed.

@@ -140,6 +140,15 @@ impl TranscriptHistory {
         self.mark_changed_from(insertion.min(self.blocks.len()));
         inserted
     }
+    pub(super) fn observe_tool_arguments(&mut self, id: u64, args: serde_json::Value) {
+        self.update_kind(id, |kind| {
+            let block::BlockKind::Tool(card) = kind else {
+                return false;
+            };
+            card.args = args;
+            true
+        });
+    }
     pub(super) fn is_tool(&self, id: u64) -> bool {
         self.blocks
             .iter()
