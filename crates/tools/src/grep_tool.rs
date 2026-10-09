@@ -1,10 +1,10 @@
 //! Bounded, ignore-aware repository search.
 
+use crate::repository_ignore::{IgnoreBudget, IgnoreRules, load_ignore};
 use crate::{
     Registry, ToolError, boxfut, edit::suspicious_unicode, err_result, ok_result,
     resolve_from_canonical_root,
 };
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use regex::{Regex, RegexBuilder};
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 const MAX_GREP_PATTERN_BYTES: usize = 4 * 1024;
 const MAX_GREP_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_GREP_TOTAL_SOURCE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_GREP_ENTRIES: usize = 50_000;
+pub(super) const MAX_GREP_ENTRIES: usize = 50_000;
 /// Context is caller-selected and remains bounded independently from match and output limits.
 const MAX_GREP_CONTEXT_LINES: usize = 64;
 /// Multi-term proximity is a relevance control, not another unbounded repository scan.
@@ -46,10 +46,10 @@ const MAX_GREP_PARALLELISM: usize = 32;
 /// results were then silently incomplete. Raised an order of magnitude; still bounded.
 const GREP_NOTICE_RESERVE_BYTES: usize = 1_024;
 const MAX_REGEX_COMPILED_BYTES: usize = 1024 * 1024;
-const MAX_GITIGNORE_FILES: usize = 128;
-const MAX_GITIGNORE_FILE_BYTES: usize = 64 * 1024;
-const MAX_GITIGNORE_TOTAL_BYTES: usize = 256 * 1024;
-const MAX_GITIGNORE_PATTERNS: usize = 4_096;
+pub(super) const MAX_GITIGNORE_FILES: usize = 128;
+pub(super) const MAX_GITIGNORE_FILE_BYTES: usize = 64 * 1024;
+pub(super) const MAX_GITIGNORE_TOTAL_BYTES: usize = 256 * 1024;
+pub(super) const MAX_GITIGNORE_PATTERNS: usize = 4_096;
 /// Owner override for calls that omit `regex`. When false, omitted calls use conservative regex
 /// intent detection; when true, every omitted call uses regex mode. Explicit call values win.
 const DEFAULT_GREP_REGEX_MODE: bool = false;
@@ -587,45 +587,6 @@ fn classify_evidence_facet(
     }
 }
 
-#[derive(Default)]
-struct IgnoreRules {
-    rules: Vec<(PathBuf, Gitignore)>,
-}
-
-impl IgnoreRules {
-    fn push(&mut self, root: PathBuf, matcher: Gitignore) {
-        self.rules.push((root, matcher));
-        self.rules.sort_by(|(left, _), (right, _)| {
-            left.components()
-                .count()
-                .cmp(&right.components().count())
-                .then(left.cmp(right))
-        });
-    }
-
-    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
-        let mut ignored = false;
-        for (root, matcher) in &self.rules {
-            if !path.starts_with(root) {
-                continue;
-            }
-            let matched = matcher.matched_path_or_any_parents(path, is_dir);
-            if matched.is_ignore() {
-                ignored = true;
-            } else if matched.is_whitelist() {
-                ignored = false;
-            }
-        }
-        ignored
-    }
-}
-
-struct IgnoreBudget {
-    files: usize,
-    bytes: usize,
-    patterns: usize,
-}
-
 const GREP_DESCRIPTION: &str = "Search bounded UTF-8 files while respecting .gitignore. `path` may \
 be relative to the repo root or an absolute host path. Omit `regex` for conservative auto-detection; \
 set false for literal matching or true for Rust regex. Stable symbols automatically include a \
@@ -946,11 +907,7 @@ fn search_with_source_limits(
     let mut result = SearchResult::default();
     let mut paths = Vec::new();
     let root_ignore = root.join(".gitignore");
-    let mut ignore_budget = IgnoreBudget {
-        files: 0,
-        bytes: 0,
-        patterns: 0,
-    };
+    let mut ignore_budget = IgnoreBudget::default();
     let mut ignore_rules = IgnoreRules::default();
     if let Some((rule_root, matcher)) = load_ignore(&root, &root_ignore, &mut ignore_budget)? {
         ignore_rules.push(rule_root, matcher);
@@ -1351,91 +1308,6 @@ fn related_hits<'a>(
         hits.push((term.as_str(), related_line));
     }
     Some(hits)
-}
-
-fn load_ignore(
-    workspace_root: &Path,
-    path: &Path,
-    budget: &mut IgnoreBudget,
-) -> Result<Option<(PathBuf, Gitignore)>, String> {
-    let max_gitignore_files =
-        iteron_tunables::param_usize("tools.grep_tool.max_gitignore_files", MAX_GITIGNORE_FILES);
-    if budget.files >= max_gitignore_files {
-        return Err(format!(
-            "grep: repository exceeds the {max_gitignore_files}-file .gitignore limit"
-        ));
-    }
-    let max_gitignore_total_bytes = iteron_tunables::param_usize(
-        "tools.grep_tool.max_gitignore_total_bytes",
-        iteron_tunables::param_integer(
-            "tools.grep_tool.max_gitignore_total_bytes",
-            MAX_GITIGNORE_TOTAL_BYTES,
-        ),
-    );
-    let remaining = max_gitignore_total_bytes.saturating_sub(budget.bytes);
-    if remaining == 0 {
-        return Err(format!(
-            "grep: .gitignore sources exceed the {max_gitignore_total_bytes}-byte total limit"
-        ));
-    }
-    let content = match iteron_ctx::source::read_bounded_utf8(
-        workspace_root,
-        path,
-        remaining.min(iteron_tunables::param_usize(
-            "tools.grep_tool.max_gitignore_file_bytes",
-            iteron_tunables::param_integer(
-                "tools.grep_tool.max_gitignore_file_bytes",
-                MAX_GITIGNORE_FILE_BYTES,
-            ),
-        )),
-        iteron_ctx::source::SourceScope::Repository,
-    ) {
-        Ok(Some(content)) => content,
-        Ok(None) => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "grep cannot safely read .gitignore: {}",
-                error.reason()
-            ));
-        }
-    };
-    if suspicious_unicode(&content).is_some() {
-        return Err("grep: .gitignore contains bidi or zero-width control characters".into());
-    }
-    budget.files += 1;
-    budget.bytes = budget.bytes.saturating_add(content.len());
-    let rule_root = path
-        .parent()
-        .ok_or_else(|| "grep: .gitignore has no parent directory".to_string())?
-        .to_path_buf();
-    let mut builder = GitignoreBuilder::new(&rule_root);
-    let max_gitignore_patterns = iteron_tunables::param_usize(
-        "tools.grep_tool.max_gitignore_patterns",
-        iteron_tunables::param_integer(
-            "tools.grep_tool.max_gitignore_patterns",
-            MAX_GITIGNORE_PATTERNS,
-        ),
-    );
-    for (line_index, line) in content.lines().enumerate() {
-        budget.patterns = budget.patterns.saturating_add(1);
-        if budget.patterns > max_gitignore_patterns {
-            return Err(format!(
-                "grep: .gitignore sources exceed the {max_gitignore_patterns}-line limit"
-            ));
-        }
-        let line = if line_index == 0 {
-            line.trim_start_matches('\u{feff}')
-        } else {
-            line
-        };
-        builder
-            .add_line(Some(path.to_path_buf()), line)
-            .map_err(|error| format!("grep: invalid .gitignore pattern: {error}"))?;
-    }
-    let matcher = builder
-        .build()
-        .map_err(|error| format!("grep: cannot compile bounded .gitignore rules: {error}"))?;
-    Ok(Some((rule_root, matcher)))
 }
 
 fn is_default_ignored(name: &str) -> bool {

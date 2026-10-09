@@ -1,6 +1,7 @@
 //! Pure/ReadOnly tools: read_file, list_dir, grep. These are the tools the scheduler may
 //! dispatch early (at content_block_stop) because they have no observable effect.
 
+use crate::repository_ignore::RepositoryWalk;
 use crate::{
     ObservationToolPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root,
 };
@@ -735,7 +736,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         ToolSpec {
             name: "list_dir".into(),
             description: "List one directory level for fast repository orientation, skipping .git \
-                          and common build/vendor dirs. Directories end in `/`; files are returned \
+                          common build/vendor dirs and repository .gitignore rules. Directories end in `/`; files are returned \
                           one path per line. `path` may be relative to the repo root or an absolute \
                           host path. Set optional `depth` only when a bounded recursive listing is \
                           genuinely useful; prefer `glob` for targeted recursive discovery."
@@ -782,7 +783,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             name: "glob".into(),
             description: "Find files by glob pattern relative to the repo root: `*` matches within a \
                           path segment, `**` matches across segments, `?` matches one char. e.g. \
-                          `src/**/*.rs`, `**/*.toml`. Skips .git/build/vendor dirs. Paths, one per line."
+                          `src/**/*.rs`, `**/*.toml`. Skips .git/build/vendor dirs and repository .gitignore rules. Paths, one per line."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -834,14 +835,8 @@ fn list_directory(
     let mut out = Vec::new();
     let mut output_bytes = 0usize;
     let mut emitted_entries = 0usize;
-    for entry in WalkDir::new(&base)
-        .min_depth(1)
-        .max_depth(depth)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-        .flatten()
-    {
+    let mut walk = RepositoryWalk::new(root, &base, depth)?;
+    while let Some(entry) = walk.next_entry()? {
         if !entry.file_type().is_file() && !entry.file_type().is_dir() {
             continue;
         }
@@ -872,6 +867,19 @@ fn list_directory(
         output_bytes = output_bytes.saturating_add(framed);
         out.push(line);
         emitted_entries = emitted_entries.saturating_add(1);
+    }
+    // Sorting retained, byte-bounded rows avoids WalkDir's unbounded per-directory sort buffer.
+    let marker = if out
+        .last()
+        .is_some_and(|line| line.starts_with("… (truncated"))
+    {
+        out.pop()
+    } else {
+        None
+    };
+    out.sort();
+    if let Some(marker) = marker {
+        out.push(marker);
     }
     Ok(out.join("\n"))
 }
@@ -908,15 +916,12 @@ fn glob_files(
     policy: crate::GlobPolicy,
 ) -> Result<String, String> {
     let base = resolve_in_root(root, relative)?;
+    let mut matcher = GlobPattern::new(pattern)?;
     let mut out = Vec::new();
     let mut output_bytes = 0usize;
     let mut emitted_results = 0usize;
-    for entry in WalkDir::new(&base)
-        .max_depth(policy.max_depth)
-        .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-        .flatten()
-    {
+    let mut walk = RepositoryWalk::new(root, &base, policy.max_depth)?;
+    while let Some(entry) = walk.next_entry()? {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -924,7 +929,7 @@ fn glob_files(
             continue;
         };
         let candidate = relative_to_base.to_string_lossy().replace('\\', "/");
-        if !glob_match(pattern, &candidate) {
+        if !matcher.is_match(&candidate)? {
             continue;
         }
         if emitted_results >= policy.max_results {
@@ -963,35 +968,86 @@ fn is_ignored(name: &str) -> bool {
     iteron_ctx::source::is_default_pruned_component(name)
 }
 
-/// Match a `/`-separated path against a glob: `?`=one char, `*`=any run WITHIN a segment (never `/`),
-/// `**`=any number of whole segments (incl. zero). Case-sensitive. Recursive backtracking over the
-/// segment list; paths/patterns are short so the worst case is bounded in practice.
-fn glob_match(pattern: &str, path: &str) -> bool {
-    let pat: Vec<&str> = pattern.split('/').collect();
-    let seg: Vec<&str> = path.split('/').collect();
-    seg_match(&pat, &seg)
+/// Glob matching is an observation computation, not an exponential search. The fixed work
+/// envelope is shared by every actual candidate in this call and never grants filesystem scope.
+const MAX_GLOB_PATTERN_BYTES: usize = 4 * 1024;
+const MAX_GLOB_MATCH_STEPS: usize = 64 * 1024 * 1024;
+
+struct GlobPattern<'a> {
+    segments: Vec<&'a str>,
+    remaining: usize,
 }
-fn seg_match(pat: &[&str], seg: &[&str]) -> bool {
-    match pat.split_first() {
-        None => seg.is_empty(),
-        Some((&"**", rest)) => (0..=seg.len()).any(|k| seg_match(rest, &seg[k..])),
-        Some((p, rest)) => !seg.is_empty() && wild_seg(p, seg[0]) && seg_match(rest, &seg[1..]),
-    }
-}
-/// Single-segment wildcard: `*` any run (no `/`), `?` one char, else literal.
-fn wild_seg(pat: &str, s: &str) -> bool {
-    fn go(p: &[char], t: &[char]) -> bool {
-        match p.split_first() {
-            None => t.is_empty(),
-            Some(('*', rest)) => (0..=t.len()).any(|k| go(rest, &t[k..])),
-            Some(('?', rest)) => !t.is_empty() && go(rest, &t[1..]),
-            Some((c, rest)) => !t.is_empty() && t[0] == *c && go(rest, &t[1..]),
+
+impl<'a> GlobPattern<'a> {
+    fn new(pattern: &'a str) -> Result<Self, String> {
+        if pattern.len() > MAX_GLOB_PATTERN_BYTES {
+            return Err("glob: pattern exceeds the fixed 4096-byte matching envelope".into());
         }
+        Ok(Self {
+            segments: pattern.split('/').collect(),
+            remaining: MAX_GLOB_MATCH_STEPS,
+        })
     }
-    go(
-        &pat.chars().collect::<Vec<_>>(),
-        &s.chars().collect::<Vec<_>>(),
-    )
+
+    fn step(&mut self) -> Result<(), String> {
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or("glob: matching work reached its fixed ceiling; narrow the pattern or path")?;
+        Ok(())
+    }
+
+    fn is_match(&mut self, path: &str) -> Result<bool, String> {
+        let parts: Vec<&str> = path.split('/').collect();
+        let mut previous = vec![false; parts.len() + 1];
+        previous[0] = true;
+        for index in 0..self.segments.len() {
+            let pattern = self.segments[index];
+            let mut current = vec![false; parts.len() + 1];
+            if pattern == "**" {
+                current[0] = previous[0];
+                for part in 1..=parts.len() {
+                    self.step()?;
+                    current[part] = previous[part] || current[part - 1];
+                }
+            } else {
+                for part in 1..=parts.len() {
+                    self.step()?;
+                    current[part] =
+                        previous[part - 1] && self.match_segment(pattern, parts[part - 1])?;
+                }
+            }
+            previous = current;
+        }
+        Ok(previous[parts.len()])
+    }
+
+    fn match_segment(&mut self, pattern: &str, part: &str) -> Result<bool, String> {
+        let text: Vec<char> = part.chars().collect();
+        let mut previous = vec![false; text.len() + 1];
+        previous[0] = true;
+        for token in pattern.chars() {
+            let mut current = vec![false; text.len() + 1];
+            current[0] = token == '*' && previous[0];
+            for index in 1..=text.len() {
+                self.step()?;
+                current[index] = match token {
+                    '*' => previous[index] || current[index - 1],
+                    '?' => previous[index - 1],
+                    literal => previous[index - 1] && literal == text[index - 1],
+                };
+            }
+            previous = current;
+        }
+        Ok(previous[text.len()])
+    }
+}
+
+#[cfg(test)]
+fn glob_match(pattern: &str, path: &str) -> bool {
+    GlobPattern::new(pattern)
+        .and_then(|mut matcher| matcher.is_match(path))
+        .unwrap()
 }
 
 /// An on-demand localization fallback: a repo skeleton (declarations only), fit to a token budget.

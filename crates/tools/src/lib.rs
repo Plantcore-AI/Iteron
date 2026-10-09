@@ -45,6 +45,7 @@ mod operation_effects;
 mod plantcore;
 mod process;
 mod repair_evidence;
+mod repository_ignore;
 mod schema;
 mod schema_error;
 mod shell;
