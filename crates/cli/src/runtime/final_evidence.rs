@@ -140,14 +140,16 @@ impl HostFinalEvidenceOwner {
 fn claims_test_success(text: &str) -> bool {
     // Classification is bounded and only produces a caution. It cannot mint a PASS receipt or
     // change completion. No part of the model's claim is copied into a trusted host message.
-    let mut end = text
-        .len()
-        .min(iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES);
-    while !text.is_char_boundary(end) {
-        end -= 1;
+    let limit = iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES;
+    let mut head_end = text.len().min(limit);
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
     }
-    let text = text[..end].to_lowercase();
-    [
+    let mut tail_start = text.len().saturating_sub(limit);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let claims = [
         "tests passed",
         "all tests pass",
         "test suite passed",
@@ -156,9 +158,13 @@ fn claims_test_success(text: &str) -> bool {
         "全部测试通过",
         "测试均通过",
         "测试已通过",
-    ]
-    .into_iter()
-    .any(|claim| text.contains(claim))
+    ];
+    [&text[..head_end], &text[tail_start..]]
+        .into_iter()
+        .any(|segment| {
+            let segment = segment.to_lowercase();
+            claims.into_iter().any(|claim| segment.contains(claim))
+        })
 }
 
 #[cfg(test)]

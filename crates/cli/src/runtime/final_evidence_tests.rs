@@ -211,3 +211,20 @@ fn configured_check_receipt_is_separate_from_suite_and_historical_done() {
         HostConfiguredCheckV1::NotObserved
     );
 }
+
+#[test]
+fn bounded_answer_tail_cannot_hide_a_final_unsupported_test_claim() {
+    let mut answer = "中".repeat(iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES);
+    answer.push_str("All tests passed.");
+    let mut owner = HostFinalEvidenceOwner::default();
+    owner.begin(TurnId(1));
+    assert_eq!(
+        owner.correction(&answer),
+        Some(HostFinalCorrectionV1::TestSuccessUnverified)
+    );
+    assert!(
+        owner
+            .correction("Implemented the requested change; testing remains unverified.")
+            .is_none()
+    );
+}
