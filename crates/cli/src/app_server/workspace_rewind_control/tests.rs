@@ -206,8 +206,36 @@ async fn local_write_grant_cannot_restore_trust_files_and_named_grant_has_real_r
 
 #[tokio::test]
 async fn real_checkout_failure_reports_observed_safety_rollback_and_does_not_adopt() {
+    use crate::app_server::{
+        session_factory::{PreparationOrigin, RewindPreparation, SessionFactory},
+        wire,
+    };
     let repo = Repository::new("rollback");
-    let (agent, target) = repo.agent();
+    let (mut agent, target) = repo.agent();
+    let target_tree = iteron_record::replay(agent.rollout.path())
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.kind {
+            EventKind::Checkpoint { tree_ref, .. } if event.seq == target.seq => Some(tree_ref),
+            _ => None,
+        })
+        .unwrap();
+    let tree = Command::new("git")
+        .current_dir(&repo.0)
+        .args(["ls-tree", &target_tree, "--", "editable.txt"])
+        .output()
+        .unwrap();
+    assert!(tree.status.success());
+    let entry = String::from_utf8(tree.stdout).unwrap();
+    let blob = entry.split_whitespace().nth(2).unwrap();
+    assert!(matches!(blob.len(), 40 | 64));
+    assert!(blob.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let target_blob = repo
+        .0
+        .join(".git/objects")
+        .join(&blob[..2])
+        .join(&blob[2..]);
+    assert!(target_blob.is_file());
     std::fs::remove_file(repo.0.join("editable.txt")).unwrap();
     std::fs::create_dir(repo.0.join("editable.txt")).unwrap();
     std::fs::write(
@@ -215,45 +243,92 @@ async fn real_checkout_failure_reports_observed_safety_rollback_and_does_not_ado
         "retained directory bytes\n",
     )
     .unwrap();
-    let attached = attach(agent, true, false).unwrap();
-    control(
-        &attached.handle,
-        Control::SetCapabilityRule {
-            capability: Capability::ReversibleLocal,
-            verdict: Verdict::Auto,
+    let mut rules = iteron_protocol::PermissionRules::new();
+    rules.allow_cap(Capability::ReversibleLocal);
+    rules.set_tool("workspace_rewind:trust_mutating", Verdict::Auto);
+    agent
+        .transition_permission_rules(rules, iteron_protocol::RuntimePolicySource::Operator)
+        .unwrap();
+    let (handle, mut ends) = wire().unwrap();
+    ends.events.bind_lifecycle_identity(
+        iteron_protocol::SessionId("rollback-fixture".into()),
+        agent.rollout.run_id().clone(),
+    );
+    let factory = SessionFactory::capture(&agent, &handle.client).unwrap();
+    let scope = handle.client.thread_snapshot_v1().unwrap();
+    let origin = PreparationOrigin {
+        thread: scope.thread_id.clone(),
+        run: scope.run_id.clone(),
+        selection: crate::providers::ModelSelection {
+            provider_id: "fixture-navigation".into(),
+            model_id: "m".into(),
         },
-    )
-    .await;
-    control(
-        &attached.handle,
-        Control::SetToolRule {
-            tool: "workspace_rewind:trust_mutating".into(),
-            verdict: Verdict::Auto,
-        },
-    )
-    .await;
-    let result = rewind(
-        &attached.handle,
-        target.clone(),
-        RewindScopeV1::CodeAndConversation,
-    )
-    .await;
-    let execution = result.presentation.execution.unwrap();
+        checkpoint: agent.tunables_checkpoint().unwrap().clone(),
+    };
+    let command = WorkspaceRewindCommandV1::Apply {
+        thread_id: scope.thread_id,
+        run_id: scope.run_id,
+        target: target.clone(),
+        scope: RewindScopeV1::CodeAndConversation,
+        unrecorded: RewindUnrecordedV1::Keep,
+    };
+    let RewindPreparation::Apply(mut prepared) =
+        factory.prepare_rewind(origin, command, None).await.unwrap()
+    else {
+        panic!("native preparation");
+    };
+    let mut ticket = agent
+        .admit_workspace_rewind(prepared.snapshot().unwrap())
+        .unwrap();
+    prepared.reply_mut().execution.as_mut().unwrap().intent_seq = Some(ticket.intent_sequence());
+    let permit = ticket.take_permit().unwrap();
+    let (authorized, safety) = (*prepared).create_safety(permit).await.unwrap();
+    let mut safety = safety.unwrap();
+    let safety_seq = agent.publish_rewind_safety(&ticket, &mut safety).unwrap();
+    // A directory collision is not a checkout failure: Git can replace it. Remove only the
+    // actual target blob after the safety checkpoint has been physically published. The safety
+    // tree and its different operator blob remain available for a real native rollback.
+    std::fs::remove_file(target_blob).unwrap();
+    let completed = authorized.restore(safety).await.unwrap();
+    assert_eq!(completed.files, RewindFilesV1::RolledBack);
+    let super::RewindControlResult::Observed(result) =
+        super::finish_restoration(&mut agent, ticket, safety_seq, completed).unwrap()
+    else {
+        panic!("the actual rolled-back terminal must never admit conversation adoption");
+    };
+    let execution = result.execution.unwrap();
     assert_eq!(execution.files, RewindFilesV1::RolledBack);
     assert!(!execution.conversation_adopted);
-    assert!(execution.retained_child_run.is_some());
-    assert!(execution.terminal_seq.is_some());
+    let child = execution.retained_child_run.unwrap();
+    assert!(
+        agent
+            .rollout
+            .path()
+            .parent()
+            .unwrap()
+            .join(format!("{}.jsonl", child.0))
+            .is_file()
+    );
+    let terminal = execution.terminal_seq.unwrap();
     assert_eq!(
-        attached.handle.client.thread_snapshot_v1().unwrap().run_id,
+        handle.client.thread_snapshot_v1().unwrap().run_id,
         target.run_id
     );
+    assert_eq!(agent.rollout.run_id(), &target.run_id);
     assert_eq!(
         std::fs::read_to_string(repo.0.join("editable.txt/operator.txt")).unwrap(),
         "retained directory bytes\n"
     );
-    assert!(result.navigation.is_none());
-    drop(attached.handle);
-    attached.task.await.unwrap();
+    let events = iteron_record::replay(agent.rollout.path()).unwrap();
+    assert!(execution.intent_seq.unwrap().0 < safety_seq.0 && safety_seq.0 < terminal.0);
+    assert!(events.iter().any(|event| event.seq == safety_seq
+        && matches!(event.kind,EventKind::Checkpoint {at,..} if at==safety_seq)));
+    assert!(events.iter().any(|event| event.seq == terminal
+        && matches!(&event.kind,EventKind::EffectFailed {tool,..} if tool=="workspace_restore")));
+    drop(factory);
+    drop(handle);
+    drop(ends);
+    drop(agent);
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 //! Trusted native session factory. Provider constructors, verified replay and writer leases never
 //! cross into presentation. Existing SQ slot permits exclude submissions through the journal swap.
 mod workspace_rewind;
-pub(super) use workspace_rewind::{PreparedRewind, RewindPreparation};
+pub(super) use workspace_rewind::{CompletedRewind, PreparedRewind, RewindPreparation};
 #[cfg(test)]
 mod tests;
 use crate::app_server::{AppServerClient, ModelSelection};

@@ -3150,9 +3150,12 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
             .await;
         (agent, result)
     });
-    tokio::time::timeout(Duration::from_secs(3), provider.started.notified())
-        .await
-        .expect("the actual provider invocation must be reached");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        provider.started.notified(),
+    )
+    .await
+    .expect("the actual provider invocation must be reached");
     let (reply, receive) = tokio::sync::oneshot::channel();
     surface.dispatch(
         &activity,
@@ -3182,7 +3185,7 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
             .all(|event| { event["run_id"] == run.0 && event["event_id"] == "model.request_sent" })
     );
     provider.release.notify_one();
-    let (agent, outcome) = tokio::time::timeout(Duration::from_secs(3), running)
+    let (agent, outcome) = tokio::time::timeout(std::time::Duration::from_secs(3), running)
         .await
         .expect("the released provider must complete")
         .unwrap();

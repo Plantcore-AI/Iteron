@@ -286,7 +286,11 @@ impl DurableArtifactStore {
             PrivateContentRetention::Session,
             MAX_PRIVATE_CONTENT_BYTES,
         )
-        .map_err(|_| ArtifactStoreError::Unavailable)
+        .map_err(|_error| {
+            #[cfg(test)]
+            eprintln!("artifact CAS owner admission failed: {_error}");
+            ArtifactStoreError::Unavailable
+        })
     }
 
     fn validate_manifest(&self, manifest: &Manifest) -> Result<(), ArtifactStoreError> {
@@ -357,7 +361,11 @@ impl DurableArtifactStore {
         for reference in &manifest.releasing {
             self.private(reference.schema)?
                 .release(Seq(reference.sequence), &reference.handle.digest)
-                .map_err(|_| ArtifactStoreError::Unavailable)?;
+                .map_err(|_error| {
+                    #[cfg(test)]
+                    eprintln!("artifact CAS retention release failed: {_error}");
+                    ArtifactStoreError::Unavailable
+                })?;
         }
         manifest.releasing.clear();
         file.write(manifest)
@@ -497,7 +505,11 @@ impl DurableArtifactStore {
         let private = self.private(schema)?;
         let handle = private
             .put_derived(Seq(sequence), served, &private_sources)
-            .map_err(|_| ArtifactStoreError::Unavailable)?;
+            .map_err(|_error| {
+                #[cfg(test)]
+                eprintln!("artifact CAS retained publication failed: {_error}");
+                ArtifactStoreError::Unavailable
+            })?;
         if handle != reference.handle
             || private
                 .read_at(Seq(sequence), &handle)

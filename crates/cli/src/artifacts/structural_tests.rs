@@ -291,7 +291,7 @@ async fn quota_eviction_removes_every_manifest_that_depends_on_the_same_snapshot
                 &format!("independent bounded quota item {index}\n"),
                 &[],
             )
-            .unwrap();
+            .unwrap_or_else(|error| panic!("actual quota publication {index} failed: {error:?}"));
     }
     let reopened = fixture.store();
     let listing = list(&fixture, &reopened);

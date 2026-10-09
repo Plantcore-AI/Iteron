@@ -315,6 +315,7 @@ fn tool_paths(tool: &str, input: &Value) -> Result<Vec<(Access, PathBuf)>, &'sta
         | "dispatch_agent"
         | "Workflow"
         | "tool_search"
+        | "update_plan"
         | "submit_repair_evidence"
         | "request_user_input" => Err("path_not_proven"),
         _ => Err("unknown_tool"),
@@ -621,6 +622,17 @@ mod tests {
         assert_eq!(declared.len(), registered.len() + 2);
         assert!(declared.contains("plantcore-run-gateway__tool_search"));
         assert!(declared.contains("plantcore-run-gateway__tool_call"));
+    }
+
+    #[test]
+    fn standalone_plan_control_has_no_workspace_hook_path_admission() {
+        assert_eq!(
+            tool_paths(
+                "update_plan",
+                &json!({"plan":[{"step":"read repo","status":"pending"}]})
+            ),
+            Err("path_not_proven")
+        );
     }
 
     #[test]

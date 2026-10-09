@@ -35,6 +35,7 @@
     "dispatch_agent": { "access": "deny_unprovable", "path_fields": [] },
     "Workflow": { "access": "deny_unprovable", "path_fields": [] },
     "tool_search": { "access": "deny_unprovable", "path_fields": [] },
+    "update_plan": { "access": "deny_unprovable", "path_fields": [] },
     "submit_repair_evidence": { "access": "deny_unprovable", "path_fields": [] },
     "request_user_input": { "access": "terminal_intercept", "path_fields": [] },
     "plantcore-run-gateway__tool_search": { "access": "external_mcp_proxy", "path_fields": [] },

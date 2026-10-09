@@ -152,6 +152,15 @@ pub(super) async fn prepare(
             return Ok(RewindControlResult::Observed(fallback));
         }
     };
+    finish_restoration(agent, ticket, safety_seq, completed)
+}
+
+fn finish_restoration(
+    agent: &mut Agent,
+    ticket: crate::runtime::workspace_rewind::WorkspaceRewindTicket,
+    safety_seq: iteron_protocol::Seq,
+    completed: super::session_factory::CompletedRewind,
+) -> Result<RewindControlResult, String> {
     let mut prepared = completed.prepared;
     let execution = prepared.reply_mut().execution.as_mut().expect("apply");
     execution.files = completed.files;
