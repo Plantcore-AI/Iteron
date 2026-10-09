@@ -943,6 +943,11 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cases = [
         (
+            "crates/cli/src/app_server/plantcore.rs",
+            "cli.app.server.plantcore.plantcoreadmission.disabled.inline.self.field.state.1",
+            InvariantKind::Authority,
+        ),
+        (
             "crates/cli/src/app_server/session_factory.rs",
             "cli.app.server.session.factory.sessionfactory.verified.inline.replayreadlimits.field.events.1",
             InvariantKind::HardBudget,
@@ -1038,7 +1043,7 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             InvariantKind::HardBudget,
         ),
     ];
-    assert_eq!(cases.len(), 19);
+    assert_eq!(cases.len(), 20);
     for (path, expected_id, kind) in cases {
         let source = std::fs::read_to_string(root.join(path)).unwrap();
         let krate = path.split('/').nth(1).unwrap();
@@ -1091,6 +1096,26 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
 #[test]
 fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
     for (path, source) in [
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Required } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl OtherPlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { other_state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { OtherAdmission { state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/unrelated.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
+        ),
         (
             "crates/cli/src/runtime/permission_policy.rs",
             "fn evaluate_operation() { let _ = OtherAdmission { verdict: Verdict::Auto }; }",

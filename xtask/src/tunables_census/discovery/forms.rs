@@ -214,6 +214,14 @@ pub(super) fn source_invariant_disposition(
     };
     for (path, owner, symbol, expected, kind, rationale) in [
         (
+            "crates/cli/src/app_server/plantcore.rs",
+            "PlantcoreAdmission::disabled",
+            "inline::Self::field::state",
+            "State :: Disabled",
+            InvariantKind::Authority,
+            "the ordinary-client constructor fixes PlantCore admission off and cannot grant bootstrap authority",
+        ),
+        (
             "crates/cli/src/queue_policy.rs",
             "FrontendQueuePolicy::owner",
             "inline::Self::new::argument_3",
@@ -397,16 +405,6 @@ pub(super) fn source_invariant_disposition(
         return Some(invariant(
             InvariantKind::WireCompatibility,
             "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
-        ));
-    }
-    if (identity.contains("crates/cli/src/app_server/plantcore.rs")
-        || identity.contains("cli.app.server.plantcore"))
-        && identity.contains("plantcoreadmission::disabled")
-        && identity.contains("field::state")
-    {
-        return Some(invariant(
-            InvariantKind::Authority,
-            "the ordinary-client constructor fixes PlantCore admission off and cannot grant bootstrap authority",
         ));
     }
     if (identity.contains("crates/cli/src/machine_contract.rs")
