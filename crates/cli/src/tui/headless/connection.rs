@@ -49,6 +49,7 @@ pub(super) struct ConnectionServices<'a> {
     pub(super) rollout_path: &'a Path,
     pub(super) session_id: &'a str,
     pub(super) plantcore: bool,
+    pub(super) service: &'a crate::resident_service::ResidentService,
     pub(super) commands: &'a PlantcoreCommands,
     pub(super) dispatch_gate: &'a Option<Arc<DispatchGate>>,
     pub(super) recording_fault: &'a Mutex<Option<RecordingAppServerFault>>,
@@ -155,9 +156,14 @@ impl<'a> ConnectionSession<'a> {
                 session_id,
                 product_contract_version,
                 observation_only,
+                live_only,
             } if shared.auth_token.authorizes(&bearer_token) => (
                 protocol_version,
-                resume_from,
+                if live_only {
+                    Some(shared.cursor.load(Ordering::Acquire))
+                } else {
+                    resume_from
+                },
                 session_id,
                 product_contract_version,
                 observation_only,
@@ -526,6 +532,13 @@ impl<'a> ConnectionSession<'a> {
                             }
                             drop(input_guard);
                             match control {
+                                control::WireControl::ResidentServiceV1 { command } => {
+                                    let mut prepared=shared.service.command(shared.client,command);
+                                    let reply=std::mem::take(&mut prepared.value);
+                                    let sent=send_frame(&mut self.writer,shared.outbound_budget,shared.frame_preparers,shared.fragment_encoders,ServerFrame::ControlReply {protocol_version,request_id,reply}).await;
+                                    drop(prepared); // Activate after this actual bounded write attempt, also on observer loss.
+                                    sent?;
+                                }
                                 control::WireControl::RefusalsV1 {command}=>{
                                     let reply=shared.client.refusals_v1(command);
                                     send_frame(&mut self.writer,shared.outbound_budget,shared.frame_preparers,shared.fragment_encoders,ServerFrame::ControlReply {protocol_version,request_id,reply}).await?;

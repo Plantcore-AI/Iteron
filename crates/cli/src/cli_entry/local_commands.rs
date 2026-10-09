@@ -9,6 +9,13 @@ use iteron_protocol::{RunId, TenantId};
 
 pub(crate) async fn machine(cli: &Cli) -> anyhow::Result<Option<u8>> {
     let code = match &cli.command {
+        Some(LocalCommand::Attach {
+            endpoint,
+            service_id,
+        }) => {
+            crate::tui::remote::run(*endpoint, service_id.clone()).await?;
+            Some(output::EXIT_SUCCESS)
+        }
         Some(LocalCommand::Setup {
             plan,
             byok,

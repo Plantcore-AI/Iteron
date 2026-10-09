@@ -5,7 +5,7 @@
 //! make a control request.
 
 mod advisory_maintenance;
-mod auth;
+pub(super) mod auth;
 #[cfg(feature = "legacy-plantcore")]
 mod commands;
 #[cfg(not(feature = "legacy-plantcore"))]
@@ -213,6 +213,7 @@ struct Shared {
     plantcore: bool,
     machine_schema_version: u32,
     commands: PlantcoreCommands,
+    service: crate::resident_service::ResidentService,
     dispatch_gate: Option<Arc<crate::runtime::DispatchGate>>,
     recording_fault: Mutex<Option<crate::app_server::RecordingAppServerFault>>,
 }
@@ -255,6 +256,7 @@ impl Shared {
             session_id: &self.session_id,
             plantcore: self.plantcore,
             commands: &self.commands,
+            service: &self.service,
             dispatch_gate: &self.dispatch_gate,
             recording_fault: &self.recording_fault,
         }
@@ -503,6 +505,15 @@ pub(crate) async fn serve(
         .await
         .with_context(|| format!("bind headless App Server at {listen}"))?;
     let bound = listener.local_addr().context("read bound listen address")?;
+    let service = crate::resident_service::ResidentService::bind(
+        facts.session_id.clone(),
+        facts.tenant.clone(),
+        &facts.workspace,
+        bound,
+        drain.clone(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let mut service_stop = service.subscribe_stop();
     log(json!({
         "component": "app_server",
         "event": "listening",
@@ -510,6 +521,7 @@ pub(crate) async fn serve(
         "listen": bound.to_string(),
         "transport": "loopback_tcp_jsonl",
         "authentication": "stdin_bearer_hello",
+        "service_id": service.service_id(),
     }));
 
     let (live, _) = broadcast::channel(iteron_tunables::param_integer(
@@ -529,7 +541,7 @@ pub(crate) async fn serve(
     );
     #[cfg(not(feature = "legacy-plantcore"))]
     let commands = {
-        let _ = (interrupt, drain);
+        let _ = interrupt;
         PlantcoreCommands::disabled()
     };
     let shared = Arc::new(Shared {
@@ -552,6 +564,7 @@ pub(crate) async fn serve(
         plantcore,
         machine_schema_version,
         commands,
+        service,
         dispatch_gate,
         recording_fault: Mutex::new(recording_fault),
     });
@@ -627,7 +640,7 @@ pub(crate) async fn serve(
             biased;
             result = &mut pump => {
                 pump_was_observed = true;
-                pump_stopped_early = true;
+                pump_stopped_early = !shared.service.stopping();
                 log(json!({
                     "component": "app_server",
                     "event": if result.is_err() {
@@ -639,6 +652,7 @@ pub(crate) async fn serve(
                 break;
             }
             _ = &mut shutdown => break,
+            _ = service_stop.wait_for(|requested| *requested) => break,
             completed = connections.join_next(), if !connections.is_empty() => {
                 if let Some(completed) = completed {
                     shared.record_client_task_completion(completed);

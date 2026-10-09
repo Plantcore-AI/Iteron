@@ -49,6 +49,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    ResidentServiceV1 {
+        command: iteron_protocol::resident_service::ResidentServiceCommandV1,
+    },
     RefusalsV1 {
         command: iteron_protocol::client_refusal::RefusalsReadV1,
     },
@@ -312,6 +315,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::ResidentServiceV1 { command } = self {
+            return command.is_read_only();
+        }
         if matches!(
             self,
             Self::HostFinalEvidenceV1 { .. } | Self::RefusalsV1 { .. }
@@ -370,6 +376,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::ResidentServiceV1 { .. } => {
+                unreachable!("service lifecycle belongs to the captured resident host")
+            }
             Self::RefusalsV1 { .. } => {
                 unreachable!("refusal observations address the captured readonly owner")
             }

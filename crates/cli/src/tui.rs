@@ -12,6 +12,8 @@
 //! on the same iteron (ADR-010: frontends are adapters).
 
 mod driver;
+pub(crate) mod remote;
+mod remote_transport;
 pub(crate) use driver::{RunConfig, run};
 mod frame_render;
 #[cfg(test)]

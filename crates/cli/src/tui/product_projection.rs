@@ -17,6 +17,9 @@ pub(super) struct ProductProjection {
 }
 
 impl ProductProjection {
+    pub(super) fn cursor(&self) -> u64 {
+        self.cursor
+    }
     /// A product event may already exist when its EQ envelope is read. Restrict projection to
     /// this envelope's source sequence so a busy producer cannot paint later-turn content early.
     pub(super) fn sync(

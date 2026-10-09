@@ -34,6 +34,8 @@ pub(super) enum ClientFrame {
         product_contract_version: Option<u32>,
         #[serde(default)]
         observation_only: bool,
+        #[serde(default)]
+        live_only: bool,
     },
     Submit {
         protocol_version: u32,

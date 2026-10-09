@@ -25,6 +25,7 @@ pub(super) struct SessionTelemetry {
     trigger: usize,
     effort: Option<EffortApplication>,
     completed_turns: u32,
+    remote_cost: Option<Option<f64>>,
 }
 impl Default for SessionTelemetry {
     fn default() -> Self {
@@ -37,6 +38,7 @@ impl Default for SessionTelemetry {
             trigger: iteron_ctx::CompactionPolicy::default().trigger_tokens,
             effort: None,
             completed_turns: 0,
+            remote_cost: None,
         }
     }
 }
@@ -82,6 +84,15 @@ impl SessionTelemetry {
         self.reserve = None;
         self.effort = None;
     }
+    /// A remote machine cost is a display observation, not a reconstructed signed rate card.
+    /// Explicit None marks unavailable observations without claiming the service admitted zero IO.
+    pub(super) fn observe_remote_cost(&mut self, amount: Option<f64>) {
+        self.remote_cost = Some(amount.filter(|amount| amount.is_finite() && *amount >= 0.0));
+    }
+    pub(super) fn display_cost_usd(&self) -> Option<f64> {
+        self.remote_cost.unwrap_or_else(|| self.cost.usd())
+    }
+    #[cfg(test)]
     pub(super) fn cost(&self) -> &CostState {
         &self.cost
     }

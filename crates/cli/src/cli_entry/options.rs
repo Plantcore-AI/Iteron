@@ -8,6 +8,12 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum LocalCommand {
+    /// Reattach a TUI to an independent loopback `serve` process. Token is read only from stdin.
+    Attach {
+        endpoint: std::net::SocketAddr,
+        #[arg(long)]
+        service_id: String,
+    },
     /// Rebuild session metadata and the sessions index from hash-chained rollout truth.
     Reindex,
     /// Delete old run journals under the runs dir according to an explicit retention policy.

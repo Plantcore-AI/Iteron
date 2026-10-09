@@ -22,6 +22,7 @@ pub(crate) struct ToolFact {
 /// copied across the boundary instead of being asked for on every keystroke.
 pub(crate) struct SessionFacts {
     pub(crate) session_id: SessionId,
+    pub(crate) tenant: iteron_protocol::TenantId,
     pub(crate) context_ledgers: iteron_ctx::ContextLedgerStore,
     pub(crate) memory_traces: iteron_ctx::MemoryTraceStore,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
@@ -175,6 +176,7 @@ fn attach_with_inputs(
     let client_bootstrap = interactive_approvals
         .then(|| super::ClientBootstrapFactory::capture(&agent, handle.client.contract.clone()));
     let facts = SessionFacts {
+        tenant: agent.rollout.tenant().clone(),
         session_id: lifecycle_session_id,
         context_ledgers: agent.context_ledgers.clone(),
         memory_traces: agent.memory_traces.clone(),

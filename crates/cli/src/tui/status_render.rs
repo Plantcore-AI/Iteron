@@ -68,8 +68,7 @@ pub(super) fn canonical_statusline_with_tokens(app: &App, tokens: Option<u64>) -
     let context = app.telemetry.context_remaining_percent();
     let cost_milli = app
         .telemetry
-        .cost()
-        .usd()
+        .display_cost_usd()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| (value * 1_000.0).round() as u64);
     let snapshot = StatusSnapshot::new(

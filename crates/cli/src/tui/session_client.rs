@@ -232,6 +232,7 @@ impl Session {
                 mcp_health: Vec::new(),
             },
             facts: app_server::SessionFacts {
+                tenant: iteron_protocol::TenantId::default(),
                 session_id: iteron_protocol::SessionId("session-test".into()),
                 context_ledgers: iteron_ctx::ContextLedgerStore::default(),
                 memory_traces: iteron_ctx::MemoryTraceStore::default(),
