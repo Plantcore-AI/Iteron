@@ -564,11 +564,39 @@ fn workflow_claim_binds_exact_agent_epoch_and_typed_terminal_atomically() {
         deadline_unix_ms: 10_100,
     };
     let before = controller.revision();
+    let resident = controller.inspect(AgentActor::Operator, id).unwrap();
+    let mut expired = claim.clone();
+    expired.deadline_unix_ms = 10_001;
+    assert!(matches!(
+        controller.claim_workflow_task(expired, 10_001),
+        Err(ControllerError::Budget)
+    ));
+    let mut beyond_lifetime = claim.clone();
+    beyond_lifetime.budget.wall_ms = resident.budget.wall_ms - resident.usage.wall_ms + 1;
+    assert!(matches!(
+        controller.claim_workflow_task(beyond_lifetime, 10_001),
+        Err(ControllerError::Budget)
+    ));
+    assert_eq!(controller.revision(), before);
+
+    // The scheduler minted deadline 10_100 from its 100ms node ceiling at time 10_000.
+    // A later controller admission still fits the resident quota; it must not require 100ms
+    // to fit inside the now-shorter 99ms absolute execution window.
     let lease = controller
-        .claim_workflow_task(claim.clone(), 10_000)
+        .claim_workflow_task(claim.clone(), 10_001)
         .unwrap();
     assert_eq!(controller.revision(), before + 1);
     assert_eq!(lease.agent.agent_id, id);
+    assert_eq!(
+        controller.runtime_epoch_deadline(id, lease.epoch).unwrap(),
+        claim.deadline_unix_ms,
+        "physical runtime retains the scheduler's original absolute cutoff"
+    );
+    assert_eq!(
+        controller.inspect(AgentActor::Operator, id).unwrap().budget,
+        resident.budget,
+        "admission never expands the resident lifetime ceiling"
+    );
     assert_eq!(lease.initial.len(), 1);
     assert_eq!(lease.initial[0].text.as_deref(), Some("exact task"));
     assert!(

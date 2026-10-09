@@ -405,12 +405,14 @@ impl<J: AgentControllerJournal> AgentController<J> {
                 .cost_microusd
                 .saturating_sub(current.cost_used)
                 .saturating_sub(current.reserved_cost),
+            // A task's wall ceiling must fit the remaining lifetime quota. Its separately
+            // admitted absolute deadline shortens execution, not this requested quota: journal
+            // publication and dispatch may already have consumed part of that deadline.
             wall_ms: current
                 .view
                 .budget
                 .wall_ms
-                .saturating_sub(current.wall_used_ms)
-                .min(claim.deadline_unix_ms - now_unix_ms),
+                .saturating_sub(current.wall_used_ms),
         };
         if !claim.budget.fits_within(remaining) {
             return Err(ControllerError::Budget);
