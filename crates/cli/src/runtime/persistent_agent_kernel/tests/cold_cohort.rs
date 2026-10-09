@@ -97,7 +97,8 @@ pub(super) fn make_main(
             .record_genesis_with_tunables(
                 workspace.0.join("repo").to_string_lossy().into_owned(),
                 1,
-                "fixture".into(),
+                // No external Config artifact is supplied; the pinned runtime policy is real.
+                String::new(),
                 None,
             )
             .unwrap();

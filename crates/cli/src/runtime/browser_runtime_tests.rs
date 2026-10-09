@@ -131,7 +131,8 @@ impl Driver {
     }
     fn registry(&self, workspace: &std::path::Path) -> Registry {
         let mut registry = Registry::read_only(workspace).unwrap();
-        registry.install_egress_allow_policy(None).unwrap();
+        // The Agent's resolved checkpoint installs this one-shot policy before activation.
+        // Registering the actual driver captures the same owner without preinstalling it.
         register(
             &mut registry,
             BrowserConfig::new(&self.endpoint, vec![ORIGIN.into()]).unwrap(),

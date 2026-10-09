@@ -380,7 +380,8 @@ fn setup_with_financial_and_memory(
         root.0.join("runs"),
         iteron_protocol::TenantId("tenant".into()),
         "parent".into(),
-        "resident-fixture".into(),
+        // This fixture has no host Config artifact; do not label an arbitrary name as its hash.
+        String::new(),
     );
     context.budget.max_turns = 20;
     context.budget.max_tokens = Some(10_000_000);
