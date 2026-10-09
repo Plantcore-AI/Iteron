@@ -214,6 +214,7 @@ mod orchestration_route;
 mod ordinary_extension_runtime;
 mod ordinary_extensions;
 mod permission_policy;
+mod refusal_provenance;
 mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
 mod persistent_native_context;

@@ -141,6 +141,8 @@ pub(crate) enum PlantcoreUiEvent {
 /// Ordered ingress from the resident runtime into App Server presentation.
 #[derive(Debug, Clone)]
 pub(crate) enum RuntimeFrontendEvent {
+    /// Live authority provenance backed by the actual decision/terminal receipt when available.
+    Refusal(iteron_protocol::refusal::HostRefusalV1),
     Ui(UiEvent),
     // No standalone producer; the historical pure projection contract remains available.
     #[cfg_attr(not(feature = "legacy-plantcore"), allow(dead_code))]
