@@ -34,6 +34,7 @@ pub(super) struct EffectJournalOwner {
     pending: usize,
     observation_unknown: bool,
     barrier_failed: bool,
+    final_evidence: super::final_evidence::HostFinalEvidenceOwner,
 }
 
 impl Default for EffectJournalOwner {
@@ -46,13 +47,15 @@ impl Default for EffectJournalOwner {
             pending: 0,
             observation_unknown: false,
             barrier_failed: false,
+            final_evidence: Default::default(),
         }
     }
 }
 
 impl EffectJournalOwner {
-    pub(super) fn begin_operator_turn(&mut self) {
+    pub(super) fn begin_operator_turn(&mut self, turn: TurnId) {
         self.workspace_mutated = false;
+        self.final_evidence.begin(turn);
     }
     pub(super) fn note_workspace_mutation(&mut self) {
         self.workspace_mutated = true;
@@ -91,9 +94,16 @@ impl EffectJournalOwner {
         rollout: &mut Rollout,
         effect: effects::BrokeredEffect,
     ) -> Result<effects::EffectTicket, effects::BrokerError> {
+        let write_capable = matches!(
+            effect.capability,
+            Capability::ReversibleLocal | Capability::CodeExecuting
+        );
         match effects::open_effect(rollout, &mut self.admissions, effect) {
             Ok(ticket) => {
                 self.pending = self.pending.saturating_add(1);
+                if write_capable {
+                    self.final_evidence.write_admitted();
+                }
                 Ok(ticket)
             }
             Err(error) => {
@@ -219,9 +229,21 @@ impl EffectJournalOwner {
             effects::Settlement::Unknown(_)
                 | effects::Settlement::Definite(EventKind::EffectUnknown { .. })
         );
+        let turn = ticket.turn();
+        let tool_failed = match &settlement {
+            effects::Settlement::Definite(EventKind::ToolDone {
+                result,
+                effect_id: Some(_),
+                ..
+            }) => Some(result.is_error),
+            _ => None,
+        };
         match effects::settle_effect_with_sequence(rollout, ticket, settlement) {
             Ok(sequence) => {
                 self.pending = self.pending.saturating_sub(1);
+                if let Some(failed) = tool_failed {
+                    self.final_evidence.tool_terminal(turn, sequence, failed);
+                }
                 self.observation_unknown |= unknown;
                 if blocks {
                     self.unresolved = self.unresolved.saturating_add(1);
@@ -233,6 +255,41 @@ impl EffectJournalOwner {
                 Err(error)
             }
         }
+    }
+
+    pub(super) fn observe_configured_check(
+        &mut self,
+        turn: TurnId,
+        source: Seq,
+        physical_runs: u16,
+        consensus: iteron_protocol::VerificationConsensusEvidence,
+        outcome: iteron_protocol::VerificationOutcomeEvidence,
+    ) {
+        self.final_evidence
+            .configured_check(turn, source, physical_runs, consensus, outcome);
+    }
+    pub(super) fn publish_final_evidence(
+        &mut self,
+        rollout: &Rollout,
+        turn: TurnId,
+        source: Seq,
+        record_healthy: bool,
+        answer: &str,
+    ) -> Option<iteron_protocol::final_evidence::HostFinalEvidenceV1> {
+        let known = record_healthy && self.parent_settlement_known();
+        self.final_evidence.publish(
+            rollout.tenant(),
+            rollout.run_id(),
+            turn,
+            source,
+            known,
+            answer,
+        )
+    }
+    pub(super) fn final_evidence(
+        &self,
+    ) -> Option<iteron_protocol::final_evidence::HostFinalEvidenceV1> {
+        self.final_evidence.published()
     }
 
     /// Restore the actual canonical WAL once for a new/adopted process. Durable orphan intents

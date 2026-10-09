@@ -452,7 +452,7 @@ impl StrongVerificationGate<'_> {
         turn: TurnId,
         kind: EventKind,
     ) -> Result<(), KernelError> {
-        self.journal.approval().append(turn, kind)
+        self.journal.durable_observation(turn, kind)
     }
     pub(super) fn lifecycle_event(
         &self,

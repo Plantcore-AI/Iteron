@@ -43,6 +43,31 @@ impl VerificationJournal<'_> {
             fault: self.fault,
         }
     }
+    pub(super) fn durable_observation(
+        &mut self,
+        turn: TurnId,
+        kind: EventKind,
+    ) -> Result<(), KernelError> {
+        let check = match &kind {
+            EventKind::VerificationPolicy {
+                event:
+                    iteron_protocol::VerificationPolicyEvent::Reduced {
+                        physical_runs,
+                        consensus,
+                        outcome,
+                        ..
+                    },
+                ..
+            } => Some((*physical_runs, *consensus, *outcome)),
+            _ => None,
+        };
+        let source = self.approval().append_receipt(turn, kind)?;
+        if let Some((runs, consensus, outcome)) = check {
+            self.effects
+                .observe_configured_check(turn, source, runs, consensus, outcome);
+        }
+        Ok(())
+    }
     fn require_healthy(&self) -> Result<(), KernelError> {
         if *self.record_failed {
             return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
@@ -63,6 +88,19 @@ impl VerificationJournal<'_> {
             )));
             return;
         }
+        let check = match &kind {
+            EventKind::VerificationPolicy {
+                event:
+                    iteron_protocol::VerificationPolicyEvent::Reduced {
+                        physical_runs,
+                        consensus,
+                        outcome,
+                        ..
+                    },
+                ..
+            } => Some((*physical_runs, *consensus, *outcome)),
+            _ => None,
+        };
         let phase = match &kind {
             EventKind::Phase { phase } => Some(*phase),
             _ => None,
@@ -93,7 +131,11 @@ impl VerificationJournal<'_> {
             self.measure(started);
         }
         match appended {
-            Ok(_) => {
+            Ok(source) => {
+                if let Some((runs, consensus, outcome)) = check {
+                    self.effects
+                        .observe_configured_check(turn, source, runs, consensus, outcome);
+                }
                 if let Some(phase) = phase {
                     events.present(UiEvent::Phase(phase));
                 }

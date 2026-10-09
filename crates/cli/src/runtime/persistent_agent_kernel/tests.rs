@@ -94,6 +94,7 @@ struct ProviderFixture {
     omit_native_user: bool,
     unsupported_capture: bool,
     stream_partial: bool,
+    answer: Option<String>,
     partial_started: AtomicUsize,
     partial_release: tokio::sync::Notify,
     child_sources: Mutex<
@@ -255,7 +256,10 @@ impl Provider for ProviderFixture {
                 })]
             } else {
                 vec![Block::Text {
-                    text: "resident response".into(),
+                    text: self
+                        .answer
+                        .clone()
+                        .unwrap_or_else(|| "resident response".into()),
                 }]
             },
             stop_reason: if blocking {
@@ -937,4 +941,45 @@ async fn actual_resident_stream_is_shared_before_terminal_and_bound_to_physical_
             .last_summary
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn actual_child_false_test_claim_gets_host_correction_without_running_verifier() {
+    use iteron_protocol::final_evidence::{HostConfiguredCheckV1, HostFinalCorrectionV1};
+    let root = Workspace::new();
+    let provider = Arc::new(ProviderFixture {
+        answer: Some("All tests passed.".into()),
+        ..Default::default()
+    });
+    let (host, runtime, _, _port) = setup(&root, provider.clone(), false);
+    let id = spawn(&host, "report results");
+    until(|| host.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle).await;
+    let resident = runtime.residents.lock().unwrap().get(&id).unwrap().clone();
+    let child = resident.lock().await;
+    let evidence = child
+        .host_final_evidence()
+        .expect("actual durable finalization evidence");
+    assert_eq!(evidence.observed_tool_completions, 0);
+    assert_eq!(
+        evidence.configured_check,
+        HostConfiguredCheckV1::NotObserved
+    );
+    assert_eq!(
+        evidence.correction,
+        Some(HostFinalCorrectionV1::TestSuccessUnverified)
+    );
+    assert!(!evidence.test_suite_identity_verified);
+    assert_eq!(child.last_assistant_text(), "All tests passed.");
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
+    let events = iteron_record::replay(child.rollout.path()).unwrap();
+    assert!(
+        events.iter().any(|event| event.seq == evidence.source_seq
+            && matches!(event.kind, EventKind::Done { .. }))
+    );
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::ToolDone { .. } | EventKind::VerificationPolicy { .. }
+    )));
+    assert_eq!(evidence.tenant, *child.rollout.tenant());
+    assert_eq!(evidence.run_id, *child.rollout.run_id());
 }

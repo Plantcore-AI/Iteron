@@ -24,6 +24,7 @@ pub mod advisory_maintenance;
 pub mod agent_cohort;
 pub mod agent_control;
 pub mod agent_output;
+pub mod final_evidence;
 pub mod agent_input;
 pub mod artifact;
 pub mod bundle;
