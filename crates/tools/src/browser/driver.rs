@@ -73,11 +73,14 @@ impl Driver {
     }
 }
 pub(super) fn driver_id(raw: &str) -> Result<&str, &'static str> {
+    // ChromeDriver element handles contain dots. They remain one opaque path segment,
+    // never a route: reject URL dot segments and every separator or encoded delimiter.
     if raw.is_empty()
+        || matches!(raw, "." | "..")
         || raw.len() > 200
         || !raw
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     {
         Err("browser_driver_identity_invalid")
     } else {

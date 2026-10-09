@@ -66,6 +66,7 @@ struct DriverState {
     clicks: u64,
     alive: bool,
     lose_click_reply: bool,
+    element_reply: Option<String>,
     navigate_after_screenshot: bool,
     proxy: String,
 }
@@ -142,9 +143,12 @@ impl DriverFixture {
                         ("GET", "/session/driver-private-1/url") => json!(state.url),
                         ("GET", "/session/driver-private-1/source") => json!(state.source),
                         ("POST", "/session/driver-private-1/element") => {
-                            json!({"element-6066-11e4-a52e-4f735466cecf":"element-private-1"})
+                            json!({"element-6066-11e4-a52e-4f735466cecf":state.element_reply.as_deref().unwrap_or("f.frame-1.d.loader_1.e.7")})
                         }
-                        ("POST", "/session/driver-private-1/element/element-private-1/click") => {
+                        (
+                            "POST",
+                            "/session/driver-private-1/element/f.frame-1.d.loader_1.e.7/click",
+                        ) => {
                             state.clicks += 1;
                             if state.lose_click_reply {
                                 state.lose_click_reply = false;
@@ -153,7 +157,10 @@ impl DriverFixture {
                             state.source.push_str("<p>clicked</p>");
                             Value::Null
                         }
-                        ("POST", "/session/driver-private-1/element/element-private-1/value") => {
+                        (
+                            "POST",
+                            "/session/driver-private-1/element/f.frame-1.d.loader_1.e.7/value",
+                        ) => {
                             state.source.push_str(body["text"].as_str().unwrap());
                             Value::Null
                         }
@@ -417,4 +424,143 @@ async fn oversized_and_nested_inputs_are_refused_before_driver_or_proxy_io() {
         assert!(matches!(captured.execution,ToolExecution::Definite(result) if result.is_error));
     }
     assert!(driver.state.lock().await.requests.is_empty());
+}
+
+#[tokio::test]
+async fn chrome_element_handles_remain_exact_opaque_same_session_routes() {
+    let root = Root::new();
+    let driver = DriverFixture::new().await;
+    let registry = registry(&root, &driver);
+    let opened = open(&registry).await;
+    let typed = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"type","page_ref":opened["page_ref"],"selector":"#text","text":"bounded typed observation"}),
+        ))
+        .await;
+    successful(&typed);
+    let page = content(&typed);
+    let clicked = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"click","page_ref":page["page_ref"],"selector":"#post"}),
+        ))
+        .await;
+    successful(&clicked);
+    let observed = driver.state.lock().await;
+    let actions = observed
+        .requests
+        .iter()
+        .filter(|request| request.starts_with("POST /session/driver-private-1/element/"))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            "POST /session/driver-private-1/element/f.frame-1.d.loader_1.e.7/value",
+            "POST /session/driver-private-1/element/f.frame-1.d.loader_1.e.7/click",
+        ]
+    );
+    assert_eq!(observed.clicks, 1);
+    assert!(
+        !content(&clicked)
+            .to_string()
+            .contains("f.frame-1.d.loader_1.e.7")
+    );
+    drop(observed);
+    let closed = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"close","page_ref":content(&clicked)["close_ref"]}),
+        ))
+        .await;
+    successful(&closed);
+}
+
+#[tokio::test]
+async fn malformed_remote_element_handles_never_dispatch_an_action_or_escape_the_session() {
+    let malformed = [
+        "".into(),
+        ".".into(),
+        "..".into(),
+        "id/../other-session".into(),
+        "id\\other".into(),
+        "id%2fother".into(),
+        "id%2e%2e".into(),
+        "id?query=1".into(),
+        "id#fragment".into(),
+        "id@other".into(),
+        "id:other".into(),
+        "id\nother".into(),
+        "id\0other".into(),
+        "idé".into(),
+        "x".repeat(201),
+    ];
+    for element in malformed {
+        let root = Root::new();
+        let driver = DriverFixture::new().await;
+        let registry = registry(&root, &driver);
+        let opened = open(&registry).await;
+        driver.state.lock().await.element_reply = Some(element);
+        let before = driver.state.lock().await.requests.len();
+        let refused = registry
+            .run_effect_captured(call(
+                "browser",
+                json!({"action":"click","page_ref":opened["page_ref"],"selector":"#post"}),
+            ))
+            .await;
+        assert!(matches!(&refused.execution, ToolExecution::Unknown(_)));
+        let refusal = content(&refused);
+        assert_eq!(refusal["error"], "browser_driver_identity_invalid");
+        assert_eq!(refusal["owner_reconciliation_required"], true);
+        let observed = driver.state.lock().await;
+        assert_eq!(observed.clicks, 0);
+        assert_eq!(
+            &observed.requests[before..],
+            &[
+                "GET /session/driver-private-1/url",
+                "GET /session/driver-private-1/source",
+                "GET /session/driver-private-1/url",
+                "POST /session/driver-private-1/element",
+            ]
+        );
+        let dispatched = observed.requests.len();
+        drop(observed);
+        let retry = registry
+            .run_effect_captured(call(
+                "computer",
+                json!({"action":"key","page_ref":opened["page_ref"],"key":"enter"}),
+            ))
+            .await;
+        assert!(result(&retry).is_error);
+        assert_eq!(driver.state.lock().await.requests.len(), dispatched);
+        let closed = registry
+            .run_effect_captured(call(
+                "browser",
+                json!({"action":"close","page_ref":refusal["close_ref"]}),
+            ))
+            .await;
+        successful(&closed);
+        assert!(!driver.state.lock().await.alive);
+    }
+}
+
+#[test]
+fn bounded_driver_handles_keep_their_literal_url_segment() {
+    for handle in ["f.frame-1.d.loader_1.e.7".to_owned(), "x".repeat(200)] {
+        let accepted = super::driver::driver_id(&handle).unwrap();
+        let root = url::Url::parse("http://127.0.0.1:19182/").unwrap();
+        let route = root
+            .join(&format!(
+                "session/driver-private-1/element/{accepted}/click"
+            ))
+            .unwrap();
+        assert_eq!(route.origin(), root.origin());
+        assert_eq!(
+            route.path(),
+            format!("/session/driver-private-1/element/{handle}/click")
+        );
+        assert!(route.query().is_none());
+        assert!(route.fragment().is_none());
+    }
 }
