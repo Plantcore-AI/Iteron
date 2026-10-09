@@ -24,7 +24,8 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         self.resolve_injection_before_provider(task).await?;
         self.context_estimator.invalidate_transcript();
-        self.effect_journal.begin_operator_turn();
+        self.effect_journal
+            .begin_operator_turn(TurnId(self.seq_turn));
         let mut run = CodingRunCoordinator::new(driver);
         loop {
             let turn = TurnId(self.seq_turn);

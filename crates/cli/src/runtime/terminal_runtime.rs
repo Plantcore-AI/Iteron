@@ -134,6 +134,7 @@ impl Agent {
         .commit(outcome)
         .await?;
         self.publish_finalized_turn(finalized.turn(), finalized.source(), finalized.fact());
+        self.publish_host_final_evidence(finalized.turn(), finalized.source());
         if finalized.outcome() == &Outcome::Done {
             self.persist_last_success_route(turn);
         }

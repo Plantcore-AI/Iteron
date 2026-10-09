@@ -146,6 +146,7 @@ pub(crate) enum RuntimeFrontendEvent {
     #[cfg_attr(not(feature = "legacy-plantcore"), allow(dead_code))]
     Plantcore(PlantcoreUiEvent),
     TurnPublication(iteron_protocol::turn_publication::TurnPublicationEventV1),
+    HostFinalEvidence(iteron_protocol::final_evidence::HostFinalEvidenceV1),
 }
 
 /// A bounded, presentation-safe task declared by a workflow plan.
