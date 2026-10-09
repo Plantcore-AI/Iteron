@@ -447,13 +447,9 @@ impl Viewer {
         match key {
             KeyCode::Esc | KeyCode::Char('q') => self.close(),
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down => {
-                self.scroll = self.scroll.saturating_add(1).min(TEXT_PAGE_BYTES as u16)
-            }
+            KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_add(10).min(TEXT_PAGE_BYTES as u16)
-            }
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
             KeyCode::Left | KeyCode::Char('[') => {
                 if let Some(Content {
                     display: Display::Text(text),

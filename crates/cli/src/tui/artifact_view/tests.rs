@@ -274,3 +274,26 @@ async fn cancellation_and_run_adoption_discard_only_presentation_not_physical_sl
     assert!(viewer.pending.is_none());
     assert!(semaphore.try_acquire_owned().is_ok());
 }
+
+#[test]
+fn control_escaped_rows_can_scroll_beyond_the_raw_page_byte_count() {
+    let text = format!("{}\nTAIL", "\u{1b}".repeat(8000));
+    let mut viewer = Viewer {
+        open: true,
+        content: Some(deliver(text.as_bytes(), "text/plain")),
+        ..Default::default()
+    };
+    for _ in 0..2396 {
+        viewer.key(KeyCode::PageDown);
+    }
+    assert!(usize::from(viewer.scroll) > TEXT_PAGE_BYTES);
+    let (_, buffer) = screen(&viewer, 4, 100);
+    let mut body = String::new();
+    for y in 1..99 {
+        for x in 1..3 {
+            body.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    assert!(body.contains("TAIL"));
+    assert!(!body.contains('\u{1b}'));
+}
