@@ -61,6 +61,44 @@ impl HistoryClient {
             _ => Err("unexpected history host reply".into()),
         }
     }
+    pub(super) async fn activity(&self) -> Result<super::session_activity::Observation, String> {
+        if !self.is_current() {
+            return Err("live activity belongs to a previous selected run".into());
+        }
+        let (reply, received) = oneshot::channel();
+        let command = iteron_protocol::activity_control::ActivityControlV1::List {
+            thread_id: self.thread.clone(),
+            run_id: self.run.clone(),
+        };
+        let response = tokio::time::timeout(Duration::from_secs(2), async {
+            self.control
+                .send(ControlRequest {
+                    control: Control::ActivityCenter(command),
+                    reply,
+                })
+                .await
+                .map_err(|_| "live activity owner unavailable")?;
+            received
+                .await
+                .map_err(|_| "live activity owner unavailable")
+        })
+        .await
+        .map_err(|_| "live activity observation timed out")?
+        .map_err(str::to_owned)?;
+        let Some(scope) = self
+            .client
+            .thread_snapshot_v1()
+            .filter(|scope| scope.thread_id == self.thread && scope.run_id == self.run)
+        else {
+            return Err("selected run changed during live activity observation".into());
+        };
+        match response {
+            ControlReply::ActivityCenter(value) => {
+                super::session_activity::Observation::capture(&value, &scope).map_err(str::to_owned)
+            }
+            _ => Err("live activity owner unavailable".into()),
+        }
+    }
     pub(super) async fn title(&self) -> String {
         self.request(ThreadLifecycleCommandV1::Read {
             run_id: self.run.clone(),

@@ -102,6 +102,7 @@ mod product_presentation;
 mod product_projection;
 mod product_tools;
 mod provider_catalog_client;
+mod session_activity;
 mod session_adoption;
 mod session_inspection;
 #[cfg(test)]

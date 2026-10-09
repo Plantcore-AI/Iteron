@@ -485,6 +485,7 @@ pub async fn run(
             );
             redraw = true;
         }
+        if app.pickers.poll_activity().await {redraw=true;}
         if let Some(update) = app.pickers.poll_page().await {
             for warning in update.warnings { app.note(block::NoticeLevel::Info, warning); }
             redraw |= update.changed;

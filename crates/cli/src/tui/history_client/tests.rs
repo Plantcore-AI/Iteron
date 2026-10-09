@@ -125,3 +125,28 @@ async fn transient_index_observation_never_dispatches_repair() {
     );
     assert!(received.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn activity_uses_only_the_captured_read_owner_and_rejects_scope_changed_during_reply() {
+    let (client, history, mut requests) = wire();
+    let observer = tokio::spawn({
+        let history = history.clone();
+        async move { history.activity().await }
+    });
+    let request = requests.recv().await.unwrap();
+    assert!(
+        matches!(request.control,Control::ActivityCenter(iteron_protocol::activity_control::ActivityControlV1::List{ref thread_id,ref run_id}) if thread_id.0=="selected-thread" && run_id.0=="selected-run")
+    );
+    request.reply.send(ControlReply::ActivityCenter(json!({"type":"activity_center_v1","thread_id":"selected-thread","run_id":"selected-run","data":{"activities":[],"omitted":0}}))).unwrap();
+    assert!(observer.await.unwrap().is_ok());
+    let observer = tokio::spawn({
+        let history = history.clone();
+        async move { history.activity().await }
+    });
+    let request = requests.recv().await.unwrap();
+    client.seed_contract_identity_for_test(SessionId("foreign".into()), RunId("foreign".into()));
+    request.reply.send(ControlReply::ActivityCenter(json!({"type":"activity_center_v1","thread_id":"selected-thread","run_id":"selected-run","data":{"activities":[],"omitted":0}}))).unwrap();
+    assert!(observer.await.unwrap().is_err());
+    assert!(history.activity().await.is_err());
+    assert!(requests.try_recv().is_err());
+}

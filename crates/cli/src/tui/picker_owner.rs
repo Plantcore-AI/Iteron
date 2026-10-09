@@ -39,6 +39,9 @@ pub(super) struct PickerOwner {
     generation: u64,
     omitted_rows: u64,
     history: Option<super::history_client::HistoryClient>,
+    activity_job: Option<JoinHandle<Result<super::session_activity::Observation, String>>>,
+    activity_due: Option<std::time::Instant>,
+    current_base_hint: Option<String>,
 }
 impl PickerOwner {
     pub(super) fn view(&self) -> Option<&Picker> {
@@ -59,6 +62,11 @@ impl PickerOwner {
         }
         self.backing = None;
         self.history = None;
+        if let Some(job) = self.activity_job.take() {
+            job.abort();
+        }
+        self.activity_due = None;
+        self.current_base_hint = None;
         self.sessions = false;
         self.generation = self.generation.wrapping_add(1);
     }
@@ -94,6 +102,7 @@ impl PickerOwner {
         });
         self.sessions = true;
         self.history = Some(history.clone());
+        self.activity_due = Some(std::time::Instant::now());
         self.job = Some(spawn_host_session_page_load(
             history,
             runs,
@@ -188,6 +197,13 @@ impl PickerOwner {
                 }
             }
         }
+        if (page.replace || self.current_base_hint.is_none())
+            && let Some(picker) = &self.picker
+            && let Some(current) = picker.items.iter().find(|item| item.is_current)
+        {
+            self.current_base_hint = Some(current.hint.clone());
+        }
+        self.activity_due = Some(std::time::Instant::now());
         self.prefetch();
         PickerPageUpdate {
             changed: true,
@@ -195,6 +211,53 @@ impl PickerOwner {
         }
     }
 
+    pub(super) async fn poll_activity(&mut self) -> bool {
+        if !self.sessions {
+            return false;
+        }
+        let Some(history) = self.history.clone() else {
+            return false;
+        };
+        if !history.is_current() {
+            return false;
+        }
+        let mut changed = false;
+        if self
+            .activity_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let result = self.activity_job.take().expect("checked above").await;
+            if !history.is_current() {
+                return false;
+            }
+            if let (Some(picker), Some(backing)) = (&mut self.picker, &self.backing) {
+                match result {
+                    Ok(Ok(observation)) => observation.apply(
+                        &mut picker.items,
+                        &backing.current_run,
+                        self.current_base_hint.as_deref(),
+                    ),
+                    _ => super::session_activity::unavailable(
+                        &mut picker.items,
+                        &backing.current_run,
+                        self.current_base_hint.as_deref(),
+                    ),
+                };
+                changed = true;
+            }
+            self.activity_due = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        }
+        if self.activity_job.is_none()
+            && self.backing.is_some()
+            && self
+                .activity_due
+                .is_some_and(|due| std::time::Instant::now() >= due)
+        {
+            self.activity_job = Some(tokio::spawn(async move { history.activity().await }));
+        }
+        changed
+    }
     pub(super) fn prefetch(&mut self) {
         if self.job.is_some() {
             return;
