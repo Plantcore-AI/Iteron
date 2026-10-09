@@ -115,6 +115,60 @@ fn authoritative_record_waits_for_a_transient_derivative_store_writer() {
 }
 
 #[test]
+fn retained_artifact_waits_for_store_lease_and_preserves_actual_source_lineage() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let source = RunId("artifact-source-contention".into());
+    let owner = RunId("artifact-owner-contention".into());
+    let source_handle = put_private_content(
+        &dir,
+        &tenant,
+        &source,
+        Seq(1),
+        PrivateContentClass::Transcript,
+        PrivateContentRetention::Session,
+        b"actual retained source",
+        0,
+    )
+    .unwrap();
+    let store = PrivateContentDerivativeStore::open_registered(
+        &dir,
+        tenant.clone(),
+        owner,
+        PrivateContentNamespace::ToolArtifact,
+        PrivateContentClass::ToolOutput,
+        PrivateContentRetention::Session,
+        1024,
+    )
+    .unwrap();
+    let sources = [PrivateContentSource {
+        owner: source,
+        digest: source_handle.digest,
+    }];
+    let layout = Layout::new(&dir, &tenant);
+    let lock = lock_store(&layout).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(lock);
+    });
+
+    let result = store.put_derived(Seq(2), b"actual retained artifact", &sources);
+    release.join().unwrap();
+    let handle = result.expect("a transient record writer must not abort retained publication");
+    assert_eq!(
+        store.read_at(Seq(2), &handle).unwrap(),
+        b"actual retained artifact"
+    );
+    assert_eq!(store.sources_at(Seq(2), &handle).unwrap(), sources);
+    assert!(matches!(
+        store.read_at(Seq(3), &handle),
+        Err(ContentStoreError::Unresolved { .. })
+    ));
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn reusable_tool_output_store_encrypts_reads_and_releases_by_run() {
     let dir = test_dir();
     let tenant = TenantId::default();

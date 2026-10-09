@@ -187,7 +187,9 @@ fn put_private_content_at_surface_with_sources(
     ensure_content_bound(bytes)?;
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _lock = lock_store(&layout)?;
+    // A retained artifact shares this tenant store with record publication. Wait only for
+    // the existing bounded acquisition window, before any blob or reference mutation.
+    let _lock = lock_store_for_record(&layout)?;
     if sources.len() > model::MAX_CONTENT_LINEAGE_EDGES {
         return Err(ContentStoreError::ReferenceBound {
             max: model::MAX_CONTENT_LINEAGE_EDGES,
