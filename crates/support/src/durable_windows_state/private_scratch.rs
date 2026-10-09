@@ -272,7 +272,7 @@ fn stamp(file: &File, directory: bool) -> io::Result<IdentityStamp> {
     ))
 }
 fn mark_delete(file: &File) -> io::Result<()> {
-    let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: DELETE-authorized exact retained file, native fixed disposition and live input.
     if unsafe {
         SetFileInformationByHandle(
