@@ -1717,3 +1717,7 @@ use native_host_control::{launch, matching_control};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "headless_serve/experiment_lab_journey.rs"]
 mod experiment_lab_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/side_journey.rs"]
+mod side_journey;

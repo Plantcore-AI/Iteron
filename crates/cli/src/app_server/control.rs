@@ -529,6 +529,29 @@ pub(super) async fn apply_control(
     }
     let mut rewind_presentation = None;
     let (control, navigation) = match request.control {
+        Control::SideV1(command) => {
+            if let Err(reason) = command.validate() {
+                let _ = request.reply.send(ControlReply::Refused(reason.into()));
+                return;
+            }
+            if events.contract.snapshot().is_none_or(|snapshot| {
+                snapshot.thread_id != command.thread_id || snapshot.run_id != command.run_id
+            }) || agent.rollout.run_id() != &command.run_id
+            {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "side interaction belongs to a previous selected run".into(),
+                ));
+                return;
+            }
+            let side = match command.command {
+                iteron_protocol::client_interaction::SideActionV1::Status {} => SideRequest::Status,
+                iteron_protocol::client_interaction::SideActionV1::Ask { text } => {
+                    SideRequest::Ask(text)
+                }
+                iteron_protocol::client_interaction::SideActionV1::Close {} => SideRequest::Close,
+            };
+            (Control::Side(side), None)
+        }
         Control::WorkspaceRewind { command, cancel } => {
             let prepared = match session_factory {
                 Some(factory) => {
@@ -643,8 +666,8 @@ pub(super) async fn apply_control(
         other => (other, None),
     };
     let reply = match control {
-        Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. } => {
-            unreachable!("session navigation and rewind are normalized by the trusted host factory")
+        Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. } | Control::SideV1(_) => {
+            unreachable!("scoped controls were normalized by their actual host owners")
         }
         Control::OrdinaryExtensions(command) => {
             operator_status.ordinary_extensions.dispatch(

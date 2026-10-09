@@ -122,6 +122,13 @@ pub(super) fn dispatch_slash_command(
         commands::DispatchRoute::NotHere(commands::TerminalIntercept::Side) => {
             let request = side_request_for(&routed.invocation.args);
             let asking = matches!(request, app_server::SideRequest::Ask(_));
+            let request = match scoped_side_request(session, request) {
+                Ok(request) => request,
+                Err(reason) => {
+                    app.note(block::NoticeLevel::Warn, reason);
+                    return Ok(());
+                }
+            };
             if asking {
                 // Same reason compaction redraws here: this is about to await a provider call, and
                 // an operator who sees nothing cannot tell a slow answer from a dead terminal.
@@ -129,7 +136,7 @@ pub(super) fn dispatch_slash_command(
             }
             let request = transcript_effect::Request::Control {
                 sender: session.control_sender(),
-                control: app_server::Control::Side(request),
+                control: app_server::Control::SideV1(request),
                 interrupt: interrupt.clone(),
                 kind: transcript_effect::ControlKind::Side,
             };
@@ -142,6 +149,28 @@ pub(super) fn dispatch_slash_command(
         }
     }
     Ok(())
+}
+
+fn scoped_side_request(
+    session: &Session,
+    request: app_server::SideRequest,
+) -> Result<iteron_protocol::client_interaction::SideCommandV1, &'static str> {
+    use iteron_protocol::client_interaction::{SideActionV1, SideCommandV1};
+    let snapshot = session
+        .client
+        .thread_snapshot_v1()
+        .ok_or("side interaction requires the selected thread observation")?;
+    let command = SideCommandV1 {
+        thread_id: snapshot.thread_id,
+        run_id: snapshot.run_id,
+        command: match request {
+            app_server::SideRequest::Status => SideActionV1::Status {},
+            app_server::SideRequest::Ask(text) => SideActionV1::Ask { text },
+            app_server::SideRequest::Close => SideActionV1::Close {},
+        },
+    };
+    command.validate()?;
+    Ok(command)
 }
 
 /// Resolve one `/side` argument into a control request.

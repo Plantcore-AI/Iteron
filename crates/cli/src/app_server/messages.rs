@@ -411,6 +411,8 @@ pub(crate) enum Control {
     },
     /// `/side` — the operator's side conversation.
     Side(SideRequest),
+    /// Both local and remote clients bind an existing side interaction to the selected run.
+    SideV1(iteron_protocol::client_interaction::SideCommandV1),
     /// `/resume <run>` — adopt another recorded run into this live session.
     AdoptRun(Box<AdoptRun>),
     /// `/workflows` fullscreen operator controls. Inventory and cancellation are owned by the

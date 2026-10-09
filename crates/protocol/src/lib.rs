@@ -27,6 +27,7 @@ pub mod agent_input;
 pub mod artifact;
 pub mod bundle;
 pub mod capability_set;
+pub mod client_interaction;
 pub mod context;
 pub mod diff;
 pub mod effect;

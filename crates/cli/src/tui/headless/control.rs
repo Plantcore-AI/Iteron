@@ -49,6 +49,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    SideV1 {
+        command: iteron_protocol::client_interaction::SideCommandV1,
+    },
     WorkspaceRewindV1 {
         command: iteron_protocol::workspace_rewind::WorkspaceRewindCommandV1,
     },
@@ -300,6 +303,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::SideV1 { command } = self {
+            return command.is_read_only();
+        }
         if let Self::WorkspaceRewindV1 { command } = self {
             return command.is_read_only();
         }
@@ -346,6 +352,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::SideV1 { command } => Control::SideV1(command),
             Self::WorkspaceRewindV1 { command } => Control::WorkspaceRewind {
                 command,
                 cancel: None,
@@ -713,9 +720,11 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "notice": reply.notice,
         }),
         ControlReply::OperatorStatus(reply) => operator_status_value(&reply),
-        ControlReply::SideAnswer(_)
-        | ControlReply::SideStatus { .. }
-        | ControlReply::Adopted { .. } => json!({
+        ControlReply::SideAnswer(answer) => super::side::answer_value(&answer),
+        ControlReply::SideStatus { status, closed } => {
+            super::side::status_value(status.as_deref(), closed)
+        }
+        ControlReply::Adopted { .. } => json!({
             "type": "refused",
             "message": "this reply type is not available on the public control transport",
         }),
