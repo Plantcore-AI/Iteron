@@ -129,6 +129,7 @@ pub(crate) use session_attachment::{
     AppServerHandle, Attached, SessionFacts, ToolFact, attach, attach_remote,
 };
 mod event_publisher;
+mod final_evidence;
 pub(crate) use event_publisher::EventPublisher;
 
 mod queue_wiring;

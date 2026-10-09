@@ -413,6 +413,11 @@ impl EventPublisher {
             return Err(());
         }
         match &event {
+            ServerEvent::HostFinalEvidence(event)
+                if self.run_id.as_ref() != Some(&event.run_id) =>
+            {
+                return Err(());
+            }
             ServerEvent::AdvisoryMaintenance(event)
                 if event.validate().is_err()
                     || self.run_id.as_ref() != Some(&event.run_id)

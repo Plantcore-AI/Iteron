@@ -72,6 +72,7 @@ mod driver_support;
 mod event_actions;
 mod event_projection;
 mod experiment_lab;
+mod final_evidence;
 pub(crate) mod hyperlink;
 #[cfg(test)]
 mod inline_shell;
@@ -630,6 +631,7 @@ struct App {
     geometry: transcript_geometry::TranscriptGeometry,
     editor: Editor,
     mcp_form: mcp_input::McpInputOwner,
+    final_evidence: final_evidence::FinalEvidencePresentation,
     status: String,
     run: run_presentation::RunPresentation,
     viewport: conversation_viewport::ConversationViewport,

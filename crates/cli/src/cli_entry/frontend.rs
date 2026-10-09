@@ -296,6 +296,9 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
             app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::HostFinalEvidence(fact) => runtime::UiEvent::Notice(
+                iteron_protocol::client_final_evidence::description(&fact).into(),
+            ),
             app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
             app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
@@ -337,6 +340,9 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         last_event_seq = event_seq;
         let event = match envelope.into_current()? {
             app_server::ServerEvent::Ui(event) => event,
+            app_server::ServerEvent::HostFinalEvidence(fact) => runtime::UiEvent::Notice(
+                iteron_protocol::client_final_evidence::description(&fact).into(),
+            ),
             app_server::ServerEvent::Notice(message) => runtime::UiEvent::Notice(message),
             app_server::ServerEvent::Lagged { dropped } => runtime::UiEvent::Notice(format!(
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"

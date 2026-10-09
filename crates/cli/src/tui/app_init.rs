@@ -42,6 +42,7 @@ impl App {
             geometry: super::transcript_geometry::TranscriptGeometry::default(),
             editor: Editor::new(),
             mcp_form: super::mcp_input::McpInputOwner::default(),
+            final_evidence: super::final_evidence::FinalEvidencePresentation::default(),
             status: "idle".into(),
             run: super::run_presentation::RunPresentation::default(),
             viewport: super::conversation_viewport::ConversationViewport::default(),

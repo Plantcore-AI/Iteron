@@ -188,7 +188,7 @@ async fn execute(
                 } omitted+=entries.len().saturating_sub(64); }
             }
             if let Some(agents)=&agents {for view in agents.iter().take(64) {
-                activities.push(json!({"target":{"kind":"persistent_agent","agent_id":view.agent_id,"epoch":view.state.epoch()},"source":"durable_agent_controller","state":view.state,"details":{"label":iteron_record::redact::scrub(&view.label),"usage":view.usage,"summary":view.last_summary.as_deref().map(iteron_record::redact::scrub)},"stop_supported":view.state.epoch().is_some()}));
+                activities.push(json!({"target":{"kind":"persistent_agent","agent_id":view.agent_id,"epoch":view.state.epoch()},"source":"durable_agent_controller","state":view.state,"details":{"label":iteron_record::redact::scrub(&view.label),"usage":view.usage,"summary":view.last_summary.as_deref().map(iteron_record::redact::scrub),"partial_output":view.partial_output},"stop_supported":view.state.epoch().is_some()}));
             } omitted+=agents.len().saturating_sub(64); }
             for run in workflows.inventory().into_iter().take(64) {
                 activities.push(json!({"target":{"kind":"workflow","run_id":run.run_id},"source":"actual_session_workflow_supervisor","state":format!("{:?}",run.status).to_lowercase(),"details":{"name":iteron_record::redact::scrub(&run.name),"running_agents":run.running_agents,"finished_agents":run.finished_agents,"elapsed_ms":run.elapsed_ms},"stop_supported":matches!(run.status,crate::workflow::SupervisedRunStatus::Running|crate::workflow::SupervisedRunStatus::Cancelling)}));
@@ -205,7 +205,7 @@ async fn execute(
         ActivityControlV1::Inspect{target,stdout_cursor,stderr_cursor,..}=>match target {
             ActivityTargetV1::Verifier{task_id}=>binding.verifier.inspect(&binding.run,&task_id).map_err(str::to_string),
             ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.poll(&job_id,stdout_cursor,stderr_cursor,0).await.map(|value|scrub(&value)).map_err(|error|error.message),
-            ActivityTargetV1::PersistentAgent{agent_id,..}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.inspect(AgentActor::Operator,agent_id).map(|view|json!({"source":"durable_agent_controller","view":scrub(&serde_json::to_value(view).unwrap_or(Value::Null))})).map_err(|_|"agent inspection refused".into()),
+            ActivityTargetV1::PersistentAgent{agent_id,..}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.inspect(AgentActor::Operator,agent_id).map(|view|json!({"source":"durable_agent_controller","view": ({let mut value=scrub(&serde_json::to_value(&view).unwrap_or(Value::Null));value["partial_output"]=serde_json::to_value(&view.partial_output).unwrap_or(Value::Null);value})})).map_err(|_|"agent inspection refused".into()),
             ActivityTargetV1::Workflow{run_id}=>workflows.inventory().into_iter().find(|run|run.run_id==run_id).map(|run|json!({"run_id":run.run_id,"name":iteron_record::redact::scrub(&run.name),"state":format!("{:?}",run.status).to_lowercase(),"running_agents":run.running_agents,"finished_agents":run.finished_agents,"source":"actual_session_workflow_supervisor"})).ok_or("workflow not retained".into()),
             ActivityTargetV1::Mcp{name}=>mcp.ok_or("MCP owner unavailable")?.health().into_iter().find(|server|server.name==name).map(|server|scrub(&serde_json::to_value(server).unwrap_or(Value::Null))).ok_or("MCP server not retained".into()),
         },

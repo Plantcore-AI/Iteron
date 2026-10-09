@@ -1725,3 +1725,7 @@ mod side_journey;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[path = "headless_serve/mcp_input_journey.rs"]
 mod mcp_input_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[path = "headless_serve/final_evidence_journey.rs"]
+mod final_evidence_journey;

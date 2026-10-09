@@ -110,6 +110,7 @@ mod tests {
             reserved: AgentUsageV1::default(),
             queued_messages: 1,
             last_summary: None,
+            partial_output: None,
         };
         let mut app = App::new();
         persistent_agents::render(

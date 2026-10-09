@@ -130,7 +130,7 @@ async fn execute_port(port: &dyn AgentControlPort, command: ClientAgentControlV1
         ClientAgentControlV1::MessageReceipt { message_id } => port.message(AgentActor::Operator,message_id)
             .map(|message| json!({"type":"agent_message_v1","message":message})),
         ClientAgentControlV1::Wait { after_revision,timeout_ms } => port.wait(AgentActor::Operator,after_revision,timeout_ms).await
-            .map(|observation| json!({"type":"agent_observation_v1","revision":observation.revision,"agents":observation.agents,"timed_out":observation.timed_out})),
+            .map(|observation| json!({"type":"agent_observation_v1","revision":observation.revision,"durable_revision":observation.durable_revision,"agents":observation.agents,"timed_out":observation.timed_out})),
         ClientAgentControlV1::Enable { .. } => return ControlReply::Refused("agent enable requires the resident runtime".into()),
     };
     match result {

@@ -75,6 +75,11 @@ fn runtime_frontend_event_heap_bytes(event: &super::RuntimeFrontendEvent) -> usi
         super::RuntimeFrontendEvent::Ui(event) => ui_event_heap_bytes(event),
         super::RuntimeFrontendEvent::Plantcore(_) => ENVELOPE.0.saturating_add(64 * 1024),
         super::RuntimeFrontendEvent::TurnPublication(_) => ENVELOPE.0.saturating_add(512),
+        super::RuntimeFrontendEvent::HostFinalEvidence(fact) => ENVELOPE
+            .0
+            .saturating_add(512)
+            .saturating_add(fact.tenant.0.len())
+            .saturating_add(fact.run_id.0.len()),
     }
 }
 
@@ -363,7 +368,8 @@ impl FrontendChannelHealth {
             super::RuntimeFrontendEvent::Plantcore(_) => (true, true),
             // These facts already have exact durable provenance and a recovery read port. A
             // presentation refusal cannot retroactively change a confirmed terminal outcome.
-            super::RuntimeFrontendEvent::TurnPublication(_) => (true, false),
+            super::RuntimeFrontendEvent::TurnPublication(_)
+            | super::RuntimeFrontendEvent::HostFinalEvidence(_) => (true, false),
         };
         if self.has_authoritative_pending() {
             let bytes = runtime_frontend_event_heap_bytes(&event);

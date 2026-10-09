@@ -171,3 +171,43 @@ fn a_single_event_larger_than_the_shared_budget_is_exactly_refused() {
     );
     assert_eq!(health.ui_bytes.used(), 0);
 }
+
+#[test]
+fn confirmed_final_evidence_refusal_does_not_poison_the_run_or_leak_queue_bytes() {
+    use iteron_protocol::final_evidence::{
+        HostConfiguredCheckV1, HostFinalCoverageV1, HostFinalEvidenceV1,
+    };
+    let fact = HostFinalEvidenceV1 {
+        tenant: iteron_protocol::TenantId::default(),
+        run_id: iteron_protocol::RunId("retained-run".into()),
+        first_turn: iteron_protocol::TurnId(0),
+        final_turn: iteron_protocol::TurnId(0),
+        source_seq: iteron_protocol::Seq(9),
+        observed_tool_completions: 0,
+        observed_tool_failures: 0,
+        configured_check: HostConfiguredCheckV1::NotObserved,
+        configured_check_source_seq: None,
+        effects_known: true,
+        write_capable_effect_admitted: false,
+        coverage: HostFinalCoverageV1::LiveInvocation,
+        workspace_diff_inspected: false,
+        test_suite_identity_verified: false,
+        correction: None,
+    };
+    // Real byte admission refuses the observation while the independently retained host
+    // receipt remains unchanged. This presentation-only refusal must not alter Done.
+    let health = FrontendChannelHealth {
+        ui_bytes: std::sync::Arc::new(FrontendUiByteBudget::new(1)),
+        ..FrontendChannelHealth::default()
+    };
+    health.ui_bytes.enable();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::HostFinalEvidence(fact.clone())));
+    assert!(!health.take_structural_refusal());
+    assert_eq!(health.ui_bytes.used(), 0);
+    assert_eq!(fact.source_seq, iteron_protocol::Seq(9));
+    drop(rx);
+    let health = FrontendChannelHealth::default();
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::HostFinalEvidence(fact)));
+    assert!(!health.take_structural_refusal());
+}

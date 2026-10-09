@@ -136,6 +136,7 @@ struct Projection {
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
     maintenance_gaps: u64,
     mcp_inputs: Option<super::mcp_input_public::InputBinding>,
+    final_evidence: super::final_evidence::FinalEvidenceReader,
     export: Option<super::client_export::ExportBinding>,
     submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
     shell: Option<Arc<super::client_shell::ShellService>>,
@@ -187,6 +188,18 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn host_final_evidence_v1(
+        &self,
+        command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
+    ) -> Value {
+        self.with_mut(|projection| {
+            if projection.snapshot.as_ref().is_none_or(|scope|scope.thread_id!=command.thread_id||scope.run_id!=command.run_id) {
+                return json!({"type":"host_final_evidence_refused_v1","reason_code":"scope_changed"});
+            }
+            projection.final_evidence.read(command)
+        })
+    }
+
     pub(super) fn bind_mcp_input_owner(&self, owner: super::mcp_input::PendingInputs) {
         self.with_mut(|projection| {
             projection.mcp_inputs =
@@ -278,8 +291,17 @@ impl ContractReader {
         });
         let recovered = agent.recovered_turn_publications_v1().map_err(|_| ());
         let maintenance_port = agent.advisory_maintenance_port();
+        let final_evidence = agent.host_final_evidence();
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
+            if let Some(snapshot) = projection.snapshot.as_ref() {
+                projection.final_evidence.bind(
+                    snapshot.thread_id.clone(),
+                    agent.rollout.tenant().clone(),
+                    agent.rollout.run_id().clone(),
+                    final_evidence,
+                );
+            }
             if let Some(snapshot) = projection.snapshot.as_ref()
                 && let Some(binding) = projection.completion.as_ref()
             {
@@ -1031,6 +1053,9 @@ impl Projection {
         };
         snapshot.source_event_seq = seq;
         match event {
+            ServerEvent::HostFinalEvidence(fact) => {
+                self.final_evidence.observe(fact);
+            }
             ServerEvent::Submission {
                 id,
                 state,

@@ -526,6 +526,11 @@ impl<'a> ConnectionSession<'a> {
                             }
                             drop(input_guard);
                             match control {
+                                control::WireControl::HostFinalEvidenceV1 { command } => {
+                                    let reply=shared.client.host_final_evidence_v1(command);
+                                    send_frame(&mut self.writer,shared.outbound_budget,shared.frame_preparers,shared.fragment_encoders,
+                                        ServerFrame::ControlReply {protocol_version,request_id,reply}).await?;
+                                }
                                 control::WireControl::McpInputsV1 { command } => {
                                     self.pending_control = Some(control::dispatch_input(shared.client.clone(), request_id, command));
                                 }

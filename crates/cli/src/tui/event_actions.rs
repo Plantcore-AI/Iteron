@@ -50,6 +50,9 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::HostFinalEvidence(fact) => {
+            super::final_evidence::apply(app, session, fact)
+        }
         app_server::ServerEvent::Plantcore(_) => {}
         app_server::ServerEvent::AdvisoryMaintenance(event) => {
             super::advisory_maintenance::apply(app, session, event)

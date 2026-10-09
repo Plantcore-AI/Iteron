@@ -49,6 +49,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    HostFinalEvidenceV1 {
+        command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
+    },
     McpInputsV1 {
         command: iteron_protocol::client_mcp_input::McpInputCommandV1,
     },
@@ -306,6 +309,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if matches!(self, Self::HostFinalEvidenceV1 { .. }) {
+            return true;
+        }
         if let Self::McpInputsV1 { command } = self {
             return command.is_read_only();
         }
@@ -358,6 +364,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::HostFinalEvidenceV1 { .. } => {
+                unreachable!("host evidence reads address the actual receipt projection")
+            }
             Self::McpInputsV1 { .. } => {
                 unreachable!("public input commands address the captured callback owner")
             }

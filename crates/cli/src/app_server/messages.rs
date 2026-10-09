@@ -229,6 +229,7 @@ pub(crate) enum ServerEvent {
     /// A 2026 server paused one tool call for bounded operator-owned input. This is not model prose
     /// and not a permission decision; only the dedicated correlated response port can answer it.
     McpInputRequested(McpInputPrompt),
+    HostFinalEvidence(iteron_protocol::final_evidence::HostFinalEvidenceV1),
 }
 
 impl ServerEvent {
@@ -303,6 +304,9 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
             ),
         ServerEvent::Notice(text) => text.len(),
         ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
+        ServerEvent::HostFinalEvidence(fact) => 512_usize
+            .saturating_add(fact.tenant.0.len())
+            .saturating_add(fact.run_id.0.len()),
         ServerEvent::TurnPublication(_) => 512,
         ServerEvent::AdvisoryMaintenance(_) => 32 * 1024,
         ServerEvent::MaintenanceAvailability(_) => 1024,

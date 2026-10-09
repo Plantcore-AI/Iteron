@@ -281,6 +281,21 @@ pub(super) fn render(app: &mut App, value: &Value) {
                 )
             })
             .collect::<Vec<_>>();
+        for view in &app.persistent_agent_views {
+            if let Some(partial) = view.partial_output.as_ref() {
+                rows.extend(partial_rows(view.agent_id, partial, false));
+                if rows.len() >= 128 {
+                    rows.truncate(128);
+                    break;
+                }
+            }
+        }
+        if let Some(revision) = value["revision"].as_u64() {
+            rows.push(kv("observation revision", &revision.to_string()));
+        }
+        if let Some(revision) = value["durable_revision"].as_u64() {
+            rows.push(kv("durable controller revision", &revision.to_string()));
+        }
         if rows.is_empty() {
             rows.push(block::PanelRow::Note("no persistent agents".into()));
         }
@@ -307,6 +322,9 @@ pub(super) fn render(app: &mut App, value: &Value) {
                 &view.budget.cost_microusd.to_string(),
             ));
             rows.push(kv("wall ceiling (ms)", &view.budget.wall_ms.to_string()));
+            if let Some(partial) = view.partial_output.as_ref() {
+                rows.extend(partial_rows(view.agent_id, partial, true));
+            }
             if let Some(summary) = view.last_summary {
                 rows.extend(
                     summary
@@ -345,9 +363,120 @@ pub(super) fn render(app: &mut App, value: &Value) {
     }
 }
 
+fn partial_rows(
+    agent_id: AgentIdV1,
+    partial: &iteron_protocol::agent_output::AgentPartialOutputV1,
+    inspect: bool,
+) -> Vec<block::PanelRow> {
+    use iteron_protocol::agent_output::AgentPartialStateV1;
+    if partial.agent_id != agent_id || partial.trust != iteron_protocol::Trust::Untrusted {
+        return vec![block::PanelRow::Note(
+            "partial output unavailable: inconsistent host observation".into(),
+        )];
+    }
+    if partial.state == AgentPartialStateV1::Unknown {
+        return vec![block::PanelRow::Note(format!(
+            "agent {} partial output unconfirmed; reconciliation required",
+            agent_id.0
+        ))];
+    }
+    let (Some(source), Some(text)) = (&partial.source, &partial.text) else {
+        return vec![block::PanelRow::Note(
+            "partial output unavailable: source not observed".into(),
+        )];
+    };
+    if source.provider_intent_seq == 0
+        || text.len() > iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES
+    {
+        return vec![block::PanelRow::Note(
+            "partial output unavailable: invalid bounded source".into(),
+        )];
+    }
+    let cap = if inspect {
+        iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES
+    } else {
+        512
+    };
+    let mut end = text.len().min(cap);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut rows = vec![block::PanelRow::Note(format!(
+        "agent {} partial · untrusted · not a terminal result",
+        agent_id.0
+    ))];
+    rows.extend(
+        text[..end]
+            .lines()
+            .take(if inspect { 128 } else { 8 })
+            .map(|line| block::PanelRow::Note(ui_safe_text(line))),
+    );
+    if partial.truncated || end < text.len() {
+        rows.push(block::PanelRow::Note("partial preview incomplete".into()));
+    }
+    if inspect {
+        rows.push(kv("source run", &ui_safe_text(&source.run_id.0)));
+        rows.push(kv(
+            "provider intent",
+            &source.provider_intent_seq.to_string(),
+        ));
+        rows.push(kv(
+            "partial observation",
+            &partial.observation_sequence.to_string(),
+        ));
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_text_is_untrusted_and_unknown_never_renders_cached_result() {
+        use iteron_protocol::agent_output::{
+            AgentOutputSourceV1, AgentPartialOutputV1, AgentPartialStateV1,
+        };
+        let mut partial = AgentPartialOutputV1 {
+            agent_id: AgentIdV1(2),
+            epoch: iteron_protocol::agent_control::AgentEpochV1 {
+                incarnation: 1,
+                turn: 1,
+            },
+            task_message_id: None,
+            observation_sequence: 3,
+            state: AgentPartialStateV1::Observed,
+            source: Some(AgentOutputSourceV1 {
+                tenant: iteron_protocol::TenantId::default(),
+                run_id: iteron_protocol::RunId("child-run".into()),
+                turn: iteron_protocol::TurnId(1),
+                provider_intent_seq: 8,
+                effect_id: iteron_protocol::EffectId("actual-physical-intent".into()),
+            }),
+            text: Some("partial data from the actual stream".into()),
+            truncated: false,
+            trust: iteron_protocol::Trust::Untrusted,
+        };
+        let rows = partial_rows(AgentIdV1(2), &partial, false);
+        assert!(rows.iter().any(|row|matches!(row,block::PanelRow::Note(text) if text.contains("not a terminal result"))));
+        assert!(
+            rows.iter().any(
+                |row| matches!(row,block::PanelRow::Note(text) if text.contains("partial data"))
+            )
+        );
+        partial.state = AgentPartialStateV1::Unknown;
+        let rows = partial_rows(AgentIdV1(2), &partial, true);
+        assert!(
+            !rows.iter().any(
+                |row| matches!(row,block::PanelRow::Note(text) if text.contains("partial data"))
+            )
+        );
+        assert!(
+            rows.iter().any(
+                |row| matches!(row,block::PanelRow::Note(text) if text.contains("unconfirmed"))
+            )
+        );
+    }
 
     #[test]
     fn budgets_are_exact_and_interrupt_cannot_guess_a_new_epoch() {
