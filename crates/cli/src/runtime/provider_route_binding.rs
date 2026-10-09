@@ -58,10 +58,7 @@ impl ProviderRouteBindingOwner<'_> {
         let controls = self.controls_for(provider.as_ref());
         if let Err(error) = provider.control_capabilities().validate(&controls) {
             self.abstain(decision_turn, source, "unsupported_request_controls")?;
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: unattested_control_reason(error),
-            });
+            return Err(KernelError::ProviderControl(error));
         }
         let route_id = format!("{}:{}", route.provider_id, route.model_id);
         let inserted = match self
@@ -90,10 +87,7 @@ impl ProviderRouteBindingOwner<'_> {
         // boundary, exactly as the former resident transaction did.
         if let Err(error) = provider.control_capabilities().validate(&controls) {
             self.rollback_governor(inserted, &route_id);
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: unattested_control_reason(error),
-            });
+            return Err(KernelError::ProviderControl(error));
         }
         let model = route.model_id.clone();
         if let Err(error) = self.selected.select(

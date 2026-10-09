@@ -71,6 +71,15 @@ impl KernelError {
                 | iteron_agents::ControllerError::Poisoned => Reason::DurableRecordUnavailable,
                 _ => Reason::Unknown,
             },
+            Self::ProviderControl(_) | Self::ProviderRequestControl(_) => Reason::ModelUnavailable,
+            Self::ProviderAdmission(reason) => match reason {
+                iteron_provider::AdmissionReason::UnknownRoute => Reason::InvalidRequest,
+                iteron_provider::AdmissionReason::Ceiling
+                | iteron_provider::AdmissionReason::QuotaExhausted => Reason::BudgetLimit,
+                iteron_provider::AdmissionReason::QuotaUnknown
+                | iteron_provider::AdmissionReason::CircuitOpen
+                | iteron_provider::AdmissionReason::CircuitHalfOpen => Reason::ResourceUnavailable,
+            },
             Self::Provider(error) => match error {
                 ProviderError::Refusal => Reason::ProviderRefusal,
                 ProviderError::KnownModelUnavailable { .. } => Reason::ModelUnavailable,
@@ -133,5 +142,56 @@ mod tests {
             KernelError::Provider(ProviderError::Refusal).refusal_reason(),
             RefusalReasonV1::ProviderRefusal
         );
+    }
+}
+
+#[cfg(test)]
+mod actual_control_cause_tests {
+    use super::*;
+    use iteron_protocol::refusal::RefusalOriginV1;
+    #[test]
+    fn typed_model_controls_and_governor_causes_keep_existing_harness_class_without_generic_text() {
+        use super::super::policy_evidence::policy_harness_error_code;
+        use iteron_protocol::PolicyHarnessErrorCode;
+        let control = iteron_provider::ControlError::IdempotencyNotAttested;
+        for (error, expected_class) in [
+            (
+                KernelError::ProviderControl(control),
+                PolicyHarnessErrorCode::RouteError,
+            ),
+            (
+                KernelError::ProviderRequestControl(control),
+                PolicyHarnessErrorCode::ProviderError,
+            ),
+        ] {
+            assert_eq!(
+                error.refusal_reason().origin(),
+                RefusalOriginV1::ModelCapability
+            );
+            assert_eq!(policy_harness_error_code(&error), expected_class);
+            assert!(error.refusal_observation().source.is_none());
+        }
+        for (cause, expected) in [
+            (
+                iteron_provider::AdmissionReason::UnknownRoute,
+                RefusalReasonV1::InvalidRequest,
+            ),
+            (
+                iteron_provider::AdmissionReason::QuotaExhausted,
+                RefusalReasonV1::BudgetLimit,
+            ),
+            (
+                iteron_provider::AdmissionReason::QuotaUnknown,
+                RefusalReasonV1::ResourceUnavailable,
+            ),
+        ] {
+            let error = KernelError::ProviderAdmission(cause);
+            assert_eq!(error.refusal_reason(), expected);
+            assert_eq!(
+                policy_harness_error_code(&error),
+                PolicyHarnessErrorCode::ProviderError
+            );
+            assert!(error.refusal_observation().source.is_none());
+        }
     }
 }

@@ -28,11 +28,9 @@ impl Agent {
         } else {
             capabilities.adapt_optional_cache_breakpoint(request.controls)
         };
-        capabilities.validate(&controls).map_err(|error| {
-            KernelError::Provider(iteron_provider::ProviderError::Configuration(
-                error.to_string(),
-            ))
-        })?;
+        capabilities
+            .validate(&controls)
+            .map_err(KernelError::ProviderRequestControl)?;
         self.provider_selection
             .validate_request(&self.provider, &self.model, &request.model)?;
         Ok(())

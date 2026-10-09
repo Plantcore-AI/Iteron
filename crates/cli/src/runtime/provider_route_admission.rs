@@ -110,11 +110,7 @@ impl ProviderRouteAdmission<'_> {
                             ..LifecyclePayload::default()
                         },
                     );
-                    return Err(ProviderError::Configuration(format!(
-                        "provider governor rejected route admission ({})",
-                        admission_reason(reason)
-                    ))
-                    .into());
+                    return Err(KernelError::ProviderAdmission(reason));
                 }
             }
         }

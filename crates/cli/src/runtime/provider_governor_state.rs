@@ -116,10 +116,7 @@ impl Agent {
         };
         capabilities
             .validate(&executable)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: "selected provider does not attest one configured control",
-            })?;
+            .map_err(KernelError::ProviderControl)?;
         self.provider_controls = controls;
         Ok(())
     }

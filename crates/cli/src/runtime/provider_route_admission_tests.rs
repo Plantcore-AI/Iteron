@@ -125,3 +125,47 @@ fn actual_quota_observation_cannot_claim_a_durable_projection_after_notice_fault
     drop(rollout);
     std::fs::remove_dir_all(workspace).unwrap();
 }
+
+#[tokio::test]
+async fn actual_unknown_route_refusal_keeps_typed_cause_without_intent_or_permit() {
+    let workspace = directory();
+    let mut rollout =
+        Rollout::open(&workspace, &RunId("refused".into()), TenantId::default()).unwrap();
+    let governor =
+        ProviderGovernor::new(GovernorPolicy::default(), vec!["registered-route".into()]).unwrap();
+    let control = SessionControlState::default();
+    let mut ledger = Ledger::default();
+    let mut failed = false;
+    let diagnostics = DiagnosticEmitter::default();
+    let mut fault = None;
+    let result = ProviderRouteAdmission {
+        governor: Some(governor.clone()),
+        control: &control,
+        run_deadline: None,
+        events: events(),
+        journal: ProviderRouteJournal {
+            rollout: &mut rollout,
+            ledger: &mut ledger,
+            record_failed: &mut failed,
+            diagnostics: &diagnostics,
+            fault: &mut fault,
+        },
+    }
+    .admit("unregistered-route")
+    .await;
+    assert!(matches!(
+        &result,
+        Err(KernelError::ProviderAdmission(
+            iteron_provider::AdmissionReason::UnknownRoute
+        ))
+    ));
+    assert_eq!(
+        result.unwrap_err().refusal_reason(),
+        iteron_protocol::refusal::RefusalReasonV1::InvalidRequest
+    );
+    assert!(!failed);
+    assert!(iteron_record::replay(rollout.path()).unwrap().is_empty());
+    assert_eq!(governor.snapshot(Instant::now()).routes[0].in_flight, 0);
+    drop(rollout);
+    std::fs::remove_dir_all(workspace).unwrap();
+}

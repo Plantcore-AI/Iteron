@@ -114,6 +114,12 @@ pub enum KernelError {
     AgentControl(#[source] iteron_agents::ControllerError),
     #[error("provider: {0}")]
     Provider(#[from] iteron_provider::ProviderError),
+    #[error("selected provider does not attest the requested control: {0}")]
+    ProviderControl(#[source] iteron_provider::ControlError),
+    #[error("selected provider does not attest the physical request control: {0}")]
+    ProviderRequestControl(#[source] iteron_provider::ControlError),
+    #[error("provider governor refused admission: {0:?}")]
+    ProviderAdmission(iteron_provider::AdmissionReason),
     #[error("record: {0}")]
     Record(#[from] iteron_record::RecordError),
     #[error("invalid route metadata in {field}: {reason}")]
@@ -210,6 +216,13 @@ impl KernelError {
                 "persistent agent control or its durable mailbox failed; execution stopped".into()
             }
             Self::Provider(error) => format!("provider: {}", error.public_summary()),
+            Self::ProviderControl(error) => format!(
+                "invalid route metadata in provider_controls: {}",
+                super::provider_route_binding::unattested_control_reason(*error)
+            ),
+            Self::ProviderAdmission(_) | Self::ProviderRequestControl(_) => {
+                "provider: provider configuration is invalid".into()
+            }
             Self::Record(error) => PublicRecordFailure::from_error(error).summary().into(),
             Self::InvalidRouteMetadata { field, reason } => {
                 format!("invalid route metadata in {field}: {reason}")

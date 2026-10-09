@@ -311,11 +311,13 @@ fn digest_json<T: Serialize>(domain: &str, value: &T) -> Result<String, KernelEr
 pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErrorCode {
     match error {
         KernelError::AgentControl(_) => PolicyHarnessErrorCode::DelegationError,
-        KernelError::Provider(_) => PolicyHarnessErrorCode::ProviderError,
+        KernelError::Provider(_)
+        | KernelError::ProviderAdmission(_)
+        | KernelError::ProviderRequestControl(_) => PolicyHarnessErrorCode::ProviderError,
         KernelError::Record(_) => PolicyHarnessErrorCode::RecordError,
-        KernelError::InvalidRouteMetadata { .. } | KernelError::InvalidRoute(_) => {
-            PolicyHarnessErrorCode::RouteError
-        }
+        KernelError::InvalidRouteMetadata { .. }
+        | KernelError::InvalidRoute(_)
+        | KernelError::ProviderControl(_) => PolicyHarnessErrorCode::RouteError,
         KernelError::ProviderRunNoticeLimit => PolicyHarnessErrorCode::ProviderNoticeLimit,
         KernelError::InvalidBudget(_) => PolicyHarnessErrorCode::BudgetError,
         KernelError::InferenceBudgetExhausted(reason) => policy_budget_harness_error_code(reason),

@@ -165,13 +165,11 @@ fn optional_cache_adaptation_preserves_other_control_refusals() {
         }
         agent.set_provider_controls(controls).unwrap();
         let result = switch(&mut agent, target.clone(), "model-b");
-        assert!(matches!(
-            result,
-            Err(KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                ..
-            })
-        ));
+        assert!(matches!(&result, Err(KernelError::ProviderControl(_))));
+        assert_eq!(
+            result.unwrap_err().refusal_reason(),
+            iteron_protocol::refusal::RefusalReasonV1::ModelUnavailable
+        );
         assert_eq!(agent.model, "model-a");
         assert_eq!(agent.provider_controls, controls);
         assert!(target.requests.lock().unwrap().is_empty());
@@ -191,4 +189,44 @@ fn resumed_controls_can_install_without_rewriting_the_cache_preference() {
     assert!(!agent.provider_cache_system_enabled());
     drop(agent);
     std::fs::remove_dir_all(ws).ok();
+}
+
+#[test]
+fn actual_physical_control_capability_refuses_before_provider_or_effect_journal() {
+    let ws = super::gate_integration_tests::temp_ws("native-control-refusal");
+    let provider = route("cache-target", false);
+    let agent = agent_for_route(&ws, provider.clone());
+    let mut request = TurnRequest {
+        model: "model-a".into(),
+        system: String::new(),
+        messages: vec![],
+        input_images: vec![],
+        tools: vec![].into(),
+        max_tokens: 16,
+        cache_system: false,
+        thinking_budget: 0,
+        reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
+        controls: iteron_provider::ProviderRequestControls::default(),
+    };
+    request.controls.service_tier = iteron_provider::ServiceTier::Priority;
+    let error = agent.validate_provider_request_route(&request).unwrap_err();
+    assert!(matches!(
+        &error,
+        KernelError::ProviderRequestControl(iteron_provider::ControlError::UnsupportedServiceTier(
+            iteron_provider::ServiceTier::Priority
+        ))
+    ));
+    assert_eq!(
+        error.refusal_reason(),
+        iteron_protocol::refusal::RefusalReasonV1::ModelUnavailable
+    );
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(
+        !iteron_record::replay(agent.rollout.path())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
+    );
+    drop(agent);
+    std::fs::remove_dir_all(ws).unwrap();
 }
