@@ -757,6 +757,92 @@ mod gate_integration_tests {
                 }
             }
         }
+        // A fixture that explicitly selected a held transport must checkpoint that same child
+        // route, rather than the unrelated provider/model chosen by the record schema sampler.
+        // Unselected fixtures still test the production missing-route refusal unchanged.
+        if let Some(selected) = agent.provider_selection.selected() {
+            let route = &selected.route;
+            let roles = crate::runtime_tunables::execution_policy::admitted_role_model_routes(
+                &agent.agent_catalog,
+                &route.provider_id,
+                &route.model_id,
+            )
+            .unwrap();
+            for (catalog_id, values) in [
+                (
+                    "iteron://tunables/catalogs/agent-roles-v1",
+                    agent
+                        .agent_catalog
+                        .defs()
+                        .iter()
+                        .map(|def| def.name.clone())
+                        .collect::<std::collections::BTreeSet<_>>(),
+                ),
+                (
+                    "iteron://tunables/catalogs/model-routes-v1",
+                    roles
+                        .values()
+                        .cloned()
+                        .chain(std::iter::once(format!(
+                            "{}:{}",
+                            route.provider_id, route.model_id
+                        )))
+                        .collect::<std::collections::BTreeSet<_>>(),
+                ),
+            ] {
+                *input
+                    .runtime
+                    .catalogs
+                    .iter_mut()
+                    .find(|item| item.catalog_id == catalog_id)
+                    .unwrap() =
+                    iteron_tunables::runtime_catalog_snapshot(catalog_id, values).unwrap();
+            }
+            for (family, value) in [
+                (
+                    "per_agent_model",
+                    iteron_tunables::ResolutionValue::Enum {
+                        value: format!("{}:{}", route.provider_id, route.model_id),
+                    },
+                ),
+                (
+                    "role_specific_model_map",
+                    iteron_tunables::ResolutionValue::Map {
+                        entries: roles
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (name, iteron_tunables::ResolutionValue::Enum { value })
+                            })
+                            .collect(),
+                    },
+                ),
+            ] {
+                input
+                    .declared_values
+                    .iter_mut()
+                    .find(|row| row.family == family)
+                    .unwrap()
+                    .value = value.clone();
+                for evidence in input
+                    .constraint_evidence
+                    .iter_mut()
+                    .filter(|row| row.family == family)
+                {
+                    let iteron_tunables::ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } = &mut evidence.value
+                    else {
+                        panic!("child model fixture must remain an attested domain");
+                    };
+                    *allowed_values = Some([value.clone()].into_iter().collect());
+                    if preferred.is_some() {
+                        *preferred = Some(value.clone());
+                    }
+                }
+            }
+        }
         for (family, value) in edits {
             input
                 .declared_values
@@ -1521,6 +1607,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ScriptedDispatch {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -1558,6 +1647,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ScriptedHookedChild {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             req: &TurnRequest,
@@ -1619,6 +1711,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ChildToolAfterSignal {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -1658,6 +1753,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for NeverCompletesChild {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -2721,6 +2819,41 @@ mod gate_integration_tests {
     /// `RunStart` followed by the resolved V2 tunables checkpoint before accepting a submission.
     pub(super) fn record_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
         record_test_genesis_with_tunable_edits(agent, workspace, []);
+    }
+
+    fn stage_direct_fixture_route(agent: &mut Agent) {
+        let provider_id = agent
+            .provider
+            .provider_instance_id()
+            .expect("direct child fixture must identify its actual held transport")
+            .to_owned();
+        let route = PricingRoute {
+            provider_id,
+            model_id: agent.model.clone(),
+            catalog_digest: String::new(),
+            capability_digest: String::new(),
+        };
+        super::provider_selection::ProviderSelectionOwner::validate_selection(
+            &agent.provider,
+            &route,
+        )
+        .unwrap();
+        // Composition-only test seed. No durable dispatch authority is claimed before genesis.
+        agent
+            .provider_selection
+            .fixture_selection(Some(SelectedRoute { route }), agent.provider.clone());
+    }
+
+    fn record_direct_fixture_selection(agent: &mut Agent) {
+        let route = agent.provider_selection.selected().unwrap().route.clone();
+        agent
+            .record_model_selection(
+                route.provider_id,
+                route.model_id,
+                route.catalog_digest,
+                route.capability_digest,
+            )
+            .unwrap();
     }
 
     pub(super) fn record_test_genesis_with_tunable_edits(
@@ -9410,7 +9543,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.permission_mode = PermissionMode::AcceptEdits;
+        stage_direct_fixture_route(&mut agent);
         record_test_genesis(&mut agent, &ws);
+        record_direct_fixture_selection(&mut agent);
 
         assert_eq!(agent.run("investigate only").await.unwrap(), Outcome::Done);
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -9494,7 +9629,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.permission_mode = PermissionMode::AcceptEdits;
+        stage_direct_fixture_route(&mut agent);
         record_test_genesis(&mut agent, &ws);
+        record_direct_fixture_selection(&mut agent);
         agent.fail_next_durable_append = Some(DurableAppendFault::SubagentFinished);
 
         assert_eq!(
@@ -9583,6 +9720,7 @@ ant-api03-SuperSecretModelToken12345"
             if hooks_enabled {
                 install_test_hooks(&mut agent, &home);
             }
+            stage_direct_fixture_route(&mut agent);
             record_test_genesis_with_tunable_edits(
                 &mut agent,
                 &ws,
@@ -9597,6 +9735,8 @@ ant-api03-SuperSecretModelToken12345"
                     ),
                 ],
             );
+
+            record_direct_fixture_selection(&mut agent);
 
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(60), agent.run("delegate the reads"),)
@@ -9698,6 +9838,7 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         child.workspace = ws.clone();
+        record_test_genesis(&mut child, &ws);
         child.delegation_depth = MAX_DELEGATION_DEPTH;
 
         let error = child
@@ -9742,7 +9883,9 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         interrupt_parent.workspace = interrupt_ws.clone();
+        stage_direct_fixture_route(&mut interrupt_parent);
         record_test_genesis(&mut interrupt_parent, &interrupt_ws);
+        record_direct_fixture_selection(&mut interrupt_parent);
         let interrupt = std::sync::Arc::new(AtomicBool::new(false));
         interrupt_parent.set_interrupt(interrupt.clone());
         let raise_interrupt = async {
@@ -9794,6 +9937,7 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         deadline_parent.workspace = deadline_ws.clone();
+        stage_direct_fixture_route(&mut deadline_parent);
         let one_second_child_ceiling = iteron_tunables::ResolutionValue::Object {
             fields: [
                 (
@@ -9835,6 +9979,7 @@ ant-api03-SuperSecretModelToken12345"
                 ("child_ceiling", one_second_child_ceiling),
             ],
         );
+        record_direct_fixture_selection(&mut deadline_parent);
         // The ample parent runway keeps loaded-suite setup out of the assertion. The immutable
         // one-second child ceiling remains the tighter bound and must cancel the pending provider.
         deadline_parent
@@ -9895,7 +10040,9 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         parent.workspace = ws.clone();
+        stage_direct_fixture_route(&mut parent);
         record_test_genesis(&mut parent, &ws);
+        record_direct_fixture_selection(&mut parent);
         let drain = parent.control.drain().clone();
         let request_drain = async {
             await_signal(&provider.started, "the provider's first turn").await;
@@ -19175,6 +19322,17 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id: "provider-a".into(),
+                    model_id: "model-a".into(),
+                    catalog_digest: test_pricing_digests().0,
+                    capability_digest: test_pricing_digests().1,
+                },
+            }),
+            agent.provider.clone(),
+        );
         record_test_genesis(&mut agent, &ws);
         agent
             .record_model_selection(
@@ -19188,28 +19346,19 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_pricing_port(pricing);
         assert!(agent.bind_selected_rate_card().unwrap());
 
-        // Admit exactly one worst-case request plus less than this fixture's measured 16 micro-USD
-        // charge. The first child can dispatch; after its signed terminal charge, neither its
-        // continuation nor a sibling can reserve another physical request.
-        let input_bound = agent.model_context_window.unwrap();
-        let output_bound = u64::from(agent.model_max_output_tokens.unwrap());
+        // Admit the fixture's minimum physical envelope plus less than its measured 16 micro-USD
+        // charge. Funding may lower a request's output cap, so the planning window or original
+        // output policy cannot establish the refusal of a later smaller request.
+        let input_bound = provider.physical_input_token_ceiling("model-a").unwrap();
         let rates = signed.rate_card.rates;
-        let reservation = iteron_obs::pricing::projected_amount_microusd(
+        let reservation = super::provider_usage_reservation::reservation(
+            provider.usage_bound_semantics(),
             rates,
-            Usage {
-                input: input_bound,
-                output: output_bound,
-                cache_creation: input_bound,
-                cache_read: input_bound,
-                thinking: if rates.thinking_microusd_per_million > rates.output_microusd_per_million
-                {
-                    output_bound
-                } else {
-                    0
-                },
-            },
+            input_bound,
+            6, // the immutable MeteredProvider output floor, independent of requested policy
         )
-        .unwrap();
+        .unwrap()
+        .cost_microusd;
         agent.budget.max_usd = Some((reservation + 8) as f64 / 1_000_000.0);
         agent.synchronize_usd_budget().unwrap();
 
@@ -19232,9 +19381,10 @@ ant-api03-SuperSecretModelToken12345"
             .await
             .unwrap_err();
         assert!(
-            second.contains(
-                "route pricing evidence failed validation; Iteron will not invent a dollar amount"
-            ),
+            second.contains(&KernelError::InvalidRouteMetadata {
+                field: "provider_budget_envelope",
+                reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
+            }.public_summary()),
             "unexpected sibling admission refusal: {second}"
         );
         assert_eq!(
@@ -19270,6 +19420,17 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id: "provider-a".into(),
+                    model_id: "model-a".into(),
+                    catalog_digest: test_pricing_digests().0,
+                    capability_digest: test_pricing_digests().1,
+                },
+            }),
+            agent.provider.clone(),
+        );
         record_test_genesis(&mut agent, &ws);
         bind_test_pricing(&mut agent);
 

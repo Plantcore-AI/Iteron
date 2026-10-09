@@ -14,6 +14,9 @@ use std::sync::{
 struct Answer(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl Provider for Answer {
+    fn provider_instance_id(&self) -> Option<&str> {
+        Some("fixture-provider")
+    }
     async fn turn(
         &self,
         _: &TurnRequest,
@@ -51,7 +54,19 @@ fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
         Budget::default(),
     );
     host.workspace = workspace;
-    gate_integration_tests::pin_test_tunables_with_edits(&mut host, []);
+    host.provider_selection.fixture_selection(
+        Some(crate::runtime::provider_selection::SelectedRoute {
+            route: iteron_protocol::PricingRoute {
+                provider_id: "fixture-provider".into(),
+                model_id: "fixture-model".into(),
+                catalog_digest: String::new(),
+                capability_digest: String::new(),
+            },
+        }),
+        host.provider.clone(),
+    );
+    let workspace = host.workspace.clone();
+    gate_integration_tests::record_test_genesis(&mut host, &workspace);
     host.record_model_selection(
         "fixture-provider".into(),
         "fixture-model".into(),
@@ -206,6 +221,9 @@ async fn native_two_child_workflow_merges_true_ledgers_under_one_parent_budget()
 struct Waiting(tokio::sync::Notify);
 #[async_trait::async_trait]
 impl Provider for Waiting {
+    fn provider_instance_id(&self) -> Option<&str> {
+        Some("fixture-provider")
+    }
     async fn turn(
         &self,
         _: &TurnRequest,
@@ -219,7 +237,14 @@ impl Provider for Waiting {
 async fn dropped_actual_direct_await_preserves_unresolved_physical_intent() {
     let (mut host, _) = host("kernel-direct-drop-owner");
     let provider = Arc::new(Waiting(tokio::sync::Notify::new()));
-    host.provider = provider.clone();
+    host.record_operator_model_selection(
+        provider.clone(),
+        "fixture-provider".into(),
+        "fixture-model".into(),
+        String::new(),
+        String::new(),
+    )
+    .unwrap();
     let call = ToolUse {
         id: "dropped-direct".into(),
         name: iteron_tools::DISPATCH_AGENT.into(),

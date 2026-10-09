@@ -7,12 +7,17 @@ impl super::Agent {
         index: usize,
     ) -> Result<String, String> {
         let turn = iteron_protocol::TurnId(self.seq_turn);
+        let call = iteron_protocol::ToolUse {
+            id: format!("fixture-direct-{index}"),
+            name: iteron_tools::DISPATCH_AGENT.into(),
+            input: serde_json::json!({"task":task}),
+        };
         let projection = self.turn_result_projection_budget(
             super::context_runtime::ContextBudgetInspection::from_policy(
                 Default::default(),
                 Default::default(),
             ),
-            &[],
+            std::slice::from_ref(&call),
         );
         let (ports, output) = self.kernel_special_execution(
             turn,
@@ -20,11 +25,6 @@ impl super::Agent {
             super::kernel_special_execution::KernelSpecialKind::Direct,
             projection,
         );
-        let call = iteron_protocol::ToolUse {
-            id: format!("fixture-direct-{index}"),
-            name: iteron_tools::DISPATCH_AGENT.into(),
-            input: serde_json::json!({"task":task}),
-        };
         let result = ports
             .run(
                 turn,

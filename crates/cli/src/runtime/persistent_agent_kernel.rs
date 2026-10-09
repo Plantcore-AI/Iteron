@@ -131,7 +131,16 @@ impl KernelPersistentRuntime {
             .for_execution(execution)?;
         let mut child = selected
             .build_persistent_child(&call, &construction, writer_workspace, execution)
-            .map_err(|_| ControllerError::Invalid("persistent child construction failed"))?;
+            .map_err(|error| {
+                #[cfg(test)]
+                eprintln!(
+                    "persistent child construction failed: {}",
+                    super::workflow_spawner::safe_agent_refusal(&error)
+                );
+                #[cfg(not(test))]
+                let _ = error;
+                ControllerError::Invalid("persistent child construction failed")
+            })?;
         child.narrow_policy_capabilities(view.capabilities);
         child.authority_ceiling = child.authority_ceiling.intersect(view.capabilities);
         if writer_workspace.is_some() {
