@@ -85,6 +85,15 @@ impl Provider for ExactRequest {
 }
 
 fn agent(workspace: &Path, run: &RunId, provider: Arc<dyn Provider>) -> Agent {
+    agent_with_environment(workspace, run, provider, None)
+}
+
+fn agent_with_environment(
+    workspace: &Path,
+    run: &RunId,
+    provider: Arc<dyn Provider>,
+    environment: Option<(String, iteron_protocol::Trust)>,
+) -> Agent {
     let rollout = Rollout::open(&workspace.join(".iteron/runs"), run, TenantId::default()).unwrap();
     let mut agent = Agent::new(
         provider.clone(),
@@ -95,7 +104,43 @@ fn agent(workspace: &Path, run: &RunId, provider: Arc<dyn Provider>) -> Agent {
         Budget::default(),
     );
     agent.workspace = workspace.to_owned();
-    gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    if let Some((text, trust)) = environment {
+        agent.set_environment_context(text, trust).unwrap();
+    }
+    // The schema sampler's tiny memory fields cannot hold a real record's framing. These
+    // journeys use the actual materializer's bounded default; deliberate budget-edge fixtures
+    // continue to override the family explicitly. No production ceiling is changed here.
+    let memory = agent.context_materialization_policy.memory;
+    let memory_value = iteron_tunables::ResolutionValue::Object {
+        fields: [
+            ("index_bytes", memory.index_bytes),
+            ("recall_bytes", memory.recall_bytes),
+            ("instruction_bytes", memory.instr_bytes),
+            ("total_bytes", memory.total),
+        ]
+        .into_iter()
+        .map(|(name, bytes)| {
+            (
+                name.into(),
+                iteron_tunables::ResolutionValue::Integer {
+                    value: i64::try_from(bytes).unwrap(),
+                },
+            )
+        })
+        .collect(),
+    };
+    if agent.rollout.next_sequence().0 == 0 {
+        gate_integration_tests::record_test_genesis_with_tunable_edits(
+            &mut agent,
+            workspace,
+            [("memory_budgets", memory_value)],
+        );
+    } else {
+        gate_integration_tests::pin_test_tunables_with_edits(
+            &mut agent,
+            [("memory_budgets", memory_value)],
+        );
+    }
     agent
         .record_operator_model_selection(
             provider,
@@ -146,7 +191,10 @@ async fn physical_manifest_sources_and_scrubbed_bytes_survive_actual_writer_reop
     let provider = Arc::new(ExactRequest::default());
     let mut owner = agent(&workspace, &run, provider.clone());
     assert_eq!(owner.run("first request").await.unwrap(), Outcome::Done);
-    assert_eq!(owner.run("second request").await.unwrap(), Outcome::Done);
+    assert_eq!(
+        owner.follow_up("second request").await.unwrap(),
+        Outcome::Done
+    );
     let record = owner.rollout.path().to_owned();
     drop(owner);
     let events = iteron_record::replay(&record).unwrap();

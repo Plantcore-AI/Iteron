@@ -2723,7 +2723,7 @@ mod gate_integration_tests {
         record_test_genesis_with_tunable_edits(agent, workspace, []);
     }
 
-    fn record_test_genesis_with_tunable_edits(
+    pub(super) fn record_test_genesis_with_tunable_edits(
         agent: &mut Agent,
         workspace: &std::path::Path,
         edits: impl IntoIterator<Item = (&'static str, iteron_tunables::ResolutionValue)>,

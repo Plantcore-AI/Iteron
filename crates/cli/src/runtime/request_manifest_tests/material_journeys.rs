@@ -1,5 +1,5 @@
 //! Actual Main admission, native preparation and retained public artifact journeys.
-use super::{ExactRequest, agent, read};
+use super::{ExactRequest, agent, agent_with_environment, read};
 use crate::artifacts::DurableArtifactStore;
 use crate::runtime::{Agent, Outcome, gate_integration_tests};
 use iteron_ctx::instructions::{InstructionDiscoveryPolicy, discover_hierarchy};
@@ -196,12 +196,14 @@ async fn new_main_decision_removes_deleted_memory_and_preserves_admitted_fronten
         .unwrap();
     let run = RunId("main-material-refresh".into());
     let provider = Arc::new(ExactRequest::default());
-    let mut owner = agent(&workspace, &run, provider.clone());
+    let mut owner = agent_with_environment(
+        &workspace,
+        &run,
+        provider.clone(),
+        Some(("admitted_environment_reference".into(), Trust::Untrusted)),
+    );
     owner.memory_workspace = Some(workspace.clone());
     install_frontend(&mut owner, &workspace);
-    owner
-        .set_environment_context("admitted_environment_reference".into(), Trust::Untrusted)
-        .unwrap();
     assert_eq!(
         owner.run("freshness_anchor reference").await.unwrap(),
         Outcome::Done
@@ -210,7 +212,10 @@ async fn new_main_decision_removes_deleted_memory_and_preserves_admitted_fronten
     assert!(memory.remove_checked(&id).unwrap());
     std::fs::write(workspace.join("AGENTS.md"), "changed_live_frontend").unwrap();
     assert_eq!(
-        owner.run("freshness_anchor second decision").await.unwrap(),
+        owner
+            .follow_up("freshness_anchor second decision")
+            .await
+            .unwrap(),
         Outcome::Done
     );
     let second = native_system(&provider, 1);
@@ -286,16 +291,16 @@ async fn cold_main_refresh_does_not_attribute_current_disk_to_old_admitted_prefi
     resumed
         .set_resume(Agent::messages_from_rollout(&path).unwrap())
         .unwrap();
-    // Empty same-turn recovery keeps the complete frozen injection. It does not choose today's
-    // memory or file versions merely because another physical request can be prepared.
-    assert_eq!(resumed.run("").await.unwrap(), Outcome::Done);
+    // The prior turn already completed. An empty continuation advances its terminal identity
+    // while keeping the frozen injection; it is not a new nonempty user memory decision.
+    assert_eq!(resumed.follow_up("").await.unwrap(), Outcome::Done);
     let frozen = native_system(&provider, 1);
     assert!(frozen.contains(original));
     assert!(frozen.contains("old_memory_reference"));
     assert!(!frozen.contains(current));
     assert_eq!(
         resumed
-            .run("coldfresh_anchor new user decision")
+            .follow_up("coldfresh_anchor new user decision")
             .await
             .unwrap(),
         Outcome::Done
