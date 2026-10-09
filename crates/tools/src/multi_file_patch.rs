@@ -12,7 +12,7 @@ use crate::multi_file_patch_error::PatchFailure;
 #[cfg(test)]
 use crate::multi_file_patch_input::MAX_FILES;
 use crate::multi_file_patch_input::{FilePatch, max_files, max_hunks_per_file, parse_requests};
-use crate::write_file::{GuardedCommitFailure, StagedWrite};
+use crate::write_file::{GuardedCommitFailure, StagedWrite, TargetSnapshot};
 use crate::{Registry, ToolError, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
@@ -34,6 +34,7 @@ struct PlannedFile {
     original: Vec<u8>,
     updated: Vec<u8>,
     stamp: FileStamp,
+    commit_guard: TargetSnapshot,
     #[cfg(unix)]
     confined_target: Option<Arc<crate::confined_fs::ConfinedTarget>>,
 }
@@ -55,6 +56,7 @@ struct FileStamp {
 struct ReadSnapshot {
     bytes: Vec<u8>,
     stamp: FileStamp,
+    commit_guard: TargetSnapshot,
 }
 
 struct SnapshotEdit {
@@ -65,7 +67,7 @@ struct SnapshotEdit {
 
 #[derive(Default)]
 struct PatchIoStats {
-    file_reads: usize,
+    planning_reads: usize,
     file_writes: usize,
 }
 
@@ -374,6 +376,7 @@ async fn plan_patch_scoped(
             original: snapshot.bytes,
             updated: updated.into_bytes(),
             stamp: snapshot.stamp,
+            commit_guard: snapshot.commit_guard,
             #[cfg(unix)]
             confined_target,
         });
@@ -441,7 +444,12 @@ async fn read_bounded(
     path: &Path,
     stats: &mut PatchIoStats,
 ) -> Result<ReadSnapshot, (&'static str, String)> {
-    let file = tokio::fs::File::open(path)
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options
+        .open(path)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
     let before = file
@@ -456,7 +464,7 @@ async fn read_bounded(
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
-    stats.file_reads += 1;
+    stats.planning_reads += 1;
     if bytes.len() > max_file_bytes {
         return Err((
             "file_too_large",
@@ -468,6 +476,8 @@ async fn read_bounded(
         .metadata()
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
+    let commit_guard = TargetSnapshot::existing_from_retained_bytes(&after, &bytes)
+        .map_err(|error| ("file_changed", error.to_string()))?;
     let before = file_stamp(&before);
     let after = file_stamp(&after);
     if before != after {
@@ -479,6 +489,7 @@ async fn read_bounded(
     Ok(ReadSnapshot {
         bytes,
         stamp: after,
+        commit_guard,
     })
 }
 
@@ -502,7 +513,7 @@ async fn read_bounded_confined(
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
-    stats.file_reads += 1;
+    stats.planning_reads += 1;
     if bytes.len() > max_file_bytes {
         return Err((
             "file_too_large",
@@ -525,6 +536,8 @@ async fn read_bounded_confined(
         ));
     }
     Ok(ReadSnapshot {
+        commit_guard: TargetSnapshot::existing_from_retained_bytes(&after, &bytes)
+            .map_err(|error| ("file_changed", error.to_string()))?,
         bytes,
         stamp: file_stamp(&after),
     })
@@ -553,6 +566,19 @@ async fn commit_patch(
     stats: &mut PatchIoStats,
     confined: bool,
 ) -> Result<(), PatchFailure> {
+    commit_patch_with_member_hook(root, plans, stats, confined, |_, _| {}).await
+}
+
+async fn commit_patch_with_member_hook<F>(
+    root: &Path,
+    plans: &[PlannedFile],
+    stats: &mut PatchIoStats,
+    confined: bool,
+    mut before_member: F,
+) -> Result<(), PatchFailure>
+where
+    F: FnMut(usize, &Path) + Send,
+{
     let mut staged = Vec::with_capacity(plans.len());
     for plan in plans {
         #[cfg(unix)]
@@ -581,7 +607,8 @@ async fn commit_patch(
 
     // Staging can take time. Recheck the identity stamp before the first rename so an operator
     // edit made underneath the patch is refused while our write set is still zero. This is a
-    // metadata-only check: each file's content is read exactly once into its planning snapshot.
+    // metadata-only early check. Each member's retained content/identity guard is checked again
+    // immediately before its own replacement, including edits made while prior members commit.
     for plan in plans {
         if confined {
             crate::workspace_boundary::validate_coding_write_target(root, &plan.target).map_err(
@@ -630,20 +657,49 @@ async fn commit_patch(
 
     let mut committed = Vec::with_capacity(plans.len());
     for (index, write) in staged.into_iter().enumerate() {
-        if let Err(failure) = write.commit().await {
-            if failure.target_replaced {
+        before_member(index, &plans[index].target);
+        if let Err(failure) = write.commit_if_unchanged(&plans[index].commit_guard).await {
+            let (failure_kind, commit_message, target_replaced) = match failure {
+                GuardedCommitFailure::Changed => (
+                    "file_changed_rolled_back",
+                    "target changed since the retained planning snapshot; current bytes retained"
+                        .into(),
+                    false,
+                ),
+                GuardedCommitFailure::Inspect(error) => (
+                    "commit_inspection_failed_rolled_back",
+                    error.to_string(),
+                    false,
+                ),
+                GuardedCommitFailure::Commit(failure) => (
+                    "commit_failed_rolled_back",
+                    failure.error.to_string(),
+                    failure.target_replaced,
+                ),
+            };
+            if target_replaced {
                 committed.push(index);
                 stats.file_writes += 1;
             }
-            let commit_message = failure.error.to_string();
             let rollback_error = rollback(root, plans, &committed, confined).await;
             return Err(match rollback_error {
-                None => PatchFailure::file(
-                    "commit_failed_rolled_back",
+                None if committed.is_empty() => PatchFailure::file(
+                    match failure_kind {
+                        "file_changed_rolled_back" => "file_changed",
+                        "commit_inspection_failed_rolled_back" => "commit_inspection_failed",
+                        _ => "commit_failed",
+                    },
                     "commit",
                     plans[index].file_index,
                     &plans[index].path,
-                    format!("commit failed and prior files were restored: {commit_message}"),
+                    format!("commit stopped before any destination replacement: {commit_message}"),
+                ),
+                None => PatchFailure::file(
+                    failure_kind,
+                    "commit",
+                    plans[index].file_index,
+                    &plans[index].path,
+                    format!("commit stopped and prior files were restored: {commit_message}"),
                 ),
                 Some(error) => PatchFailure::file(
                     "rollback_failed",

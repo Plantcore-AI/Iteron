@@ -53,6 +53,26 @@ pub(crate) enum TargetSnapshot {
     Existing(ExistingTarget),
 }
 
+impl TargetSnapshot {
+    /// Retain an already-read, verified descriptor snapshot without another planning read. Only
+    /// native writer owners call this; commit still re-inspects the destination before rename.
+    pub(crate) fn existing_from_retained_bytes(
+        metadata: &std::fs::Metadata,
+        bytes: &[u8],
+    ) -> Result<Self, SnapshotError> {
+        if !metadata.is_file() {
+            return Err(SnapshotError::NotRegular);
+        }
+        if metadata.len() != bytes.len() as u64 {
+            return Err(SnapshotError::ChangedDuringRead);
+        }
+        Ok(Self::Existing(ExistingTarget {
+            stamp: metadata_stamp(metadata),
+            digest: Sha256::digest(bytes).into(),
+        }))
+    }
+}
+
 pub(crate) struct ExistingFileSnapshot {
     pub(crate) bytes: Vec<u8>,
     pub(crate) target: TargetSnapshot,
@@ -136,7 +156,7 @@ async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> 
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     let file = options.open(target).await.map_err(SnapshotError::Io)?;
     let opened_before = file.metadata().await.map_err(SnapshotError::Io)?;
     if !opened_before.is_file() || metadata_stamp(&path_before) != metadata_stamp(&opened_before) {

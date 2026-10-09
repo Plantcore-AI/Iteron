@@ -143,6 +143,89 @@ fn patch_call(id: &str, files: Vec<Value>) -> ToolUse {
 }
 
 #[tokio::test]
+async fn each_patch_member_refuses_new_user_bytes_after_the_batch_precheck() {
+    for confined in [false, true] {
+        for edited_member in [0, 1] {
+            for edit_committed_member in [false, true] {
+                let root = TestRoot::new("per-member-commit-guard");
+                root.write("first.txt", "first original\n");
+                root.write("second.txt", "second original\n");
+                root.write("unrelated.txt", "existing dirty work\n");
+                let requests = parse_requests(&json!({"files":[
+                    file_patch("first.txt", "first original", "first patched"),
+                    file_patch("second.txt", "second original", "second patched")
+                ]}))
+                .unwrap();
+                let mut stats = PatchIoStats::default();
+                let plans = plan_patch(&root.0, requests, &mut stats, confined)
+                    .await
+                    .unwrap();
+                let failure = commit_patch_with_member_hook(
+                    &root.0,
+                    &plans,
+                    &mut stats,
+                    confined,
+                    |index, target| {
+                        if index != edited_member {
+                            return;
+                        }
+                        // Keep both length and modification time: the original metadata-only
+                        // batch check is insufficient, especially on Windows without inode/ctime.
+                        let modified = std::fs::metadata(target).unwrap().modified().unwrap();
+                        let bytes = if index == 0 {
+                            "first human!!!\n"
+                        } else {
+                            "second human!!!\n"
+                        };
+                        assert_eq!(bytes.len(), plans[index].original.len());
+                        std::fs::write(target, bytes).unwrap();
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(target)
+                            .unwrap()
+                            .set_modified(modified)
+                            .unwrap();
+                        if index == 1 && edit_committed_member {
+                            root.write("first.txt", "user edited committed first member\n");
+                        }
+                    },
+                )
+                .await
+                .unwrap_err();
+                let error: Value = serde_json::from_str(&failure.model_json()).unwrap();
+                if edited_member == 0 {
+                    assert_eq!(error["kind"], "file_changed");
+                    assert_eq!(stats.file_writes, 0);
+                    assert_eq!(root.read("first.txt"), b"first human!!!\n");
+                    assert_eq!(root.read("second.txt"), b"second original\n");
+                } else {
+                    assert_eq!(stats.file_writes, 1);
+                    assert_eq!(root.read("second.txt"), b"second human!!!\n");
+                    if edit_committed_member {
+                        assert_eq!(error["kind"], "rollback_failed");
+                        assert_eq!(
+                            root.read("first.txt"),
+                            b"user edited committed first member\n"
+                        );
+                    } else {
+                        assert_eq!(error["kind"], "file_changed_rolled_back");
+                        assert_eq!(root.read("first.txt"), b"first original\n");
+                    }
+                }
+                assert_eq!(root.read("unrelated.txt"), b"existing dirty work\n");
+                assert!(std::fs::read_dir(&root.0).unwrap().all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".core-write-")
+                }));
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn ordinary_coding_patch_refuses_parent_and_absolute_escape_atomically() {
     let root = TestRoot::new("confined-root");
     let outside = TestRoot::new("confined-outside");
@@ -463,7 +546,7 @@ async fn d3_03_g2_missing_anchor_leaves_single_file_byte_identical() {
     assert_eq!(error["kind"], "anchor_not_found");
     assert_eq!(error["file_index"], 1);
     assert_eq!(error["hunk_index"], 3);
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(
         stats.file_writes, 0,
         "invalid proposal must perform no write"
@@ -512,7 +595,7 @@ async fn d3_03_g2_ambiguous_anchor_leaves_single_file_byte_identical() {
     assert_eq!(error["kind"], "ambiguous_anchor");
     assert_eq!(error["file_index"], 1);
     assert_eq!(error["hunk_index"], 3);
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(
         stats.file_writes, 0,
         "invalid proposal must perform no write"
@@ -535,7 +618,7 @@ async fn d3_03_g3_instrumentation_records_one_content_read_and_one_destination_w
     let result = execute_patch(&root.0, &input, &mut stats, false).await;
 
     assert_eq!(result.unwrap(), (1, 3));
-    assert_eq!(stats.file_reads, 1, "content snapshot reads");
+    assert_eq!(stats.planning_reads, 1, "planning snapshot reads");
     assert_eq!(stats.file_writes, 1, "destination replacements");
     assert_eq!(root.read("single.txt"), b"ALPHA\nBETA\nGAMMA\n");
 }
@@ -619,7 +702,7 @@ async fn d3_04_g2_two_normalized_candidates_are_refused_with_zero_writes() {
             .unwrap()
             .contains("whitespace-normalized candidates")
     );
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(stats.file_writes, 0);
     assert_snapshots(&root, &["single.txt"], &before);
 }
@@ -693,7 +776,7 @@ async fn d3_04_g5_normalization_line_work_is_bounded_and_fail_closed() {
     let error: Value = serde_json::from_str(&failure.model_json()).unwrap();
     assert_eq!(error["kind"], "normalization_limit");
     assert!(error["message"].as_str().unwrap().contains("262144"));
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(stats.file_writes, 0);
     assert_eq!(byte_hash(&root.read("single.txt")), before_hash);
 }
