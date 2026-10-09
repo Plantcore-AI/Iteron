@@ -145,7 +145,11 @@ impl ToolResponseOwner {
                 blocks: self
                     .results
                     .into_iter()
-                    .map(|result| Block::ToolResult(result.expect("validated complete slot")))
+                    .map(|result| {
+                        Block::ToolResult(model_visible_result(
+                            result.expect("validated complete slot"),
+                        ))
+                    })
                     .collect(),
             },
             images: self.images,
@@ -161,6 +165,18 @@ impl ToolResponseOwner {
         }
         Ok(())
     }
+}
+
+/// This is the one transcript outlet shared by native, parallel, kernel, and recovered results.
+/// Scrubbing the record or a UI projection does not change the live model's input. Keep the
+/// executor's result and private spill untouched until this outlet; then reapply its already
+/// admitted visible byte envelope so a redaction marker cannot enlarge the next request.
+fn model_visible_result(mut result: ToolResult) -> ToolResult {
+    let visible_bytes = result.content.len();
+    result.content = iteron_record::redact::scrub(&result.content);
+    let mut projection = super::tool_output_spill::ManagedToolResult::unspilled(result);
+    projection.project_visible(visible_bytes);
+    projection.result
 }
 
 impl ToolResponseMessage {
