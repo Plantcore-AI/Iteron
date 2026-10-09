@@ -364,6 +364,10 @@ fn prepare_patch_against(
             OsStr::new("--cached"),
             OsStr::new("--binary"),
             OsStr::new("--full-index"),
+            // Disabling an external diff is a Git option; `diff.external=` alone is an
+            // empty executable and still invokes Git's external-command path.
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-textconv"),
             OsStr::new(&output_arg),
             OsStr::new(diff_base),
             OsStr::new("--"),

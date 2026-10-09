@@ -129,7 +129,7 @@ async fn actual_main_native_recipe_and_same_owner_status_events_reopen_without_r
     });
     let mut owner = agent(&root, &run, provider.clone());
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     let directory = ProviderDirectory::inspect_local(&[]).unwrap();
     owner
@@ -203,7 +203,7 @@ async fn actual_main_alias_obeys_base_named_deny_even_with_bypass() {
         )
         .unwrap();
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     owner
         .install_ordinary_extensions(
@@ -227,7 +227,7 @@ async fn reopened_catalog_change_refuses_and_removes_every_new_executable_alias(
     let directory = ProviderDirectory::inspect_local(&[]).unwrap();
     let mut owner = agent(&root, &run, provider.clone());
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     owner
         .install_ordinary_extensions(bindings(), &directory, None)
@@ -266,7 +266,7 @@ fn reopened_unbound_message_v2_refuses_catalog_without_aliases_binding_or_provid
     });
     let mut owner = agent(root, &run, provider.clone());
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     // Synthetic, validated untrusted pixels exercise the actual new record vocabulary. This
     // observation is data; it grants no tool effect or terminal authority to this fixture.
@@ -352,7 +352,7 @@ fn actual_emitter_rebind_uses_the_new_bus_and_keeps_old_bus_events_unavailable()
         }),
     );
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     owner
         .install_ordinary_extensions(
@@ -439,7 +439,7 @@ async fn native_provider_export_uses_signed_route_and_cannot_dispatch_over_a_fin
     );
     owner.model = "sdk-model".into();
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     let route = PricingRoute {
         provider_id: "sdk-native".into(),
@@ -631,7 +631,7 @@ async fn ordinary_provider_export_drives_the_real_native_http_adapter_and_wal() 
     let mut owner = agent(&root, &run, provider);
     owner.model = "sdk-model".into();
     owner
-        .record_genesis_with_tunables(root.display().to_string(), 1, "sdk-fixture".into(), None)
+        .record_genesis_with_tunables(root.display().to_string(), 1, String::new(), None)
         .unwrap();
     owner
         .install_ordinary_extensions(
