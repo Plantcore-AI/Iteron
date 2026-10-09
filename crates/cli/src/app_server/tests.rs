@@ -2977,15 +2977,22 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
     use iteron_protocol::{
         capability_set::CapabilitySet, ordinary_extension_control::OrdinaryExtensionReadV1,
     };
+    use sha2::Digest;
     let workspace = temp_workspace("sdk-public-read");
     let mut agent = agent_in(&workspace);
+    let configuration = serde_json::json!({
+        "provider_id": "provider-a",
+        "model_id": "m",
+        "tunables_snapshot_sha256": agent.tunables_checkpoint().unwrap().snapshot_digest_sha256(),
+    });
+    let config_digest = format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(
+            serde_json::to_vec(&configuration).unwrap()
+        ))
+    );
     agent
-        .record_genesis_with_tunables(
-            workspace.display().to_string(),
-            1,
-            "sdk-public".into(),
-            None,
-        )
+        .record_genesis_with_tunables(workspace.display().to_string(), 1, config_digest, None)
         .unwrap();
     let read_caps = CapabilitySet::only(iteron_protocol::Capability::ReadOnly);
     agent
@@ -3119,6 +3126,7 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
 
 /// Native configured provider construction is real; no provider call/network is used by navigation.
 pub(crate) fn navigation_agent(workspace: &std::path::Path) -> Agent {
+    use sha2::Digest;
     use std::collections::BTreeMap;
     let credential = workspace.join("fixture-credential");
     std::fs::write(&credential, "test-only-navigation-token\n").unwrap();
@@ -3142,6 +3150,10 @@ pub(crate) fn navigation_agent(workspace: &std::path::Path) -> Agent {
         models: vec!["m".into()],
         model_capabilities: BTreeMap::new(),
     };
+    let config_digest = format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(serde_json::to_vec(&config).unwrap()))
+    );
     let directory = crate::providers::ProviderDirectory::inspect_local(&[config]).unwrap();
     let selection = crate::providers::ModelSelection {
         provider_id: "fixture-navigation".into(),
@@ -3175,12 +3187,7 @@ pub(crate) fn navigation_agent(workspace: &std::path::Path) -> Agent {
         &selection.model_id,
     );
     agent
-        .record_genesis_with_tunables(
-            workspace.display().to_string(),
-            1,
-            "navigation-fixture".into(),
-            None,
-        )
+        .record_genesis_with_tunables(workspace.display().to_string(), 1, config_digest, None)
         .unwrap();
     agent
         .install_client_inventory(

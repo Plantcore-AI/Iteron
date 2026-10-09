@@ -172,12 +172,20 @@ async fn storage_refusal_is_shutdown_debt_not_a_confirmed_flush() {
         .unwrap()
         .install()
         .unwrap();
-    std::fs::remove_dir_all(fixture.root.join("home")).unwrap();
-    std::fs::write(fixture.root.join("home"), b"blocked storage namespace").unwrap();
+    let storage = fixture.root.join("home");
+    assert!(
+        !storage.exists(),
+        "hydrating absent prompt history does not create its manifest namespace"
+    );
+    std::fs::write(&storage, b"blocked storage namespace").unwrap();
     assert!(
         !prepared
             .writer
             .finish_bounded(State::new(vec!["no invented lineage".into()], None))
+    );
+    assert_eq!(
+        std::fs::read(storage).unwrap(),
+        b"blocked storage namespace"
     );
 }
 
