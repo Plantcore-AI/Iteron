@@ -140,7 +140,7 @@ impl ProviderExecutionScope {
         let configuration = &self.configuration;
         // Only a real ordinary physical ticket attributes a stream. Hedged aggregates must not
         // be mislabeled as one guessed winner intent.
-        let partial_source = if hedged.is_none() {
+        let partial_source = if hedged.is_none() && configuration.events.partial_mailbox.is_some() {
             route.ticket().map(
                 |ticket| iteron_protocol::agent_output::AgentOutputSourceV1 {
                     tenant: journal.rollout.tenant().clone(),
