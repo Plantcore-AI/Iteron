@@ -462,6 +462,45 @@ mod tests {
             }
             syn::visit::visit_expr_call(self, call);
         }
+
+        fn visit_expr_macro(&mut self, expression: &'ast syn::ExprMacro) {
+            if expression.mac.path.is_ident("vec") {
+                let tokens = &expression.mac.tokens;
+                if let Ok(repeated) = syn::parse2::<syn::ExprRepeat>(quote::quote!([#tokens])) {
+                    // The Windows native buffer consumes its parameter inside the actual vec
+                    // repetition length. Opaque macro payloads and string literals prove no call.
+                    syn::visit::Visit::visit_expr(self, repeated.len.as_ref());
+                }
+            }
+        }
+    }
+    #[test]
+    fn native_allocation_macro_evidence_excludes_literal_and_opaque_payloads() {
+        let prefix = "iteron_tunables::param_integer(\"cli.tui.max_windows_system_root_bytes\", MAX_WINDOWS_SYSTEM_ROOT_BYTES)";
+        for (source, expected) in [
+            (
+                format!("fn owner() {{ let _ = vec![0_u16; {prefix}]; }}"),
+                1,
+            ),
+            (
+                format!("fn owner() {{ let _ = opaque![0_u16; {prefix}]; }}"),
+                0,
+            ),
+            (format!("fn owner() {{ let _ = vec![{prefix}; 1]; }}"), 0),
+            (
+                format!("fn owner() {{ let _ = vec![0_u16; {prefix:?}]; }}"),
+                0,
+            ),
+        ] {
+            let parsed = syn::parse_file(&source).unwrap();
+            let mut probe = ActualHelper {
+                id: "cli.tui.max_windows_system_root_bytes",
+                name: "MAX_WINDOWS_SYSTEM_ROOT_BYTES",
+                matches: 0,
+            };
+            syn::visit::Visit::visit_file(&mut probe, &parsed);
+            assert_eq!(probe.matches, expected);
+        }
     }
     #[test]
     fn moved_live_client_controls_bind_the_advertised_id_to_the_actual_native_consumer() {

@@ -20,6 +20,7 @@ pub enum ClientAgentControlV1 {
         request_id: String,
         command: AgentCommandV1,
     },
+    #[serde(deserialize_with = "deserialize_list")]
     List,
     Inspect {
         agent_id: AgentIdV1,
@@ -31,6 +32,20 @@ pub enum ClientAgentControlV1 {
         after_revision: u64,
         timeout_ms: u64,
     },
+}
+
+fn deserialize_list<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Serde's internally tagged unit visitor ignores the remaining map even when the enum has
+    // deny_unknown_fields. Validate this zero-field payload without changing the public unit
+    // variant or its existing {"type":"list"} serialization.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Empty {}
+
+    Empty::deserialize(deserializer).map(|_| ())
 }
 
 impl ClientAgentControlV1 {
@@ -126,5 +141,23 @@ mod tests {
             .is_err()
         );
         assert!(ClientAgentControlV1::List.is_read_only());
+    }
+
+    #[test]
+    fn list_retains_its_existing_wire_shape_and_rejects_every_extra_authority_field() {
+        let list: ClientAgentControlV1 = serde_json::from_str(r#"{"type":"list"}"#).unwrap();
+        assert!(matches!(list, ClientAgentControlV1::List));
+        assert_eq!(
+            serde_json::to_value(list).unwrap(),
+            serde_json::json!({"type": "list"})
+        );
+        for input in [
+            r#"{"type":"list","effects_known":true}"#,
+            r#"{"type":"list","actor":"operator"}"#,
+            r#"{"type":"list","path":"/another/run"}"#,
+            r#"{"type":"list","unknown":null}"#,
+        ] {
+            assert!(serde_json::from_str::<ClientAgentControlV1>(input).is_err());
+        }
     }
 }
