@@ -419,9 +419,6 @@ pub(crate) fn governed_workflow_limits(
 const MAX_VERIFY_ATTEMPTS: u32 = iteron_verify::DEFAULT_VERIFICATION_REPAIR_ATTEMPTS;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Iteron runtime notification — not an operator instruction]";
-#[cfg(test)]
-pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
-    "[Iteron runtime memory-added — operator-authored]";
 /// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
 /// narrow this per opportunity, but it cannot expand beyond this owner value.
 pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;

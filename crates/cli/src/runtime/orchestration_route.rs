@@ -23,7 +23,7 @@ impl Agent {
     /// A refusal is not an error the run dies on. Fan-out is the *additional* thing a route can
     /// ask for, so the fail-closed answer is the single-agent loop — which is also what a
     /// `Localized` route means — and the refusal is said out loud rather than swallowed.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "script-workflows"))]
     pub(super) fn route_submission(
         &mut self,
         task: &str,

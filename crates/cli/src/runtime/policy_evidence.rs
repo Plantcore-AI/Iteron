@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 pub(super) const CONTEXT_SLOT: &str = "core/context";
 pub(super) const TOOL_POLICY_SLOT: &str = "core/tool_policy";
 pub(super) const MEMORY_SLOT: &str = "core/memory";
-#[cfg(test)]
+#[cfg(all(test, feature = "script-workflows"))]
 pub(super) const ROUTER_SLOT: &str = "core/router";
-#[cfg(test)]
+#[cfg(all(test, feature = "script-workflows"))]
 pub(super) const PLANNER_SLOT: &str = "core/planner";
 pub(super) const COLLABORATION_SLOT: &str = "core/collaboration";
 pub(super) const SCHEDULER_SLOT: &str = "core/scheduler";
