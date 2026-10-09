@@ -684,6 +684,7 @@
 /crates/cli/src/runtime/advisory_maintenance/pool.rs @fr0m-scratch
 /crates/cli/src/runtime/advisory_maintenance/store.rs @fr0m-scratch
 /crates/cli/src/runtime/advisory_maintenance/tests.rs @fr0m-scratch
+/crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agent_kernel/budget.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agent_kernel/profiles.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agent_kernel/recovery.rs @fr0m-scratch
@@ -700,7 +701,9 @@
 /crates/cli/src/runtime/persistent_agents/provider_budget.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/weak_mailbox.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/workflow.rs @fr0m-scratch
+/crates/cli/src/runtime/request_manifest/refusal.rs @fr0m-scratch
 /crates/cli/src/runtime/request_manifest_tests/material_journeys.rs @fr0m-scratch
+/crates/cli/src/runtime/resume/adoption_diagnostic.rs @fr0m-scratch
 /crates/cli/src/runtime/route_attempt_accounting/replay_evidence.rs @fr0m-scratch
 /crates/cli/src/runtime/test_support/tempdir_tests.rs @fr0m-scratch
 /crates/record/src/checkpoint/restore/tests.rs @fr0m-scratch

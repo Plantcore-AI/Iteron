@@ -3319,6 +3319,18 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/test_support/tempdir_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/refusal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/resume/adoption_diagnostic.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs"
         }
       ],
       "contracts": [

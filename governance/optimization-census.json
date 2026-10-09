@@ -1,15 +1,15 @@
 {
   "schema_version": 4,
-  "total": 3448,
+  "total": 3450,
   "runtime_settable": 2227,
-  "invariant_read_only": 1221,
+  "invariant_read_only": 1223,
   "binding_required": 0,
   "advertised_runtime_settable": 2227,
   "runtime_applied": 2227,
   "externally_addressed_runtime_settable": 2227,
   "unaddressed_runtime_settable": 0,
-  "mechanical_invariant_dispositions": 1221,
-  "owning_human_review_required": 1221,
+  "mechanical_invariant_dispositions": 1223,
+  "owning_human_review_required": 1223,
   "explicit_invariant_overrides": 470,
   "address_kind_counts": {
     "unified_profile": 1466,
@@ -19,7 +19,7 @@
   "invariant_kind_counts": {
     "identity": 244,
     "wire_compatibility": 136,
-    "authority": 71,
+    "authority": 73,
     "security": 102,
     "durability": 110,
     "replay": 15,
@@ -29,16 +29,16 @@
   },
   "source_coverage": {
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
-    "production_rust_files_scanned": 1185,
+    "production_rust_files_scanned": 1188,
     "source_form_counts": {
       "const": 2443,
       "static": 68,
       "associated_const": 43,
       "serde_default": 378,
       "clap_default": 28,
-      "policy_default_constructor": 653,
+      "policy_default_constructor": 655,
       "policy_fallback_call": 13,
-      "builder_quality_default": 3901,
+      "builder_quality_default": 3926,
       "include_str_asset": 3,
       "include_bytes_asset": 5,
       "dynamic_implementation_manifest": 2,
@@ -52,7 +52,7 @@
       "clap_default": 28,
       "policy_default_constructor": 12,
       "policy_fallback_call": 0,
-      "builder_quality_default": 467,
+      "builder_quality_default": 469,
       "include_str_asset": 3,
       "include_bytes_asset": 5,
       "dynamic_implementation_manifest": 1,
@@ -4858,33 +4858,33 @@
       "use_sites": [
         {
           "path": "crates/cli/src/artifacts/storage.rs",
-          "line": 127,
+          "line": 136,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts/storage.rs",
-          "line": 141,
+          "line": 150,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts/storage.rs",
-          "line": 155,
+          "line": 164,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts/storage.rs",
-          "line": 158,
+          "line": 167,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts/storage.rs",
-          "line": 169,
+          "line": 178,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_MANIFEST_BYTES` at crates/cli/src/artifacts/storage.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/cli/src/artifacts/storage.rs:127 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_MANIFEST_BYTES` at crates/cli/src/artifacts/storage.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/cli/src/artifacts/storage.rs:136 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -21694,12 +21694,12 @@
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 149,
+          "line": 152,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 415,
+          "line": 418,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -21899,6 +21899,54 @@
       "explicit_invariant_override": true,
       "applied": false,
       "tier2_id": "cli.runtime.optional_tool_round.empty_indices"
+    },
+    {
+      "id": "cli.runtime.ordinary.extensions.tests.paid.native.signed.known.native.sdk.export.charges.actual.cached.usage.then.refuses.exhausted.io.inline.providerconfig.field.catalog.1",
+      "candidate_kind": "builder_quality_default",
+      "rust_type": "_ (inferred by rustc)",
+      "value": "false",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs",
+        "symbol": "signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses_exhausted_io"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs",
+          "line": 145,
+          "evidence": "inline production quality/default struct field value"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "authority",
+      "review_evidence": "closed source-form invariant rule: `signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses_exhausted_io` at crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs — provider catalog and enablement are composition authority, not trainer inputs; observed at crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs:145; mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": false,
+      "applied": false
+    },
+    {
+      "id": "cli.runtime.ordinary.extensions.tests.paid.native.signed.known.native.sdk.export.charges.actual.cached.usage.then.refuses.exhausted.io.inline.providerconfig.field.enabled.1",
+      "candidate_kind": "builder_quality_default",
+      "rust_type": "_ (inferred by rustc)",
+      "value": "true",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs",
+        "symbol": "signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses_exhausted_io"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs",
+          "line": 144,
+          "evidence": "inline production quality/default struct field value"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "authority",
+      "review_evidence": "closed source-form invariant rule: `signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses_exhausted_io` at crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs — provider catalog and enablement are composition authority, not trainer inputs; observed at crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs:144; mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": false,
+      "applied": false
     },
     {
       "id": "cli.runtime.permission.policy.evaluate.operation.inline.operationadmission.field.verdict.1",
@@ -23519,12 +23567,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 283,
+          "line": 286,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 577,
+          "line": 580,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25372,7 +25420,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_usage_journal.rs",
-          "line": 70,
+          "line": 73,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -28035,7 +28083,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 1271,
+          "line": 1293,
           "evidence": "Rust path reference"
         },
         {
@@ -28051,7 +28099,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "explicit census disposition override: `MAX_AGENT_DEFINITION_TAG_BYTES` at crates/cli/src/session_view.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime/resume.rs:1271 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_AGENT_DEFINITION_TAG_BYTES` at crates/cli/src/session_view.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime/resume.rs:1293 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -84099,18 +84147,18 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 750,
+          "line": 752,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 919,
+          "line": 921,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE_FIELD` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:750 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE_FIELD` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:752 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -84154,12 +84202,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 231,
+          "line": 233,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 995,
+          "line": 997,
           "evidence": "Rust path reference"
         },
         {
@@ -84185,7 +84233,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "explicit census disposition override: `MAX_CONTENT_JSON_BYTES` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:231 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_CONTENT_JSON_BYTES` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:233 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -84299,62 +84347,62 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 419,
+          "line": 421,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 425,
+          "line": 427,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 431,
+          "line": 433,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 471,
+          "line": 473,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 523,
+          "line": 525,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 529,
+          "line": 531,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 535,
+          "line": 537,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 578,
+          "line": 580,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 597,
+          "line": 599,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 603,
+          "line": 605,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 609,
+          "line": 611,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 651,
+          "line": 653,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -84714,7 +84762,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 993,
+          "line": 995,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -84774,17 +84822,17 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 440,
+          "line": 442,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 545,
+          "line": 547,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 618,
+          "line": 620,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -84909,32 +84957,32 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 300,
+          "line": 302,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 445,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 550,
+          "line": 552,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 623,
+          "line": 625,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 751,
+          "line": 753,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 925,
+          "line": 927,
           "evidence": "Rust path reference"
         },
         {
@@ -85025,7 +85073,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "closed Tier-2 disposition rule: `STORE_VERSION` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:300 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `STORE_VERSION` at crates/record/src/content_store/model.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/record/src/content_store.rs:302 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -85044,12 +85092,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 761,
+          "line": 763,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 768,
+          "line": 770,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -85079,7 +85127,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/content_store.rs",
-          "line": 773,
+          "line": 775,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -85595,7 +85643,7 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1654,
+          "line": 1659,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -85640,17 +85688,17 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1496,
+          "line": 1497,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1502,
+          "line": 1503,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1582,
+          "line": 1587,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -85695,17 +85743,17 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1475,
+          "line": 1476,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1481,
+          "line": 1482,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1586,
+          "line": 1591,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -85866,17 +85914,17 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1460,
+          "line": 1461,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1848,
+          "line": 1853,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1906,
+          "line": 1911,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -98034,7 +98082,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/schema.rs",
-          "line": 292,
+          "line": 312,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -98094,12 +98142,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/schema.rs",
-          "line": 198,
+          "line": 209,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/schema.rs",
-          "line": 225,
+          "line": 236,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -98189,13 +98237,13 @@
       "use_sites": [
         {
           "path": "crates/tools/src/schema.rs",
-          "line": 111,
+          "line": 113,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "explicit census disposition override: `SUPPORTED_TYPES` at crates/tools/src/schema.rs — the value participates in stable identity/canonical naming; observed at crates/tools/src/schema.rs:111 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `SUPPORTED_TYPES` at crates/tools/src/schema.rs — the value participates in stable identity/canonical naming; observed at crates/tools/src/schema.rs:113 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
