@@ -231,3 +231,61 @@ async fn changed_schema_projection_cannot_authorize_a_response_but_reject_is_ava
     assert_eq!(reply["state"], "rejected");
     assert!(matches!(decision.await.unwrap(), McpInputDecision::Reject));
 }
+
+#[tokio::test]
+async fn actual_publish_rejects_shape_and_escaped_bytes_before_retaining_or_observing_prompt() {
+    let (mut events, mut eq) = events();
+    let mut inputs = PendingInputs::default();
+    for (id, schema) in [
+        (
+            20,
+            json!({"description":"\\".repeat(MAX_PROMPT_BYTES / 2 + 1)}),
+        ),
+        (21, (0..10).fold(json!("leaf"), |value, _| json!([value]))),
+        (22, Value::Array(vec![Value::Null; 8193])),
+    ] {
+        let (mut request, decision) = form(id);
+        request.prompt.fields[0].schema = schema;
+        publish_request(request, &mut inputs, &mut events).await;
+        assert!(matches!(decision.await.unwrap(), McpInputDecision::Reject));
+        assert!(inputs.is_empty());
+        assert!(eq.try_recv().is_err());
+    }
+}
+#[tokio::test]
+async fn full_callback_queue_refuses_before_a_second_prompt_clone_or_new_request_id() {
+    let (_responses, mut port) = wire();
+    let handler = port.owner.0.clone();
+    let mut receipts = Vec::new();
+    for id in 100..100 + capacity() as u64 {
+        let (request, decision) = form(id);
+        port.owner
+            .0
+            .requests
+            .try_send(request)
+            .unwrap_or_else(|_| panic!("finite request slot"));
+        receipts.push(decision);
+    }
+    let before = handler.next_id.load(Ordering::Relaxed);
+    assert!(matches!(
+        handler
+            .request("alpha", "choose", None, Vec::new())
+            .await
+            .unwrap(),
+        McpInputDecision::Reject
+    ));
+    assert_eq!(handler.next_id.load(Ordering::Relaxed), before);
+    let oversized = "x".repeat(MAX_PROMPT_BYTES + 1);
+    assert!(matches!(
+        handler
+            .request(&oversized, "choose", None, Vec::new())
+            .await
+            .unwrap(),
+        McpInputDecision::Reject
+    ));
+    assert_eq!(handler.next_id.load(Ordering::Relaxed), before);
+    for _ in 0..capacity() {
+        let _ = port.requests.recv().await.unwrap();
+    }
+    drop(receipts);
+}

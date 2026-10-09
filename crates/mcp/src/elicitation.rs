@@ -528,9 +528,26 @@ mod tests {
             json!({"profile": {"type": "object", "properties": {}}});
         assert!(ElicitationRequest::parse(nested).is_err());
 
-        let mut sensitive = base;
-        sensitive["requestedSchema"]["properties"] = json!({"api_key": {"type": "string"}});
-        assert!(ElicitationRequest::parse(sensitive).is_err());
+        for name in [
+            "password",
+            "service-secret",
+            "access_token",
+            "api_key",
+            "private_key",
+        ] {
+            let mut sensitive = base.clone();
+            sensitive["requestedSchema"]["properties"] = json!({name: {"type": "string", "default": "opaque-private-default", "enum": ["opaque-private-default"]}});
+            assert!(
+                ElicitationRequest::parse(sensitive).is_err(),
+                "known sensitive schema cannot become an input request or observer prompt"
+            );
+        }
+        for annotation in ["format", "writeOnly", "examples", "const"] {
+            let mut unsupported = base.clone();
+            unsupported["requestedSchema"]["properties"] =
+                json!({"label": {"type": "string", annotation: "opaque-private-value"}});
+            assert!(ElicitationRequest::parse(unsupported).is_err());
+        }
     }
 
     #[test]

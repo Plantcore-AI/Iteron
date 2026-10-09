@@ -1,5 +1,6 @@
 //! One bounded input-callback owner shared by local forms and authenticated clients.
 use super::{EventPublisher, ServerEvent};
+mod request_bounds;
 use iteron_mcp::{McpFuture, McpInputDecision, McpInputRequest, McpMrtrHandler};
 use iteron_protocol::client_mcp_input::{
     MCP_INPUT_CONTRACT_VERSION, McpInputClosedV1, McpInputFieldViewV1, McpInputPromptViewV1,
@@ -363,6 +364,14 @@ impl McpMrtrHandler for BridgeHandler {
         requests: Vec<McpInputRequest>,
     ) -> McpFuture<'a, McpInputDecision> {
         Box::pin(async move {
+            // The typed MCP request has been validated upstream, but the bridge enforces its own
+            // aggregate shape/metadata ceiling before any retained schema or string clone.
+            if !request_bounds::requests_fit(server_name, tool_name, request_state, &requests) {
+                return Ok(McpInputDecision::Reject);
+            }
+            let Ok(slot) = self.requests.try_reserve() else {
+                return Ok(McpInputDecision::Reject);
+            };
             let request_id = self
                 .next_id
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -392,14 +401,7 @@ impl McpMrtrHandler for BridgeHandler {
             };
             let deadline = tokio::time::Instant::now() + MAX_INPUT_WAIT;
             let decision = async {
-                self.requests
-                    .send(McpInputRequestEnvelope { prompt, reply })
-                    .await
-                    .map_err(|_| {
-                        iteron_mcp::McpError::Protocol(
-                            "interactive MCP input frontend is unavailable".into(),
-                        )
-                    })?;
+                slot.send(McpInputRequestEnvelope { prompt, reply });
                 response.await.map_err(|_| {
                     iteron_mcp::McpError::Protocol(
                         "interactive MCP input request was not resolved".into(),
@@ -450,34 +452,7 @@ pub(super) async fn publish_request(
         return;
     }
     let request_id = envelope.prompt.request_id;
-    let metadata_bytes = envelope
-        .prompt
-        .server
-        .len()
-        .saturating_add(envelope.prompt.tool.len())
-        .saturating_add(
-            envelope
-                .prompt
-                .request_state
-                .as_ref()
-                .map_or(0, String::len),
-        );
-    let bytes = envelope
-        .prompt
-        .fields
-        .iter()
-        .try_fold(metadata_bytes, |n, field| {
-            let bytes = serde_json::to_vec(&field.schema)
-                .ok()?
-                .len()
-                .saturating_add(field.id.len())
-                .saturating_add(field.prompt.len());
-            n.checked_add(bytes)
-        });
-    if envelope.prompt.fields.len()
-        > iteron_protocol::client_mcp_input::MAX_MCP_INPUT_REQUEST_FIELDS
-        || bytes.is_none_or(|bytes| bytes > MAX_PROMPT_BYTES)
-    {
+    if !request_bounds::prompt_fits(&envelope.prompt) {
         let _ = envelope.reply.send(McpInputDecision::Reject);
         return;
     }
@@ -485,7 +460,7 @@ pub(super) async fn publish_request(
         .contract
         .snapshot()
         .map(|snapshot| (snapshot.thread_id, snapshot.run_id));
-    let prompt = envelope.prompt.clone();
+    let prompt;
     {
         let mut state = pending.0.lock();
         let cancelled = state
@@ -503,6 +478,8 @@ pub(super) async fn publish_request(
             let _ = envelope.reply.send(McpInputDecision::Reject);
             return;
         }
+        // Capacity and the original schema bound precede the second presentation clone.
+        prompt = envelope.prompt.clone();
         state.revision = state.revision.saturating_add(1);
         state.pending.insert(
             request_id,
