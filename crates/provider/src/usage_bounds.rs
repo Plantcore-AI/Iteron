@@ -32,7 +32,7 @@ pub(crate) fn physical_input_ceiling(
 #[cfg(test)]
 mod tests {
     use super::ProviderUsageBoundSemantics;
-    use crate::{Anthropic, ApiRoot, OpenAiCompat, OpenAiResponses, Provider};
+    use crate::{Anthropic, ApiRoot, ErrorProfile, OpenAiCompat, OpenAiResponses, Provider};
 
     #[test]
     fn only_exact_native_endpoints_attest_the_usage_partition() {
@@ -43,7 +43,8 @@ mod tests {
                     "fixture".into(),
                     ApiRoot::parse("https://api.openai.com/v1").unwrap(),
                 )
-                .unwrap(),
+                .unwrap()
+                .with_error_profile(ErrorProfile::OpenAi),
             ),
             Box::new(OpenAiResponses::new("fixture".into(), None).unwrap()),
         ];
@@ -53,6 +54,17 @@ mod tests {
                 ProviderUsageBoundSemantics::PartitionedInput
             );
         }
+        // An endpoint alone cannot promote a conservative compatibility adapter into an
+        // attested vendor billing contract. The admitted profile must identify that contract.
+        let conservative_native = OpenAiCompat::with_root(
+            "fixture".into(),
+            ApiRoot::parse("https://api.openai.com/v1").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            conservative_native.usage_bound_semantics(),
+            ProviderUsageBoundSemantics::IndependentClasses
+        );
         let custom_root = ApiRoot::parse("https://gateway.invalid/v1").unwrap();
         let custom = [
             Box::new(Anthropic::with_root("fixture".into(), custom_root.clone()).unwrap())

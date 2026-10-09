@@ -27,12 +27,12 @@ A host-fixed platform service also declares a bounded `non_optimization_reason`,
 to agree exactly with the service's dependency edges. Across the host-fixed platform layer, the
 delegated module evidence is total over all 28 `ModuleId` values.
 
-The graph currently contains 66 classified nodes. That is an architectural inventory, not a claim
-of 66 pluggable modules:
+The graph currently contains 67 classified nodes. That is an architectural inventory, not a claim
+of 67 pluggable modules:
 
 - 28 optimization modules, each retaining a distinct `external_process` identity;
 - nine host-fixed typed production consumers;
-- 22 platform services: six `replaceable_only + external_protocol` services and 16
+- 23 platform services: six `replaceable_only + external_protocol` services and 17
   `host_fixed_non_optimization + host_fixed` services;
 - seven immutable host invariants.
 
@@ -40,6 +40,10 @@ A source-manifest test compares the platform layer to the workspace member list,
 production crate without classifying it fails CI. Multiple ordered module stages may feed one typed
 consumer without losing their individual implementation identity, lifecycle, state, or consumption
 evidence.
+
+The extension SDK has its own `service/extension.sdk` row owned by `plugin-marketplace`. Its
+bounded descriptors and read-only ports carry host-bound identities and capability contracts;
+they provide no execution authority or lifecycle writer.
 
 The six externally replaceable platform services are the optimizer runtime, LSP transport, MCP
 transport, observation export, provider adapters, and tunables registry. The validator pins this

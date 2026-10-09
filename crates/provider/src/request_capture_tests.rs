@@ -103,6 +103,20 @@ fn provider(
     ))
 }
 
+fn provider_with_default_transport(adapter: AdapterKind, root: ApiRoot) -> Box<dyn Provider> {
+    let key = "credential_header_canary".to_owned();
+    let inner: Box<dyn Provider> = match adapter {
+        AdapterKind::AnthropicMessages => Box::new(Anthropic::with_root(key, root).unwrap()),
+        AdapterKind::OpenAiCompatibleChat => Box::new(OpenAiCompat::with_root(key, root).unwrap()),
+        AdapterKind::OpenAiResponses => Box::new(OpenAiResponses::with_root(key, root).unwrap()),
+    };
+    Box::new(HealthReportingProvider::new(
+        inner,
+        "fixture",
+        ProviderHealthStore::new(1),
+    ))
+}
+
 async fn received_body(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     let (stream, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
         .await
@@ -234,8 +248,10 @@ async fn slow_observation_deadline_remains_proven_zero_network() {
                 listener.local_addr().unwrap().port()
             ))
             .unwrap();
-            let (_, transport) = tls_configuration();
-            let provider = provider(adapter, root, &transport);
+            // The default transport can attest the requested short policy. The injected TLS
+            // transport above is deliberately fixed to its construction policy and must reject
+            // a different checkpoint before the observation callback, even without network IO.
+            let provider = provider_with_default_transport(adapter, root);
             let witness = Witness {
                 observation: Mutex::new(Observation::default()),
                 refuse: None,

@@ -9,18 +9,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION: u16 = 2;
-pub const RUNTIME_SERVICE_NODE_COUNT: usize = 66;
+pub const RUNTIME_SERVICE_NODE_COUNT: usize = 67;
 pub const MAX_RUNTIME_SERVICE_GRAPH_BYTES: usize = 256 * 1024;
 
 /// Production workspace crates covered by the platform-service layer. The test below compares this
 /// list with the root workspace manifest so a new runtime crate cannot silently escape the graph.
-pub const RUNTIME_CRATE_IDS: [&str; 22] = [
+pub const RUNTIME_CRATE_IDS: [&str; 23] = [
     "agents",
     "changeset",
     "cli",
     "ctx",
     "eval",
     "evolve",
+    "extension-sdk",
     "kernel",
     "lsp",
     "marketplace",
@@ -378,6 +379,20 @@ pub fn runtime_service_graph() -> RuntimeServiceGraph {
                 ModuleId::VerificationQuorum,
             ],
             vec![HostInvariant::EvidenceDurability],
+        ),
+        (
+            "extension.sdk",
+            "plugin-marketplace",
+            "extension-sdk",
+            RuntimeServiceImplementationStatus::HostFixed,
+            Some(
+                "Extension descriptors and read-only SDK contracts retain bounded identity and capability bindings; they grant no execution or lifecycle-writing authority.",
+            ),
+            vec![],
+            vec![
+                HostInvariant::CapabilityAndPermission,
+                HostInvariant::ReplayAndIdentity,
+            ],
         ),
         (
             "optimizer.runtime",
@@ -941,7 +956,22 @@ mod tests {
             .iter()
             .filter(|node| node.layer == RuntimeServiceLayer::PlatformService)
             .collect::<Vec<_>>();
-        assert_eq!(platform.len(), 22);
+        assert_eq!(platform.len(), 23);
+        let sdk = platform
+            .iter()
+            .find(|node| node.source_crate.as_deref() == Some("extension-sdk"))
+            .unwrap();
+        assert_eq!(sdk.id, "service/extension.sdk");
+        assert_eq!(sdk.owner, "plugin-marketplace");
+        assert_eq!(
+            sdk.disposition,
+            RuntimeServiceDisposition::HostFixedNonOptimization
+        );
+        assert_eq!(
+            sdk.implementation_status,
+            RuntimeServiceImplementationStatus::HostFixed
+        );
+        assert!(sdk.delegated_modules.is_empty());
         assert!(!platform.iter().any(|node| {
             node.disposition == RuntimeServiceDisposition::ReplaceableOnly
                 && node.implementation_status
