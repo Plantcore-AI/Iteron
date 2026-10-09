@@ -41,7 +41,10 @@ async fn start(registry: &Registry, command: &str) -> Value {
             .run_effect(tool_use("process_start", json!({"command":command})))
             .await,
     );
-    assert_eq!(started["backend"], "windows-job-conpty-unconfined");
+    assert_eq!(
+        started["backend"],
+        iteron_sandbox::PersistentBackend::WindowsJobConPty.as_str()
+    );
     started
 }
 async fn poll(registry: &Registry, job: &str, cursor: u64, wait: u64) -> Value {

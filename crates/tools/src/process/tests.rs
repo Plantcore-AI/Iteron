@@ -725,7 +725,7 @@ async fn detached_session_cannot_outlive_the_reported_job_terminal() {
     cleanup(&root);
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 #[tokio::test]
 async fn unsupported_platform_refuses_detached_session_oracle_before_spawn() {
     let root = temp_root("unsupported-detached-session");
