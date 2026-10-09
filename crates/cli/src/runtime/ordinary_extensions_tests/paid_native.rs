@@ -3,6 +3,7 @@ use super::{agent_with_budget, binding};
 use crate::config::{ProviderConfig, ProviderCredential};
 use crate::plugin_runtime::ordinary::OrdinaryDescriptor;
 use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::runtime::provider_charge_evidence::route_accounting_id;
 use crate::runtime::{Outcome, gate_integration_tests};
 use iteron_extension_sdk::NativeProviderRegistrationV1;
 use iteron_obs::{CostState, HmacPricingAuthority, HmacPricingKey};
@@ -298,10 +299,11 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
     else {
         unreachable!()
     };
+    let accounted_route = route_accounting_id("sdk-paid-native:gpt-5.6");
     assert!(events.iter().any(|event| matches!(&event.kind,
     EventKind::EffectDone { id, tool, provider_route_attempt: Some(attempt), .. }
         if id == physical_id && tool == "provider"
-            && attempt.route_id == "sdk-paid-native:gpt-5.6"
+            && attempt.route_id == accounted_route
             && matches!(&attempt.cost, iteron_protocol::ProviderRouteCostTruth::Known {
                 amount_microusd: 15, projection: Some(projection), ..
             } if projection.usage == Usage {
