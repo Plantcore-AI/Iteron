@@ -1,5 +1,8 @@
 use super::*;
 use iteron_protocol::Block;
+#[path = "resume/adoption_diagnostic.rs"]
+mod adoption_diagnostic;
+use adoption_diagnostic::{Stage as AdoptionStage, refused as adoption_refused};
 
 /// Approval sequence a replay starts from when the journal holds no `Approval` event, so the first
 /// approval of the resumed run still mints a strictly increasing id.
@@ -436,9 +439,9 @@ impl Agent {
             .environment
             .matches(recorded_environment.as_ref())
         {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted runtime environment differs from its immutable environment_snapshot identity"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::RecordedEnvironment,
+                KernelError::ExecutionPolicy("adopted runtime environment differs from its immutable environment_snapshot identity".into()),
             ));
         }
 
@@ -763,8 +766,12 @@ impl Agent {
                 || current.workflow_graph != effective.content.workflow_graph
                 || current.agent_catalog != effective.content.agent_catalog
         }) {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted resident content-owner identities differ from the running process".into(),
+            return Err(adoption_refused(
+                AdoptionStage::ResidentContent,
+                KernelError::ExecutionPolicy(
+                    "adopted resident content-owner identities differ from the running process"
+                        .into(),
+                ),
             ));
         }
         let effective_content = effective.content;
@@ -806,12 +813,13 @@ impl Agent {
                     "resource_prompt_plugin_capability_exposure",
                     "session_isolation_profile",
                 ],
-            )?;
+            )
+            .map_err(|error| adoption_refused(AdoptionStage::ProcessFamilies, error))?;
         }
         if effective_core.app_server_queue != self.app_server_queue_policy {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted app-server queue owner differs from the resident process; restart to resume that run"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::QueueOwner,
+                KernelError::ExecutionPolicy("adopted app-server queue owner differs from the resident process; restart to resume that run".into()),
             ));
         }
         let primary_route_id =
@@ -836,9 +844,9 @@ impl Agent {
             .map(GovernedProviderRoute::id)
             .collect::<Vec<_>>();
         if installed_fallback_ids != expected_fallback_ids {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted fallback-route topology differs from the resident process; restart to resume that run"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::FallbackTopology,
+                KernelError::ExecutionPolicy("adopted fallback-route topology differs from the resident process; restart to resume that run".into()),
             ));
         }
         let capabilities = self.provider.control_capabilities();
@@ -872,7 +880,12 @@ impl Agent {
                 self.model_context_window,
                 self.model_max_output_tokens,
             )
-            .map_err(|error| KernelError::ExecutionPolicy(error.to_string()))?;
+            .map_err(|error| {
+                adoption_refused(
+                    AdoptionStage::NativeCeilings,
+                    KernelError::ExecutionPolicy(error.to_string()),
+                )
+            })?;
         let adopted_governor = iteron_provider::ProviderGovernor::new(
             effective_core.provider_governor.policy.clone(),
             std::iter::once(primary_route_id).chain(expected_fallback_ids.iter().cloned()),
@@ -882,8 +895,12 @@ impl Agent {
             reason: "adopted governor policy or route set is invalid",
         })?;
         let adopted_spawn_ledger = std::sync::Arc::new(
-            SessionSpawnLedger::new(effective_core.session_spawn_cap)
-                .map_err(|reason| KernelError::ExecutionPolicy(reason.into()))?,
+            SessionSpawnLedger::new(effective_core.session_spawn_cap).map_err(|reason| {
+                adoption_refused(
+                    AdoptionStage::SpawnQuota,
+                    KernelError::ExecutionPolicy(reason.into()),
+                )
+            })?,
         );
         let adopted_authority_ceiling =
             effective_core.constrain_authority_ceiling(self.authority_ceiling);
@@ -1113,6 +1130,9 @@ impl Agent {
             config_digest,
             agent_definition_tag,
             fresh_usd_ceiling_microusd,
+            // A completed turn consumes the pending proposal. New uses the same retained,
+            // admitted environment bytes; it never rediscovers the host or widens its identity.
+            self.composition_environment_context.as_ref(),
         )?;
         let policy_tail = self.genesis_policy_tail_events_with_usd_ceiling(
             RuntimePolicySource::Startup,
@@ -1249,6 +1269,7 @@ impl Agent {
             self.usd_budget
                 .as_ref()
                 .map(|budget| budget.ceiling_microusd()),
+            self.environment_context.as_ref(),
         )
     }
 
@@ -1259,6 +1280,7 @@ impl Agent {
         config_digest: String,
         agent_definition_tag: Option<String>,
         usd_ceiling_microusd: Option<u64>,
+        environment: Option<&(String, Trust)>,
     ) -> Result<Event, KernelError> {
         if !self.model.is_empty() {
             validate_route_identifier("model_id", &self.model, 512, false)?;
@@ -1272,14 +1294,12 @@ impl Agent {
                 false,
             )?;
         }
-        let environment =
-            self.environment_context
-                .as_ref()
-                .map(|(text, trust)| DurableEnvironmentContext {
-                    text: text.clone(),
-                    trust: *trust,
-                });
-        self.validate_environment_identity(environment.as_ref())?;
+        let environment = environment.map(|(text, trust)| DurableEnvironmentContext {
+            text: text.clone(),
+            trust: *trust,
+        });
+        self.validate_environment_identity(environment.as_ref())
+            .map_err(|error| adoption_refused(AdoptionStage::GenesisEnvironment, error))?;
         Ok(Event {
             seq: Seq::ZERO,
             turn: TurnId(0),

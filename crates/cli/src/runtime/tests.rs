@@ -696,7 +696,15 @@ mod gate_integration_tests {
             entry_count: u64::try_from(graph.entry_count).unwrap(),
             canonical_bytes: u64::try_from(graph.canonical_bytes).unwrap(),
         };
-        let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(None);
+        let environment_context = agent.environment_context.as_ref().map(|(text, trust)| {
+            iteron_protocol::DurableEnvironmentContext {
+                text: text.clone(),
+                trust: *trust,
+            }
+        });
+        let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(
+            environment_context.as_ref(),
+        );
         let environment_value = iteron_tunables::ResolutionValue::Object {
             fields: [
                 (
@@ -720,7 +728,12 @@ mod gate_integration_tests {
                 (
                     "trust".into(),
                     iteron_tunables::ResolutionValue::Enum {
-                        value: "trusted".into(),
+                        value: match environment.trust {
+                            Trust::Trusted => "trusted",
+                            Trust::Workspace => "workspace",
+                            Trust::Untrusted => "untrusted",
+                        }
+                        .into(),
                     },
                 ),
             ]
@@ -7454,6 +7467,117 @@ mod gate_integration_tests {
         ));
 
         drop(child);
+        drop(live);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn fresh_adoption_after_a_real_turn_uses_the_retained_immutable_environment() {
+        let ws = temp_ws("fresh-after-real-environment-turn");
+        let runs = ws.join(".iteron/runs");
+        let mut live = agent_for_run(&ws, "completed-environment-source");
+        live.provider = std::sync::Arc::new(ScriptedDone);
+        live.set_environment_context("captured_at_unix_secs: 11".into(), Trust::Workspace)
+            .unwrap();
+        bind_unrecorded_test_route(&mut live);
+        pin_test_tunables(&mut live);
+        live.record_genesis_with_tunables(ws.display().to_string(), 11, String::new(), None)
+            .unwrap();
+        live.record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+        let expected_checkpoint = live.tunables_checkpoint().unwrap().clone();
+        let expected_environment = live.composition_environment_context.clone().unwrap();
+        assert_eq!(
+            live.run("completed before actual New").await.unwrap(),
+            Outcome::Done
+        );
+        assert!(
+            live.environment_context.is_none(),
+            "the real injection consumes its proposal"
+        );
+        assert_eq!(
+            live.composition_environment_context.as_ref(),
+            Some(&expected_environment)
+        );
+        let original = iteron_record::replay(live.rollout.path()).unwrap();
+        assert!(
+            original
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ContextInjection { .. }))
+        );
+        assert!(
+            original.iter().any(
+                |event| matches!(&event.kind, EventKind::Done { outcome } if outcome == "Done")
+            )
+        );
+        let previous_path = live.rollout.path().to_path_buf();
+        let previous_bytes = std::fs::read(&previous_path).unwrap();
+
+        let target = Rollout::open(
+            &runs,
+            &iteron_protocol::RunId("actual-new-903".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let adopted = live
+            .adopt_fresh_run(target, ws.display().to_string(), 12, None)
+            .unwrap();
+        assert_eq!(adopted.run_id, "actual-new-903");
+        assert_eq!(live.tunables_checkpoint().unwrap(), &expected_checkpoint);
+        let events = iteron_record::replay(live.rollout.path()).unwrap();
+        let EventKind::RunStart {
+            environment: Some(environment),
+            created_at,
+            ..
+        } = &events[0].kind
+        else {
+            panic!("fresh New must retain its admitted environment in physical genesis");
+        };
+        assert_eq!(
+            (environment.text.clone(), environment.trust),
+            expected_environment
+        );
+        assert_eq!(*created_at, 12);
+        assert_eq!(
+            iteron_record::tunables_checkpoint_from_events(&events)
+                .unwrap()
+                .unwrap(),
+            expected_checkpoint
+        );
+        assert_eq!(std::fs::read(&previous_path).unwrap(), previous_bytes);
+
+        for (id, replacement) in [
+            ("missing-frozen-environment", None),
+            (
+                "mismatched-frozen-environment",
+                Some(("another host snapshot".into(), Trust::Workspace)),
+            ),
+        ] {
+            live.composition_environment_context = replacement;
+            let current = live.rollout.run_id().clone();
+            let source_bytes = std::fs::read(live.rollout.path()).unwrap();
+            let target = Rollout::open(
+                &runs,
+                &iteron_protocol::RunId(id.into()),
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let target_path = target.path().to_path_buf();
+            assert!(
+                matches!(live.adopt_fresh_run(target, ws.display().to_string(), 13, None), Err(KernelError::ExecutionPolicy(reason)) if reason == "runtime environment differs from the immutable environment_snapshot identity")
+            );
+            assert_eq!(live.rollout.run_id(), &current);
+            assert_eq!(std::fs::read(live.rollout.path()).unwrap(), source_bytes);
+            assert!(
+                std::fs::read(target_path).unwrap().is_empty(),
+                "identity refuses before target genesis"
+            );
+        }
         drop(live);
         let _ = std::fs::remove_dir_all(ws);
     }

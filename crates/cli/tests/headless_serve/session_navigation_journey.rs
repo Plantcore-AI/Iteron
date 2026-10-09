@@ -19,8 +19,40 @@ fn navigate(
     );
     matching_control(reader, id)
 }
-fn confirmed(value: &Value) -> SessionNavigationReplyV1 {
-    assert_eq!(value["type"], "session_navigated_v1", "{value}");
+fn confirmed(value: &Value, action: &str, process: &mut OwnedCore) -> SessionNavigationReplyV1 {
+    let stage = if value["type"] != "session_navigated_v1" {
+        let stderr = stop(
+            process
+                .0
+                .take()
+                .expect("the refused navigation still owns its process"),
+        );
+        // Only closed static diagnostics leave retained stderr; never foreign error content.
+        String::from_utf8_lossy(&stderr)
+            .lines()
+            .filter_map(|line| line.strip_prefix("session adoption refused: stage="))
+            .find(|stage| {
+                matches!(
+                    *stage,
+                    "genesis_environment"
+                        | "recorded_environment"
+                        | "resident_content"
+                        | "process_families"
+                        | "queue_owner"
+                        | "fallback_topology"
+                        | "native_ceilings"
+                        | "spawn_quota"
+                )
+            })
+            .unwrap_or("unobserved")
+            .to_owned()
+    } else {
+        "none".to_owned()
+    };
+    assert_eq!(
+        value["type"], "session_navigated_v1",
+        "action={action} stage={stage}: {value}"
+    );
     serde_json::from_value(value["navigation"].clone()).unwrap()
 }
 fn run_count(runs: &Path) -> usize {
@@ -39,7 +71,7 @@ fn run_count(runs: &Path) -> usize {
 fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     let provider = PausedProvider::spawn();
     let scratch = Scratch::new(&provider.api_root);
-    let (process, token, address) = launch(&scratch, &scratch.repo(), 4, &[]);
+    let (mut process, token, address) = launch(&scratch, &scratch.repo(), 4, &[]);
     let mut connection = connect(address);
     send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
     let mut reader = BufReader::new(connection.try_clone().unwrap());
@@ -151,12 +183,16 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     assert_eq!(denied["code"], "observer_authority");
     assert_eq!(run_count(&scratch.runs()), before);
 
-    let created = confirmed(&navigate(
-        &mut connection,
-        &mut reader,
-        903,
-        json!({"action":"new","thread_id":thread,"run_id":origin}),
-    ));
+    let created = confirmed(
+        &navigate(
+            &mut connection,
+            &mut reader,
+            903,
+            json!({"action":"new","thread_id":thread,"run_id":origin}),
+        ),
+        "new_903",
+        &mut process,
+    );
     assert!(created.fresh);
     assert_eq!(created.origin_run_id.0, origin);
     assert_ne!(created.run_id.0, origin);
@@ -182,12 +218,16 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     assert_eq!(stale["type"], "refused");
     assert_eq!(run_count(&scratch.runs()), after_create);
 
-    let resumed = confirmed(&navigate(
-        &mut connection,
-        &mut reader,
-        905,
-        json!({"action":"resume","thread_id":thread,"run_id":created.run_id,"target_run_id":origin}),
-    ));
+    let resumed = confirmed(
+        &navigate(
+            &mut connection,
+            &mut reader,
+            905,
+            json!({"action":"resume","thread_id":thread,"run_id":created.run_id,"target_run_id":origin}),
+        ),
+        "resume_905",
+        &mut process,
+    );
     assert!(!resumed.fresh);
     assert_eq!(resumed.run_id.0, origin);
     assert!(resumed.transcript.blocks.iter().any(|row| matches!(&row.content, iteron_protocol::session_navigation::SessionTranscriptContentV1::User {text} if text == "retained navigation origin")));
@@ -199,12 +239,16 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
             .all(|row| row.source_run_id.0 == origin)
     );
 
-    let forked = confirmed(&navigate(
-        &mut connection,
-        &mut reader,
-        906,
-        json!({"action":"fork","thread_id":thread,"run_id":origin}),
-    ));
+    let forked = confirmed(
+        &navigate(
+            &mut connection,
+            &mut reader,
+            906,
+            json!({"action":"fork","thread_id":thread,"run_id":origin}),
+        ),
+        "fork_906",
+        &mut process,
+    );
     assert_ne!(forked.run_id.0, origin);
     assert!(
         forked
@@ -312,7 +356,7 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
         iteron_record::Rollout::open_existing(&scratch.runs(), &forked.run_id, TenantId::default())
             .unwrap();
     drop(reopened);
-    let (restarted, token, address) = launch(
+    let (mut restarted, token, address) = launch(
         &scratch,
         &scratch.repo(),
         4,
@@ -323,12 +367,16 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     let mut reader = BufReader::new(connection.try_clone().unwrap());
     let greeting = receive(&mut reader);
     let new_thread = greeting["session_id"].as_str().unwrap().to_owned();
-    let resumed_again = confirmed(&navigate(
-        &mut connection,
-        &mut reader,
-        907,
-        json!({"action":"resume","thread_id":new_thread,"run_id":forked.run_id,"target_run_id":origin}),
-    ));
+    let resumed_again = confirmed(
+        &navigate(
+            &mut connection,
+            &mut reader,
+            907,
+            json!({"action":"resume","thread_id":new_thread,"run_id":forked.run_id,"target_run_id":origin}),
+        ),
+        "resume_after_restart_907",
+        &mut restarted,
+    );
     assert_eq!(resumed_again.run_id, RunId(origin));
     assert_eq!(
         resumed_again.transcript.blocks.len(),
