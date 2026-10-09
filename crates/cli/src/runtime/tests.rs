@@ -2857,6 +2857,119 @@ mod gate_integration_tests {
         install_test_provider_governor_from_tunables(agent);
     }
 
+    #[test]
+    fn native_child_context_retains_the_actual_frozen_effort_map_and_its_ceiling() {
+        let workspace = temp_ws("native-child-frozen-effort-map");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("native-child-frozen-effort-map".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&workspace).unwrap(),
+            rollout,
+            "model-a".into(),
+            "actual pinned map fixture".into(),
+            Budget::default(),
+        );
+        agent.workspace = workspace.clone();
+        stage_direct_fixture_route(&mut agent);
+        // The labels alone do not prove narrowing: this admitted map gives Low more thinking
+        // than Medium. The existing owner must compare actual mapped tokens, not compiled ones.
+        let thinking_map = iteron_tunables::ResolutionValue::Map {
+            entries: Effort::ALL
+                .into_iter()
+                .map(|effort| {
+                    let value = match effort {
+                        Effort::Low => 256,
+                        Effort::Medium => 137,
+                        other => i64::from(other.thinking_budget()),
+                    };
+                    (
+                        effort.label().to_owned(),
+                        iteron_tunables::ResolutionValue::Integer { value },
+                    )
+                })
+                .collect(),
+        };
+        record_test_genesis_with_tunable_edits(
+            &mut agent,
+            &workspace,
+            [("thinking_map", thinking_map)],
+        );
+        record_direct_fixture_selection(&mut agent);
+        let route = agent.provider_selection.selected().unwrap().route.clone();
+        let context = agent.kernel_spawner_context(&route, "held-effort-policy");
+        assert_eq!(
+            context
+                .tunables_pin
+                .as_ref()
+                .unwrap()
+                .resolution_digest_sha256(),
+            agent
+                .tunables_pin
+                .as_ref()
+                .unwrap()
+                .resolution_digest_sha256()
+        );
+        for effort in Effort::ALL {
+            assert_eq!(
+                context.effort_policy.thinking_budget(effort),
+                agent.effort_policy.thinking_budget(effort)
+            );
+            assert_eq!(
+                context.effort_policy.reasoning(effort),
+                agent.effort_policy.reasoning(effort)
+            );
+            assert_eq!(
+                context.effort_policy.orchestration(effort),
+                agent.effort_policy.orchestration(effort)
+            );
+        }
+        assert_eq!(context.effort_policy.thinking_budget(Effort::Medium), 137);
+        let origin = iteron_agents::AgentEngineOrigin::DirectSubagent {
+            parent: iteron_agents::AgentEngineParentSource {
+                tenant: agent.rollout.tenant().0.clone(),
+                run: agent.rollout.run_id().0.clone(),
+                provider_scope_sha256: agent.provider_scope(),
+            },
+        };
+        let spawner = KernelSpawner::new(context);
+        let allowed = spawner
+            .prepare_engine_execution(
+                &super::persistent_agents::AgentEngineRequest {
+                    profile: Some("generic".into()),
+                    model: None,
+                    effort: Some(Effort::Medium),
+                },
+                origin.clone(),
+            )
+            .unwrap();
+        assert_eq!(allowed.effort, Effort::Medium);
+        let before = std::fs::read(agent.rollout.path()).unwrap();
+        let error = spawner
+            .prepare_engine_execution(
+                &super::persistent_agents::AgentEngineRequest {
+                    profile: Some("generic".into()),
+                    model: None,
+                    effort: Some(Effort::Low),
+                },
+                origin,
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("requested child effort exceeds the pinned per-agent ceiling"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(agent.rollout.path()).unwrap(), before);
+        assert!(provider.requests.lock().unwrap().is_empty());
+        drop(agent);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
     pub(super) fn record_test_genesis_with_tunable_edits(
         agent: &mut Agent,
         workspace: &std::path::Path,

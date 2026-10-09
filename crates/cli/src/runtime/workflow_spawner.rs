@@ -1987,6 +1987,7 @@ pub(super) mod tests {
         .unwrap()
         .core;
         context.default_effort = effective.effort;
+        context.effort_policy = effective.effort_policy;
         context.execution_policy = effective.execution;
         context.retry_policy = effective.retry;
         context.provider_controls = effective.provider_governor.controls;

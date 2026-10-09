@@ -186,14 +186,30 @@ impl NativeGenerations {
                     return self
                         .bootstrap
                         .prepare_engine_execution(request, origin)
-                        .map_err(|_| ControllerError::Permission);
+                        .map_err(|error| {
+                            #[cfg(test)]
+                            eprintln!(
+                                "persistent child profile refused: {}",
+                                super::workflow_spawner::safe_agent_refusal(&error)
+                            );
+                            #[cfg(not(test))]
+                            let _ = error;
+                            ControllerError::Permission
+                        });
                 }
                 return Err(ControllerError::RecoveryRequired);
             }
         };
         spawner
             .prepare_engine_execution(request, origin)
-            .map_err(|_| {
+            .map_err(|error| {
+                #[cfg(test)]
+                eprintln!(
+                    "persistent child profile refused: {}",
+                    super::workflow_spawner::safe_agent_refusal(&error)
+                );
+                #[cfg(not(test))]
+                let _ = error;
                 ControllerError::Invalid("child profile has no admitted native execution binding")
             })
     }

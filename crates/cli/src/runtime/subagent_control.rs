@@ -70,6 +70,7 @@ impl Agent {
         cx.budget.max_usd = self.effective_max_usd();
         cx.execution_deadline = self.run_deadline.current();
         cx.default_effort = self.execution_policy.per_agent_effort;
+        cx.effort_policy = self.effort_policy.clone();
         cx.execution_policy = self.execution_policy;
         cx.permission_mode = self.permission_mode;
         cx.permission_rules = self.permission_rules.clone();
