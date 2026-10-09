@@ -1230,6 +1230,59 @@ fn wait_for_ready(pty: &mut PtyHarness) {
     wait_for_ready_with_composer(pty, "ask about this codebase");
 }
 
+fn assert_recorded_assistant_terminal(scratch: &Scratch, expected_text: &str) {
+    let mut confirmed = 0;
+    for entry in
+        std::fs::read_dir(scratch.runs()).expect("read the fixture's physical run directory")
+    {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            continue;
+        }
+        let events = iteron_record::replay(&path).expect("verify the actual completed run");
+        for answer in &events {
+            let message = match &answer.kind {
+                iteron_protocol::EventKind::Message { message }
+                | iteron_protocol::EventKind::MessageV2 { message, .. }
+                    if message.role == iteron_protocol::Role::Assistant =>
+                {
+                    message
+                }
+                _ => continue,
+            };
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    iteron_protocol::Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if text != expected_text {
+                continue;
+            }
+            assert!(
+                events.iter().any(|terminal| {
+                    terminal.seq > answer.seq
+                        && terminal.turn == answer.turn
+                        && matches!(&terminal.kind,
+                        iteron_protocol::EventKind::Done { outcome } if outcome == "Done")
+                }),
+                "the exact answer needs its own later physical Done terminal: {}",
+                path.display()
+            );
+            confirmed += 1;
+        }
+    }
+    assert_eq!(
+        confirmed, 1,
+        "exactly one physical answer/terminal pair must be recorded"
+    );
+}
+
 fn wait_for_ready_with_composer(pty: &mut PtyHarness, composer_text: &str) {
     pty.wait_until("the initial Core full-screen surface", |pty| {
         let screen = pty.parser.screen();
@@ -1364,7 +1417,7 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
     pty.send(b"/tunables registry\r");
     pty.wait_until("searchable 160-family tunables registry", |pty| {
         let screen = pty.screen_text();
-        screen.contains("tunables · catalog")
+        screen.contains("tunables · simulation only · catalog")
             && screen.contains("provider")
             && screen.contains("simulation only")
     });
@@ -1375,7 +1428,7 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
     pty.send(b"\x1b"); // clear the pasted picker query without closing the picker.
     pty.wait_until("first picker escape clears the pasted query", |pty| {
         let screen = pty.screen_text();
-        screen.contains("tunables · catalog")
+        screen.contains("tunables · simulation only · catalog")
             && screen.contains("type to filter")
             && screen.contains("1/160")
             && !screen.contains("No matches")
@@ -1918,9 +1971,10 @@ fn missing_usage_completion_uses_the_server_run_boundary_without_double_notifica
     let mut pty = PtyHarness::spawn_link_fixture(&scratch, 80, 24);
 
     pty.wait_until("missing-usage run completion and OSC 9 frame", |pty| {
-        pty.screen_text()
-            .contains("Missing-usage completion still notifies.")
-            && pty.screen_text().contains("idle · input ready")
+        let screen = pty.screen_text();
+        screen.contains("Missing-usage completion still")
+            && screen.contains("notifies.")
+            && screen.contains("idle · input ready")
             && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
@@ -1929,9 +1983,9 @@ fn missing_usage_completion_uses_the_server_run_boundary_without_double_notifica
         1,
         "the App Server RunEnded boundary must notify exactly once even without provider usage"
     );
+    let screen = pty.screen_text();
     assert!(
-        pty.screen_text()
-            .contains("Missing-usage completion still notifies."),
+        screen.contains("Missing-usage completion still") && screen.contains("notifies."),
         "run-complete notification corrupted the completed response row"
     );
 
@@ -1942,6 +1996,8 @@ fn missing_usage_completion_uses_the_server_run_boundary_without_double_notifica
     pty.close_and_drain();
     pty.assert_terminal_restored();
     provider.finish();
+    assert_recorded_assistant_terminal(&scratch, "Missing-usage completion still notifies.");
+    assert_eq!(sequence_count(&pty.capture, OSC9_RUN_COMPLETE), 1);
 }
 
 #[test]
@@ -2101,7 +2157,10 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     );
     pty.wait_until("the queued next turn reaches its terminal event", |pty| {
         let screen = pty.screen_text();
-        screen.contains("Next prompt completed.")
+        // Actual incremental assistant blocks can wrap into distinct visible rows. The
+        // physical transcript check below still requires the whole exact returned answer.
+        screen.contains("Next prompt")
+            && screen.contains("completed.")
             && screen.contains("idle")
             && !screen.contains(" pending")
     });
@@ -2117,6 +2176,7 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     pty.close_and_drain();
     pty.assert_terminal_restored();
     provider.finish();
+    assert_recorded_assistant_terminal(&scratch, "Next prompt completed.");
 }
 
 #[test]

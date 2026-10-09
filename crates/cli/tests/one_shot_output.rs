@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 #[cfg(unix)]
+use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -2160,17 +2162,37 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
             "the failed physical provider attempt has one durable TurnStart"
         );
         let (notice_index, notice) = notices[0];
+        // ProviderAttemptJournal durably exposes the domain-separated route commitment, not
+        // the raw selected label. Reproduce that exact known fixture route's wire identity.
+        let mut route_hash = Sha256::new();
+        route_hash.update(b"iteron-provider-route-attempt-v1\0");
+        route_hash.update(b"glm:glm-5.2");
+        let accounted_route = format!("sha256:{:x}", route_hash.finalize());
+        let provider_intents = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match &event.kind {
+                iteron_protocol::EventKind::EffectIntent {
+                    tool,
+                    provider_route_attempt: Some(attempt),
+                    ..
+                } if tool == "provider" && attempt.route_id == accounted_route => {
+                    assert_eq!(event.turn, events[turn_starts[0]].turn);
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            notice_index + 2,
-            turn_starts[0],
-            "the metadata Notice precedes the provider EffectIntent and TurnStart"
+            provider_intents.len(),
+            2,
+            "each real CONNECT has its own intent"
         );
         assert!(
-            matches!(
-                events[notice_index + 1].kind,
-                iteron_protocol::EventKind::EffectIntent { .. }
-            ),
-            "the paid provider intent is durable between its run notice and TurnStart"
+            notice_index < provider_intents[0]
+                && provider_intents[0] < turn_starts[0]
+                && turn_starts[0] < provider_intents[1],
+            "the metadata Notice precedes both actual route intents; only the first opens the logical TurnStart"
         );
         assert!(notice.starts_with("provider run notice [key=sha256:"));
         assert!(notice.contains(
@@ -2272,6 +2294,21 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
         .and_then(|stem| stem.to_str())
         .expect("rollout has a UTF-8 run id")
         .to_string();
+    let first_injections = iteron_record::replay(&rollout_path)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                iteron_protocol::EventKind::ContextInjection { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        first_injections.len(),
+        1,
+        "fresh submission freezes one prefix"
+    );
 
     fs::write(scratch.repo().join("AGENTS.md"), changed).expect("change live instructions");
     let resumed = collect_core(spawn_core(&scratch, "json", 2, &["--resume", &run_id]));
@@ -2296,12 +2333,19 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
                 text,
                 trust,
                 instructions,
-            } => Some((text, trust, instructions)),
+            } => Some((event.turn, text, trust, instructions)),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(injections.len(), 1);
-    let (legacy_text, legacy_trust, instructions) = &injections[0];
+    // The new operator task admits a second memory decision, while its frontend prefix must
+    // remain the first task's captured bytes. A second ContextInjection is not a second world read.
+    assert_eq!(injections.len(), 2);
+    assert_eq!(injections[0].0, first_injections[0].turn);
+    assert!(injections[1].0 > injections[0].0);
+    assert_eq!(injections[1].1, injections[0].1);
+    assert_eq!(injections[1].2, injections[0].2);
+    assert_eq!(injections[1].3, injections[0].3);
+    let (_, legacy_text, legacy_trust, instructions) = &injections[0];
     assert!(legacy_text.is_empty());
     assert_eq!(*legacy_trust, iteron_protocol::Trust::Trusted);
     let instructions = instructions.as_ref().expect("durable frontend context");
@@ -2389,6 +2433,20 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
             _ => None,
         })
         .expect("durable environment snapshot");
+    let first_injections = first_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                iteron_protocol::EventKind::ContextInjection { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        first_injections.len(),
+        1,
+        "fresh submission freezes one environment"
+    );
     let genesis_environment = first_events
         .iter()
         .find_map(|event| match &event.kind {
@@ -2438,14 +2496,36 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     let injections = iteron_record::replay(&rollout_path)
         .unwrap()
         .into_iter()
-        .filter(|event| {
-            matches!(
-                event.kind,
-                iteron_protocol::EventKind::ContextInjection { .. }
-            )
+        .filter_map(|event| match event.kind {
+            iteron_protocol::EventKind::ContextInjection { instructions, .. } => Some((
+                event.turn,
+                instructions.expect("recorded frozen frontend context"),
+            )),
+            _ => None,
         })
-        .count();
-    assert_eq!(injections, 1, "resume reuses one recorded snapshot");
+        .collect::<Vec<_>>();
+    assert_eq!(
+        injections.len(),
+        2,
+        "each new operator task records its memory decision"
+    );
+    assert_eq!(injections[0].0, first_injections[0].turn);
+    assert!(injections[1].0 > injections[0].0);
+    assert_eq!(
+        injections[0].1, injections[1].1,
+        "the exact frontend source stays frozen"
+    );
+    for (_, instructions) in &injections {
+        assert_eq!(instructions.environment.as_ref(), Some(environment));
+        assert!(
+            instructions
+                .environment
+                .as_ref()
+                .unwrap()
+                .text
+                .contains(&format!("captured_at_unix_secs: {created_at}"))
+        );
+    }
 }
 
 // Uses only_rollout_path, which is #[cfg(unix)], as do the two other tests that call it. Without
