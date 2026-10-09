@@ -323,6 +323,14 @@ impl View {
         id: SubmissionId,
         state: SubmissionLifecycleState,
     ) {
+        let observation = app.run.observe_receipt(id, state);
+        if matches!(
+            observation,
+            super::run_presentation::ReceiptObservation::Refused
+        ) && self.expected_submission == Some(id)
+        {
+            self.expected_submission = None;
+        }
         if self.accepted.as_ref().is_none_or(|draft| draft.id != id) {
             return;
         }
@@ -827,6 +835,73 @@ mod tests {
         assert!(view.submit(&mut app).unwrap());
         assert!(view.queued.is_empty());
     }
+    #[test]
+    fn actual_rejection_releases_only_unadmitted_submission_and_accepts_the_next_identity() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("first");
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Submit {
+                draft: "first".into(),
+                revision: app.editor.persistence_revision(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"control_queued_v1","submission_id":4}),
+        )
+        .unwrap();
+        assert!(app.run.running());
+        view.observe_submission(
+            &mut app,
+            SubmissionId(99),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(app.run.running());
+        view.observe_submission(
+            &mut app,
+            SubmissionId(4),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(!app.run.running());
+        assert!(view.expected_submission.is_none());
+        assert_eq!(app.editor.text(), "first");
+        app.editor.clear();
+        app.editor.insert_str("second");
+        view.pending = Some(Request {
+            id: 2,
+            kind: Kind::Submit {
+                draft: "second".into(),
+                revision: app.editor.persistence_revision(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            2,
+            json!({"type":"control_queued_v1","submission_id":5}),
+        )
+        .unwrap();
+        view.observe_submission(
+            &mut app,
+            SubmissionId(5),
+            SubmissionLifecycleState::Admitted,
+        );
+        view.observe_submission(
+            &mut app,
+            SubmissionId(5),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(
+            app.run.running(),
+            "a rejected receipt cannot undo actual prior admission"
+        );
+        assert_eq!(view.expected_submission, Some(SubmissionId(5)));
+    }
+
     #[test]
     fn delayed_old_machine_event_after_navigation_cannot_contaminate_selected_run() {
         let mut app = App::new();

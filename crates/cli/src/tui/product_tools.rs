@@ -12,7 +12,7 @@ const MAX_TOOL_BYTES: usize = 256 * 1024;
 const MAX_PENDING_BYTES: usize = 1024 * 1024;
 #[derive(Default)]
 pub(super) struct ProductTools {
-    rows: HashMap<String, Row>,
+    rows: HashMap<(u64, String), Row>,
     bytes: usize,
 }
 struct Row {
@@ -29,6 +29,21 @@ impl ProductTools {
         app.tools.clear();
     }
     pub(super) fn observe(&mut self, app: &mut App, event: &ProductEventV1) {
+        let Some(turn) = event.turn_id.filter(|turn| turn.0 > 0) else {
+            return;
+        };
+        if matches!(&event.event, ProductEventKindV1::TurnStarted { .. }) {
+            if !self.rows.is_empty() {
+                app.note(
+                    super::block::NoticeLevel::Warn,
+                    "prior-turn tool output is incomplete; no missing terminal was inferred",
+                );
+            }
+            self.rows.clear();
+            self.bytes = 0;
+            app.tools.clear();
+            return;
+        }
         let Some(item) = event
             .item_id
             .as_deref()
@@ -36,12 +51,13 @@ impl ProductTools {
         else {
             return;
         };
+        let row_key = (turn.0, item.to_owned());
         match &event.event {
             ProductEventKindV1::ItemStarted {
                 kind: ItemKindV1::ToolCall,
                 title,
             } => {
-                if self.rows.len() >= MAX_TOOLS || self.rows.contains_key(item) {
+                if self.rows.len() >= MAX_TOOLS || self.rows.contains_key(&row_key) {
                     return;
                 }
                 let name = title
@@ -55,7 +71,7 @@ impl ProductTools {
                 );
                 app.tool_start(key.clone(), name.to_owned(), serde_json::Value::Null);
                 self.rows.insert(
-                    item.to_owned(),
+                    row_key,
                     Row {
                         key,
                         input: String::new(),
@@ -66,7 +82,7 @@ impl ProductTools {
                 );
             }
             ProductEventKindV1::ItemContent { channel, content } => {
-                let Some(row) = self.rows.get_mut(item) else {
+                let Some(row) = self.rows.get_mut(&row_key) else {
                     return;
                 };
                 let (target, omitted) = match channel {
@@ -90,7 +106,7 @@ impl ProductTools {
                 }
             }
             ProductEventKindV1::ContentOmitted { channel, .. } => {
-                if let Some(row) = self.rows.get_mut(item) {
+                if let Some(row) = self.rows.get_mut(&row_key) {
                     match channel {
                         ItemContentChannelV1::ToolInputJson => row.input_omitted = true,
                         ItemContentChannelV1::ToolOutput => row.output_omitted = true,
@@ -99,7 +115,7 @@ impl ProductTools {
                 }
             }
             ProductEventKindV1::ItemEnded { state } => {
-                let Some(mut row) = self.rows.remove(item) else {
+                let Some(mut row) = self.rows.remove(&row_key) else {
                     return;
                 };
                 self.bytes = self
@@ -120,3 +136,6 @@ impl ProductTools {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
