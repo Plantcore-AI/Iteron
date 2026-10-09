@@ -124,7 +124,8 @@ impl Supervisor {
 }
 
 fn unsupported() -> ActionError {
-    ActionError::Definite(
+    ActionError::Refused(
+        iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
         "process execution is unavailable: this platform has no Iteron code-execution sandbox"
             .into(),
     )

@@ -636,7 +636,13 @@ async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
         .await
     {
         Ok(started) => started,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
@@ -784,7 +790,13 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
         .await
     {
         Ok(started) => started,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
@@ -846,7 +858,7 @@ async fn dropping_exec_yield_kills_and_reaps_the_process_group() {
     tokio::select! {
         () = armed.notified() => {}
         result = &mut running => match result.unwrap() {
-            Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+            Err(ActionError::Definite(error) | ActionError::Refused(iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable, error)) if error.contains("unsupported") => {
                 cleanup(&root);
                 return;
             }
@@ -910,7 +922,13 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
         .await
     {
         Ok(value) => value,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
