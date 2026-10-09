@@ -309,7 +309,7 @@ impl LiveAgentActivity {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "script-workflows"))]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;

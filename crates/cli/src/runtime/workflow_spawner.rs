@@ -1134,9 +1134,11 @@ pub(super) mod tests {
     use super::*;
     use iteron_protocol::{Capability, EventKind};
     use iteron_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
+    #[cfg(feature = "script-workflows")]
     use iteron_workflow::{
         ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine, WorkflowState,
     };
+    #[cfg(feature = "script-workflows")]
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1157,11 +1159,13 @@ pub(super) mod tests {
         }
     }
 
+    #[cfg(feature = "script-workflows")]
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<ProgressEvent>>,
     }
 
+    #[cfg(feature = "script-workflows")]
     impl ProgressSink for RecordingSink {
         fn emit(&self, event: ProgressEvent) {
             self.events.lock().unwrap().push(event);
@@ -2324,6 +2328,7 @@ pub(super) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn request_refusals_are_safe_across_null_journal_and_progress_surfaces() {
         let root = scratch("refusal-surfaces");
