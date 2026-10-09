@@ -10,6 +10,7 @@ use super::hooks::{HookDecision, HookEvent, Hooks, journal::HookEffectJournal};
 use super::inbound_control::inbound_poll_limit;
 use super::permission_policy::{OperationAdmission, OperationPolicy, evaluate_operation};
 use super::permission_transaction::PermissionTransaction;
+use super::refusal_provenance::publish_tool_refusal;
 use super::session_control::{InboundControl, SessionControlState};
 use super::session_inbox::SessionSubmissionInbox;
 use super::stream_tool_events::StreamToolEvents;
@@ -19,6 +20,7 @@ use super::turn_activity::{ActivitySink, ActivityStage};
 use super::{INBOUND_DRAIN_POLL_INTERVAL, UI_PROJECTION_TRUNCATED_WHEN_UNMARKED};
 use iteron_kernel::admission::OperatorAuthority;
 use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::refusal::{RefusalEffectStateV1, RefusalReasonV1};
 use iteron_protocol::{
     Capability, LifecyclePayload, PermissionMode, SubmissionId, ToolResult, ToolUse, Trust, TurnId,
     Verdict,
@@ -73,7 +75,12 @@ impl ToolDeclarationAdmission<'_> {
         self.poll();
         let control = self.control.requested();
         if control != InboundControl::None {
-            return self.refused(call, control_refusal(call, control), true);
+            return self.refused(
+                call,
+                control_refusal(call, control),
+                true,
+                RefusalReasonV1::OperatorInterrupted,
+            );
         }
         if self
             .scope
@@ -85,10 +92,11 @@ impl ToolDeclarationAdmission<'_> {
                 "refused: run wall deadline exhausted before this effecting tool".into(),
                 Trust::Workspace,
                 true,
+                RefusalReasonV1::DeadlineLimit,
             );
         }
         if *self.journal.record_failed {
-            return self.refuse(call, "refused: the durable record failed mid-turn; halting before side effects (audit integrity, ADR-008).".into(), Trust::Workspace, false);
+            return self.refuse(call, "refused: the durable record failed mid-turn; halting before side effects (audit integrity, ADR-008).".into(), Trust::Workspace, false, RefusalReasonV1::DurableRecordUnavailable);
         }
         let proposal = match proposal {
             Ok(proposal) => proposal,
@@ -98,6 +106,23 @@ impl ToolDeclarationAdmission<'_> {
                     format!("tool policy refused `{}`: {error}", call.name),
                     Trust::Trusted,
                     true,
+                    match error {
+                        ToolPolicyError::NotEligible => self
+                            .scope
+                            .registry
+                            .operation_effects(call)
+                            .and_then(|effects| {
+                                effects
+                                    .extension_ceiling
+                                    .map(|ceiling| !effects.required.is_subset_of(ceiling))
+                            })
+                            .filter(|blocked| *blocked)
+                            .map_or(RefusalReasonV1::CapabilityCeiling, |_| {
+                                RefusalReasonV1::ExtensionDenied
+                            }),
+                        ToolPolicyError::UnknownTool(_) => RefusalReasonV1::ExtensionUnavailable,
+                        _ => RefusalReasonV1::Unknown,
+                    },
                 );
             }
         };
@@ -115,7 +140,13 @@ impl ToolDeclarationAdmission<'_> {
                 call.name,
                 iteron_protocol::text::tail(prior, 800)
             );
-            return self.refuse(call, reason, Trust::Workspace, true);
+            return self.refuse(
+                call,
+                reason,
+                Trust::Workspace,
+                true,
+                RefusalReasonV1::DuplicateFailedAction,
+            );
         }
         if proposal.eligible.iter().next().is_none() {
             return self.refuse(
@@ -126,6 +157,7 @@ impl ToolDeclarationAdmission<'_> {
                 ),
                 Trust::Trusted,
                 true,
+                RefusalReasonV1::CapabilityCeiling,
             );
         }
         let effects = self.scope.registry.operation_effects(call).ok_or_else(|| {
@@ -177,6 +209,7 @@ impl ToolDeclarationAdmission<'_> {
                     ),
                     Trust::Workspace,
                     true,
+                    RefusalReasonV1::ExtensionDenied,
                 );
             }
         }
@@ -196,6 +229,7 @@ impl ToolDeclarationAdmission<'_> {
                 format!("tool `{}` blocked by lifecycle hook: {reason}", call.name),
                 Trust::Workspace,
                 true,
+                RefusalReasonV1::ExtensionDenied,
             );
         }
         hook_activity.complete();
@@ -213,10 +247,12 @@ impl ToolDeclarationAdmission<'_> {
                     UI_PROJECTION_TRUNCATED_WHEN_UNMARKED,
                 ))
         });
-        let approved = match admission.verdict {
-            Verdict::Auto => true,
-            Verdict::Deny => false,
-            Verdict::Ask if incomplete => false,
+        let (approved, approval_refusal) = match admission.verdict {
+            Verdict::Auto => (true, None),
+            Verdict::Deny => (false, None),
+            Verdict::Ask if incomplete => {
+                (false, Some(RefusalReasonV1::ApprovalProjectionIncomplete))
+            }
             Verdict::Ask => {
                 self.approve(
                     call,
@@ -227,18 +263,32 @@ impl ToolDeclarationAdmission<'_> {
             }
         };
         if approved && *self.journal.record_failed {
-            return self.refuse(call, "refused: the durable record failed; halting before this side effect (audit integrity, ADR-008).".into(), Trust::Workspace, false);
+            return self.refuse(call, "refused: the durable record failed; halting before this side effect (audit integrity, ADR-008).".into(), Trust::Workspace, false, RefusalReasonV1::DurableRecordUnavailable);
         }
         if !approved {
             let reason = self.permission_refusal(call, &admission, incomplete);
-            return self.refuse(call, reason, Trust::Workspace, true);
+            let refusal = approval_refusal.unwrap_or_else(|| {
+                if admission.ceiling_blocks {
+                    RefusalReasonV1::CapabilityCeiling
+                } else if admission.taint_blocks {
+                    RefusalReasonV1::UntrustedExternalEffect
+                } else {
+                    RefusalReasonV1::PermissionDenied
+                }
+            });
+            return self.refuse(call, reason, Trust::Workspace, true, refusal);
         }
         // A configured hook and a waited approval are physical external activity. Consume only
         // the actual ingress now visible before returning the permit to the separate executor.
         self.poll();
         let control = self.control.requested();
         if control != InboundControl::None {
-            return self.refused(call, control_refusal(call, control), true);
+            return self.refused(
+                call,
+                control_refusal(call, control),
+                true,
+                RefusalReasonV1::OperatorInterrupted,
+            );
         }
         Ok(ToolAdmissionDecision::Permitted {
             proposal,
@@ -262,7 +312,7 @@ impl ToolDeclarationAdmission<'_> {
         call: &ToolUse,
         capability: Capability,
         arguments: serde_json::Value,
-    ) -> Result<bool, KernelError> {
+    ) -> Result<(bool, Option<RefusalReasonV1>), KernelError> {
         *self.approval_sequence = self
             .approval_sequence
             .checked_add(1)
@@ -333,7 +383,10 @@ impl ToolDeclarationAdmission<'_> {
                 return Err(error);
             }
         }
-        decision.publish(&self.scope.events)
+        let refusal = decision.refusal_reason();
+        decision
+            .publish(&self.scope.events)
+            .map(|approved| (approved, refusal))
     }
     fn permission_refusal(
         &self,
@@ -435,6 +488,7 @@ impl ToolDeclarationAdmission<'_> {
         reason: String,
         trust: Trust,
         durable: bool,
+        refusal: RefusalReasonV1,
     ) -> Result<ToolAdmissionDecision, KernelError> {
         self.refused(
             call,
@@ -446,6 +500,7 @@ impl ToolDeclarationAdmission<'_> {
                 latency_ms: 0,
             },
             durable,
+            refusal,
         )
     }
     fn refused(
@@ -453,15 +508,22 @@ impl ToolDeclarationAdmission<'_> {
         call: &ToolUse,
         result: ToolResult,
         durable: bool,
+        refusal: RefusalReasonV1,
     ) -> Result<ToolAdmissionDecision, KernelError> {
         if durable {
-            self.journal.refused_result(
+            let receipt = self.journal.refused_result_receipt(
                 self.scope.turn,
                 &call.name,
                 &result,
                 "refused_before_dispatch",
                 &self.scope.events,
             )?;
+            publish_tool_refusal(
+                &self.scope.events,
+                &receipt,
+                refusal,
+                RefusalEffectStateV1::NotDispatched,
+            );
         }
         self.scope.events.present(tool_end_ui(call, &result));
         Ok(ToolAdmissionDecision::Refused(result))

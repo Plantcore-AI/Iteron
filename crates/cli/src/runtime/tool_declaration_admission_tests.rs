@@ -226,3 +226,114 @@ async fn a_proposal_for_different_arguments_cannot_cross_the_owner_boundary() {
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn refusal_source_tracks_actual_plan_noninteractive_and_operator_decision_receipts() {
+    use crate::runtime::RuntimeFrontendEvent;
+    use iteron_protocol::refusal::{RefusalEffectStateV1, RefusalReasonV1};
+    for (mode, interactive, expected) in [
+        (
+            PermissionMode::Plan,
+            false,
+            RefusalReasonV1::PermissionDenied,
+        ),
+        (
+            PermissionMode::Default,
+            false,
+            RefusalReasonV1::ApprovalUnavailable,
+        ),
+        (
+            PermissionMode::Default,
+            true,
+            RefusalReasonV1::OperatorDenied,
+        ),
+    ] {
+        let (root, mut agent, call) = fixture();
+        agent.permission_mode = mode;
+        agent.interactive_approvals = interactive;
+        let (events, mut reader) = tokio::sync::mpsc::channel(32);
+        agent.set_resident_ui(events);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        agent.set_approvals(rx);
+        agent.interactive_approvals = interactive;
+        let draft = proposal(&agent, &call);
+        let (decision, observed) = tokio::join!(
+            async {
+                agent
+                    .tool_declaration_admission(TurnId(0), Trust::Workspace)
+                    .run(&call, draft)
+                    .await
+            },
+            async {
+                loop {
+                    let event = tokio::time::timeout(Duration::from_secs(2), reader.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    match event {
+                        RuntimeFrontendEvent::Ui(UiEvent::ApprovalRequest { id, .. }) => {
+                            assert!(interactive);
+                            tx.send(TurnSubmission::identified(
+                                SubmissionId(12),
+                                Op::ApprovalResponse {
+                                    id,
+                                    approved: false,
+                                    remember: false,
+                                },
+                            ))
+                            .await
+                            .unwrap();
+                        }
+                        RuntimeFrontendEvent::Refusal(observation) => break observation,
+                        _ => {}
+                    }
+                }
+            },
+        );
+        assert!(matches!(
+            decision.unwrap(),
+            ToolAdmissionDecision::Refused(_)
+        ));
+        assert_eq!(observed.reason, expected);
+        assert_eq!(observed.effects, RefusalEffectStateV1::NotDispatched);
+        assert_eq!(observed.tool.as_deref(), Some(call.name.as_str()));
+        assert_eq!(observed.tool_use_id.as_deref(), Some(call.id.as_str()));
+        let source = observed.source.unwrap();
+        assert_eq!(&source.tenant, agent.rollout.tenant());
+        assert_eq!(&source.run_id, agent.rollout.run_id());
+        let replay = iteron_record::replay(agent.rollout.path()).unwrap();
+        assert!(replay.iter().any(|event| event.seq == source.sequence && event.turn == source.turn && matches!(&event.kind, EventKind::ToolDone { result, effect_id:None, .. } if result.is_error && result.tool_use_id==call.id)));
+        assert!(
+            !replay
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
+        );
+        assert!(!root.join("result.txt").exists());
+        drop(agent);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn refusal_record_fault_does_not_publish_a_predicted_source_receipt() {
+    let (root, mut agent, call) = fixture();
+    agent.permission_mode = PermissionMode::Plan;
+    let (events, mut reader) = tokio::sync::mpsc::channel(32);
+    agent.set_resident_ui(events);
+    agent.fail_next_durable_append = Some(crate::runtime::DurableAppendFault::ToolDone);
+    let draft = proposal(&agent, &call);
+    let result = agent
+        .tool_declaration_admission(TurnId(0), Trust::Workspace)
+        .run(&call, draft)
+        .await;
+    assert!(matches!(result, Err(KernelError::Record(_))));
+    while let Ok(event) = reader.try_recv() {
+        assert!(!matches!(
+            event,
+            crate::runtime::RuntimeFrontendEvent::Refusal(_)
+        ));
+    }
+    assert!(!root.join("result.txt").exists());
+    drop(agent);
+    std::fs::remove_dir_all(root).unwrap();
+}

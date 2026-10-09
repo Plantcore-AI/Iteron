@@ -195,6 +195,17 @@ impl ToolExecutionJournal<'_> {
         reason_code: &'static str,
         events: &StreamToolEvents,
     ) -> Result<(), KernelError> {
+        self.refused_result_receipt(turn, tool, result, reason_code, events)
+            .map(|_| ())
+    }
+    pub(super) fn refused_result_receipt(
+        &mut self,
+        turn: TurnId,
+        tool: &str,
+        result: &ToolResult,
+        reason_code: &'static str,
+        events: &StreamToolEvents,
+    ) -> Result<ToolTerminalReceipt, KernelError> {
         if !result.is_error {
             return Err(KernelError::EffectBoundary(
                 "a refused tool cannot publish success without admission".into(),
@@ -214,7 +225,7 @@ impl ToolExecutionJournal<'_> {
             },
         });
         self.measure(started);
-        result_append.map_err(|error| self.record_error(error))?;
+        let sequence = result_append.map_err(|error| self.record_error(error))?;
         events.emit(
             "tool.policy_evaluated",
             None,
@@ -233,7 +244,15 @@ impl ToolExecutionJournal<'_> {
             },
         );
         self.ledger.tool(result.latency_ms, 0, true);
-        Ok(())
+        Ok(ToolTerminalReceipt {
+            sequence,
+            turn,
+            tenant: self.rollout.tenant().clone(),
+            run: self.rollout.run_id().clone(),
+            tool: tool.to_owned(),
+            tool_use_id: result.tool_use_id.clone(),
+            successful: false,
+        })
     }
     #[cfg(test)]
     fn inject_tool_done_failure(&mut self) -> Result<(), KernelError> {

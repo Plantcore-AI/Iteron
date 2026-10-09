@@ -10,6 +10,7 @@ use super::stream_tool_events::StreamToolEvents;
 use super::turn_activity::{ActivitySink, ActivitySpan, ActivityStage};
 use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_obs::Ledger;
+use iteron_protocol::refusal::RefusalReasonV1;
 use iteron_protocol::{
     Capability, Event, EventKind, Op, Seq, SubmissionId, SubmissionRejectionReason, TurnId, Verdict,
 };
@@ -107,6 +108,7 @@ pub(super) struct ApprovalWait<'a> {
 pub(super) struct ApprovalDecision {
     pub(super) approved: bool,
     pub(super) remember: bool,
+    refusal: Option<RefusalReasonV1>,
     id: SubmissionId,
     resolution: ApprovalResolution,
     reason: &'static str,
@@ -115,6 +117,9 @@ pub(super) struct ApprovalDecision {
     activity: Option<ActivitySpan>,
 }
 impl ApprovalDecision {
+    pub(super) fn refusal_reason(&self) -> Option<RefusalReasonV1> {
+        self.refusal
+    }
     /// Called only after any remembered-policy fsync. A true verdict without delivered resolution
     /// cannot authorize execution; the operator must see the same decision as the durable writer.
     pub(super) fn publish(mut self, events: &StreamToolEvents) -> Result<bool, KernelError> {
@@ -153,7 +158,11 @@ impl ApprovalWait<'_> {
         self.journal.verdict(&request, Verdict::Ask)?;
         if !request.interactive {
             self.journal.verdict(&request, Verdict::Deny)?;
-            return Ok(self.present_refused(&request, "noninteractive_approval_unavailable"));
+            return Ok(self.present_refused(
+                &request,
+                "noninteractive_approval_unavailable",
+                RefusalReasonV1::ApprovalUnavailable,
+            ));
         }
         let activity = self
             .activity
@@ -177,7 +186,11 @@ impl ApprovalWait<'_> {
                     ..Default::default()
                 },
             );
-            return Ok(self.present_refused(&request, "frontend_queue_saturated_or_closed"));
+            return Ok(self.present_refused(
+                &request,
+                "frontend_queue_saturated_or_closed",
+                RefusalReasonV1::ResourceUnavailable,
+            ));
         }
         // The actual unique receiver remains inside the resident inbox across this await.
         // Future cancellation drops a recv borrow, never the caller's receiver or queued work.
@@ -186,6 +199,7 @@ impl ApprovalWait<'_> {
             return Ok(ApprovalDecision {
                 approved: false,
                 remember: false,
+                refusal: Some(RefusalReasonV1::ResourceUnavailable),
                 id: request.id,
                 resolution: ApprovalResolution::Cancelled,
                 reason: "approval_channel_closed",
@@ -198,6 +212,7 @@ impl ApprovalWait<'_> {
         let mut remember = false;
         let mut response = None;
         let mut resolution = ApprovalResolution::Cancelled;
+        let mut refusal = Some(RefusalReasonV1::ResourceUnavailable);
         let mut reason = "approval_channel_closed";
         loop {
             if request
@@ -205,20 +220,24 @@ impl ApprovalWait<'_> {
                 .is_some_and(|deadline| deadline <= Instant::now())
             {
                 resolution = ApprovalResolution::TimedOut;
+                refusal = Some(RefusalReasonV1::DeadlineLimit);
                 reason = "run_deadline_exhausted";
                 break;
             }
             match self.control.requested() {
                 InboundControl::Drain => {
                     reason = "drain_requested";
+                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                     break;
                 }
                 InboundControl::ForceCancel => {
                     reason = "force_cancel_requested";
+                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                     break;
                 }
                 InboundControl::Interrupt => {
                     reason = "interrupt_requested";
+                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                     break;
                 }
                 InboundControl::None => {}
@@ -262,6 +281,7 @@ impl ApprovalWait<'_> {
                         } if answer_id == request.id => {
                             response = (id.0 != 0).then_some(id);
                             approved = answer;
+                            refusal = (!answer).then_some(RefusalReasonV1::OperatorDenied);
                             resolution = if answer {
                                 ApprovalResolution::Approved
                             } else {
@@ -291,14 +311,17 @@ impl ApprovalWait<'_> {
                             let kind = match control {
                                 InboundControl::Interrupt => {
                                     reason = "interrupt_requested";
+                                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                                     ControlSubmissionKind::Interrupt
                                 }
                                 InboundControl::Drain => {
                                     reason = "drain_requested";
+                                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                                     ControlSubmissionKind::Drain
                                 }
                                 InboundControl::ForceCancel => {
                                     reason = "force_cancel_requested";
+                                    refusal = Some(RefusalReasonV1::OperatorInterrupted);
                                     self.control.force_cancel().store(true, Ordering::Release);
                                     let requested = self
                                         .force_cancel
@@ -368,6 +391,7 @@ impl ApprovalWait<'_> {
         Ok(ApprovalDecision {
             approved,
             remember,
+            refusal,
             id: request.id,
             resolution,
             reason,
@@ -376,7 +400,12 @@ impl ApprovalWait<'_> {
             activity: Some(activity),
         })
     }
-    fn present_refused(&self, request: &ApprovalRequest, reason: &'static str) -> ApprovalDecision {
+    fn present_refused(
+        &self,
+        request: &ApprovalRequest,
+        reason: &'static str,
+        refusal: RefusalReasonV1,
+    ) -> ApprovalDecision {
         self.events.present(UiEvent::ApprovalResolved {
             id: request.id,
             resolution: ApprovalResolution::Denied,
@@ -386,6 +415,7 @@ impl ApprovalWait<'_> {
         ApprovalDecision {
             approved: false,
             remember: false,
+            refusal: Some(refusal),
             id: request.id,
             resolution: ApprovalResolution::Denied,
             reason,

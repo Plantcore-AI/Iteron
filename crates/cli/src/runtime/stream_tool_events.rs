@@ -20,6 +20,16 @@ pub(super) struct StreamToolEvents {
     pub(super) partial_mailbox: Option<super::persistent_agents::LiveAgentMailbox>,
 }
 impl StreamToolEvents {
+    /// Presentation of a real refused decision after its writer receipt. Channel pressure cannot
+    /// undo a known refusal or authorize a retry. Legacy text-only frontends receive its fixed summary.
+    pub(super) fn refusal(&self, observation: iteron_protocol::refusal::HostRefusalV1) {
+        if let Some(tx) = self.resident_ui.as_ref() {
+            self.frontend
+                .try_send_runtime(tx, RuntimeFrontendEvent::Refusal(observation));
+        } else {
+            self.present(UiEvent::Notice(observation.summary().into()));
+        }
+    }
     pub(super) fn declared(&self, call: &ToolUse) {
         self.present(UiEvent::ToolStart {
             id: call.id.clone(),
