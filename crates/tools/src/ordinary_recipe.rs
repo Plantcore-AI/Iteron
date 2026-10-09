@@ -4,6 +4,7 @@ use crate::{
     OperationEffects, RegisteredExecution, Registry, Tool, ToolError, ToolOutputOwner, err_result,
     registeredfut, schema, workspace_boundary,
 };
+use iteron_protocol::refusal::RefusalReasonV1;
 use iteron_protocol::{Capability, ToolSpec, ToolUse, capability_set::CapabilitySet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -36,6 +37,14 @@ pub(super) struct RecipeBinding {
     dispatch_policy: Option<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
 }
 impl RecipeBinding {
+    pub(super) fn revoked(&self) -> bool {
+        self.dispatch_policy.as_ref().is_some_and(|policy| {
+            !policy.admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Tool,
+                &self.recipe.name,
+            )
+        })
+    }
     pub(super) fn resolve(&self, call: &ToolUse) -> Result<ToolUse, String> {
         if call.name != self.recipe.name
             || !value_bounds(&call.input)
@@ -43,12 +52,7 @@ impl RecipeBinding {
         {
             return Err("ordinary tool arguments exceed their host envelope".into());
         }
-        if self.dispatch_policy.as_ref().is_some_and(|policy| {
-            !policy.admits(
-                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Tool,
-                &self.recipe.name,
-            )
-        }) {
+        if self.revoked() {
             return Err("ordinary tool binding was revoked".into());
         }
         let mut input = call
@@ -218,13 +222,20 @@ impl Registry {
             let alias = alias.clone();
             let canonical = canonical.clone();
             registeredfut::box_it(async move {
-                let refused = |reason: String| RegisteredExecution {
-                    outcome: err_result(call.id.clone(), reason).into(),
+                let refused = |reason: String, provenance: RefusalReasonV1| RegisteredExecution {
+                    outcome: crate::CapturedToolExecution::from(err_result(
+                        call.id.clone(),
+                        reason,
+                    ))
+                    .with_refusal(provenance),
                     dispatch_to_terminal_ms: None,
                 };
                 // Outer dispatch has resolved the exact alias before its ordinary path guards.
                 if call.name != canonical {
-                    return refused("ordinary tool physical identity mismatch".into());
+                    return refused(
+                        "ordinary tool physical identity mismatch".into(),
+                        RefusalReasonV1::InvalidRequest,
+                    );
                 }
                 if binding.dispatch_policy.as_ref().is_some_and(|policy| {
                     !policy.admits(
@@ -232,7 +243,10 @@ impl Registry {
                         &alias,
                     )
                 }) {
-                    return refused("ordinary tool binding was revoked".into());
+                    return refused(
+                        "ordinary tool binding was revoked".into(),
+                        RefusalReasonV1::ExtensionDenied,
+                    );
                 }
                 let mut effects = OperationEffects::classify(&call, capability);
                 for path in effects.targets.clone() {
@@ -241,24 +255,27 @@ impl Registry {
                     }
                 }
                 if !effects.required.is_subset_of(binding.ceiling) {
-                    return refused("ordinary tool operation exceeds the extension ceiling".into());
+                    return refused(
+                        "ordinary tool operation exceeds the extension ceiling".into(),
+                        RefusalReasonV1::ExtensionDenied,
+                    );
                 }
                 if let Some(scope) = inherited.get()
                     && let Err(reason) = scope
                         .validate_tool(&call, capability)
                         .and_then(|_| scope.validate_call(&root, &call))
                 {
-                    return refused(reason);
+                    return refused(reason, RefusalReasonV1::PermissionDenied);
                 }
                 if confined.load(Ordering::Acquire)
                     && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
                     && let Err(reason) =
                         workspace_boundary::validate_coding_write_call(&root, &call)
                 {
-                    return refused(reason);
+                    return refused(reason, RefusalReasonV1::PermissionDenied);
                 }
                 if isolated && let Err(reason) = workspace_boundary::validate_call(&root, &call) {
-                    return refused(reason);
+                    return refused(reason, RefusalReasonV1::PermissionDenied);
                 }
                 let id = call.id.clone();
                 let mut completed = if writer {
@@ -269,20 +286,33 @@ impl Registry {
                         Some(scope) => {
                             match scope.intersection_paths(&binding.recipe.write_paths) {
                                 Ok(paths) => paths,
-                                Err(reason) => return refused(reason),
+                                Err(reason) => {
+                                    return refused(reason, RefusalReasonV1::PermissionDenied);
+                                }
                             }
                         }
                         None => binding.recipe.write_paths.clone(),
                     };
                     if paths.is_empty() {
-                        return refused("ordinary recipe has no inherited writable path".into());
+                        return refused(
+                            "ordinary recipe has no inherited writable path".into(),
+                            RefusalReasonV1::CapabilityCeiling,
+                        );
                     }
                     let mut dedicated = match Registry::isolated_writer(root.clone()) {
                         Ok(registry) => registry,
-                        Err(_) => return refused("ordinary native writer unavailable".into()),
+                        Err(_) => {
+                            return refused(
+                                "ordinary native writer unavailable".into(),
+                                RefusalReasonV1::ResourceUnavailable,
+                            );
+                        }
                     };
                     if dedicated.set_inherited_write_scope(paths).is_err() {
-                        return refused("ordinary native writer scope unavailable".into());
+                        return refused(
+                            "ordinary native writer scope unavailable".into(),
+                            RefusalReasonV1::ResourceUnavailable,
+                        );
                     }
                     dedicated
                         .test_helper_thread

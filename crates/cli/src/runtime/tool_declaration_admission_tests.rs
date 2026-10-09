@@ -369,3 +369,35 @@ async fn misspelled_unregistered_tool_does_not_claim_an_extension_refusal() {
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn operator_shell_source_is_the_actual_captured_host_gate_not_command_text() {
+    use iteron_protocol::refusal::RefusalReasonV1;
+    let (root, mut agent, _) = fixture();
+    agent.permission_mode = PermissionMode::Plan;
+    let scope = crate::client_effects::shell::NativeShellScope::capture(
+        &agent,
+        "printf 'administrator denied'".into(),
+    );
+    let (_cancel, cancelled) = tokio::sync::watch::channel(false);
+    let completion = scope.execute(cancelled).await;
+    assert_eq!(completion.refusal, Some(RefusalReasonV1::PermissionDenied));
+    assert_eq!(
+        completion.outcome,
+        crate::client_effects::shell::ShellOutcome::NotStarted
+    );
+    assert_eq!(
+        completion.cleanup,
+        crate::client_effects::shell::ShellCleanup::NotDispatched
+    );
+    assert_eq!(completion.source_run.as_ref(), Some(agent.rollout.run_id()));
+    assert!(!completion.ok);
+    assert!(
+        iteron_record::replay(agent.rollout.path())
+            .unwrap()
+            .is_empty(),
+        "captured host refusal launches no native tool and does not invent a WAL receipt"
+    );
+    drop(agent);
+    std::fs::remove_dir_all(root).unwrap();
+}

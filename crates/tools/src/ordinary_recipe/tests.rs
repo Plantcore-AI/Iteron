@@ -226,6 +226,23 @@ async fn cached_native_read_still_obeys_exact_revocation() {
             .is_error
     );
     policy.0.store(true, Ordering::Release);
+    let refused = registry
+        .run_effect_captured(call("sample__read", json!({})))
+        .await;
+    assert_eq!(
+        refused.refusal_reason(),
+        Some(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied)
+    );
+    assert!(matches!(refused.execution, crate::ToolExecution::Definite(result) if result.is_error));
+    assert!(matches!(
+        registry.propose_intent(
+            &crate::ToolPolicy::default(),
+            call("sample__read", json!({})),
+            Trust::Workspace,
+            CapabilitySet::only(Capability::ReadOnly)
+        ),
+        Err(crate::ToolPolicyError::ExtensionDenied)
+    ));
     assert!(
         registry
             .dispatch(call("sample__read", json!({})))
@@ -301,5 +318,49 @@ fn native_strategy_evidence_uses_actual_fixed_recipe_arguments() {
     assert!(registry.is_candidate_review_tool(&read.name));
     assert!(registry.is_workspace_localization_observation(&read, &root));
     assert!(registry.is_workspace_targeted_observation(&read, &root));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn proposal_distinguishes_actual_host_and_extension_capability_ceiling_without_text_matching() {
+    let root = workspace();
+    let mut registry = coding(&root);
+    registry
+        .register_ordinary_recipe(
+            recipe("sample__write", "write_file", json!({}), vec!["f".into()]),
+            CapabilitySet::only(Capability::ReversibleLocal),
+            None,
+        )
+        .unwrap();
+    let trust_write = call(
+        "sample__write",
+        json!({"path":".agents/SKILL.md","content":"new rule"}),
+    );
+    let all = CapabilitySet::from_iter_capabilities([
+        Capability::ReadOnly,
+        Capability::ReversibleLocal,
+        Capability::CodeExecuting,
+        Capability::TrustMutating,
+        Capability::IrreversibleExternal,
+    ]);
+    assert!(matches!(
+        registry.propose_intent(
+            &crate::ToolPolicy::default(),
+            trust_write.clone(),
+            Trust::Trusted,
+            all
+        ),
+        Err(crate::ToolPolicyError::ExtensionDenied)
+    ));
+    assert!(matches!(
+        registry.propose_intent(
+            &crate::ToolPolicy::default(),
+            trust_write,
+            Trust::Trusted,
+            CapabilitySet::only(Capability::ReversibleLocal)
+        ),
+        Err(crate::ToolPolicyError::NotEligible)
+    ));
+    assert!(!root.join(".agents").exists());
     std::fs::remove_dir_all(root).unwrap();
 }

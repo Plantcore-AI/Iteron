@@ -51,6 +51,8 @@ pub(crate) struct ShellCompletion {
     pub(crate) code: i32,
     pub(crate) outcome: ShellOutcome,
     pub(crate) cleanup: ShellCleanup,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) refusal: Option<iteron_protocol::refusal::RefusalReasonV1>,
     #[cfg(windows)]
     #[serde(skip)]
     pub(crate) windows_custody: Option<WindowsShellCustody>,
@@ -114,10 +116,12 @@ impl NativeShellScope {
     ) -> ShellCompletion {
         let command = self.command;
         let mut result = if !self.admitted {
-            failed(
+            let mut refused = failed(
                 &command,
                 "actual host permission policy refuses this command".into(),
-            )
+            );
+            refused.refusal = Some(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
+            refused
         } else {
             execute(
                 &self.workspace,
@@ -137,6 +141,7 @@ impl NativeShellScope {
 fn failed(command: &str, body: String) -> ShellCompletion {
     ShellCompletion {
         source_run: None,
+        refusal: None,
         command: display(command, 32 * 1024),
         body: display(&body, 256 * 1024),
         ok: false,
@@ -300,6 +305,7 @@ async fn execute(
             }
             return ShellCompletion {
                 source_run: None,
+                refusal: None,
                 command: display(cmd, 32 * 1024),
                 body: display(&error.to_string(), 256 * 1024),
                 ok: false,
@@ -450,6 +456,7 @@ async fn execute(
     let ok = !timed_out && cleanup_confirmed && status.is_some_and(|status| status.success());
     ShellCompletion {
         source_run: None,
+        refusal: None,
         command: display(cmd, 32 * 1024),
         body: display(&body, 256 * 1024),
         ok,
@@ -484,6 +491,7 @@ fn display(text: &str, limit: usize) -> String {
 fn unobserved(command: &str, body: String, group: &OwnedProcessGroup) -> ShellCompletion {
     ShellCompletion {
         source_run: None,
+        refusal: None,
         command: display(command, 32 * 1024),
         body: display(&body, 256 * 1024),
         ok: false,

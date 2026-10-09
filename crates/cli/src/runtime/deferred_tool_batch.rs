@@ -122,6 +122,7 @@ impl DeferredToolBatch<'_> {
                 operator_interrupted,
                 publication_error,
                 captured_images,
+                refusal,
             } = receipt;
             if let Some(visible) = projected_visible {
                 self.scope.events.projected(visible);
@@ -131,7 +132,9 @@ impl DeferredToolBatch<'_> {
                 ManagedToolExecution::Definite(managed) => (managed, true),
                 ManagedToolExecution::Unknown(managed) => (managed, false),
             };
-            let committed = if definite && !managed.result.is_error && !captured_images.is_empty() {
+            let committed = if definite
+                && (refusal.is_some() || (!managed.result.is_error && !captured_images.is_empty()))
+            {
                 self.journal
                     .known_result_receipt(
                         entry.ticket,
@@ -141,10 +144,22 @@ impl DeferredToolBatch<'_> {
                         &self.scope.events,
                     )
                     .map(|receipt| {
-                        image_projections.push(super::tool_images::PendingToolImageProjection {
-                            receipt,
-                            images: captured_images,
-                        })
+                        if let Some(reason) = refusal {
+                            super::refusal_provenance::publish_tool_refusal(
+                                &self.scope.events,
+                                &receipt,
+                                reason,
+                                iteron_protocol::refusal::RefusalEffectStateV1::Settled,
+                            );
+                        }
+                        if !managed.result.is_error && !captured_images.is_empty() {
+                            image_projections.push(
+                                super::tool_images::PendingToolImageProjection {
+                                    receipt,
+                                    images: captured_images,
+                                },
+                            );
+                        }
                     })
             } else if definite {
                 self.journal.known_result(

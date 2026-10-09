@@ -10,7 +10,7 @@ use super::hooks::{HookDecision, HookEvent, Hooks, journal::HookEffectJournal};
 use super::inbound_control::inbound_poll_limit;
 use super::permission_policy::{OperationAdmission, OperationPolicy, evaluate_operation};
 use super::permission_transaction::PermissionTransaction;
-use super::refusal_provenance::publish_tool_refusal;
+use super::refusal_provenance::{publish_tool_refusal, publish_unrecorded_tool_refusal};
 use super::session_control::{InboundControl, SessionControlState};
 use super::session_inbox::SessionSubmissionInbox;
 use super::stream_tool_events::StreamToolEvents;
@@ -107,19 +107,8 @@ impl ToolDeclarationAdmission<'_> {
                     Trust::Trusted,
                     true,
                     match error {
-                        ToolPolicyError::NotEligible => self
-                            .scope
-                            .registry
-                            .operation_effects(call)
-                            .and_then(|effects| {
-                                effects
-                                    .extension_ceiling
-                                    .map(|ceiling| !effects.required.is_subset_of(ceiling))
-                            })
-                            .filter(|blocked| *blocked)
-                            .map_or(RefusalReasonV1::CapabilityCeiling, |_| {
-                                RefusalReasonV1::ExtensionDenied
-                            }),
+                        ToolPolicyError::NotEligible => RefusalReasonV1::CapabilityCeiling,
+                        ToolPolicyError::ExtensionDenied => RefusalReasonV1::ExtensionDenied,
                         ToolPolicyError::UnknownTool(_) => RefusalReasonV1::InvalidRequest,
                         _ => RefusalReasonV1::Unknown,
                     },
@@ -524,6 +513,8 @@ impl ToolDeclarationAdmission<'_> {
                 refusal,
                 RefusalEffectStateV1::NotDispatched,
             );
+        } else {
+            publish_unrecorded_tool_refusal(&self.scope.events, call, refusal);
         }
         self.scope.events.present(tool_end_ui(call, &result));
         Ok(ToolAdmissionDecision::Refused(result))

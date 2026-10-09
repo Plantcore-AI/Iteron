@@ -107,6 +107,7 @@ impl EarlyToolCollection<'_> {
                     operator_interrupted,
                     publication_error,
                     captured_images,
+                    refusal,
                 })) => {
                     if let Some(hook) = hook {
                         self.observe_hook(hook, false);
@@ -144,7 +145,7 @@ impl EarlyToolCollection<'_> {
                         );
                         unknown = unknown.saturating_add(1);
                     } else {
-                        if !captured_images.is_empty() && !result.is_error {
+                        if refusal.is_some() || (!captured_images.is_empty() && !result.is_error) {
                             let receipt = self.journal.known_result_receipt(
                                 ticket,
                                 &call.name,
@@ -152,12 +153,22 @@ impl EarlyToolCollection<'_> {
                                 overlap_ms.min(result.latency_ms),
                                 &self.scope.events,
                             )?;
-                            image_projections.push(
-                                super::tool_images::PendingToolImageProjection {
-                                    receipt,
-                                    images: captured_images,
-                                },
-                            );
+                            if let Some(reason) = refusal {
+                                super::refusal_provenance::publish_tool_refusal(
+                                    &self.scope.events,
+                                    &receipt,
+                                    reason,
+                                    iteron_protocol::refusal::RefusalEffectStateV1::Settled,
+                                );
+                            }
+                            if !captured_images.is_empty() && !result.is_error {
+                                image_projections.push(
+                                    super::tool_images::PendingToolImageProjection {
+                                        receipt,
+                                        images: captured_images,
+                                    },
+                                );
+                            }
                         } else {
                             self.journal.known_result(
                                 ticket,

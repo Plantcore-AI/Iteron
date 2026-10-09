@@ -35,6 +35,27 @@ pub(super) fn publish_tool_refusal(
     };
     events.refusal(observation);
 }
+/// A live gate can refuse before a failed writer can append. This has no durable receipt and
+/// must remain distinguishable from a confirmed ToolDone; it says nothing about other run effects.
+pub(super) fn publish_unrecorded_tool_refusal(
+    events: &StreamToolEvents,
+    call: &iteron_protocol::ToolUse,
+    reason: RefusalReasonV1,
+) {
+    events.refusal(HostRefusalV1 {
+        reason,
+        source: None,
+        tool: Some(strict_utf8_head(
+            &iteron_record::redact::scrub(&call.name),
+            2048,
+        )),
+        tool_use_id: Some(strict_utf8_head(
+            &iteron_record::redact::scrub(&call.id),
+            2048,
+        )),
+        effects: RefusalEffectStateV1::NotDispatched,
+    });
+}
 impl KernelError {
     /// An opaque policy/configuration string cannot prove who refused. These mappings use only
     /// existing closed error variants whose producer has already established the category.
@@ -42,6 +63,14 @@ impl KernelError {
         use RefusalReasonV1 as Reason;
         match self {
             Self::OrdinaryExtension(_) => Reason::ExtensionUnavailable,
+            Self::AgentControl(error) => match error {
+                iteron_agents::ControllerError::Capacity => Reason::ObservationLimit,
+                iteron_agents::ControllerError::Budget => Reason::BudgetLimit,
+                iteron_agents::ControllerError::Permission => Reason::PermissionDenied,
+                iteron_agents::ControllerError::Store(_)
+                | iteron_agents::ControllerError::Poisoned => Reason::DurableRecordUnavailable,
+                _ => Reason::Unknown,
+            },
             Self::Provider(error) => match error {
                 ProviderError::Refusal => Reason::ProviderRefusal,
                 ProviderError::KnownModelUnavailable { .. } => Reason::ModelUnavailable,

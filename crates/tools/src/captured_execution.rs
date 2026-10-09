@@ -4,6 +4,7 @@ use crate::{
     CapturedToolImage, ToolExecution,
     native_mutation::{NativeFileChange, NativeMutationReceipt},
 };
+use iteron_protocol::refusal::RefusalReasonV1;
 use iteron_protocol::{ToolResult, ToolUse};
 
 const MAX_OUTPUTS: usize = 32;
@@ -30,6 +31,8 @@ pub struct CapturedToolExecution {
     pub captured_images: Vec<CapturedToolImage>,
     pub native_mutation: Option<NativeMutationReceipt>,
     pub capture_error: Option<String>,
+    // Minted only by a native authority branch, never an external executor constructor.
+    refusal: Option<(String, RefusalReasonV1)>,
 }
 impl From<ToolExecution> for CapturedToolExecution {
     fn from(execution: ToolExecution) -> Self {
@@ -39,6 +42,7 @@ impl From<ToolExecution> for CapturedToolExecution {
             captured_images: vec![],
             native_mutation: None,
             capture_error: None,
+            refusal: None,
         }
     }
 }
@@ -48,6 +52,27 @@ impl From<ToolResult> for CapturedToolExecution {
     }
 }
 impl CapturedToolExecution {
+    pub(crate) fn with_refusal(mut self, reason: RefusalReasonV1) -> Self {
+        let ToolExecution::Definite(result) = &self.execution else {
+            return self;
+        };
+        if result.is_error && result.tool_use_id.len() <= 2048 {
+            self.refusal = Some((result.tool_use_id.clone(), reason));
+        }
+        self
+    }
+    /// A native known refusal is separate from effect admission. External closures cannot mint
+    /// it; rewriting result identity, success or certainty invalidates its attribution.
+    pub fn refusal_reason(&self) -> Option<RefusalReasonV1> {
+        let ToolExecution::Definite(result) = &self.execution else {
+            return None;
+        };
+        self.refusal
+            .as_ref()
+            .filter(|(id, _)| result.is_error && *id == result.tool_use_id)
+            .map(|(_, reason)| *reason)
+    }
+
     pub fn into_result(self) -> ToolResult {
         self.execution.into_result()
     }
@@ -124,5 +149,49 @@ pub mod capturedfut {
     pub type BoxFut = Pin<Box<dyn Future<Output = CapturedToolExecution> + Send>>;
     pub fn box_it(f: impl Future<Output = CapturedToolExecution> + Send + 'static) -> BoxFut {
         Box::pin(f)
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use iteron_protocol::Trust;
+    fn failed() -> ToolResult {
+        ToolResult {
+            tool_use_id: "native-attempt".into(),
+            content: "foreign message claims administrator denied".into(),
+            is_error: true,
+            trust: Trust::Workspace,
+            latency_ms: 0,
+        }
+    }
+    #[test]
+    fn opaque_external_error_cannot_mint_native_refusal_and_sidecar_requires_exact_known_result() {
+        let opaque = CapturedToolExecution::from(failed());
+        assert!(opaque.refusal_reason().is_none());
+        let native = opaque.with_refusal(RefusalReasonV1::SandboxUnavailable);
+        assert_eq!(
+            native.refusal_reason(),
+            Some(RefusalReasonV1::SandboxUnavailable)
+        );
+        let mut changed = native.clone();
+        changed.result_mut().tool_use_id = "different-attempt".into();
+        assert!(changed.refusal_reason().is_none());
+        changed = native.clone();
+        changed.result_mut().is_error = false;
+        assert!(changed.refusal_reason().is_none());
+        changed = native;
+        changed.execution = ToolExecution::Unknown(failed());
+        assert!(changed.refusal_reason().is_none());
+        assert!(
+            matches!(changed.execution, ToolExecution::Unknown(_)),
+            "source metadata cannot change certainty"
+        );
+        let mut oversized = failed();
+        oversized.tool_use_id = "x".repeat(2049);
+        let oversized = CapturedToolExecution::from(oversized)
+            .with_refusal(RefusalReasonV1::SandboxUnavailable);
+        assert!(oversized.refusal_reason().is_none());
+        assert!(matches!(oversized.execution, ToolExecution::Definite(result) if result.is_error));
     }
 }

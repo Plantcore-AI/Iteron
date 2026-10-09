@@ -951,12 +951,19 @@ impl Registry {
         argument_trust: Trust,
         ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ToolPolicyProposal, ToolPolicyError> {
-        let spec = self
+        let tool = self
             .tools
             .iter()
             .find(|tool| tool.spec.name == call.name)
-            .map(|tool| &tool.spec)
             .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
+        if tool
+            .recipe
+            .as_ref()
+            .is_some_and(|binding| binding.revoked())
+        {
+            return Err(ToolPolicyError::ExtensionDenied);
+        }
+        let spec = &tool.spec;
         let effects = self
             .operation_effects(&call)
             .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
@@ -974,12 +981,18 @@ impl Registry {
             },
             ceiling,
         )?;
-        let ceiling = effects
-            .extension_ceiling
-            .map_or(ceiling, |extension| ceiling.intersect(extension));
         if !effects.required.is_subset_of(ceiling) {
             return Err(ToolPolicyError::NotEligible);
         }
+        if effects
+            .extension_ceiling
+            .is_some_and(|extension| !effects.required.is_subset_of(extension))
+        {
+            return Err(ToolPolicyError::ExtensionDenied);
+        }
+        let ceiling = effects
+            .extension_ceiling
+            .map_or(ceiling, |extension| ceiling.intersect(extension));
         // The strategy can refuse the registered operation. Only this host classifier can add
         // the *requirements* for its actual effects, all still bounded by the caller's ceiling.
         proposal.eligible = effects.required.intersect(ceiling);
@@ -1003,6 +1016,19 @@ impl Registry {
     }
 
     pub async fn run_admitted_intent_captured(&self, intent: ToolIntent) -> CapturedToolExecution {
+        if self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == intent.call.name)
+            .and_then(|tool| tool.recipe.as_ref())
+            .is_some_and(|binding| binding.revoked())
+        {
+            return CapturedToolExecution::from(err_result(
+                intent.call.id,
+                "ordinary tool binding was revoked".into(),
+            ))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied);
+        }
         if let Err(reason) = self.validate_admitted_intent(&intent, None) {
             return ToolExecution::Definite(err_result(intent.call.id, reason)).into();
         }
@@ -1028,6 +1054,22 @@ impl Registry {
         > {
             Box::pin(async move { ToolExecution::Definite(err_result(id, reason)).into() })
         };
+        if self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == intent.call.name)
+            .and_then(|tool| tool.recipe.as_ref())
+            .is_some_and(|binding| binding.revoked())
+        {
+            let id = intent.call.id;
+            return Box::pin(async move {
+                CapturedToolExecution::from(err_result(
+                    id,
+                    "ordinary tool binding was revoked".into(),
+                ))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied)
+            });
+        }
         if let Err(reason) = self.validate_admitted_intent(&intent, None) {
             return refused(intent.call.id, reason);
         }
@@ -1071,18 +1113,27 @@ impl Registry {
                     .validate_tool(&call, inherited_capability)
                     .and_then(|_| scope.validate_call(&root, &call))
             {
-                return ToolExecution::Definite(err_result(id, reason)).into();
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
             }
             if confine_execution.load(std::sync::atomic::Ordering::Relaxed)
                 && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
                 && let Err(reason) = workspace_boundary::validate_coding_write_call(&root, &call)
             {
-                return ToolExecution::Definite(err_result(id, reason)).into();
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
             }
             if workspace_boundary
                 && let Err(reason) = workspace_boundary::validate_call(&root, &call)
             {
-                return ToolExecution::Definite(err_result(id, reason)).into();
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
             }
             // Cache lookup and closure invocation both belong behind the runtime gate.
             let pending = if !is_effecting {
@@ -1321,6 +1372,17 @@ impl Registry {
             })
             .into();
         };
+        if tool
+            .recipe
+            .as_ref()
+            .is_some_and(|binding| binding.revoked())
+        {
+            return CapturedToolExecution::from(err_result(
+                id,
+                "ordinary tool binding was revoked".into(),
+            ))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied);
+        }
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)))
                 .into();
@@ -1340,19 +1402,24 @@ impl Registry {
             && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
             && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
         {
-            return ToolExecution::Definite(err_result(id, reason)).into();
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(id, reason)))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
         }
         if let Some(scope) = self.inherited_write_scope.get()
             && let Err(reason) = scope
                 .validate_tool(&call, tool.spec.capability)
                 .and_then(|_| scope.validate_call(&self.root, &call))
         {
-            return ToolExecution::Definite(err_result(call.id, reason)).into();
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                call.id, reason,
+            )))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
         }
         if self.workspace_boundary
             && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
         {
-            return ToolExecution::Definite(err_result(id, reason)).into();
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(id, reason)))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
         }
 
         let is_effecting = tool.spec.purity == Purity::Effecting;

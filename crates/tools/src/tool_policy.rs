@@ -65,6 +65,7 @@ pub enum ToolPolicyError {
     InvalidObservation(&'static str),
     UnsupportedVersion,
     NotEligible,
+    ExtensionDenied,
 }
 
 impl fmt::Display for ToolPolicyError {
@@ -74,6 +75,9 @@ impl fmt::Display for ToolPolicyError {
             Self::InvalidObservation(reason) => formatter.write_str(reason),
             Self::UnsupportedVersion => formatter.write_str("unsupported tool-policy version"),
             Self::NotEligible => formatter.write_str("tool policy admitted no eligible capability"),
+            Self::ExtensionDenied => {
+                formatter.write_str("installed extension ceiling refuses the operation")
+            }
         }
     }
 }
