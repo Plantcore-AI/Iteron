@@ -182,7 +182,7 @@ pub(super) fn spawn_host_session_page_load(
         })
     })
 }
-fn host_session_picker_items(
+pub(super) fn host_session_picker_items(
     page: &serde_json::Value,
     current_run: &str,
 ) -> Result<Vec<PickItem>, String> {

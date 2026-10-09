@@ -4,6 +4,7 @@ use iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1;
 use iteron_protocol::client_final_evidence::description;
 use iteron_protocol::final_evidence::HostFinalEvidenceV1;
 use iteron_protocol::{RunId, Seq};
+use serde::Deserialize as _;
 
 #[derive(Default)]
 pub(super) struct FinalEvidencePresentation {
@@ -44,11 +45,14 @@ pub(super) fn apply(app: &mut App, session: &Session, fact: HostFinalEvidenceV1)
     if observed != fact || !app.final_evidence.admit(&fact) {
         return;
     }
+    render(app, &fact);
+}
+fn render(app: &mut App, fact: &HostFinalEvidenceV1) {
     app.panel(
         "◇",
         "Completion checks",
         vec![
-            block::PanelRow::Note(description(&fact).into()),
+            block::PanelRow::Note(description(fact).into()),
             kv(
                 "tool completions",
                 &fact.observed_tool_completions.to_string(),
@@ -73,6 +77,52 @@ pub(super) fn apply(app: &mut App, session: &Session, fact: HostFinalEvidenceV1)
             kv("test-suite identity", "unverified"),
         ],
     );
+}
+
+pub(super) fn remote(
+    app: &mut App,
+    value: &serde_json::Value,
+    thread: &iteron_protocol::SessionId,
+    tenant: &iteron_protocol::TenantId,
+    run: &RunId,
+) {
+    if value["type"] != "host_final_evidence_v1"
+        || value["thread_id"] != thread.0
+        || value["run_id"] != run.0
+        || value["source"] != "actual_host_receipt"
+        || value["historical_recovery"] != false
+    {
+        return;
+    }
+    let Ok(fact) = HostFinalEvidenceV1::deserialize(&value["evidence"]) else {
+        return;
+    };
+    if fact.tenant != *tenant
+        || fact.run_id != *run
+        || fact.source_seq.0 == 0
+        || fact.first_turn > fact.final_turn
+        || fact.observed_tool_failures > fact.observed_tool_completions
+        || fact.workspace_diff_inspected
+        || fact.test_suite_identity_verified
+        || fact
+            .configured_check_source_seq
+            .is_some_and(|seq| seq.0 == 0 || seq >= fact.source_seq)
+    {
+        return;
+    }
+    use iteron_protocol::final_evidence::HostConfiguredCheckV1;
+    if matches!(
+        fact.configured_check,
+        HostConfiguredCheckV1::Passed | HostConfiguredCheckV1::Failed
+    ) && fact.configured_check_source_seq.is_none()
+        || fact.configured_check == HostConfiguredCheckV1::NotObserved
+            && fact.configured_check_source_seq.is_some()
+    {
+        return;
+    }
+    if app.final_evidence.admit(&fact) {
+        render(app, &fact);
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +163,49 @@ mod tests {
         fact.run_id = RunId("other".into());
         fact.source_seq = Seq(1);
         assert!(owner.admit(&fact));
+    }
+    #[test]
+    fn attached_final_fact_requires_actual_reader_scope_and_cannot_invent_suite_success() {
+        let mut app = App::new();
+        let thread = iteron_protocol::SessionId("thread".into());
+        let run = RunId("run".into());
+        let tenant = TenantId::default();
+        let fact = HostFinalEvidenceV1 {
+            tenant: tenant.clone(),
+            run_id: run.clone(),
+            first_turn: TurnId(0),
+            final_turn: TurnId(0),
+            source_seq: Seq(17),
+            observed_tool_completions: 0,
+            observed_tool_failures: 0,
+            configured_check: HostConfiguredCheckV1::NotObserved,
+            configured_check_source_seq: None,
+            effects_known: true,
+            write_capable_effect_admitted: false,
+            coverage: HostFinalCoverageV1::LiveInvocation,
+            workspace_diff_inspected: false,
+            test_suite_identity_verified: false,
+            correction: None,
+        };
+        let value = serde_json::json!({"type":"host_final_evidence_v1","thread_id":thread,"run_id":run,"evidence":fact,"source":"actual_host_receipt","historical_recovery":false});
+        for key in ["run_id", "source", "historical_recovery", "suite"] {
+            let mut forged = value.clone();
+            match key {
+                "run_id" => forged["run_id"] = serde_json::json!("other"),
+                "source" => forged["source"] = serde_json::json!("model_claim"),
+                "historical_recovery" => forged["historical_recovery"] = serde_json::json!(true),
+                _ => forged["evidence"]["test_suite_identity_verified"] = serde_json::json!(true),
+            };
+            remote(&mut app, &forged, &thread, &tenant, &run);
+            assert!(app.history.blocks().is_empty());
+        }
+        remote(&mut app, &value, &thread, &tenant, &run);
+        assert_eq!(app.history.blocks().len(), 1);
+        let text = app.history.blocks()[0].to_text();
+        assert!(text.contains("unverified"));
+        assert!(!text.contains("suite passed"));
+        assert!(!app.run.running());
+        remote(&mut app, &value, &thread, &tenant, &run);
+        assert_eq!(app.history.blocks().len(), 1);
     }
 }

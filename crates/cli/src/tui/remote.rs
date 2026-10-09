@@ -84,6 +84,15 @@ enum Kind {
         prompt: SubmissionId,
     },
     Models,
+    FinalEvidence {
+        run: iteron_protocol::RunId,
+    },
+    Sessions {
+        run: iteron_protocol::RunId,
+    },
+    Refusals {
+        run: iteron_protocol::RunId,
+    },
     Inputs,
     McpResponse {
         request_id: u64,
@@ -118,6 +127,12 @@ struct View {
     product_cursor: u64,
     poll_events: bool,
     poll_inputs: bool,
+    last_terminal: Option<(
+        iteron_protocol::RunId,
+        iteron_protocol::product_contract::ProductTurnId,
+        u64,
+    )>,
+    final_needed: bool,
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
     expected_submission: Option<SubmissionId>,
@@ -148,6 +163,9 @@ impl View {
     }
     fn inputs_request(&mut self) -> Result<()> {
         self.queue(json!({"type":"mcp_inputs_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"command":{"action":"read"}}}),Kind::Inputs)
+    }
+    fn final_request(&mut self) -> Result<()> {
+        self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone()})
     }
     fn mcp_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -228,7 +246,7 @@ impl View {
             return Ok(false);
         }
         if text == "/help" {
-            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity /agents /models [offset] /model provider:model /artifacts /extensions /side question /inputs /input request-id JSON /new /resume run-id");
+            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity /agents /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
             app.editor.clear();
             return Ok(false);
         }
@@ -240,6 +258,22 @@ impl View {
                     json!({"type":"activity_center_v1","command":{"action":"list","thread_id":scope["thread_id"],"run_id":scope["run_id"]}})
                 }
                 "/agents" => json!({"type":"agents_v1","command":{"type":"list"}}),
+                "/refusals" => {
+                    self.queue(json!({"type":"refusals_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::Refusals{run:self.service.current_run_id.clone()})?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/evidence" => {
+                    self.final_request()?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/sessions" => {
+                    self.queue(json!({"type":"thread_lifecycle_v1","command":{"type":"list","cursor":if arg.is_empty(){Value::Null}else{json!(arg)},"limit":25}}),Kind::Sessions{run:self.service.current_run_id.clone()})?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+
                 "/artifacts" => {
                     self.queue(json!({"type":"artifacts_v1","command":{"type":"list","thread_id":scope["thread_id"]}}), Kind::ArtifactList { prefix: arg.to_owned(), run: self.service.current_run_id.clone() })?;
                     app.editor.clear();
@@ -452,6 +486,8 @@ impl View {
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
+                    self.last_terminal = None;
+                    self.final_needed = false;
                     app.clear_mcp_inputs();
                     app.artifact_viewer.close();
                     app.telemetry.observe_remote_cost(None);
@@ -520,6 +556,15 @@ impl View {
                         && terminal.event_seq > 0
                         && matches
                     {
+                        let identity = (
+                            terminal.run_id.clone(),
+                            terminal.turn_id,
+                            terminal.event_seq,
+                        );
+                        if self.last_terminal.as_ref() != Some(&identity) {
+                            self.last_terminal = Some(identity);
+                            self.final_needed = true;
+                        }
                         app.finish_text_boundary();
                         if let Some(text) = app.product.take_terminal() {
                             app.reconcile_terminal_assistant(&text);
@@ -565,6 +610,57 @@ impl View {
                     app.status = "submission queued · awaiting application".into();
                 } else {
                     show_reply(app, &reply);
+                }
+            }
+            Kind::FinalEvidence { run } => {
+                if run == self.service.current_run_id {
+                    super::final_evidence::remote(
+                        app,
+                        &reply,
+                        &self.service.scope.thread_id,
+                        &self.service.scope.tenant,
+                        &run,
+                    );
+                }
+                self.final_needed = false;
+            }
+            Kind::Sessions { run } => {
+                if run != self.service.current_run_id {
+                    return Ok(());
+                }
+                let items = match super::session_picker::host_session_picker_items(&reply, &run.0) {
+                    Ok(items) => items,
+                    Err(_) => {
+                        app.note(block::NoticeLevel::Warn,"session records are unavailable; the service and current draft remain attached");
+                        return Ok(());
+                    }
+                };
+                let mut rows = items
+                    .into_iter()
+                    .map(|item| block::PanelRow::Note(format!("{} · {}", item.label, item.hint)))
+                    .collect::<Vec<_>>();
+                rows.push(block::PanelRow::Note("/resume RUN uses the shared host adoption port · /activity shows this bound service's live owners".into()));
+                if reply["has_more"] == true {
+                    if let Some(cursor) = reply["next_cursor"]
+                        .as_str()
+                        .filter(|cursor| cursor.len() <= 1024)
+                    {
+                        rows.push(block::PanelRow::Note(format!(
+                            "next page: /sessions {cursor}"
+                        )));
+                    }
+                }
+                app.panel("≡", "service sessions", rows);
+            }
+            Kind::Refusals { run } => {
+                if run == self.service.current_run_id {
+                    super::refusal::remote(
+                        app,
+                        &reply,
+                        &self.service.scope.thread_id,
+                        &self.service.scope.tenant,
+                        &run,
+                    );
                 }
             }
             Kind::Inputs => {
@@ -718,6 +814,8 @@ impl View {
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
+                    self.last_terminal = None;
+                    self.final_needed = false;
                     app.clear_mcp_inputs();
                     app.artifact_viewer.close();
                     app.history.bind_selected_run(&navigation.run_id);
@@ -867,6 +965,8 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         product_cursor: 0,
         poll_events: false,
         poll_inputs: false,
+        last_terminal: None,
+        final_needed: false,
         last_live_seq: 0,
         accepted: None,
         expected_submission: None,
@@ -940,7 +1040,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
             },
             _=tick.tick()=>{
                 if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.poll_inputs{view.inputs_request()?;}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.poll_inputs{view.inputs_request()?;}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -976,6 +1076,8 @@ mod tests {
             product_cursor: 0,
             poll_events: false,
             poll_inputs: false,
+            last_terminal: None,
+            final_needed: false,
             last_live_seq: 0,
             accepted: None,
             expected_submission: None,
