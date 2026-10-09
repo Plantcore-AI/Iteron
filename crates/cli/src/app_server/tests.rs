@@ -2143,6 +2143,23 @@ async fn panel_resume_launches_the_persisted_run_and_orders_started_before_finis
     )
     .unwrap();
 
+    #[cfg(feature = "script-workflows")]
+    {
+        // The real pinned policy reserves all four fixture turns for its parent writer. Prove
+        // that refusal before the operator records the smallest finite ceiling with child room.
+        let before = std::fs::read(agent.rollout.path()).unwrap();
+        assert!(
+            agent
+                .prepare_workflow_resume(run_id)
+                .err()
+                .unwrap()
+                .contains("writer reserve leaves no child turn")
+        );
+        assert_eq!(std::fs::read(agent.rollout.path()).unwrap(), before);
+        assert!(crate::workflow::load_result(&workflows_dir, run_id).is_none());
+        assert_eq!(agent.set_turn_ceiling(5).unwrap().max_turns, 5);
+    }
+
     let Attached {
         handle,
         task,
@@ -2176,6 +2193,31 @@ async fn panel_resume_launches_the_persisted_run_and_orders_started_before_finis
     let ControlReply::Workflows(reply) = reply_rx.await.unwrap() else {
         panic!("resume answers through the typed workflow surface")
     };
+    if !iteron_workflow::SCRIPT_WORKFLOWS_ENABLED {
+        assert!(reply.notice.as_deref().is_some_and(|notice| {
+            notice.contains(&iteron_workflow::ScriptWorkflowsUnavailable.to_string())
+        }));
+        assert!(reply.runs.is_empty());
+        assert!(crate::workflow::load_result(&workflows_dir, run_id).is_none());
+        while let Ok(envelope) = events.try_recv() {
+            assert!(
+                !matches!(
+                    envelope.into_current().unwrap(),
+                    ServerEvent::WorkflowRun(_)
+                ),
+                "unavailable scripts must not publish a started or terminal run"
+            );
+        }
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the refused session closes without a workflow")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+        return;
+    }
     assert!(
         reply
             .notice
