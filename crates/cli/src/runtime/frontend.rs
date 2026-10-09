@@ -782,10 +782,20 @@ impl Agent {
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
         if self.transcript_state.working().is_none() {
-            // Nothing has run in this process yet, so the record is the only transcript there is.
+            // A failed intake can leave no working transcript even after the operator has
+            // committed and priced a new route. Verified adoption must still clear the card;
+            // re-authenticate that previously bound selection in its new epoch, through the
+            // host pricing port and a fresh WAL receipt, instead of restoring cached authority.
+            let reauthenticate_pricing = self.provider_selection.card().is_some();
             let path = self.rollout.path().to_path_buf();
             let prior = Self::messages_from_rollout(&path)?;
-            return self.set_resume(prior);
+            self.set_resume(prior)?;
+            if reauthenticate_pricing {
+                // Missing pricing stays unbound. Invalid pricing or a failed durable receipt
+                // refuses this submission; the ordinary finite-budget gate still precedes IO.
+                self.bind_selected_rate_card()?;
+            }
+            return Ok(());
         }
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // Turn ids are canonical effect/correlation identities, not an invocation-local counter, so

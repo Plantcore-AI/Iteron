@@ -18368,7 +18368,8 @@ ant-api03-SuperSecretModelToken12345"
         record_test_genesis(&mut agent, &ws);
         let (pricing, _) = test_pricing("provider-a", "model-a");
         let select = |agent: &mut Agent| {
-            agent.record_model_selection(
+            agent.record_operator_model_selection(
+                provider.clone(),
                 "provider-a".into(),
                 "model-a".into(),
                 test_pricing_digests().0,
@@ -18387,16 +18388,28 @@ ant-api03-SuperSecretModelToken12345"
         ));
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        // The refused initial run produced no resident transcript. Stage the real cold record
-        // before rebinding: verified adoption deliberately starts a new pricing-card epoch.
-        agent.stage_follow_up_transcript().await.unwrap();
-        assert!(agent.provider_selection.card().is_none());
+        // This is the same order as an operator's model control followed by a retry. The
+        // runtime must adopt the cold transcript, then authenticate a fresh pricing-card epoch.
+        assert!(agent.transcript_state.working().is_none());
         assert!(agent.bind_selected_rate_card().unwrap());
-        assert_eq!(agent.run("now dispatch").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            agent.follow_up("now dispatch").await.unwrap(),
+            Outcome::Done
+        );
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert!(matches!(agent.ledger.cost_state(), CostState::Known { .. }));
 
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let bindings: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::RateCardBound { .. }))
+            .collect();
+        assert_eq!(bindings.len(), 3, "adoption authenticates a new epoch once");
+        let physical_intent = events
+            .iter()
+            .find(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .unwrap();
+        assert!(bindings[2].seq < physical_intent.seq);
         let mut replay = iteron_obs::PricingReplay::trusted(pricing);
         let mut replayed = Ledger::new();
         for event in &events {
@@ -18411,6 +18424,273 @@ ant-api03-SuperSecretModelToken12345"
         }
         assert_eq!(replayed.cost_state(), agent.ledger.cost_state());
         let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn cold_restored_host_reauthenticates_pricing_before_its_first_followup_dispatch() {
+        let ws = temp_ws("cold-host-priced-first-followup");
+        let runs = ws.join(".iteron/runs");
+        let run = iteron_protocol::RunId("cold-host-priced-first-followup".into());
+        let tenant = iteron_protocol::TenantId::default();
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let (pricing, _) = test_pricing("provider-a", "model-a");
+        {
+            let mut original = Agent::new(
+                provider.clone(),
+                Registry::coding_agent(&ws).unwrap(),
+                Rollout::open(&runs, &run, tenant.clone()).unwrap(),
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_usd: Some(1.0),
+                    max_tokens: None,
+                    ..Budget::default()
+                },
+            );
+            record_test_genesis(&mut original, &ws);
+            original
+                .record_model_selection(
+                    "provider-a".into(),
+                    "model-a".into(),
+                    test_pricing_digests().0,
+                    test_pricing_digests().1,
+                )
+                .unwrap();
+            original.set_pricing_port(pricing.clone());
+            assert!(original.bind_selected_rate_card().unwrap());
+            assert_eq!(
+                original.run("first durable turn").await.unwrap(),
+                Outcome::Done
+            );
+        }
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        let rollout = Rollout::open_existing(&runs, &run, tenant).unwrap();
+        let checkpoint = rollout.tunables_checkpoint().unwrap().unwrap();
+        let messages = Agent::messages_from_rollout(rollout.path()).unwrap();
+        let mut resumed = Agent::new_with_tunables_checkpoint(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+            checkpoint,
+        )
+        .unwrap();
+        resumed.workspace = ws.clone();
+        resumed.set_pricing_port(pricing.clone());
+        resumed.set_resume(messages).unwrap();
+        assert!(resumed.provider_selection.card().is_none());
+        assert_eq!(resumed.budget.max_usd, Some(1.0));
+        assert!(resumed.transcript_state.working().is_none());
+        assert!(resumed.transcript_state.restored().is_some());
+        // This is the real host selection transaction used after cold session adoption.
+        resumed
+            .record_operator_model_selection(
+                provider.clone(),
+                "provider-a".into(),
+                "model-a".into(),
+                test_pricing_digests().0,
+                test_pricing_digests().1,
+            )
+            .unwrap();
+        assert!(resumed.bind_selected_rate_card().unwrap());
+        assert_eq!(
+            resumed.follow_up("cold host retry").await.unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(provider.requests.lock().unwrap().len(), 2);
+        let events = iteron_record::replay(resumed.rollout.path()).unwrap();
+        let last_binding = events
+            .iter()
+            .rfind(|event| matches!(event.kind, EventKind::RateCardBound { .. }))
+            .unwrap();
+        let last_intent = events
+            .iter()
+            .rfind(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .unwrap();
+        assert!(last_binding.seq < last_intent.seq);
+        let mut replayed = Ledger::new();
+        let mut replay = iteron_obs::PricingReplay::trusted(pricing);
+        for event in &events {
+            replay
+                .observe(
+                    event,
+                    resumed.rollout.tenant(),
+                    resumed.rollout.run_id(),
+                    &mut replayed,
+                )
+                .unwrap();
+        }
+        assert_eq!(replayed.cost_state(), resumed.ledger.cost_state());
+        drop(resumed);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    /// A fixture manifest may become unavailable or return a corrupted artifact between two
+    /// host authentications. All signature and projection verification still uses the real HMAC
+    /// authority; this adapter never manufactures known cost or a successful authentication.
+    struct FollowupPricingManifest {
+        trusted: std::sync::Arc<iteron_obs::HmacPricingAuthority>,
+        failure: AtomicUsize,
+        resolutions: AtomicUsize,
+    }
+    impl iteron_obs::PricingPort for FollowupPricingManifest {
+        fn resolve_rate_card(
+            &self,
+            route: &PricingRoute,
+            at_unix_secs: u64,
+        ) -> Result<Option<SignedRateCard>, iteron_obs::PricingError> {
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            let mut signed = self.trusted.resolve_rate_card(route, at_unix_secs)?;
+            match self.failure.load(Ordering::SeqCst) {
+                1 => Ok(None),
+                2 => {
+                    if let Some(card) = &mut signed {
+                        let end = card.signature.len();
+                        let replacement = if card.signature.ends_with('0') {
+                            "1"
+                        } else {
+                            "0"
+                        };
+                        card.signature.replace_range(end - 1..end, replacement);
+                    }
+                    Ok(signed)
+                }
+                _ => Ok(signed),
+            }
+        }
+        fn verify_rate_card(
+            &self,
+            signed: &SignedRateCard,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_rate_card(signed)
+        }
+        fn project(
+            &self,
+            signed: &SignedRateCard,
+            identity: iteron_protocol::CostProjectionIdentity,
+            usage: Usage,
+            projected_at_unix_secs: u64,
+        ) -> Result<iteron_protocol::CostProjection, iteron_obs::PricingError> {
+            self.trusted
+                .project(signed, identity, usage, projected_at_unix_secs)
+        }
+        fn verify_projection(
+            &self,
+            signed: &SignedRateCard,
+            projection: &iteron_protocol::CostProjection,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_projection(signed, projection)
+        }
+        fn verify_projection_by_digest(
+            &self,
+            projection: &iteron_protocol::CostProjection,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_projection_by_digest(projection)
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_followup_cannot_reuse_unbound_missing_expired_corrupt_or_uncommitted_pricing() {
+        for case in ["unbound", "missing", "expired", "corrupt", "record"] {
+            let ws = temp_ws(&format!("priced-cold-followup-{case}"));
+            let provider = std::sync::Arc::new(CaptureSteering::default());
+            let (_, mut signed) = test_pricing("provider-a", "model-a");
+            signed.rate_card.expires_at_unix_secs = 200;
+            let signed =
+                iteron_obs::sign_rate_card(signed.rate_card, "pricing-root-v1", [42; 32]).unwrap();
+            let manifest = std::sync::Arc::new(FollowupPricingManifest {
+                trusted: std::sync::Arc::new(
+                    iteron_obs::HmacPricingAuthority::new(vec![(
+                        signed,
+                        iteron_obs::HmacPricingKey::from_bytes([42; 32]),
+                    )])
+                    .unwrap(),
+                ),
+                failure: AtomicUsize::new(0),
+                resolutions: AtomicUsize::new(0),
+            });
+            let mut agent = Agent::new(
+                provider.clone(),
+                Registry::coding_agent(&ws).unwrap(),
+                Rollout::open(
+                    &ws.join(".iteron/runs"),
+                    &iteron_protocol::RunId(format!("priced-cold-followup-{case}")),
+                    iteron_protocol::TenantId::default(),
+                )
+                .unwrap(),
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_usd: Some(1.0),
+                    max_tokens: None,
+                    ..Budget::default()
+                },
+            );
+            record_test_genesis(&mut agent, &ws);
+            agent
+                .record_model_selection(
+                    "provider-a".into(),
+                    "model-a".into(),
+                    test_pricing_digests().0,
+                    test_pricing_digests().1,
+                )
+                .unwrap();
+            agent.set_pricing_port(manifest.clone());
+            agent.pricing_now_unix_secs = Some(100);
+            if case != "unbound" {
+                assert!(agent.bind_selected_rate_card().unwrap());
+            }
+            match case {
+                "missing" => manifest.failure.store(1, Ordering::SeqCst),
+                "expired" => agent.pricing_now_unix_secs = Some(200),
+                "corrupt" => manifest.failure.store(2, Ordering::SeqCst),
+                "record" => {
+                    agent.fail_next_durable_append = Some(DurableAppendFault::RateCardBound)
+                }
+                _ => {}
+            }
+            let result = agent.follow_up("must remain before provider IO").await;
+            match case {
+                "unbound" | "missing" => {
+                    assert!(matches!(result, Err(KernelError::UnpricedUsdCeiling)))
+                }
+                "expired" => assert!(matches!(
+                    result,
+                    Err(KernelError::Pricing(
+                        iteron_obs::PricingError::RateCardExpired
+                    ))
+                )),
+                "corrupt" => assert!(matches!(
+                    result,
+                    Err(KernelError::Pricing(
+                        iteron_obs::PricingError::SignatureMismatch
+                    ))
+                )),
+                "record" => {
+                    assert!(matches!(result, Err(KernelError::Record(_))));
+                    assert!(agent.record_failed);
+                }
+                _ => unreachable!(),
+            }
+            assert!(agent.provider_selection.card().is_none());
+            assert!(provider.requests.lock().unwrap().is_empty());
+            assert_eq!(agent.ledger.provider_attempts, 0);
+            assert_eq!(
+                manifest.resolutions.load(Ordering::SeqCst),
+                if case == "unbound" { 0 } else { 2 }
+            );
+            assert!(
+                !iteron_record::replay(agent.rollout.path())
+                    .unwrap()
+                    .iter()
+                    .any(|event| matches!(event.kind, EventKind::TurnStart)
+                        || matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            );
+            drop(agent);
+            std::fs::remove_dir_all(ws).unwrap();
+        }
     }
 
     #[tokio::test]
