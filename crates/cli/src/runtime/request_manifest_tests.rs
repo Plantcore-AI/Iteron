@@ -116,6 +116,13 @@ fn agent_with_environment(
             ("index_bytes", memory.index_bytes),
             ("recall_bytes", memory.recall_bytes),
             ("instruction_bytes", memory.instr_bytes),
+            (
+                "fact_bytes",
+                iteron_tunables::param_usize(
+                    "cli.runtime_tunables.core_facts.memory_fact_bytes",
+                    8_000,
+                ),
+            ),
             ("total_bytes", memory.total),
         ]
         .into_iter()
