@@ -55,6 +55,15 @@ pub(super) struct ManifestFile {
     snapshot: std::sync::Mutex<iteron_support::durable_windows_state::WindowsSnapshotStore>,
 }
 
+#[cfg(not(windows))]
+impl Drop for ManifestFile {
+    fn drop(&mut self) {
+        // A forked child can retain the open file description until exec. End this owner's
+        // lease explicitly so an inherited descriptor cannot retain its catalog lock.
+        let _ = self._lock.unlock();
+    }
+}
+
 impl ManifestFile {
     pub(super) fn acquire(
         store: &DurableArtifactStore,
@@ -231,5 +240,49 @@ fn directory(path: &Path, create: bool) -> Result<bool, ArtifactStoreError> {
             Ok(true)
         }
         Err(_) => Err(ArtifactStoreError::Unavailable),
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::artifacts::ArtifactSchema;
+    use iteron_protocol::client_artifact::ClientArtifactCommandV1;
+    use iteron_protocol::{RunId, SessionId, TenantId};
+
+    #[test]
+    fn completed_owner_releases_catalog_lock_while_an_inherited_descriptor_remains_open() {
+        let root = crate::runtime::test_tempdir::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let run = RunId("manifest-owner-closure".into());
+        let rollout =
+            iteron_record::Rollout::open(&root.path().join("runs"), &run, TenantId::default())
+                .unwrap();
+        let store = DurableArtifactStore::from_rollout_writer(&rollout, &workspace).unwrap();
+        let active = ManifestFile::acquire(&store, true).unwrap().unwrap();
+        // A cloned descriptor shares the same OS open file description as fork inheritance.
+        let inherited = active._lock.try_clone().unwrap();
+        assert!(matches!(
+            store.publish_text(1, ArtifactSchema::ToolOutput, "retained bytes", &[]),
+            Err(ArtifactStoreError::Unavailable)
+        ));
+        drop(active);
+        let published = store
+            .publish_text(1, ArtifactSchema::ToolOutput, "retained bytes", &[])
+            .expect("finished catalog authority must not remain held by a descriptor copy");
+        let thread = SessionId(run.0);
+        let listed = store
+            .read(
+                &thread,
+                ClientArtifactCommandV1::List {
+                    thread_id: thread.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["artifacts"][0]["artifact_id"], published.artifact_id);
+        assert!(published.complete);
+        drop(inherited);
     }
 }
