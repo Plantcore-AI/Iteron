@@ -142,6 +142,60 @@ async fn native_windows_registry_terminal_stdin_eof_and_cursors() {
 }
 
 #[tokio::test]
+async fn native_windows_registry_required_confinement_uses_lpac_on_the_actual_terminal() {
+    let root = Workspace::new("windows-required-confinement");
+    let registry = Registry::coding_agent(&root.0).unwrap();
+    registry
+        .install_process_launch_policy(super::ProcessLaunchPolicy::owner(&root.0).unwrap())
+        .unwrap();
+    // The ordinary registry's required-confinement posture remains intact. A transport-only Job
+    // or unsupported backend cannot satisfy this positive native journey.
+    let started = value(registry.run_effect(tool_use("process_start", json!({
+        "command":"printf 'lpac-ready\\n'; while IFS= read -r line; do printf 'lpac-reply:%s\\n' \"$line\"; done"
+    }))).await);
+    assert_eq!(
+        started["backend"],
+        iteron_sandbox::PersistentBackend::WindowsLpacConPty.as_str()
+    );
+    let job = started["job_id"].as_str().unwrap();
+    observe(&registry, job, 0, "lpac-ready").await;
+    let written = value(
+        registry
+            .run_effect(tool_use(
+                "process_write",
+                json!({
+                    "job_id":job,"input":"actual-isolated-terminal\n","eof":true
+                }),
+            ))
+            .await,
+    );
+    assert_eq!(
+        written["accepted_bytes"],
+        "actual-isolated-terminal\n".len()
+    );
+    assert_eq!(written["stdin_closed"], true);
+    let done = terminal(&registry, job).await;
+    assert_eq!(done["state"]["kind"], "exited");
+    assert_eq!(done["state"]["exit_code"], 0);
+    let retained = poll(&registry, job, 0, 0).await;
+    assert!(
+        retained["stdout"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("lpac-reply:actual-isolated-terminal")
+    );
+    assert!(retained["stdout"]["closed"].as_bool().unwrap());
+    assert_eq!(
+        registry
+            .process_control()
+            .unwrap()
+            .health()
+            .cleanup_unknown_jobs,
+        0
+    );
+}
+
+#[tokio::test]
 async fn native_windows_registry_resize_and_authoritative_stop() {
     let root = Workspace::new("windows-resize");
     let registry = registry(&root.0);
