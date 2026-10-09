@@ -133,8 +133,8 @@ mod tests {
         assert!(screen.contains("bounded investigator"));
     }
 
-    #[test]
-    fn artifact_panel_and_open_render_the_same_scrubbed_public_content() {
+    #[tokio::test]
+    async fn artifact_panel_and_open_render_the_same_scrubbed_public_content() {
         let (submissions, _receive) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(submissions);
         let thread_id = iteron_protocol::SessionId("artifact-thread".into());
@@ -166,13 +166,23 @@ mod tests {
         assert!(screen.contains("thread artifacts"));
         assert!(screen.contains("tool_output"));
         artifacts::render(&mut app, &session, &id[..12]);
-        let content = app.history.blocks().last().unwrap().to_text();
-        assert!(content.contains("artifact result"));
-        assert!(content.contains("[REDACTED"));
-        assert!(!content.contains(SECRET));
-        let screen = render_text(&mut app, 120, 24);
-        assert!(screen.contains("artifact result"));
-        assert!(!screen.contains(SECRET));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            app.artifact_viewer
+                .poll(&iteron_protocol::RunId("run".into()));
+            let screen = render_text(&mut app, 120, 24);
+            if screen.contains("SHA-256 verified") {
+                assert!(screen.contains("artifact result"));
+                assert!(screen.contains("[REDACTED"));
+                assert!(!screen.contains(SECRET));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "artifact view did not observe its worker: {screen}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     #[test]

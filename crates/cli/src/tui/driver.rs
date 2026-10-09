@@ -375,6 +375,7 @@ pub async fn run(
     let tui_result: anyhow::Result<()> = async {
     loop {
         if app.reconcile_mcp_inputs(&session) { redraw = true; }
+        if let Some(scope)=session.client.thread_snapshot_v1() && app.artifact_viewer.poll(&scope.run_id) {redraw=true;}
         if let Some(receipt)=session.client.model_preference_after(model_preference_revision) {
             model_preference_revision=receipt.revision;
             event_actions::show_model_preference(&mut app,receipt);

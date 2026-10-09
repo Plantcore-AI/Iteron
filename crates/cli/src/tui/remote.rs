@@ -75,10 +75,22 @@ impl Drop for Input {
 enum Kind {
     Snapshot,
     Events,
-    Submit { draft: String, revision: u64 },
+    Submit {
+        draft: String,
+        revision: u64,
+    },
     Control,
-    Approval { prompt: SubmissionId },
+    Approval {
+        prompt: SubmissionId,
+    },
     Models,
+    ArtifactList {
+        prefix: String,
+        run: iteron_protocol::RunId,
+    },
+    ArtifactChunk {
+        generation: u64,
+    },
     Stop,
 }
 struct AcceptedDraft {
@@ -103,6 +115,7 @@ struct View {
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
     expected_submission: Option<SubmissionId>,
+    artifact: Option<(iteron_protocol::RunId, super::artifact_view::Transfer)>,
 }
 impl View {
     fn scope(&self) -> Value {
@@ -172,7 +185,9 @@ impl View {
                 }
                 "/agents" => json!({"type":"agents_v1","command":{"type":"list"}}),
                 "/artifacts" => {
-                    json!({"type":"artifacts_v1","command":{"type":"list","thread_id":scope["thread_id"]}})
+                    self.queue(json!({"type":"artifacts_v1","command":{"type":"list","thread_id":scope["thread_id"]}}), Kind::ArtifactList { prefix: arg.to_owned(), run: self.service.current_run_id.clone() })?;
+                    app.editor.clear();
+                    return Ok(false);
                 }
                 "/extensions" => {
                     json!({"type":"ordinary_extensions_v1","command":{"action":"read","thread_id":scope["thread_id"],"run_id":scope["run_id"],"offset":0,"limit":16}})
@@ -378,6 +393,8 @@ impl View {
                     self.queued.clear();
                     self.accepted = None;
                     self.expected_submission = None;
+                    self.artifact = None;
+                    app.artifact_viewer.close();
                     app.telemetry.observe_remote_cost(None);
                     app.history.clear();
                     app.history.bind_selected_run(&snapshot.run_id);
@@ -490,6 +507,77 @@ impl View {
                     show_reply(app, &reply);
                 }
             }
+            Kind::ArtifactList { prefix, run } => {
+                if run != self.service.current_run_id {
+                    return Ok(());
+                }
+                if prefix.is_empty() {
+                    super::artifacts::render_listing(app, &reply);
+                } else {
+                    app.artifact_viewer.begin_remote();
+                    match super::artifact_view::Transfer::select(
+                        self.service.scope.thread_id.clone(),
+                        &prefix,
+                        &reply,
+                    ) {
+                        Ok(transfer) => {
+                            if self
+                                .queue(
+                                    json!({"type":"artifacts_v1","command":transfer.command()}),
+                                    Kind::ArtifactChunk {
+                                        generation: app.artifact_viewer.generation(),
+                                    },
+                                )
+                                .is_ok()
+                            {
+                                self.artifact = Some((run, transfer));
+                            } else {
+                                app.artifact_viewer.unavailable("artifact read queue is busy; retry after pending commands finish");
+                            }
+                        }
+                        Err(reason) => app.artifact_viewer.unavailable(reason),
+                    }
+                }
+            }
+            Kind::ArtifactChunk { generation } => {
+                if !app.artifact_viewer.is_open() || app.artifact_viewer.generation() != generation
+                {
+                    self.artifact = None;
+                    return Ok(());
+                }
+                let Some((run, mut transfer)) = self.artifact.take() else {
+                    app.artifact_viewer
+                        .unavailable("artifact transfer unavailable");
+                    return Ok(());
+                };
+                if run != self.service.current_run_id {
+                    app.artifact_viewer.close();
+                    return Ok(());
+                }
+                match transfer.accept(&reply) {
+                    Ok(true) => {
+                        if let Err(reason) = app.artifact_viewer.finish_remote(transfer, run) {
+                            app.artifact_viewer.unavailable(reason);
+                        }
+                    }
+                    Ok(false) => {
+                        if self
+                            .queue(
+                                json!({"type":"artifacts_v1","command":transfer.command()}),
+                                Kind::ArtifactChunk { generation },
+                            )
+                            .is_ok()
+                        {
+                            self.artifact = Some((run, transfer));
+                        } else {
+                            app.artifact_viewer.unavailable(
+                                "artifact read queue is busy; retry after pending commands finish",
+                            );
+                        }
+                    }
+                    Err(reason) => app.artifact_viewer.unavailable(reason),
+                }
+            }
             Kind::Approval { prompt } => {
                 if reply["type"] == "control_queued_v1" {
                     let id = reply["submission_id"]
@@ -528,6 +616,8 @@ impl View {
                     self.models = None;
                     self.accepted = None;
                     self.expected_submission = None;
+                    self.artifact = None;
+                    app.artifact_viewer.close();
                     app.history.bind_selected_run(&navigation.run_id);
                     app.run.select_verified_run();
                     super::session_adoption::project_host_transcript(app, &navigation.transcript);
@@ -677,6 +767,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         last_live_seq: 0,
         accepted: None,
         expected_submission: None,
+        artifact: None,
     };
     view.snapshot_request()?;
     let mut tick = tokio::time::interval(POLL_PERIOD);
@@ -692,6 +783,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                 deadline: Instant::now() + REPLY_DEADLINE,
             });
         }
+        app.artifact_viewer.poll(&view.service.current_run_id);
         terminal.draw(|frame| draw(frame, &mut app))?;
         tokio::select! {
             _=termination_rx.recv()=>break,
@@ -714,6 +806,9 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                 let ReadResult::Event(event)=incoming?else{continue;};
                 match event {
                     Event::Key(key) if key.kind!=KeyEventKind::Release=>{
+                        if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() { app.artifact_viewer.close(); }
+                        if app.artifact_viewer.is_open() && !key.modifiers.contains(KeyModifiers::CONTROL) {app.artifact_viewer.key(key.code);continue;}
+                        if key.modifiers.contains(KeyModifiers::CONTROL) { app.artifact_viewer.close(); }
                         if app.permission_prompt.read().is_some() {
                             if let Err(error) = view.approval_key(&mut app, key.code) { app.note(block::NoticeLevel::Warn, error.to_string()); }
                             continue;
@@ -775,6 +870,7 @@ mod tests {
             last_live_seq: 0,
             accepted: None,
             expected_submission: None,
+            artifact: None,
         }
     }
     #[test]
@@ -996,5 +1092,107 @@ mod tests {
         assert!(text.contains("same scoped public bytes"));
         assert!(!text.contains("old secret output"));
         assert!(!text.contains("write_file"));
+    }
+    #[tokio::test]
+    async fn remote_artifact_download_preserves_all_chunks_and_cancelled_scope_is_not_reused() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let bytes = format!("{}REMOTE-ARTIFACT-TAIL", "x".repeat(100_000)).into_bytes();
+        let descriptor = iteron_protocol::client_artifact::ClientArtifactDescriptorV1 {
+            artifact_id: hex::encode(Sha256::digest(&bytes)),
+            schema: "iteron.fixture.v1".into(),
+            mime_type: "text/plain".into(),
+            bytes: bytes.len() as u64,
+            complete: true,
+            required_capability: iteron_protocol::Capability::ReadOnly,
+            source_event_seq: 23,
+        };
+        let mut app = App::new();
+        let mut view = view();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::ArtifactList {
+                prefix: descriptor.artifact_id[..12].into(),
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"artifacts_v1","contract_version":1,"artifacts":[descriptor]}),
+        )
+        .unwrap();
+        let mut offset = 0;
+        for (index, bytes) in bytes.chunks(64 * 1024).enumerate() {
+            let (request, kind) = view.queued.pop_front().unwrap();
+            assert_eq!(request["command"]["artifact_id"], descriptor.artifact_id);
+            assert_eq!(request["command"]["offset"], offset);
+            let end = offset + bytes.len();
+            view.pending = Some(Request {
+                id: index as u64 + 2,
+                kind,
+                deadline: Instant::now() + REPLY_DEADLINE,
+            });
+            view.reply(&mut app,index as u64+2,json!({"type":"artifact_chunk_v1","contract_version":1,"artifact":descriptor,"offset":offset,"next_offset":end,"eof":end==descriptor.bytes as usize,"content_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})).unwrap();
+            offset = end;
+        }
+        assert_eq!(offset, bytes.len());
+        assert!(view.artifact.is_none());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !app.artifact_viewer.poll(&view.service.current_run_id) {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for _ in 0..bytes.len().div_ceil(8192) - 1 {
+            app.artifact_viewer.key(KeyCode::Right);
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 100)).unwrap();
+        terminal
+            .draw(|frame| super::super::artifact_view::render(frame, &app.artifact_viewer))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("REMOTE-ARTIFACT-TAIL"));
+        assert!(screen.contains("SHA-256 verified"));
+        let generation = app.artifact_viewer.generation();
+        app.artifact_viewer.close();
+        view.pending = Some(Request {
+            id: 4,
+            kind: Kind::ArtifactChunk { generation },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            4,
+            json!({"type":"artifact_chunk_v1","artifact":{"source_event_seq":999}}),
+        )
+        .unwrap();
+        assert!(!app.artifact_viewer.is_open());
+        assert!(view.artifact.is_none());
+        assert!(view.queued.is_empty());
+        view.pending = Some(Request {
+            id: 5,
+            kind: Kind::ArtifactList {
+                prefix: descriptor.artifact_id.clone(),
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.service.current_run_id = iteron_protocol::RunId("new".into());
+        view.reply(
+            &mut app,
+            5,
+            json!({"type":"artifacts_v1","contract_version":1,"artifacts":[descriptor]}),
+        )
+        .unwrap();
+        assert!(!app.artifact_viewer.is_open());
+        assert!(view.queued.is_empty());
     }
 }

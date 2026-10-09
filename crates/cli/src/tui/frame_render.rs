@@ -246,6 +246,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
     if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
+        app.artifact_viewer.close();
         if app.transcript_viewer.is_open() {
             app.transcript_viewer.close();
         }
@@ -263,6 +264,10 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             &app.theme,
             app.spin,
         );
+        return;
+    }
+    if app.artifact_viewer.is_open() {
+        super::artifact_view::render(f, &app.artifact_viewer);
         return;
     }
     if app.transcript_viewer.is_open() {

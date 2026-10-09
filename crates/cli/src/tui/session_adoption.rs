@@ -438,6 +438,7 @@ pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
 /// Retained UI state is per-run exactly as kernel state is: a card, an index entry or a half-streamed
 /// paragraph from the previous run would render under the adopted run's identity.
 pub(super) fn clear_transcript_for_adoption(app: &mut App) {
+    app.artifact_viewer.close();
     app.history.clear();
     app.history.clear_selected_run_binding();
     app.permission_prompt.clear();

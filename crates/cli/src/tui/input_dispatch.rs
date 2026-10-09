@@ -175,7 +175,8 @@ where
             // inspection. In particular, a queued approval cannot have its first key
             // swallowed before the next draw closes the viewer, and Ctrl-C/Ctrl-D still
             // reach the kernel/teardown paths below.
-            if app.permission_prompt.read().is_some() {
+            if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
+                app.artifact_viewer.close();
                 if app.transcript_viewer.is_open() {
                     app.transcript_viewer.close();
                 }
@@ -199,6 +200,16 @@ where
             }
             if lifecycle_key && app.workflows_panel.is_open() {
                 app.workflows_panel.close();
+            }
+            if app.artifact_viewer.is_open() && !lifecycle_key {
+                app.artifact_viewer.key(k.code);
+                if !app.artifact_viewer.is_open() {
+                    term.clear()?;
+                }
+                return Ok(true);
+            }
+            if lifecycle_key {
+                app.artifact_viewer.close();
             }
             if app.transcript_viewer.is_open() && !lifecycle_key {
                 if let Some(effect) = app.transcript_viewer.key(

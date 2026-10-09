@@ -59,6 +59,7 @@ mod app_picker;
 mod app_transcript;
 mod app_workflow;
 mod app_workflow_legacy;
+mod artifact_view;
 mod artifacts;
 mod assistant_stream;
 mod attachment_owner;
@@ -606,6 +607,7 @@ struct App {
     session_name: String,
     history: transcript_history::TranscriptHistory,
     transcript_viewer: transcript_viewer::Viewer,
+    artifact_viewer: artifact_view::Viewer,
     tools: tool_presentations::ToolPresentations,
     /// The workflow region's store: the QuickJS `iteron-workflow` runs this TUI is watching, each
     /// bound to the one live phase→agent tree card that renders it (design §3.2 store), plus the

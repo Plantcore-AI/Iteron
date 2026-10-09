@@ -29,6 +29,7 @@ impl App {
             session_name: "New session".into(),
             history: super::transcript_history::TranscriptHistory::with_landing(welcome.kind),
             transcript_viewer: transcript_viewer::Viewer::default(),
+            artifact_viewer: super::artifact_view::Viewer::default(),
             tools: super::tool_presentations::ToolPresentations::default(),
             workflow_monitor: workflow_region::WorkflowMonitor::default(),
             workflows_panel: workflows_panel::View::default(),
