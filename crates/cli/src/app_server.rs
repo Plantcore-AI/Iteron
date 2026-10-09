@@ -179,10 +179,10 @@ use self::control::{
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
 use self::mcp_control::apply_mcp_control;
-#[cfg(test)]
-pub(crate) use self::mcp_input::McpInputField;
-pub(crate) use self::mcp_input::capacity as mcp_input_capacity;
-pub(crate) use self::mcp_input::{McpInputAnswer, McpInputPrompt, McpInputResponse};
+pub(crate) use self::mcp_input::{McpInputAnswer, McpInputField, McpInputPrompt, McpInputResponse};
+pub(crate) use self::mcp_input::{
+    capacity as mcp_input_capacity, prompt_view_fits as mcp_prompt_view_fits,
+};
 use self::operator_status::OperatorStatusSources;
 pub(crate) use self::operator_status::{
     LanguageServerStatus, OperatorStatusSnapshot, WorkflowHealth,

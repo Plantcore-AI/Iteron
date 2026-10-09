@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 struct PendingMcpInput {
     prompt: app_server::McpInputPrompt,
     editor: Editor,
+    complete: bool,
 }
 
 impl PendingMcpInput {
@@ -17,16 +18,27 @@ impl PendingMcpInput {
         Self {
             prompt,
             editor: Editor::new(),
+            complete: true,
         }
     }
 
     fn answers(&self) -> Result<Vec<(String, serde_json::Value)>, String> {
+        if !self.complete {
+            return Err(
+                "this prompt was redacted; decline or use an authorized complete input surface"
+                    .into(),
+            );
+        }
         let input = self.editor.text();
+        if input.len() > iteron_protocol::client_mcp_input::MAX_MCP_INPUT_RESPONSE_BYTES {
+            return Err("input response exceeds its byte ceiling".into());
+        }
         if input.trim().is_empty() {
             return Err("enter a JSON response or press Esc to decline".into());
         }
-        let value: serde_json::Value = serde_json::from_str(&input)
-            .map_err(|error| format!("invalid JSON response: {error}"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&input).map_err(|_| "invalid JSON response".to_string())?;
+        iteron_protocol::client_mcp_input::response_value_bytes(&value).map_err(str::to_owned)?;
         let answers = if self.prompt.fields.len() == 1 {
             vec![(self.prompt.fields[0].id.clone(), value)]
         } else {
@@ -62,7 +74,7 @@ impl PendingMcpInput {
                 .find(|field| field.id == *id)
                 .expect("answer ids came from the pending prompt");
             iteron_mcp::validate_mrtr_input(&field.schema, value)
-                .map_err(|error| format!("response for `{id}` is invalid: {error}"))?;
+                .map_err(|_| "response does not match the requested schema".to_string())?;
         }
         Ok(answers)
     }
@@ -71,7 +83,8 @@ impl PendingMcpInput {
 #[derive(Default)]
 pub(super) struct McpInputOwner {
     pending: Option<PendingMcpInput>,
-    queued: VecDeque<app_server::McpInputPrompt>,
+    queued: VecDeque<PendingMcpInput>,
+    remote_scope: Option<(iteron_protocol::SessionId, iteron_protocol::RunId)>,
 }
 impl McpInputOwner {
     pub(super) fn is_waiting(&self) -> bool {
@@ -88,7 +101,7 @@ impl McpInputOwner {
         if self.queued.len() >= app_server::mcp_input_capacity().saturating_sub(1) {
             return Err(prompt);
         }
-        self.queued.push_back(prompt);
+        self.queued.push_back(PendingMcpInput::new(prompt));
         Ok(false)
     }
     fn advance(&mut self, answered_request: u64) -> bool {
@@ -99,12 +112,13 @@ impl McpInputOwner {
         {
             return false;
         }
-        self.pending = self.queued.pop_front().map(PendingMcpInput::new);
+        self.pending = self.queued.pop_front();
         true
     }
     pub(super) fn clear(&mut self) {
         self.pending = None;
         self.queued.clear();
+        self.remote_scope = None;
     }
 }
 impl App {
@@ -135,7 +149,7 @@ impl App {
         for closed in &snapshot.closed {
             self.mcp_form
                 .queued
-                .retain(|prompt| prompt.request_id != closed.request_id);
+                .retain(|pending| pending.prompt.request_id != closed.request_id);
             if self.mcp_form.advance(closed.request_id) {
                 self.status = if self.mcp_form.is_waiting() {
                     "MCP server is waiting for your input".into()
@@ -149,6 +163,117 @@ impl App {
     }
     pub(super) fn clear_mcp_inputs(&mut self) {
         self.mcp_form.clear();
+    }
+}
+
+impl McpInputOwner {
+    pub(super) fn observe_remote(
+        &mut self,
+        snapshot: &iteron_protocol::client_mcp_input::McpInputsSnapshotV1,
+        thread: &iteron_protocol::SessionId,
+        run: &iteron_protocol::RunId,
+    ) -> Result<(), &'static str> {
+        if snapshot.version != 1
+            || snapshot.thread_id != *thread
+            || snapshot.run_id != *run
+            || snapshot.pending.len() > app_server::mcp_input_capacity()
+            || snapshot.closed.len() > 64
+        {
+            return Err("input observation scope or bounds changed");
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for prompt in &snapshot.pending {
+            if !ids.insert(prompt.request_id) || !app_server::mcp_prompt_view_fits(prompt) {
+                return Err("input prompt exceeds its finite presentation bounds");
+            }
+            let mut fields = std::collections::BTreeSet::new();
+            for field in &prompt.fields {
+                if usize::from(field.field_index) >= prompt.fields.len()
+                    || !fields.insert(field.field_index)
+                {
+                    return Err("input field handles are not the complete requested set");
+                }
+            }
+        }
+        let scope = (thread.clone(), run.clone());
+        let mut candidates = snapshot
+            .pending
+            .iter()
+            .map(|view| {
+                let prompt = app_server::McpInputPrompt {
+                    request_id: view.request_id,
+                    server: view.server_display.clone(),
+                    tool: view.tool_display.clone(),
+                    request_state: None,
+                    fields: view
+                        .fields
+                        .iter()
+                        .map(|field| app_server::McpInputField {
+                            id: field.field_index.to_string(),
+                            prompt: field.prompt.clone(),
+                            schema: field.schema.clone(),
+                        })
+                        .collect(),
+                };
+                let mut pending = PendingMcpInput::new(prompt);
+                pending.complete = view.prompt_complete;
+                pending
+            })
+            .collect::<VecDeque<_>>();
+        // Validate immutable metadata before replacing any queued form or its owned draft.
+        let retained = if self.remote_scope.as_ref() == Some(&scope) {
+            if let Some(current) = &self.pending {
+                if let Some(index) = candidates
+                    .iter()
+                    .position(|candidate| candidate.prompt.request_id == current.prompt.request_id)
+                {
+                    let candidate = &candidates[index];
+                    if current.prompt != candidate.prompt || current.complete != candidate.complete
+                    {
+                        return Err("pending input metadata changed");
+                    }
+                    candidates.remove(index);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !retained {
+            self.pending = candidates.pop_front();
+        }
+        self.queued = candidates;
+        self.remote_scope = Some(scope);
+        Ok(())
+    }
+    pub(super) fn remote_answer(
+        &self,
+        reject: bool,
+    ) -> Result<(u64, iteron_protocol::client_mcp_input::McpInputAnswerV1), String> {
+        let pending = self.pending.as_ref().ok_or("no observed input request")?;
+        let answer = if reject {
+            iteron_protocol::client_mcp_input::McpInputAnswerV1::Reject {}
+        } else {
+            let values = pending
+                .answers()?
+                .into_iter()
+                .map(|(id, content)| {
+                    Ok(iteron_protocol::client_mcp_input::McpInputValueV1 {
+                        field_index: id.parse().map_err(|_| "invalid observed field handle")?,
+                        content,
+                    })
+                })
+                .collect::<Result<Vec<_>, &str>>()?;
+            iteron_protocol::client_mcp_input::McpInputAnswerV1::Approve { values }
+        };
+        Ok((pending.prompt.request_id, answer))
+    }
+    pub(super) fn remote_handoff(&mut self, request_id: u64) {
+        self.advance(request_id);
     }
 }
 
@@ -211,7 +336,7 @@ pub(super) fn handle_key(
                 request_drain(app, session, drain, drain_available);
             }
         }
-        KeyCode::Enter if !alt && !shift => {
+        KeyCode::Enter if !ctrl && !alt && !shift => {
             let answers = app
                 .mcp_form
                 .pending
@@ -227,8 +352,21 @@ pub(super) fn handle_key(
                 Err(error) => app.note(block::NoticeLevel::Warn, error),
             }
         }
+        _ => edit_key(app, code, modifiers),
+    }
+}
+/// Pure form editing shared by local and attached clients; answer delivery stays in their adapters.
+pub(super) fn edit_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let alt = modifiers.contains(KeyModifiers::ALT);
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    match code {
         KeyCode::Enter | KeyCode::Char('j') if ctrl || alt || shift => {
-            active_editor(app).newline();
+            if active_editor(app).text().len()
+                < iteron_protocol::client_mcp_input::MAX_MCP_INPUT_RESPONSE_BYTES
+            {
+                active_editor(app).newline();
+            }
         }
         KeyCode::Left if alt => active_editor(app).word_left(),
         KeyCode::Right if alt => active_editor(app).word_right(),
@@ -247,13 +385,31 @@ pub(super) fn handle_key(
         KeyCode::Char('w') if ctrl => active_editor(app).delete_word_before(),
         KeyCode::Delete => active_editor(app).delete(),
         KeyCode::Backspace => active_editor(app).backspace(),
-        KeyCode::Char(character) if !ctrl && !alt => active_editor(app).insert(character),
+        KeyCode::Char(character) if !ctrl && !alt => {
+            if active_editor(app)
+                .text()
+                .len()
+                .saturating_add(character.len_utf8())
+                <= iteron_protocol::client_mcp_input::MAX_MCP_INPUT_RESPONSE_BYTES
+            {
+                active_editor(app).insert(character);
+            }
+        }
         _ => {}
     }
 }
 
 pub(super) fn handle_paste(app: &mut App, pasted: &str) {
-    active_editor(app).insert_str(pasted);
+    if active_editor(app).text().len().saturating_add(pasted.len())
+        <= iteron_protocol::client_mcp_input::MAX_MCP_INPUT_RESPONSE_BYTES
+    {
+        active_editor(app).insert_str(pasted);
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "input paste exceeds its byte ceiling; retained the current response",
+        );
+    }
 }
 
 fn active_editor(app: &mut App) -> &mut Editor {
@@ -309,6 +465,11 @@ pub(super) fn render(f: &mut Frame, area: Rect, app: &mut App) -> bool {
                 clip_text(&format!("state {state}"), body.width),
                 Style::default().fg(app.theme.muted),
             )));
+        }
+        if !pending.complete {
+            lines.push(Line::from(
+                "Prompt was redacted · approval unavailable · Esc declines",
+            ));
         }
         for field in &pending.prompt.fields {
             let schema = serde_json::to_string(&field.schema).unwrap_or_else(|_| "{}".into());
@@ -461,5 +622,125 @@ mod tests {
         assert!(!owner.is_waiting());
         assert!(owner.queued.is_empty());
         assert!(!owner.advance(101));
+    }
+    fn remote_snapshot() -> iteron_protocol::client_mcp_input::McpInputsSnapshotV1 {
+        use iteron_protocol::client_mcp_input::{
+            McpInputFieldViewV1, McpInputPromptViewV1, McpInputsSnapshotV1,
+        };
+        McpInputsSnapshotV1 {
+            version: 1,
+            thread_id: iteron_protocol::SessionId("thread".into()),
+            run_id: iteron_protocol::RunId("run".into()),
+            revision: 1,
+            pending: vec![McpInputPromptViewV1 {
+                request_id: 3,
+                server_display: "alpha".into(),
+                tool_display: "profile".into(),
+                fields: vec![McpInputFieldViewV1 {
+                    field_index: 0,
+                    prompt: "Enter name".into(),
+                    schema: serde_json::json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}),
+                }],
+                prompt_complete: true,
+            }],
+            closed: vec![],
+            omitted_closed: 0,
+        }
+    }
+    #[test]
+    fn remote_form_uses_exact_owner_snapshot_and_retains_response_until_matching_handoff() {
+        let mut snapshot = remote_snapshot();
+        let mut app = App::new();
+        app.mcp_form
+            .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
+            .unwrap();
+        handle_paste(&mut app, r#"{"name":"private-form-value"}"#);
+        app.mcp_form
+            .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
+            .unwrap();
+        let (id, answer) = app.mcp_form.remote_answer(false).unwrap();
+        assert_eq!(id, 3);
+        let iteron_protocol::client_mcp_input::McpInputAnswerV1::Approve { values } = answer else {
+            panic!("approve")
+        };
+        assert_eq!(values[0].field_index, 0);
+        assert_eq!(values[0].content["name"], "private-form-value");
+        assert!(app.history.blocks().is_empty());
+        assert!(app.editor.text().is_empty());
+        app.mcp_form.remote_handoff(999);
+        assert!(app.mcp_form.is_waiting());
+        let mut forged = snapshot.clone();
+        forged.pending[0].fields[0].schema = serde_json::json!({"type":"boolean"});
+        assert!(
+            app.mcp_form
+                .observe_remote(&forged, &snapshot.thread_id, &snapshot.run_id)
+                .is_err()
+        );
+        assert!(
+            active_editor(&mut app)
+                .text()
+                .contains("private-form-value")
+        );
+        let mut second = snapshot.pending[0].clone();
+        second.request_id = 4;
+        second.prompt_complete = false;
+        snapshot.pending.push(second);
+        app.mcp_form
+            .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
+            .unwrap();
+        app.mcp_form.remote_handoff(3);
+        assert!(app.mcp_form.is_waiting());
+        handle_paste(&mut app, r#"{"name":"hidden-schema"}"#);
+        assert!(app.mcp_form.remote_answer(false).is_err());
+        assert!(app.mcp_form.remote_answer(true).is_ok());
+        app.mcp_form.remote_handoff(4);
+        assert!(!app.mcp_form.is_waiting());
+    }
+    #[test]
+    fn remote_form_refuses_foreign_or_unbounded_prompts_before_clone_and_errors_are_content_free() {
+        let snapshot = remote_snapshot();
+        let mut owner = McpInputOwner::default();
+        assert!(
+            owner
+                .observe_remote(
+                    &snapshot,
+                    &snapshot.thread_id,
+                    &iteron_protocol::RunId("foreign".into())
+                )
+                .is_err()
+        );
+        assert!(!owner.is_waiting());
+        let mut forged = snapshot.clone();
+        forged.pending[0].fields[0].field_index = 1;
+        assert!(
+            owner
+                .observe_remote(&forged, &snapshot.thread_id, &snapshot.run_id)
+                .is_err()
+        );
+        forged = snapshot.clone();
+        forged.pending[0].fields[0].schema =
+            serde_json::json!({"description":"x".repeat(128*1024+1)});
+        assert!(
+            owner
+                .observe_remote(&forged, &snapshot.thread_id, &snapshot.run_id)
+                .is_err()
+        );
+        let mut pending = pending(vec![field("name", "name", "string")]);
+        pending.editor.insert_str("private-invalid-json-secret");
+        let error = pending.answers().unwrap_err();
+        assert!(!error.contains("private-invalid-json-secret"));
+        pending.editor.replace_text(r#"{"name":31415926}"#);
+        assert!(!pending.answers().unwrap_err().contains("31415926"));
+        let mut app = App::new();
+        app.mcp_form
+            .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
+            .unwrap();
+        handle_paste(
+            &mut app,
+            &"x".repeat(iteron_protocol::client_mcp_input::MAX_MCP_INPUT_RESPONSE_BYTES + 1),
+        );
+        assert!(active_editor(&mut app).text().is_empty());
+        edit_key(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(active_editor(&mut app).text(), "\n");
     }
 }

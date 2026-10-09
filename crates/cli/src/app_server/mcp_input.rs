@@ -7,6 +7,7 @@ use iteron_protocol::client_mcp_input::{
     McpInputStateV1, McpInputsSnapshotV1, response_value_bytes,
 };
 use iteron_protocol::{RunId, SessionId};
+pub(crate) use request_bounds::prompt_view_fits;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

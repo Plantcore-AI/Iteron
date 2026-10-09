@@ -84,6 +84,11 @@ enum Kind {
         prompt: SubmissionId,
     },
     Models,
+    Inputs,
+    McpResponse {
+        request_id: u64,
+        run: iteron_protocol::RunId,
+    },
     ArtifactList {
         prefix: String,
         run: iteron_protocol::RunId,
@@ -112,6 +117,7 @@ struct View {
     models: Option<Value>,
     product_cursor: u64,
     poll_events: bool,
+    poll_inputs: bool,
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
     expected_submission: Option<SubmissionId>,
@@ -139,6 +145,56 @@ impl View {
     }
     fn events_request(&mut self) -> Result<()> {
         self.product(json!({"type":"events_read","thread_id":self.service.scope.thread_id,"after":self.product_cursor}),Kind::Events)
+    }
+    fn inputs_request(&mut self) -> Result<()> {
+        self.queue(json!({"type":"mcp_inputs_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"command":{"action":"read"}}}),Kind::Inputs)
+    }
+    fn mcp_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('d') {
+            return Ok(true);
+        }
+        let reject = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
+        if reject || (key.code == KeyCode::Enter && key.modifiers.is_empty()) {
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(|request| matches!(&request.kind, Kind::McpResponse { .. }))
+                || self
+                    .queued
+                    .iter()
+                    .any(|(_, kind)| matches!(kind, Kind::McpResponse { .. }))
+            {
+                bail!("input response is awaiting callback handoff");
+            }
+            let (request_id, answer) = app
+                .mcp_form
+                .remote_answer(reject)
+                .map_err(anyhow::Error::msg)?;
+            let command = iteron_protocol::client_mcp_input::McpInputCommandV1 {
+                thread_id: self.service.scope.thread_id.clone(),
+                run_id: self.service.current_run_id.clone(),
+                command: iteron_protocol::client_mcp_input::McpInputActionV1::Respond {
+                    request_id,
+                    answer,
+                },
+            };
+            command.validate().map_err(anyhow::Error::msg)?;
+            self.queue(
+                json!({"type":"mcp_inputs_v1","command":command}),
+                Kind::McpResponse {
+                    request_id,
+                    run: self.service.current_run_id.clone(),
+                },
+            )?;
+            app.status = "input response queued · callback handoff not yet observed".into();
+            if ctrl && key.code == KeyCode::Char('c') && self.active_turn().is_some() {
+                self.interrupt()?;
+            }
+        } else {
+            super::mcp_input::edit_key(app, key.code, key.modifiers);
+        }
+        Ok(false)
     }
     fn active_turn(&self) -> Option<iteron_protocol::product_contract::ProductTurnId> {
         self.snapshot
@@ -193,7 +249,9 @@ impl View {
                     json!({"type":"ordinary_extensions_v1","command":{"action":"read","thread_id":scope["thread_id"],"run_id":scope["run_id"],"offset":0,"limit":16}})
                 }
                 "/inputs" => {
-                    json!({"type":"mcp_inputs_v1","command":{"thread_id":scope["thread_id"],"run_id":scope["run_id"],"command":{"action":"read"}}})
+                    self.inputs_request()?;
+                    app.editor.clear();
+                    return Ok(false);
                 }
                 "/input" => {
                     let (id, body) = arg
@@ -394,6 +452,7 @@ impl View {
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
+                    app.clear_mcp_inputs();
                     app.artifact_viewer.close();
                     app.telemetry.observe_remote_cost(None);
                     app.history.clear();
@@ -475,6 +534,7 @@ impl View {
                     }
                 }
                 self.poll_events = false;
+                self.poll_inputs = true;
             }
             Kind::Submit { draft, revision } => {
                 if reply["type"] == "control_queued_v1" {
@@ -505,6 +565,47 @@ impl View {
                     app.status = "submission queued · awaiting application".into();
                 } else {
                     show_reply(app, &reply);
+                }
+            }
+            Kind::Inputs => {
+                if reply["type"] == "mcp_inputs_snapshot_v1" {
+                    let snapshot: iteron_protocol::client_mcp_input::McpInputsSnapshotV1 =
+                        serde_json::from_value(reply["snapshot"].clone())
+                            .map_err(|_| anyhow::anyhow!("input observation shape invalid"))?;
+                    let was_waiting = app.mcp_form.is_waiting();
+                    if let Err(reason) = app.mcp_form.observe_remote(
+                        &snapshot,
+                        &self.service.scope.thread_id,
+                        &self.service.current_run_id,
+                    ) {
+                        app.note(block::NoticeLevel::Warn, reason);
+                    } else if !was_waiting && app.mcp_form.is_waiting() {
+                        app.status = "MCP server is waiting for your input".into();
+                        app.artifact_viewer.close();
+                    } else if was_waiting && !app.mcp_form.is_waiting() {
+                        app.status = "input callback closed · tool completion not inferred".into();
+                    }
+                }
+                self.poll_inputs = false;
+            }
+            Kind::McpResponse { request_id, run } => {
+                if run != self.service.current_run_id {
+                    return Ok(());
+                }
+                if reply["type"] == "mcp_input_response_v1"
+                    && reply["thread_id"] == self.service.scope.thread_id.0
+                    && reply["run_id"] == run.0
+                    && reply["request_id"].as_u64() == Some(request_id)
+                    && matches!(reply["state"].as_str(), Some("answered" | "rejected"))
+                {
+                    app.mcp_form.remote_handoff(request_id);
+                    app.status =
+                        "input callback handoff observed · tool completion not inferred".into();
+                } else {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "input callback handoff was refused or unconfirmed; retained form",
+                    );
                 }
             }
             Kind::ArtifactList { prefix, run } => {
@@ -617,6 +718,7 @@ impl View {
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
+                    app.clear_mcp_inputs();
                     app.artifact_viewer.close();
                     app.history.bind_selected_run(&navigation.run_id);
                     app.run.select_verified_run();
@@ -764,6 +866,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         models: None,
         product_cursor: 0,
         poll_events: false,
+        poll_inputs: false,
         last_live_seq: 0,
         accepted: None,
         expected_submission: None,
@@ -809,6 +912,10 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                         if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() { app.artifact_viewer.close(); }
                         if app.artifact_viewer.is_open() && !key.modifiers.contains(KeyModifiers::CONTROL) {app.artifact_viewer.key(key.code);continue;}
                         if key.modifiers.contains(KeyModifiers::CONTROL) { app.artifact_viewer.close(); }
+                        if app.mcp_form.is_waiting() {
+                            match view.mcp_key(&mut app,key) {Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())};
+                            continue;
+                        }
                         if app.permission_prompt.read().is_some() {
                             if let Err(error) = view.approval_key(&mut app, key.code) { app.note(block::NoticeLevel::Warn, error.to_string()); }
                             continue;
@@ -826,13 +933,14 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                             KeyCode::PageUp=>app.scroll_up(10),KeyCode::PageDown=>app.scroll_down(10),_=>{},
                         }}
                     },
+                    Event::Paste(text) if app.mcp_form.is_waiting()=>super::mcp_input::handle_paste(&mut app,&text),
                     Event::Paste(text)=>{if app.editor.text().len().saturating_add(text.len())<=MAX_DRAFT_BYTES{app.editor.insert_str(&crate::editor::sanitize_foreign_text(&text));}else{app.note(block::NoticeLevel::Warn,"paste exceeds the bounded remote draft; retained current text");}},
                     _=>{},
                 }
             },
             _=tick.tick()=>{
                 if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if view.pending.is_none()&&view.queued.is_empty(){if view.poll_inputs{view.inputs_request()?;}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -867,6 +975,7 @@ mod tests {
             models: None,
             product_cursor: 0,
             poll_events: false,
+            poll_inputs: false,
             last_live_seq: 0,
             accepted: None,
             expected_submission: None,
@@ -1194,5 +1303,78 @@ mod tests {
         .unwrap();
         assert!(!app.artifact_viewer.is_open());
         assert!(view.queued.is_empty());
+    }
+    #[test]
+    fn attached_modal_callback_ack_is_scoped_and_detach_never_rejects_the_pending_request() {
+        let mut app = App::new();
+        let mut view = view();
+        let snapshot = json!({"version":1,"thread_id":view.service.scope.thread_id,"run_id":view.service.current_run_id,"revision":1,"pending":[{"request_id":6,"server_display":"alpha","tool_display":"profile","fields":[{"field_index":0,"prompt":"Enter name","schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}],"prompt_complete":true}],"closed":[],"omitted_closed":0});
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Inputs,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"mcp_inputs_snapshot_v1","snapshot":snapshot}),
+        )
+        .unwrap();
+        assert!(app.mcp_form.is_waiting());
+        super::super::mcp_input::handle_paste(&mut app, r#"{"name":"private-response"}"#);
+        assert!(
+            view.mcp_key(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            )
+            .unwrap()
+        );
+        assert!(view.queued.is_empty());
+        assert!(app.mcp_form.is_waiting());
+        view.mcp_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(app.mcp_form.is_waiting());
+        assert!(app.editor.text().is_empty());
+        assert!(app.history.blocks().is_empty());
+        assert!(
+            view.mcp_key(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            )
+            .is_err()
+        );
+        let (command, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(
+            command["command"]["command"]["answer"]["values"][0]["content"]["name"],
+            "private-response"
+        );
+        view.pending = Some(Request {
+            id: 2,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app,2,json!({"type":"mcp_input_response_v1","thread_id":view.service.scope.thread_id,"run_id":"foreign","request_id":6,"state":"answered"})).unwrap();
+        assert!(app.mcp_form.is_waiting());
+        view.pending = Some(Request {
+            id: 3,
+            kind: Kind::McpResponse {
+                request_id: 6,
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app,3,json!({"type":"mcp_input_response_v1","thread_id":view.service.scope.thread_id,"run_id":view.service.current_run_id,"request_id":6,"state":"answered"})).unwrap();
+        assert!(!app.mcp_form.is_waiting());
+        assert!(!app.run.running());
+        assert!(app.status.contains("completion not inferred"));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .all(|block| !block.to_text().contains("private-response"))
+        );
     }
 }

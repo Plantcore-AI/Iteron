@@ -18,7 +18,7 @@ pub(super) fn requests_fit(
         requests.len(),
         requests
             .iter()
-            .map(|request| (request.id(), request.prompt(), request.schema())),
+            .map(|request| (request.id().len(), request.prompt(), request.schema())),
     )
 }
 pub(super) fn prompt_fits(prompt: &McpInputPrompt) -> bool {
@@ -30,15 +30,33 @@ pub(super) fn prompt_fits(prompt: &McpInputPrompt) -> bool {
         prompt
             .fields
             .iter()
-            .map(|field| (field.id.as_str(), field.prompt.as_str(), &field.schema)),
+            .map(|field| (field.id.len(), field.prompt.as_str(), &field.schema)),
     )
+}
+pub(crate) fn prompt_view_fits(
+    prompt: &iteron_protocol::client_mcp_input::McpInputPromptViewV1,
+) -> bool {
+    prompt.request_id != 0
+        && bounded(
+            &prompt.server_display,
+            &prompt.tool_display,
+            None,
+            prompt.fields.len(),
+            prompt.fields.iter().map(|field| {
+                (
+                    field.field_index.to_string().len(),
+                    field.prompt.as_str(),
+                    &field.schema,
+                )
+            }),
+        )
 }
 fn bounded<'a>(
     server: &str,
     tool: &str,
     state: Option<&str>,
     field_count: usize,
-    fields: impl Iterator<Item = (&'a str, &'a str, &'a Value)>,
+    fields: impl Iterator<Item = (usize, &'a str, &'a Value)>,
 ) -> bool {
     if field_count > iteron_protocol::client_mcp_input::MAX_MCP_INPUT_REQUEST_FIELDS {
         return false;
@@ -53,7 +71,7 @@ fn bounded<'a>(
     let mut remaining_nodes = MAX_SCHEMA_NODES;
     for (id, prompt, schema) in fields {
         let Some(value) = remaining
-            .checked_sub(id.len())
+            .checked_sub(id)
             .and_then(|value| value.checked_sub(prompt.len()))
         else {
             return false;
