@@ -35,7 +35,8 @@ fn agent(workspace: &std::path::Path, run: &RunId) -> Agent {
         Budget::default(),
     );
     agent.workspace = workspace.to_owned();
-    gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    // Submission/plan receipts require a real nonzero WAL sequence after the genesis prefix.
+    gate_integration_tests::record_test_genesis(&mut agent, workspace);
     agent
 }
 fn replacement(revision: u64, submission: Seq) -> serde_json::Value {

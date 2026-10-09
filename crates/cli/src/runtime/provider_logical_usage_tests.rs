@@ -60,13 +60,18 @@ pub(in crate::runtime) fn durable_evidence(
         stop_reason: StopReason::EndTurn,
         usage: report,
     });
-    let (_, _, receipt) = agent.provider_attempt_journal().settle_observed(
+    let (accounting, _, receipt) = agent.provider_attempt_journal().settle_observed(
         ticket,
         ProviderObservedAttempt {
             route_id: &route,
             result: &result,
         },
     )?;
+    // Match the real dispatch path: a durable terminal precedes physical USD settlement,
+    // and the later logical projection consumes that already charged exact receipt.
+    agent
+        .provider_attempt_journal()
+        .commit_usd(turn, &accounting)?;
     Ok(ProviderLogicalUsageEvidence::Single(receipt))
 }
 

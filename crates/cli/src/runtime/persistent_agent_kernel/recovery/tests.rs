@@ -195,16 +195,29 @@ impl Fixture {
             self.accounting.cost = ProviderRouteCostTruth::NotDispatched;
             self.accounting.max_cost_reservation_microusd = None;
         }
+        // This terminal proves only the physical provider observation. The independently
+        // unmeasured Main execution remains RecoveryRequired in the controller.
+        let kind = if no_io {
+            EventKind::EffectFailed {
+                id: EffectId(self.request.effect_id.clone()),
+                tool: "provider".into(),
+                reason: "known refusal before provider dispatch".into(),
+                duration_ms: None,
+                provider_route_attempt: Some(self.accounting.clone()),
+            }
+        } else {
+            EventKind::EffectDone {
+                id: EffectId(self.request.effect_id.clone()),
+                tool: "provider".into(),
+                duration_ms: None,
+                provider_route_attempt: Some(self.accounting.clone()),
+            }
+        };
         self.rollout
             .append(&Event {
                 seq: Seq::ZERO,
                 turn: TurnId(1),
-                kind: EventKind::EffectUnknown {
-                    id: EffectId(self.request.effect_id.clone()),
-                    tool: "provider".into(),
-                    reason: "process cleanup is independently unmeasured".into(),
-                    provider_route_attempt: Some(self.accounting.clone()),
-                },
+                kind,
             })
             .unwrap();
     }

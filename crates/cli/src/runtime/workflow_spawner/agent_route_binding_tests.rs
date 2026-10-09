@@ -23,17 +23,14 @@ impl Provider for NativeProvider {
     }
 }
 fn origin() -> AgentEngineOrigin {
-    let mut digest = Sha256::new();
-    digest.update(b"iteron-persistent-provider-run-v1\0");
-    for value in ["tenant", "parent"] {
-        digest.update((value.len() as u64).to_be_bytes());
-        digest.update(value.as_bytes());
-    }
     AgentEngineOrigin::DirectSubagent {
         parent: AgentEngineParentSource {
             tenant: "tenant".into(),
             run: "parent".into(),
-            provider_scope_sha256: hex::encode(digest.finalize()),
+            provider_scope_sha256: crate::runtime::persistent_provider_budget::provider_scope_for(
+                &TenantId("tenant".into()),
+                &RunId("parent".into()),
+            ),
         },
     }
 }

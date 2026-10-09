@@ -64,6 +64,9 @@ fn agent(root: &Path) -> Agent {
         Budget::default(),
     );
     agent.workspace = root.to_owned();
+    // Recovery reads the actual logical journal; an application event at seq zero is not
+    // an admitted RunStart/tunables prefix and cannot stand in for a recoverable session.
+    gate_integration_tests::record_test_genesis(&mut agent, root);
     agent.verify_command = Some("operator workspace command".into());
     agent
         .verification_state
@@ -241,12 +244,13 @@ async fn future_drop_retains_task_quarantine_and_receiver_recovery_never_reruns_
     );
     assert_eq!(agent.verification_state.attempts(), 0);
     agent.effect_journal.adopt_journal();
-    assert!(
-        agent
-            .effect_journal
-            .guard_recovery(&mut agent.rollout, &mut agent.ledger)
-            .is_err()
-    );
+    agent
+        .effect_journal
+        .guard_recovery(&mut agent.rollout, &mut agent.ledger)
+        .unwrap();
+    // The existing harness-kind policy lets a fresh operator submission proceed after an
+    // unknown verify. That admission fact does not prove physical cleanup for a parent.
+    assert!(!agent.effect_journal.parent_settlement_known());
     let events = iteron_record::replay(agent.rollout.path()).unwrap();
     assert_eq!(
         events
