@@ -2854,6 +2854,7 @@ mod gate_integration_tests {
                 route.capability_digest,
             )
             .unwrap();
+        install_test_provider_governor_from_tunables(agent);
     }
 
     pub(super) fn record_test_genesis_with_tunable_edits(
@@ -2949,14 +2950,16 @@ mod gate_integration_tests {
         }
     }
 
-    fn install_test_provider_governor_from_tunables(agent: &mut Agent) {
+    pub(super) fn install_test_provider_governor_from_tunables(agent: &mut Agent) {
         let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(
             agent.tunables_checkpoint().unwrap(),
             None,
         )
         .expect("the pinned test checkpoint must decode before governor installation")
         .core;
-        let primary_route = format!("{}:{}", effective.provider_id, effective.model_id);
+        // The governor admits the real held route, not the structural sampler's provider/model
+        // label. Selection still crosses the ordinary model-selection journal before IO.
+        let primary_route = agent.governed_route_id();
         let governor = effective.provider_governor;
         agent
             .set_provider_controls(governor.controls)
@@ -19361,6 +19364,7 @@ ant-api03-SuperSecretModelToken12345"
         .cost_microusd;
         agent.budget.max_usd = Some((reservation + 8) as f64 / 1_000_000.0);
         agent.synchronize_usd_budget().unwrap();
+        install_test_provider_governor_from_tunables(&mut agent);
 
         let first = agent.spawn_subagent("inspect the repository", 0).await;
         assert!(
@@ -19433,6 +19437,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         record_test_genesis(&mut agent, &ws);
         bind_test_pricing(&mut agent);
+        install_test_provider_governor_from_tunables(&mut agent);
 
         assert!(
             agent

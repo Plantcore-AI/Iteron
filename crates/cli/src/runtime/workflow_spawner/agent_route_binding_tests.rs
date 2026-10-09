@@ -55,8 +55,8 @@ fn fixture(
         primary.clone(),
         "model-primary".into(),
         "primary".into(),
-        "a".repeat(64),
-        "b".repeat(64),
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
         root.clone(),
         root.join("runs"),
         TenantId("tenant".into()),
@@ -71,8 +71,8 @@ fn fixture(
             PricingRoute {
                 provider_id: "alternate".into(),
                 model_id: "model-alternate".into(),
-                catalog_digest: "c".repeat(64),
-                capability_digest: "d".repeat(64),
+                catalog_digest: format!("sha256:{}", "c".repeat(64)),
+                capability_digest: format!("sha256:{}", "d".repeat(64)),
             },
             Some(false),
             Some(true),
@@ -112,7 +112,7 @@ fn actual_child_uses_held_native_provider_route_and_its_caps_without_io() {
         )
         .unwrap();
     assert_eq!(binding.provider_id, "alternate");
-    assert_eq!(binding.catalog_digest, "c".repeat(64));
+    assert_eq!(binding.catalog_digest, format!("sha256:{}", "c".repeat(64)));
     let child = spawner
         .build_child_in_mode(
             &request("model-alternate"),
@@ -134,7 +134,10 @@ fn actual_child_uses_held_native_provider_route_and_its_caps_without_io() {
     assert_eq!(child.effort, Effort::Low);
     let selected = child.provider_selection.selected().unwrap();
     assert_eq!(selected.route.provider_id, "alternate");
-    assert_eq!(selected.route.capability_digest, "d".repeat(64));
+    assert_eq!(
+        selected.route.capability_digest,
+        format!("sha256:{}", "d".repeat(64))
+    );
     assert!(
         child
             .provider_governor

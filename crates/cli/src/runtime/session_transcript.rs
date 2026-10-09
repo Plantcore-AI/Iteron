@@ -149,6 +149,10 @@ impl TranscriptAdmissionJournal<'_> {
                 EventKind::Message { .. }
             ) | (Some(DurableAppendFault::Notice), EventKind::Notice { .. })
                 | (
+                    Some(DurableAppendFault::ContextInjection),
+                    EventKind::ContextInjection { .. }
+                )
+                | (
                     Some(DurableAppendFault::UsdCeiling),
                     EventKind::UsdCeilingChanged { .. }
                 )

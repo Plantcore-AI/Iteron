@@ -26,17 +26,34 @@ impl Provider for Answer {
 }
 fn agent(workspace: &std::path::Path, run: &RunId) -> Agent {
     let rollout = Rollout::open(&workspace.join(".iteron/runs"), run, TenantId::default()).unwrap();
-    let mut agent = Agent::new(
-        Arc::new(Answer),
-        iteron_tools::Registry::coding_agent_for_tests(workspace).unwrap(),
-        rollout,
-        "fixture-model".into(),
-        "fixture system".into(),
-        Budget::default(),
-    );
+    let checkpoint = rollout.tunables_checkpoint().unwrap();
+    let registry = iteron_tools::Registry::coding_agent_for_tests(workspace).unwrap();
+    let mut agent = match checkpoint {
+        Some(checkpoint) => Agent::new_with_tunables_checkpoint(
+            Arc::new(Answer),
+            registry,
+            rollout,
+            "fixture-model".into(),
+            "fixture system".into(),
+            Budget::default(),
+            checkpoint,
+        )
+        .unwrap(),
+        None => Agent::new(
+            Arc::new(Answer),
+            registry,
+            rollout,
+            "fixture-model".into(),
+            "fixture system".into(),
+            Budget::default(),
+        ),
+    };
     agent.workspace = workspace.to_owned();
     // Submission/plan receipts require a real nonzero WAL sequence after the genesis prefix.
-    gate_integration_tests::record_test_genesis(&mut agent, workspace);
+    // An existing run is reconstructed by set_resume; it retains its original frozen genesis.
+    if agent.rollout.is_empty() {
+        gate_integration_tests::record_test_genesis(&mut agent, workspace);
+    }
     agent
 }
 fn replacement(revision: u64, submission: Seq) -> serde_json::Value {

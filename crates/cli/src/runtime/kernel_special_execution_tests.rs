@@ -74,6 +74,7 @@ fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
         String::new(),
     )
     .unwrap();
+    gate_integration_tests::install_test_provider_governor_from_tunables(&mut host);
     host.guard_unresolved_effects().unwrap();
     (host, calls)
 }
