@@ -264,6 +264,7 @@ pub(crate) struct ModelCapabilities {
     pub image_input_version: Option<String>,
     pub image_input_source: Option<String>,
     pub routing_objectives: Option<iteron_provider::RouteObjectiveScores>,
+    pub data_policy: Option<iteron_provider::DataPolicyObservation>,
     pub version: Option<String>,
     pub source: Option<String>,
 }
@@ -279,6 +280,7 @@ impl ModelCapabilities {
             image_input_version: None,
             image_input_source: None,
             routing_objectives: None,
+            data_policy: None,
             version: None,
             source: None,
         }

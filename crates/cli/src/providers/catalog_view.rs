@@ -191,12 +191,18 @@ impl ProviderCatalogView {
                     client_sha256(catalog_digest)?,
                     client_sha256(capability_digest)?,
                 );
-                capabilities.source = capabilities.source.as_deref().map(display);
+                capabilities.source = capabilities.source.as_deref().map(display_source);
                 capabilities.version = capabilities.version.as_deref().map(display);
-                capabilities.image_input_source =
-                    capabilities.image_input_source.as_deref().map(display);
+                capabilities.image_input_source = capabilities
+                    .image_input_source
+                    .as_deref()
+                    .map(display_source);
                 capabilities.image_input_version =
                     capabilities.image_input_version.as_deref().map(display);
+                if let Some(policy) = &mut capabilities.data_policy {
+                    policy.source = display_source(&policy.source);
+                    policy.version = display(&policy.version);
+                }
                 routes.insert(
                     (selection.provider_id.clone(), selection.model_id.clone()),
                     CatalogRouteFacts {
@@ -386,6 +392,19 @@ fn display(value: &str) -> String {
             .take(512)
             .collect::<String>(),
     )
+}
+
+fn display_source(value: &str) -> String {
+    match url::Url::parse(value) {
+        Ok(mut source) => {
+            // Metadata references may carry arbitrary query credentials that shape-based
+            // scanning cannot identify. Route identity above binds the complete original bytes.
+            source.set_query(None);
+            source.set_fragment(None);
+            display(source.as_str())
+        }
+        Err(_) => display(value),
+    }
 }
 
 /// A read-only latest-value subscription, without a sender or host owner.

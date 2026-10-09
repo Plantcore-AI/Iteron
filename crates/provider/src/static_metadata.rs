@@ -85,6 +85,9 @@ pub struct StaticModelCapabilities {
     /// never synthesized for a route whose source does not publish or calibrate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_objectives: Option<crate::RouteObjectiveScores>,
+    /// Informational source declaration; no provider policy or runtime enforcement is inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_policy: Option<crate::DataPolicyDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -566,6 +569,9 @@ impl StaticProviderMetadata {
                 &capability.source,
                 capability.captured_at_unix_secs,
             )?;
+            if let Some(policy) = &capability.data_policy {
+                policy.validate().map_err(configuration)?;
+            }
             if capability.context_window_tokens == Some(0)
                 || capability.max_output_tokens == Some(0)
                 || capability
@@ -657,6 +663,9 @@ impl StaticProviderMetadata {
                     &capability.source,
                     capability.captured_at_unix_secs,
                 )?;
+                if let Some(policy) = &capability.data_policy {
+                    policy.validate().map_err(configuration)?;
+                }
                 if capability.context_window_tokens == Some(0)
                     || capability.max_output_tokens == Some(0)
                     || capability
@@ -840,6 +849,68 @@ mod tests {
             restamped.bundle_revision(),
             StaticProviderMetadata::embedded().bundle_revision()
         );
+    }
+
+    #[test]
+    fn policy_disclosures_keep_legacy_stamps_and_bind_changed_exact_route_evidence() {
+        let original: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        let mut document = original.clone();
+        StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        assert_eq!(
+            document, original,
+            "an absent policy preserves all released content stamps"
+        );
+        assert!(
+            StaticProviderMetadata::from_slice(EMBEDDED.as_bytes())
+                .unwrap()
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-haiku-4")
+                .unwrap()
+                .data_policy
+                .is_none()
+        );
+
+        let policy = serde_json::json!({
+            "retention":{"kind":"no_retention"},
+            "training_use":"not_used",
+            "processing":{"kind":"regional", "jurisdictions":["US"]}
+        });
+        document["model_capabilities"]["anthropic_messages"]["families"]["claude-haiku-4"]["data_policy"] =
+            policy.clone();
+        assert!(
+            StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("canonical content digest")
+        );
+        StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+        let observed =
+            StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
+        let capabilities = observed
+            .route_model_capabilities(ANTHROPIC_ROOT, "claude-haiku-4")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&capabilities.data_policy).unwrap(),
+            policy
+        );
+        assert_ne!(
+            observed.bundle_revision(),
+            original["bundle_revision"].as_str().unwrap()
+        );
+        assert_ne!(capabilities.version.as_str(), original["model_capabilities"]["anthropic_messages"]["families"]["claude-haiku-4"]["version"].as_str().unwrap());
+        assert!(
+            observed
+                .route_model_capabilities("https://gateway.invalid/v1", "claude-haiku-4")
+                .is_none()
+        );
+        assert!(
+            observed
+                .route_model_capabilities(ANTHROPIC_ROOT, "claude-unknown")
+                .is_none()
+        );
+
+        document["model_capabilities"]["anthropic_messages"]["families"]["claude-haiku-4"]["data_policy"]
+            ["processing"]["jurisdictions"] = serde_json::json!([]);
+        assert!(StaticProviderMetadata::stamp_content_versions(&mut document).is_err());
     }
 
     #[test]

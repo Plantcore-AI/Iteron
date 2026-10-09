@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime};
 pub mod anthropic;
 pub mod catalog;
 mod controls;
+mod data_policy;
 mod governor;
 mod governor_policy;
 mod governor_snapshot;
@@ -44,6 +45,10 @@ pub use catalog::{
 pub use controls::{
     CacheBreakpoint, CacheScope, ControlError, PromptCacheControl, ProviderControlCapabilities,
     ProviderRequestControls, RequestCompression, ResponseVerbosity, ServiceTier,
+};
+pub use data_policy::{
+    DataPolicyDeclaration, DataPolicyObservation, DataPolicyProvenance, DataProcessing,
+    DataRetention, DataTrainingUse,
 };
 pub use governor::{
     Admission as ProviderAdmission, AdmissionReason, AttemptPermit, CircuitTransition,

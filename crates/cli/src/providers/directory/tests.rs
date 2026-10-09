@@ -393,6 +393,236 @@ fn public_inventory_freezes_catalog_and_resolves_only_matching_host_route_identi
     assert!(!text.contains("test-key"));
 }
 
+#[test]
+fn public_data_policy_is_route_scoped_and_changed_declarations_refuse_stale_selection_without_io() {
+    use iteron_protocol::client_inventory::{
+        ClientInventoryKindV1, ClientInventoryQueryV1, ClientModelSelectionV1,
+    };
+    use iteron_provider::{DataPolicyProvenance, DataTrainingUse};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let mut entry = catalogued_entry("policy-fixture", &endpoint, "model-a");
+    entry.catalog.as_mut().unwrap().models.push(descriptor(
+        "model-b",
+        Compatibility::Compatible,
+        Selectability::Selectable,
+    ));
+    let health = ProviderHealthStore::new(4);
+    health.mark_ready(entry.id());
+    let plain = ProviderDirectory {
+        entries: Arc::new(vec![entry]),
+        health,
+        deferred: None,
+        refresh_activity: ProviderRefreshActivity::default(),
+    };
+    let selected = ModelSelection {
+        provider_id: "policy-fixture".into(),
+        model_id: "model-a".into(),
+    };
+    let sibling = ModelSelection {
+        provider_id: selected.provider_id.clone(),
+        model_id: "model-b".into(),
+    };
+    let query = ClientInventoryQueryV1 {
+        kind: ClientInventoryKindV1::Models,
+        provider_id: Some(selected.provider_id.clone()),
+        offset: 0,
+        limit: 2,
+    };
+    let capture = |directory: &ProviderDirectory| {
+        crate::client_inventory::ClientInventoryOwner::capture(
+            directory,
+            &crate::plugin_runtime::RuntimePlugins::default(),
+            &selected,
+        )
+        .unwrap()
+    };
+    let plain_owner = capture(&plain);
+    let plain_page = plain_owner.read(&query).unwrap();
+    let unknown = &plain_page["records"][0]["data_policy"];
+    assert_eq!(unknown["status"], "unknown");
+    assert_eq!(unknown["declaration"]["retention"]["kind"], "unknown");
+    assert_eq!(unknown["declaration"]["training_use"], "unknown");
+    assert_eq!(unknown["declaration"]["processing"]["kind"], "unknown");
+    assert!(unknown["provenance"].is_null());
+    assert_eq!(unknown["enforcement"], "not_attested");
+
+    let mut declared = plain.clone();
+    let capabilities: crate::config::ProviderModelCapabilities =
+        serde_json::from_value(serde_json::json!({
+            "data_policy": {
+                "retention":{"kind":"days", "maximum_days":30},
+                "training_use":"not_used",
+                "processing":{"kind":"regional", "jurisdictions":["US"]}
+            }
+        }))
+        .unwrap();
+    Arc::make_mut(&mut declared.entries)[0]
+        .declared_capabilities
+        .insert(selected.model_id.clone(), capabilities);
+    let declared_facts = declared.selection_capabilities(&selected);
+    let policy = declared_facts.data_policy.as_ref().unwrap();
+    assert_eq!(policy.provenance, DataPolicyProvenance::OperatorDeclaration);
+    assert_eq!(policy.captured_at_unix_secs, None);
+    assert_eq!(declared_facts.tool_calling, None);
+    assert_eq!(declared_facts.semantic_effort, None);
+    assert_eq!(declared_facts.image_input, None);
+    assert!(
+        declared
+            .selection_capabilities(&sibling)
+            .data_policy
+            .is_none()
+    );
+    let plain_digests = plain.selection_digests(&selected);
+    let declared_digests = declared.selection_digests(&selected);
+    assert_eq!(plain_digests.0, declared_digests.0);
+    assert_ne!(plain_digests.1, declared_digests.1);
+
+    let old_owner = capture(&declared);
+    let before = old_owner.read(&query).unwrap();
+    let record = &before["records"][0];
+    assert_eq!(record["data_policy"]["status"], "declared");
+    assert_eq!(record["data_policy"]["provenance"], "operator_declaration");
+    assert_eq!(record["data_policy"]["enforcement"], "not_attested");
+    let request = ClientModelSelectionV1 {
+        inventory_digest_sha256: old_owner.digest(),
+        provider_id: selected.provider_id.clone(),
+        model_id: selected.model_id.clone(),
+        catalog_digest_sha256: record["catalog_digest_sha256"].as_str().unwrap().into(),
+        capability_digest_sha256: record["capability_digest_sha256"].as_str().unwrap().into(),
+    };
+    old_owner.resolve(&request).unwrap();
+    Arc::make_mut(&mut declared.entries)[0]
+        .declared_capabilities
+        .get_mut(&selected.model_id)
+        .unwrap()
+        .data_policy
+        .as_mut()
+        .unwrap()
+        .training_use = DataTrainingUse::MayBeUsed;
+    let new_owner = capture(&declared);
+    assert_ne!(new_owner.digest(), old_owner.digest());
+    assert_eq!(old_owner.read(&query).unwrap(), before);
+    assert!(new_owner.resolve(&request).is_err());
+    let mut restamped_inventory_only = request;
+    restamped_inventory_only.inventory_digest_sha256 = new_owner.digest();
+    assert!(
+        new_owner.resolve(&restamped_inventory_only).is_err(),
+        "old capability handle must refuse even with the new inventory stamp"
+    );
+    assert!(matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+}
+
+#[test]
+fn captured_metadata_policy_outranks_operator_policy_and_scrubs_only_the_display() {
+    use iteron_protocol::client_inventory::{ClientInventoryKindV1, ClientInventoryQueryV1};
+    use iteron_provider::{DataPolicyDeclaration, DataPolicyProvenance, DataTrainingUse};
+
+    let mut document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../provider/static-provider-metadata-v1.json"
+    ))
+    .unwrap();
+    let snapshot = &mut document["glm_standard_chat"]["capabilities"]["glm-5.2"];
+    snapshot["data_policy"] = serde_json::json!({"training_use":"not_used"});
+    snapshot["source"] =
+        serde_json::json!("https://docs.example.invalid/policy?api_key=synthetic-policy-fixture");
+    StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
+    let metadata = Arc::new(
+        StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap(),
+    );
+    let mut entry = glm_static_entry_with_metadata(Some("test-key".into()), metadata);
+    entry.declared_capabilities.insert(
+        "glm-5.2".into(),
+        crate::config::ProviderModelCapabilities {
+            data_policy: Some(DataPolicyDeclaration {
+                training_use: DataTrainingUse::MayBeUsed,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let health = ProviderHealthStore::new(4);
+    health.mark_ready(entry.id());
+    let directory = ProviderDirectory {
+        entries: Arc::new(vec![entry]),
+        health,
+        deferred: None,
+        refresh_activity: ProviderRefreshActivity::default(),
+    };
+    let selected = ModelSelection {
+        provider_id: "glm".into(),
+        model_id: "glm-5.2".into(),
+    };
+    let facts = directory.selection_capabilities(&selected);
+    let actual = facts.data_policy.as_ref().unwrap();
+    assert_eq!(actual.provenance, DataPolicyProvenance::MetadataSnapshot);
+    assert_eq!(actual.declaration.training_use, DataTrainingUse::NotUsed);
+    assert!(actual.captured_at_unix_secs.is_some());
+    assert!(
+        directory
+            .selection_capabilities(&ModelSelection {
+                provider_id: "absent".into(),
+                model_id: selected.model_id.clone()
+            })
+            .data_policy
+            .is_none()
+    );
+    let owner = crate::client_inventory::ClientInventoryOwner::capture(
+        &directory,
+        &crate::plugin_runtime::RuntimePlugins::default(),
+        &selected,
+    )
+    .unwrap();
+    let query = ClientInventoryQueryV1 {
+        kind: ClientInventoryKindV1::Models,
+        provider_id: Some("glm".into()),
+        offset: 0,
+        limit: 16,
+    };
+    let page = owner.read(&query).unwrap();
+    let record = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["model_id"] == "glm-5.2")
+        .unwrap();
+    assert_eq!(record["data_policy"]["provenance"], "metadata_snapshot");
+    assert_eq!(
+        record["data_policy"]["declaration"]["training_use"],
+        "not_used"
+    );
+    assert!(!page.to_string().contains("synthetic-policy-fixture"));
+    assert_eq!(
+        record["capability_digest_sha256"],
+        directory
+            .selection_digests(&selected)
+            .1
+            .strip_prefix("sha256:")
+            .unwrap()
+    );
+}
+
+#[test]
+fn invalid_programmatic_policy_refuses_before_provider_instance_or_discovery() {
+    use iteron_provider::{DataPolicyDeclaration, DataProcessing};
+    let mut config = declaring_config("policy-fixture", &closed_api_root(), None, BTreeMap::new());
+    config.model_capabilities.insert(
+        "k3".into(),
+        crate::config::ProviderModelCapabilities {
+            data_policy: Some(DataPolicyDeclaration {
+                processing: DataProcessing::Regional {
+                    jurisdictions: vec!["US".into(), "US".into()],
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(entry_from_config(&config).is_err());
+}
+
 fn test_scope_key(path: &Path) -> CatalogCacheScopeKey {
     CatalogCacheScopeKey::load_or_create(path).unwrap()
 }
@@ -2192,6 +2422,7 @@ fn declared_window(
             context_window_tokens: Some(window),
             image_input: None,
             routing_objectives: None,
+            data_policy: None,
         },
     )])
 }
@@ -2206,6 +2437,7 @@ fn declared_images(
             context_window_tokens: None,
             image_input: Some(supported),
             routing_objectives: None,
+            data_policy: None,
         },
     )])
 }

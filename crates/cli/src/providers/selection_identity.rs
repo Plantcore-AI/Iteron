@@ -102,6 +102,17 @@ fn capability_digest(
 ) -> String {
     let mut capability = Sha256::new();
     hash_part(&mut capability, b"iteron-provider-capability-v2");
+    // Preserve legacy identity when no declaration exists. Actual new source evidence must bind
+    // selection identity so a stale client cannot silently select changed privacy metadata.
+    if let Some(policy) = &documented.data_policy {
+        hash_part(&mut capability, b"data-policy-declaration-v1");
+        hash_part(
+            &mut capability,
+            serde_json::to_string(policy)
+                .expect("closed data-policy observation is JSON-serializable")
+                .as_bytes(),
+        );
+    }
     hash_part(&mut capability, entry.id().as_bytes());
     hash_part(&mut capability, selection.model_id.as_bytes());
     hash_part(

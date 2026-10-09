@@ -170,6 +170,11 @@ pub(super) fn entry_from_config_with_metadata(
     config: &ProviderConfig,
     static_metadata: Arc<StaticProviderMetadata>,
 ) -> anyhow::Result<ProviderEntry> {
+    for capabilities in config.model_capabilities.values() {
+        if let Some(policy) = &capabilities.data_policy {
+            policy.validate().map_err(anyhow::Error::msg)?;
+        }
+    }
     let adapter = match config.adapter.as_str() {
         "anthropic_messages" => AdapterKind::AnthropicMessages,
         "openai_responses" => AdapterKind::OpenAiResponses,

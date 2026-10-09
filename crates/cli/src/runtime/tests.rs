@@ -14633,6 +14633,7 @@ ant-api03-SuperSecretModelToken12345"
                     context_window_tokens: None,
                     image_input: Some(false),
                     routing_objectives: None,
+                    data_policy: None,
                 },
             )]),
         };

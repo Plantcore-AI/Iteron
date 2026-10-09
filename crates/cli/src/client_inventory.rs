@@ -156,7 +156,20 @@ fn model_record(view: &ProviderCatalogView, selection: &ModelSelection, explicit
         "selectable":!stale && view.selection_available(selection),"explicit_selected_route":explicit,
         "context_window_tokens":capabilities.context_window_tokens,"max_output_tokens":capabilities.max_output_tokens,
         "tool_calling":capabilities.tool_calling,"semantic_effort":capabilities.semantic_effort,"image_input":capabilities.image_input,
+        "data_policy":data_policy_record(capabilities.data_policy.as_ref()),
         "capability_version":capabilities.version.as_deref().map(safe),"capability_source":capabilities.source.as_deref().map(safe)})
+}
+
+fn data_policy_record(policy: Option<&iteron_provider::DataPolicyObservation>) -> Value {
+    json!({
+        "status": if policy.is_some() { "declared" } else { "unknown" },
+        "declaration": policy.map(|value| value.declaration.clone()).unwrap_or_default(),
+        "provenance": policy.map(|value| value.provenance),
+        "version": policy.map(|value| safe(&value.version)),
+        "source": policy.map(|value| safe(&value.source)),
+        "captured_at_unix_secs": policy.and_then(|value| value.captured_at_unix_secs),
+        "enforcement": "not_attested",
+    })
 }
 
 fn check_identity(value: &str) -> Result<(), String> {

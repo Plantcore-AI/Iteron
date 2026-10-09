@@ -959,6 +959,15 @@ impl ProviderDirectory {
             resolved.semantic_effort = capabilities.semantic_effort;
             resolved.image_input = capabilities.image_input;
             resolved.routing_objectives = capabilities.routing_objectives;
+            resolved.data_policy = capabilities.data_policy.clone().map(|declaration| {
+                iteron_provider::DataPolicyObservation {
+                    declaration,
+                    provenance: iteron_provider::DataPolicyProvenance::MetadataSnapshot,
+                    version: capabilities.version.clone(),
+                    source: capabilities.source.clone(),
+                    captured_at_unix_secs: Some(capabilities.captured_at_unix_secs),
+                }
+            });
             resolved.version = Some(capabilities.version.clone());
             resolved.source = Some(capabilities.source.clone());
             if capabilities.image_input.is_some() {
@@ -982,6 +991,17 @@ impl ProviderDirectory {
         // captured vendor evidence, which keeps the capability digest honest about where the
         // number came from.
         if let Some(declared) = entry.declared_capabilities.get(&selection.model_id) {
+            if resolved.data_policy.is_none() {
+                resolved.data_policy = declared.data_policy.clone().map(|declaration| {
+                    iteron_provider::DataPolicyObservation {
+                        declaration,
+                        provenance: iteron_provider::DataPolicyProvenance::OperatorDeclaration,
+                        version: OPERATOR_DECLARED_CAPABILITY_VERSION.into(),
+                        source: OPERATOR_DECLARED_CAPABILITY_SOURCE.into(),
+                        captured_at_unix_secs: None,
+                    }
+                });
+            }
             if resolved.context_window_tokens.is_none()
                 && let Some(window) = declared.context_window_tokens
             {

@@ -600,6 +600,7 @@ mod tests {
                     context_window_tokens: None,
                     image_input: Some(true),
                     routing_objectives: None,
+                    data_policy: None,
                 },
             )]),
         }
