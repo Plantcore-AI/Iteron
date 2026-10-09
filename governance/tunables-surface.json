@@ -4,7 +4,7 @@
   "registry_revision": 28,
   "registry_digest": "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "ccc830327b71fc8e21ed01ab4c07f499b38545fbe9740032163886718d937254",
+  "param_registry_digest": "503c9188b1c9fc33b53d979dc40aecf7fb8f0db0af05a275408b14a6619963d5",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "1fca9085746b2ba1ce643a167e547929000ef4bdd958182178baf3edf2066f04",
   "counts": {
@@ -12316,7 +12316,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -16584,7 +16584,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -17138,7 +17138,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -26643,7 +26643,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 278,
+          "line": 280,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -26671,7 +26671,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 144,
+          "line": 146,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -26701,12 +26701,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 297,
+          "line": 299,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 313,
+          "line": 315,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26736,7 +26736,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 329,
+          "line": 331,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29404,7 +29404,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 567,
+          "line": 565,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -30222,7 +30222,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 513,
+          "line": 511,
           "evidence": "param_str runtime resolution"
         }
       ],

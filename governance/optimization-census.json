@@ -10738,7 +10738,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -15979,7 +15979,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -16519,7 +16519,7 @@
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 416,
+          "line": 418,
           "evidence": "Rust path reference"
         },
         {
@@ -28610,7 +28610,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 278,
+          "line": 280,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -28640,7 +28640,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 144,
+          "line": 146,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -28670,12 +28670,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 297,
+          "line": 299,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 313,
+          "line": 315,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -28705,7 +28705,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/clipboard.rs",
-          "line": 329,
+          "line": 331,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -31740,7 +31740,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 567,
+          "line": 565,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -32579,7 +32579,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 513,
+          "line": 511,
           "evidence": "param_str runtime resolution"
         }
       ],
