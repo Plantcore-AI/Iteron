@@ -78,6 +78,62 @@ fn file_patch_with_hunks(path: &str, hunks: &[(&str, &str)]) -> Value {
     })
 }
 
+#[tokio::test]
+async fn failed_later_commit_retains_user_edits_during_rollback() {
+    for confined in [false, true] {
+        for edited in [false, true] {
+            let root = TestRoot::new("rollback-intervening-edit");
+            root.write("first.txt", "first original\n");
+            root.write("second.txt", "second original\n");
+            root.write("unrelated.txt", "existing user work\n");
+            let input = json!({"files": [
+                file_patch("first.txt", "first original", "first patched"),
+                file_patch("second.txt", "second original", "second patched")
+            ]});
+            let requests = parse_requests(&input).unwrap();
+            let plans = plan_patch(&root.0, requests, &mut PatchIoStats::default(), confined)
+                .await
+                .unwrap();
+            let first = StagedWrite::prepare_with_boundary(
+                &plans[0].target,
+                &plans[0].updated,
+                confined.then_some(root.0.as_path()),
+            )
+            .await
+            .unwrap();
+            let second = StagedWrite::prepare_with_boundary(
+                &plans[1].target,
+                &plans[1].updated,
+                confined.then_some(root.0.as_path()),
+            )
+            .await
+            .unwrap();
+            first.commit().await.unwrap();
+            if edited {
+                root.write("first.txt", "user edited after the first commit\n");
+            }
+            // An actual later rename fails on every supported platform; no simulated result.
+            std::fs::remove_file(&plans[1].target).unwrap();
+            std::fs::create_dir(&plans[1].target).unwrap();
+            let failure = second.commit().await.unwrap_err();
+            assert!(!failure.target_replaced);
+            let restored = rollback(&root.0, &plans, &[0], confined).await;
+            if edited {
+                assert!(restored.unwrap().contains("rollback conflict"));
+                assert_eq!(
+                    root.read("first.txt"),
+                    b"user edited after the first commit\n"
+                );
+            } else {
+                assert_eq!(restored, None);
+                assert_eq!(root.read("first.txt"), b"first original\n");
+            }
+            assert!(plans[1].target.is_dir());
+            assert_eq!(root.read("unrelated.txt"), b"existing user work\n");
+        }
+    }
+}
+
 fn patch_call(id: &str, files: Vec<Value>) -> ToolUse {
     ToolUse {
         id: id.into(),

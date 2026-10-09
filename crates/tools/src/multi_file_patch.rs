@@ -2,7 +2,8 @@
 //!
 //! Every path and hunk is planned in memory before a destination is touched. Updated contents are
 //! then staged as fsynced same-directory files and committed as one registry effect; a commit-time
-//! I/O failure triggers byte-exact restoration of any member already replaced.
+//! I/O failure restores prior members only while they still contain this transaction's bytes.
+//! Intervening user edits are retained and reported as a rollback conflict.
 
 use crate::edit::{UniqueEditError, plan_unique_edit};
 use crate::multi_file_patch_error::PatchFailure;
@@ -11,7 +12,7 @@ use crate::multi_file_patch_error::PatchFailure;
 #[cfg(test)]
 use crate::multi_file_patch_input::MAX_FILES;
 use crate::multi_file_patch_input::{FilePatch, max_files, max_hunks_per_file, parse_requests};
-use crate::write_file::{StagedWrite, atomic_replace_with_boundary};
+use crate::write_file::{GuardedCommitFailure, StagedWrite};
 use crate::{Registry, ToolError, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
@@ -76,11 +77,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         ToolSpec {
             name: "apply_patch".into(),
             description: format!(
-                "Apply an all-or-nothing unique-anchor patch across up to {} existing UTF-8 \
+                "Apply a validated unique-anchor patch across up to {} existing UTF-8 \
                  files. Exact matching is tried first; an exact miss may use deterministic \
                  line-edge whitespace/EOL normalization. Every anchor must still have one \
                  candidate in its original snapshot, and overlapping hunks are refused before any \
-                 write. Errors identify the failing file and hunk.",
+                 write. Commit failures restore only unchanged transaction bytes; intervening \
+                 user edits are retained and reported. Errors identify the failing file and hunk.",
                 max_files()
             ),
             input_schema: serde_json::json!({
@@ -659,35 +661,14 @@ async fn commit_patch(
 }
 
 async fn rollback(
-    _root: &Path,
+    root: &Path,
     plans: &[PlannedFile],
     committed: &[usize],
-    _confined: bool,
+    confined: bool,
 ) -> Option<String> {
     let mut first_error = None;
     for &index in committed.iter().rev() {
-        #[cfg(unix)]
-        let replacement = if let Some(bound) = &plans[index].confined_target {
-            async {
-                let staged = StagedWrite::prepare_confined(
-                    &plans[index].target,
-                    &plans[index].original,
-                    bound.clone(),
-                )
-                .await?;
-                staged.commit().await.map_err(|failure| failure.error)
-            }
-            .await
-        } else {
-            atomic_replace_with_boundary(&plans[index].target, &plans[index].original, None).await
-        };
-        #[cfg(not(unix))]
-        let replacement = atomic_replace_with_boundary(
-            &plans[index].target,
-            &plans[index].original,
-            _confined.then_some(_root),
-        )
-        .await;
+        let replacement = restore_transaction_bytes(root, &plans[index], confined).await;
         if let Err(error) = replacement
             && first_error.is_none()
         {
@@ -695,6 +676,51 @@ async fn rollback(
         }
     }
     first_error
+}
+
+async fn restore_transaction_bytes(
+    root: &Path,
+    plan: &PlannedFile,
+    confined: bool,
+) -> std::io::Result<()> {
+    if confined {
+        crate::workspace_boundary::validate_coding_write_target(root, &plan.target)
+            .map_err(std::io::Error::other)?;
+    }
+    #[cfg(unix)]
+    let current = if let Some(bound) = &plan.confined_target {
+        crate::write_file::read_existing_confined_snapshot(bound)
+    } else {
+        crate::write_file::read_existing_snapshot(&plan.target).await
+    };
+    #[cfg(not(unix))]
+    let current = crate::write_file::read_existing_snapshot(&plan.target).await;
+    let current = current.map_err(|error| std::io::Error::other(error.to_string()))?;
+    if current.bytes != plan.updated {
+        return Err(std::io::Error::other(
+            "rollback conflict: current bytes are not this transaction's replacement; retained",
+        ));
+    }
+    #[cfg(unix)]
+    let staged = if let Some(bound) = &plan.confined_target {
+        StagedWrite::prepare_confined(&plan.target, &plan.original, bound.clone()).await
+    } else {
+        StagedWrite::prepare_with_boundary(&plan.target, &plan.original, None).await
+    };
+    #[cfg(not(unix))]
+    let staged =
+        StagedWrite::prepare_with_boundary(&plan.target, &plan.original, confined.then_some(root))
+            .await;
+    staged?
+        .commit_if_unchanged(&current.target)
+        .await
+        .map_err(|failure| match failure {
+            GuardedCommitFailure::Changed => std::io::Error::other(
+                "rollback conflict: file changed during restoration; retained",
+            ),
+            GuardedCommitFailure::Inspect(error) => error,
+            GuardedCommitFailure::Commit(failure) => failure.error,
+        })
 }
 
 #[cfg(test)]
