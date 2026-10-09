@@ -327,6 +327,7 @@ fn exercise_module_matrix() -> Result<ModuleMatrixCoverage, String> {
     let mut ledger = Vec::new();
     let mut observations = 0;
     let mut reaped = 0;
+    let mut verified_artifact = None;
     for module in ModuleId::ALL {
         for mode in [ProviderMode::Ablation, ProviderMode::Swap] {
             let implementation_id = format!(
@@ -364,12 +365,19 @@ fn exercise_module_matrix() -> Result<ModuleMatrixCoverage, String> {
                     failure_policy: ImplementationFailurePolicy::FailClosed,
                 })
                 .map_err(|error| error.to_string())?;
-            let verified = registry
-                .verify_artifact(&implementation_id, &bytes)
-                .map_err(|error| error.to_string())?
+            // All cells bind these same immutable bytes and this campaign's exact executable
+            // digest. Reuse only the opaque observed digest, never a path/mtime cache. Launch
+            // still performs complete native content verification before and after every spawn.
+            if verified_artifact.is_none() {
+                verified_artifact = registry
+                    .verify_artifact(&implementation_id, &bytes)
+                    .map_err(|error| error.to_string())?;
+            }
+            let verified = verified_artifact
+                .as_ref()
                 .ok_or_else(|| "registered campaign provider disappeared".to_owned())?;
             let plan = registry
-                .launch_plan(&implementation_id, root, &verified)
+                .launch_plan(&implementation_id, root, verified)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "registered campaign provider has no launch plan".to_owned())?;
             let mut runtime =

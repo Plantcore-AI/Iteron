@@ -18,3 +18,7 @@ iteron-protocol = { path = "../protocol" }
 
 [target.'cfg(windows)'.dependencies]
 iteron-support = { path = "../support" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

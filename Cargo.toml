@@ -80,3 +80,12 @@ zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Native artifact verification must still hash every byte before and after each launch. Keep
+# those cryptographic loops optimized in diagnostic builds without changing their algorithms,
+# provider/runtime code optimization, debug information or release profile.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3

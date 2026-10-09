@@ -16,6 +16,16 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // Whole executable hashes use a finite retained native reader population. Timeout cannot
+        // release a worker still inside native I/O or mint a successful content binding.
+        (
+            "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+            "MAX_EXECUTABLE_BYTES" | "MAX_WORKERS" | "WORKERS",
+        ) => Some(InvariantReason::HardBudgetEffectLedger),
+        (
+            "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+            "MAX_PROGRAM_PATH_BYTES",
+        ) => Some(InvariantReason::Security),
         // The operator may lower installed agent capacity/budgets. These constants bound the
         // actual controller tree and ancestor walk independently of that admitted configuration.
         ("crates/agents/src/controller.rs", "MAX_AGENTS" | "MAX_HIERARCHY_DEPTH") => {
@@ -224,6 +234,26 @@ mod tests {
     #[test]
     fn exact_native_scope_and_replay_boundaries_have_closed_reasons() {
         for (path, name, expected) in [
+            (
+                "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+                "MAX_EXECUTABLE_BYTES",
+                InvariantReason::HardBudgetEffectLedger,
+            ),
+            (
+                "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+                "MAX_WORKERS",
+                InvariantReason::HardBudgetEffectLedger,
+            ),
+            (
+                "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+                "WORKERS",
+                InvariantReason::HardBudgetEffectLedger,
+            ),
+            (
+                "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+                "MAX_PROGRAM_PATH_BYTES",
+                InvariantReason::Security,
+            ),
             (
                 "crates/tools/src/git_observe.rs",
                 "MAX_ENVIRONMENT_BRANCH_BYTES",

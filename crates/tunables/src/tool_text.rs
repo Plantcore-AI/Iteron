@@ -41,7 +41,8 @@ macro_rules! tool_text {
 /// Total catalog for the union of built-in production tools registered by `iteron-tools`.
 ///
 /// `iteron-tools` has a registration-boundary test that compares this catalog with the complete
-/// `Registry::coding_agent` ToolSpec set.  Adding a built-in without adding its stable address (or
+/// `Registry::coding_agent` ToolSpec set after projecting the union onto its actual feature
+/// profile. Adding a built-in without adding its stable address (or
 /// publishing a stale address) therefore fails that crate's focused contract test.
 pub const TOOL_TEXT_ARTIFACTS: &[ToolTextArtifact] = &[
     tool_text!(
