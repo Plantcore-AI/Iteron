@@ -151,7 +151,7 @@ index transactions, physical/reference memory stores and pure selection, complet
 and read-only helper evidence versus explicit source rewrites. Existing public interfaces and
 runtime lookup addresses remain stable; generated artifacts retain actual new source provenance.
 
-The record crate facade measures 2,011 production lines after its two real publication assembly
+The record crate facade measures 2,057 production lines after its two real publication assembly
 hunks. It retains the sole Rollout writer state and composes separate append, bounded replay,
 session projection and index owners. This is an explicit clear modular structure under the current
 alternative criterion; the workspace is not claimed to have every file below 2,000 lines.
