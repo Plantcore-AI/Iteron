@@ -14,13 +14,15 @@ use iteron_provider::request_capture::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+mod refusal;
+use refusal::{Cause, Stage, refused};
 
 #[cfg(test)]
 #[path = "request_manifest_tests.rs"]
 mod tests;
 
 pub(super) struct RequestManifestFactory {
-    store: Option<DurableArtifactStore>,
+    store: Result<DurableArtifactStore, Cause>,
     budget: Budget,
     sources: Vec<ContextSegmentEvidence>,
     materials: Vec<CapturedContextMaterial>,
@@ -45,9 +47,12 @@ impl RequestManifestFactory {
                 .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
                 .is_some_and(|bytes| bytes <= MAX_CONTEXT_PROVENANCE_BYTES);
         Self {
-            store: admitted
-                .then(|| DurableArtifactStore::from_rollout_writer(rollout, workspace).ok())
-                .flatten(),
+            store: if admitted {
+                DurableArtifactStore::from_rollout_writer(rollout, workspace)
+                    .map_err(Cause::Artifact)
+            } else {
+                Err(Cause::Request(RequestCaptureError::Bounds))
+            },
             budget: budget.clone(),
             materials: if admitted {
                 materials.to_vec()
@@ -83,7 +88,7 @@ impl RequestManifestFactory {
                 self.materials_dropped,
                 admitted_output_tokens,
             )
-            .ok(),
+            .map_err(Cause::Artifact),
             state: Mutex::new(PublicationState::Initial),
             inclusion: self.inclusion.clone(),
             mailbox: self.mailbox.clone(),
@@ -102,8 +107,8 @@ enum PublicationState {
     Faulted,
 }
 struct RequestManifestObserver {
-    store: Option<DurableArtifactStore>,
-    scope: Option<RequestManifestScope>,
+    store: Result<DurableArtifactStore, Cause>,
+    scope: Result<RequestManifestScope, Cause>,
     state: Mutex<PublicationState>,
     inclusion: Arc<AtomicBool>,
     mailbox: Option<LiveAgentMailbox>,
@@ -111,11 +116,17 @@ struct RequestManifestObserver {
 
 impl RequestManifestObserver {
     fn scope(&self) -> Result<(&DurableArtifactStore, &RequestManifestScope), RequestCaptureError> {
-        let store = self
-            .store
+        let store = self.store.as_ref().map_err(|cause| {
+            refused(
+                Stage::StoreCapture,
+                *cause,
+                RequestCaptureError::Unavailable,
+            )
+        })?;
+        let scope = self
+            .scope
             .as_ref()
-            .ok_or(RequestCaptureError::Unavailable)?;
-        let scope = self.scope.as_ref().ok_or(RequestCaptureError::Bounds)?;
+            .map_err(|cause| refused(Stage::TicketScope, *cause, RequestCaptureError::Bounds))?;
         Ok((store, scope))
     }
 }
@@ -123,27 +134,45 @@ impl RequestManifestObserver {
 impl ProviderRequestObserver for RequestManifestObserver {
     fn prepared(&self, wire: ProviderWireRequest<'_>) -> Result<(), RequestCaptureError> {
         let (store, scope) = self.scope()?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        let mut state = self.state.lock().map_err(|_| {
+            refused(
+                Stage::StateLock,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            )
+        })?;
         if !matches!(*state, PublicationState::Initial) {
-            return Err(RequestCaptureError::ReconciliationNeeded);
+            return Err(refused(
+                Stage::StateTransition,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            ));
         }
         *state = PublicationState::Faulted;
         let mailbox_proof = self
             .mailbox
             .as_ref()
             .map(|mailbox| mailbox.prepared_delivery(&wire))
-            .transpose()?;
+            .transpose()
+            .map_err(|error| refused(Stage::MailboxPreparation, Cause::Request(error), error))?;
         let context_included = super::request_inclusion::context_included(&wire);
         let prepared = store
             .publish_prepared_request(scope, wire)
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+            .map_err(|error| {
+                refused(
+                    Stage::PreparedPublication,
+                    Cause::Artifact(error),
+                    RequestCaptureError::ReconciliationNeeded,
+                )
+            })?;
         if let (Some(mailbox), Some(proof)) = (&self.mailbox, mailbox_proof) {
-            mailbox
-                .confirm_prepared(proof)
-                .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+            mailbox.confirm_prepared(proof).map_err(|_| {
+                refused(
+                    Stage::MailboxConfirmation,
+                    Cause::MailboxConfirmationRefused,
+                    RequestCaptureError::ReconciliationNeeded,
+                )
+            })?;
         }
         *state = PublicationState::Prepared(prepared);
         if context_included {
@@ -153,35 +182,63 @@ impl ProviderRequestObserver for RequestManifestObserver {
     }
     fn dispatching(&self) -> Result<(), RequestCaptureError> {
         let (store, scope) = self.scope()?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        let mut state = self.state.lock().map_err(|_| {
+            refused(
+                Stage::StateLock,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            )
+        })?;
         let previous = std::mem::replace(&mut *state, PublicationState::Faulted);
         let PublicationState::Prepared(prepared) = previous else {
-            return Err(RequestCaptureError::ReconciliationNeeded);
+            return Err(refused(
+                Stage::StateTransition,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            ));
         };
         store
             .publish_request_dispatch_intent(scope, &prepared)
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+            .map_err(|error| {
+                refused(
+                    Stage::DispatchPublication,
+                    Cause::Artifact(error),
+                    RequestCaptureError::ReconciliationNeeded,
+                )
+            })?;
         *state = PublicationState::LocalDispatchIntent;
         Ok(())
     }
     fn unavailable(&self, reason: &'static str) -> Result<(), RequestCaptureError> {
         let (store, scope) = self.scope()?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        let mut state = self.state.lock().map_err(|_| {
+            refused(
+                Stage::StateLock,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            )
+        })?;
         if !matches!(*state, PublicationState::Initial) {
-            return Err(RequestCaptureError::ReconciliationNeeded);
+            return Err(refused(
+                Stage::StateTransition,
+                Cause::Request(RequestCaptureError::ReconciliationNeeded),
+                RequestCaptureError::ReconciliationNeeded,
+            ));
         }
         *state = PublicationState::Faulted;
         store
             .publish_request_unavailable(scope, reason)
-            .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+            .map_err(|error| {
+                refused(
+                    Stage::UnsupportedPublication,
+                    Cause::Artifact(error),
+                    RequestCaptureError::ReconciliationNeeded,
+                )
+            })?;
         if let Some(mailbox) = &self.mailbox {
-            mailbox.refuse_unsupported_pending()?;
+            mailbox.refuse_unsupported_pending().map_err(|error| {
+                refused(Stage::UnsupportedMailbox, Cause::Request(error), error)
+            })?;
         }
         *state = PublicationState::Unsupported;
         Ok(())

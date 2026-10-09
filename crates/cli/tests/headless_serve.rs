@@ -660,8 +660,21 @@ fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes()
     let listing = receive(&mut reader);
     assert_eq!(listing["type"], "control_reply");
     assert_eq!(listing["reply"]["type"], "artifacts_v1");
-    let artifact = &listing["reply"]["artifacts"][0];
-    let id = artifact["artifact_id"].as_str().unwrap();
+    let artifacts: Vec<iteron_protocol::client_artifact::ClientArtifactDescriptorV1> =
+        serde_json::from_value(listing["reply"]["artifacts"].clone()).unwrap();
+    let answers = artifacts
+        .iter()
+        .filter(|artifact| artifact.schema == "iteron.final-answer.v1")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        answers.len(),
+        1,
+        "select the actual answer rather than an earlier request artifact"
+    );
+    let artifact = answers[0];
+    assert!(artifact.complete);
+    assert_eq!(artifact.bytes, b"parity reply".len() as u64);
+    let id = artifact.artifact_id.as_str();
     assert_eq!(id.len(), 64);
     assert_eq!(id, hex::encode(Sha256::digest(b"parity reply")));
     send(
@@ -692,6 +705,25 @@ fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes()
     drop(connection);
     stop(child);
     provider.finish();
+    let events = iteron_record::replay(&only_rollout(&scratch.runs())).unwrap();
+    let source = events
+        .iter()
+        .find(|event| event.seq.0 == artifact.source_event_seq)
+        .expect("the answer descriptor must cite its actual retained physical producer");
+    let iteron_protocol::EventKind::Message { message } = &source.kind else {
+        panic!("the final answer source must be the committed assistant message");
+    };
+    assert_eq!(message.role, iteron_protocol::Role::Assistant);
+    assert_eq!(
+        message.content,
+        vec![iteron_protocol::Block::Text {
+            text: "parity reply".into()
+        }]
+    );
+    assert!(events.iter().any(|event| {
+        event.seq > source.seq && event.turn == source.turn
+            && matches!(&event.kind, iteron_protocol::EventKind::Done { outcome } if outcome == "Done")
+    }));
 }
 
 #[test]
