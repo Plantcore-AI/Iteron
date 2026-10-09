@@ -1,16 +1,16 @@
 {
   "schema_version": 4,
-  "total": 3444,
+  "total": 3448,
   "runtime_settable": 2227,
-  "invariant_read_only": 1217,
+  "invariant_read_only": 1221,
   "binding_required": 0,
   "advertised_runtime_settable": 2227,
   "runtime_applied": 2227,
   "externally_addressed_runtime_settable": 2227,
   "unaddressed_runtime_settable": 0,
-  "mechanical_invariant_dispositions": 1217,
-  "owning_human_review_required": 1217,
-  "explicit_invariant_overrides": 466,
+  "mechanical_invariant_dispositions": 1221,
+  "owning_human_review_required": 1221,
+  "explicit_invariant_overrides": 470,
   "address_kind_counts": {
     "unified_profile": 1466,
     "direct_config": 407,
@@ -20,33 +20,33 @@
     "identity": 244,
     "wire_compatibility": 136,
     "authority": 71,
-    "security": 101,
+    "security": 102,
     "durability": 110,
     "replay": 15,
-    "hard_budget": 193,
+    "hard_budget": 196,
     "effect_ledger": 17,
     "non_value_structural": 330
   },
   "source_coverage": {
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
-    "production_rust_files_scanned": 1184,
+    "production_rust_files_scanned": 1185,
     "source_form_counts": {
-      "const": 2440,
-      "static": 67,
+      "const": 2443,
+      "static": 68,
       "associated_const": 43,
       "serde_default": 378,
       "clap_default": 28,
       "policy_default_constructor": 653,
       "policy_fallback_call": 13,
-      "builder_quality_default": 3900,
+      "builder_quality_default": 3902,
       "include_str_asset": 3,
       "include_bytes_asset": 5,
       "dynamic_implementation_manifest": 2,
       "dynamic_plugin_manifest": 0
     },
     "candidate_row_counts": {
-      "const": 2440,
-      "static": 67,
+      "const": 2443,
+      "static": 68,
       "associated_const": 43,
       "serde_default": 378,
       "clap_default": 28,
@@ -19491,7 +19491,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 386,
+          "line": 388,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23759,7 +23759,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 393,
+          "line": 395,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37202,7 +37202,7 @@
         },
         {
           "path": "crates/ctx/src/context_provenance.rs",
-          "line": 436,
+          "line": 442,
           "evidence": "Rust path reference"
         }
       ],
@@ -37237,7 +37237,7 @@
         },
         {
           "path": "crates/ctx/src/context_provenance.rs",
-          "line": 441,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
@@ -37257,12 +37257,12 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 544,
+          "line": 577,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 401,
+          "line": 409,
           "evidence": "Rust path reference"
         },
         {
@@ -37847,12 +37847,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 308,
+          "line": 341,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 310,
+          "line": 343,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37882,12 +37882,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 322,
+          "line": 355,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 324,
+          "line": 357,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37917,12 +37917,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 315,
+          "line": 348,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 317,
+          "line": 350,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37952,12 +37952,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 329,
+          "line": 362,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 331,
+          "line": 364,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37987,7 +37987,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 773,
+          "line": 806,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -38017,7 +38017,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 769,
+          "line": 802,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -38047,7 +38047,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1068,
+          "line": 1101,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -38077,7 +38077,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1067,
+          "line": 1100,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -38106,8 +38106,13 @@
       },
       "use_sites": [
         {
+          "path": "crates/ctx/src/memory.rs",
+          "line": 175,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 364,
+          "line": 372,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -38167,12 +38172,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 509,
+          "line": 542,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 913,
+          "line": 946,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -38217,7 +38222,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 284,
+          "line": 294,
           "evidence": "param_usize runtime resolution"
         },
         {
@@ -38282,22 +38287,22 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 239,
+          "line": 249,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 241,
+          "line": 251,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 350,
+          "line": 360,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 352,
+          "line": 362,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -38397,13 +38402,13 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 354,
+          "line": 387,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "hard_budget",
-      "review_evidence": "closed source-form invariant rule: `MemBudget::fit_content_bytes` at crates/ctx/src/memory.rs — a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs; observed at crates/ctx/src/memory.rs:354; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `MemBudget::fit_content_bytes` at crates/ctx/src/memory.rs — a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs; observed at crates/ctx/src/memory.rs:387; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -38421,13 +38426,13 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 355,
+          "line": 388,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "hard_budget",
-      "review_evidence": "closed source-form invariant rule: `MemBudget::fit_content_bytes` at crates/ctx/src/memory.rs — a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs; observed at crates/ctx/src/memory.rs:355; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `MemBudget::fit_content_bytes` at crates/ctx/src/memory.rs — a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs; observed at crates/ctx/src/memory.rs:388; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -38925,7 +38930,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 628,
+          "line": 661,
           "evidence": "Rust path reference"
         },
         {
@@ -38936,7 +38941,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "wire_compatibility",
-      "review_evidence": "explicit source-specific Tier-2 disposition rule: `LEGACY_CONFIDENCE_PPM` at crates/ctx/src/memory_records.rs — the value fixes serialized, decoded, or cross-process wire compatibility; observed at crates/ctx/src/memory.rs:628 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `LEGACY_CONFIDENCE_PPM` at crates/ctx/src/memory_records.rs — the value fixes serialized, decoded, or cross-process wire compatibility; observed at crates/ctx/src/memory.rs:661 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -38955,7 +38960,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1327,
+          "line": 1358,
           "evidence": "Rust path reference"
         },
         {
@@ -38971,7 +38976,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_RECORD_BODY_BYTES` at crates/ctx/src/memory_records.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/ctx/src/memory.rs:1327 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_RECORD_BODY_BYTES` at crates/ctx/src/memory_records.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/ctx/src/memory.rs:1358 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -39000,32 +39005,32 @@
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 71,
+          "line": 78,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 83,
+          "line": 90,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 181,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 209,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 214,
+          "line": 188,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
           "line": 216,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/ctx/src/memory_records/file.rs",
+          "line": 221,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/ctx/src/memory_records/file.rs",
+          "line": 223,
           "evidence": "Rust path reference"
         }
       ],
@@ -42942,22 +42947,22 @@
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 330,
+          "line": 331,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 420,
+          "line": 428,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 426,
+          "line": 434,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 872,
+          "line": 880,
           "evidence": "Rust path reference"
         },
         {
@@ -46238,7 +46243,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 554,
+          "line": 562,
           "evidence": "Rust path reference"
         },
         {
@@ -46249,7 +46254,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `ALL_TRAINER_CAPABILITIES` at crates/eval/src/trainer_bridge.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/qualification_campaign.rs:554 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `ALL_TRAINER_CAPABILITIES` at crates/eval/src/trainer_bridge.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/qualification_campaign.rs:562 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -46518,7 +46523,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 509,
+          "line": 517,
           "evidence": "Rust path reference"
         },
         {
@@ -46544,7 +46549,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `TRAINER_BRIDGE_SCHEMA_VERSION` at crates/eval/src/trainer_bridge.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/qualification_campaign.rs:509 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `TRAINER_BRIDGE_SCHEMA_VERSION` at crates/eval/src/trainer_bridge.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/qualification_campaign.rs:517 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -47036,12 +47041,12 @@
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 929,
+          "line": 937,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 1008,
+          "line": 1016,
           "evidence": "Rust path reference"
         },
         {
@@ -59293,7 +59298,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 288,
+          "line": 293,
           "evidence": "macro token reference"
         },
         {
@@ -59353,12 +59358,12 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 446,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 288,
+          "line": 293,
           "evidence": "macro token reference"
         }
       ],
@@ -59539,7 +59544,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 297,
+          "line": 302,
           "evidence": "Rust path reference"
         }
       ],
@@ -59569,7 +59574,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 294,
+          "line": 299,
           "evidence": "Rust path reference"
         }
       ],
@@ -59599,7 +59604,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 295,
+          "line": 300,
           "evidence": "Rust path reference"
         }
       ],
@@ -59629,7 +59634,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 308,
+          "line": 313,
           "evidence": "Rust path reference"
         }
       ],
@@ -59744,17 +59749,17 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 31,
+          "line": 30,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 310,
+          "line": 315,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 312,
+          "line": 317,
           "evidence": "Rust path reference"
         }
       ],
@@ -59814,7 +59819,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 314,
+          "line": 319,
           "evidence": "Rust path reference"
         }
       ],
@@ -59874,7 +59879,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 306,
+          "line": 311,
           "evidence": "Rust path reference"
         }
       ],
@@ -60399,17 +60404,17 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 25,
+          "line": 26,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 460,
+          "line": 441,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 463,
+          "line": 444,
           "evidence": "Rust path reference"
         },
         {
@@ -60542,6 +60547,111 @@
       "tier2_id": "marketplace.implementation_protocol.max_protocol_id_bytes"
     },
     {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_executable_bytes",
+      "candidate_kind": "const",
+      "rust_type": "u64",
+      "value": "1024 * 1024 * 1024",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_EXECUTABLE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 103,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "hard_budget",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_EXECUTABLE_BYTES` at crates/marketplace/src/implementation_runtime/artifact_verification.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/marketplace/src/implementation_runtime/artifact_verification.rs:103 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": true,
+      "applied": false,
+      "tier2_id": "marketplace.implementation_runtime.artifact_verification.max_executable_bytes"
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_program_path_bytes",
+      "candidate_kind": "const",
+      "rust_type": "usize",
+      "value": "4096",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_PROGRAM_PATH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 31,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "security",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_PROGRAM_PATH_BYTES` at crates/marketplace/src/implementation_runtime/artifact_verification.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/marketplace/src/implementation_runtime/artifact_verification.rs:31 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": true,
+      "applied": false,
+      "tier2_id": "marketplace.implementation_runtime.artifact_verification.max_program_path_bytes"
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_workers",
+      "candidate_kind": "const",
+      "rust_type": "usize",
+      "value": "4",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 43,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "hard_budget",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_WORKERS` at crates/marketplace/src/implementation_runtime/artifact_verification.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/marketplace/src/implementation_runtime/artifact_verification.rs:43 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": true,
+      "applied": false,
+      "tier2_id": "marketplace.implementation_runtime.artifact_verification.max_workers"
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.workers",
+      "candidate_kind": "static",
+      "rust_type": "AtomicUsize",
+      "value": "AtomicUsize::new(0)",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 20,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 41,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "hard_budget",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `WORKERS` at crates/marketplace/src/implementation_runtime/artifact_verification.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/marketplace/src/implementation_runtime/artifact_verification.rs:20 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": true,
+      "applied": false,
+      "tier2_id": "marketplace.implementation_runtime.artifact_verification.workers"
+    },
+    {
       "id": "marketplace.implementation_runtime.max_implementation_state_evidence",
       "candidate_kind": "const",
       "rust_type": "usize",
@@ -60554,18 +60664,18 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 456,
+          "line": 457,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 458,
+          "line": 459,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "hard_budget",
-      "review_evidence": "explicit census disposition override: `MAX_IMPLEMENTATION_STATE_EVIDENCE` at crates/marketplace/src/implementation_runtime.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/marketplace/src/implementation_runtime.rs:456 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_IMPLEMENTATION_STATE_EVIDENCE` at crates/marketplace/src/implementation_runtime.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/marketplace/src/implementation_runtime.rs:457 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -60614,7 +60724,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 47,
+          "line": 46,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -60644,7 +60754,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 52,
+          "line": 51,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -60674,13 +60784,13 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 543,
+          "line": 524,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `kill_process_group::SIGKILL` at crates/marketplace/src/implementation_runtime/process.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/marketplace/src/implementation_runtime/process.rs:543 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `kill_process_group::SIGKILL` at crates/marketplace/src/implementation_runtime/process.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/marketplace/src/implementation_runtime/process.rs:524 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -69089,13 +69199,13 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/client_agent_control.rs",
-          "line": 73,
+          "line": 88,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "wire_compatibility",
-      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_AGENT_REQUEST_ID_BYTES` at crates/protocol/src/agent_control.rs — the value fixes serialized, decoded, or cross-process wire compatibility; observed at crates/protocol/src/client_agent_control.rs:73 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_AGENT_REQUEST_ID_BYTES` at crates/protocol/src/agent_control.rs — the value fixes serialized, decoded, or cross-process wire compatibility; observed at crates/protocol/src/client_agent_control.rs:88 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -100109,37 +100219,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ],
@@ -103511,37 +103621,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ],
@@ -103666,7 +103776,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 185,
+          "line": 186,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -103695,7 +103805,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 181,
+          "line": 182,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -103749,37 +103859,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ],
@@ -103804,18 +103914,18 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 643,
+          "line": 658,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 814,
+          "line": 829,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `CLOSED_HOST_INVARIANTS` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:643 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `CLOSED_HOST_INVARIANTS` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:658 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -103834,13 +103944,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 828,
+          "line": 843,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `EXTERNAL_PROTOCOL_SERVICE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:828 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EXTERNAL_PROTOCOL_SERVICE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:843 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -103859,13 +103969,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 676,
+          "line": 691,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "hard_budget",
-      "review_evidence": "explicit census disposition override: `MAX_RUNTIME_SERVICE_GRAPH_BYTES` at crates/tunables/src/service_graph.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/tunables/src/service_graph.rs:676 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_RUNTIME_SERVICE_GRAPH_BYTES` at crates/tunables/src/service_graph.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/tunables/src/service_graph.rs:691 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -103874,8 +103984,8 @@
     {
       "id": "tunables.service_graph.runtime_crate_ids",
       "candidate_kind": "const",
-      "rust_type": "[&str; 22]",
-      "value": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
+      "rust_type": "[&str; 23]",
+      "value": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"extension-sdk\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/service_graph.rs",
@@ -103884,13 +103994,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 780,
+          "line": 795,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_CRATE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:780 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_CRATE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:795 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -103909,18 +104019,18 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 660,
+          "line": 675,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 668,
+          "line": 683,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:660 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:675 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -103930,7 +104040,7 @@
       "id": "tunables.service_graph.runtime_service_node_count",
       "candidate_kind": "const",
       "rust_type": "usize",
-      "value": "66",
+      "value": "67",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/service_graph.rs",
@@ -103939,18 +104049,18 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 269,
+          "line": 270,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 669,
+          "line": 684,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_NODE_COUNT` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:269 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_NODE_COUNT` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:270 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -103990,7 +104100,7 @@
       "id": "tunables.tool_text.tool_text_artifacts",
       "candidate_kind": "const",
       "rust_type": "&[ToolTextArtifact]",
-      "value": "&[\n    tool_text!(\n        \"repo_map\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"grep\",\n        \"crates/tools/src/grep_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_file\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"list_dir\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"glob\", \"crates/tools/src/fs_tools.rs:ToolSpec::description\"),\n    tool_text!(\n        \"submit_repair_evidence\",\n        \"crates/tools/src/repair_evidence.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"git_diff\", \"crates/tools/src/git.rs:ToolSpec::description\"),\n    tool_text!(\n        \"git_status\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"git_log\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_memory\",\n        \"crates/tools/src/mem.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"use_skill\",\n        \"crates/tools/src/skill.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"edit\", \"crates/tools/src/edit.rs:ToolSpec::description\"),\n    tool_text!(\n        \"apply_patch\",\n        \"crates/tools/src/multi_file_patch.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"write_file\",\n        \"crates/tools/src/write_file.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"bash\", \"crates/tools/src/shell.rs:ToolSpec::description\"),\n    tool_text!(\n        \"process_start\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_list\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_poll\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_write\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_resize\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_stop\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"lsp_query\",\n        \"crates/tools/src/lsp/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"web_fetch\", \"crates/tools/src/web.rs:ToolSpec::description\"),\n    tool_text!(\n        \"web_search\",\n        \"crates/tools/src/web.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"dispatch_agent\",\n        \"crates/tools/src/lib.rs:register_dispatch_agent\"\n    ),\n    tool_text!(\n        \"Workflow\",\n        \"crates/tools/src/workflow_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"tool_search\",\n        \"crates/tools/src/tool_search.rs:ToolSpec::description\"\n    ),\n]",
+      "value": "&[\n    tool_text!(\n        \"repo_map\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"grep\",\n        \"crates/tools/src/grep_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_file\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"list_dir\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"glob\", \"crates/tools/src/fs_tools.rs:ToolSpec::description\"),\n    tool_text!(\n        \"submit_repair_evidence\",\n        \"crates/tools/src/repair_evidence.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"update_plan\",\n        \"crates/tools/src/task_plan.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"git_diff\", \"crates/tools/src/git.rs:ToolSpec::description\"),\n    tool_text!(\n        \"git_status\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"git_log\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_memory\",\n        \"crates/tools/src/mem.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"use_skill\",\n        \"crates/tools/src/skill.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"edit\", \"crates/tools/src/edit.rs:ToolSpec::description\"),\n    tool_text!(\n        \"apply_patch\",\n        \"crates/tools/src/multi_file_patch.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"write_file\",\n        \"crates/tools/src/write_file.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"bash\", \"crates/tools/src/shell.rs:ToolSpec::description\"),\n    tool_text!(\n        \"process_start\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_list\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_poll\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_write\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_resize\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_stop\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"lsp_query\",\n        \"crates/tools/src/lsp/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"web_fetch\", \"crates/tools/src/web.rs:ToolSpec::description\"),\n    tool_text!(\n        \"web_search\",\n        \"crates/tools/src/web.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"dispatch_agent\",\n        \"crates/tools/src/lib.rs:register_dispatch_agent\"\n    ),\n    tool_text!(\n        \"Workflow\",\n        \"crates/tools/src/workflow_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"tool_search\",\n        \"crates/tools/src/tool_search.rs:ToolSpec::description\"\n    ),\n]",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/tool_text.rs",
@@ -104019,17 +104129,17 @@
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 144,
+          "line": 149,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 151,
+          "line": 156,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 165,
+          "line": 170,
           "evidence": "Rust path reference"
         }
       ],
@@ -104059,7 +104169,7 @@
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 163,
+          "line": 168,
           "evidence": "Rust path reference"
         }
       ],
@@ -104084,13 +104194,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 164,
+          "line": 169,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "explicit census disposition override: `TOOL_TEXT_SCHEMA_VERSION` at crates/tunables/src/tool_text.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/tool_text.rs:164 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `TOOL_TEXT_SCHEMA_VERSION` at crates/tunables/src/tool_text.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/tool_text.rs:169 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -105884,7 +105994,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/bindings/run_state.rs",
-          "line": 144,
+          "line": 150,
           "evidence": "param_usize runtime resolution"
         },
         {

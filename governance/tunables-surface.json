@@ -4,25 +4,25 @@
   "registry_revision": 28,
   "registry_digest": "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "2ad373004d44493b0bdab7109491123deb88a6638445555da36a53552da658a3",
+  "param_registry_digest": "ccc830327b71fc8e21ed01ab4c07f499b38545fbe9740032163886718d937254",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
-  "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
+  "tool_text_registry_digest": "1fca9085746b2ba1ce643a167e547929000ef4bdd958182178baf3edf2066f04",
   "counts": {
     "families": 160,
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2550,
+    "params": 2554,
     "params_searchable": 575,
     "params_bounded": 891,
-    "params_structural": 1084,
+    "params_structural": 1088,
     "params_applied": 1466,
     "modules": 28,
     "prompt_artifacts": 10,
     "prompt_artifacts_overridable": 10,
-    "tool_descriptions": 27,
-    "tool_descriptions_overridable": 27,
-    "runtime_service_nodes": 66,
+    "tool_descriptions": 28,
+    "tool_descriptions_overridable": 28,
+    "runtime_service_nodes": 67,
     "runtime_service_external": 34,
     "runtime_service_compiled_interfaces": 0
   },
@@ -39,7 +39,7 @@
       "kind": "textual",
       "families": 0,
       "params": 0,
-      "artifacts": 28
+      "artifacts": 29
     },
     {
       "id": "prompt.subagent",
@@ -122,7 +122,7 @@
       "id": "tool.exposure",
       "kind": "structured",
       "families": 31,
-      "params": 226,
+      "params": 230,
       "artifacts": 0
     },
     {
@@ -1101,6 +1101,31 @@
         ],
         "closed_host_invariants": [
           "evidence_durability"
+        ]
+      },
+      {
+        "id": "service/extension.sdk",
+        "layer": "platform_service",
+        "disposition": "host_fixed_non_optimization",
+        "implementation_status": "host_fixed",
+        "owner": "plugin-marketplace",
+        "source_crate": "extension-sdk",
+        "provider_contract": {
+          "id": "iteron/runtime/service/extension.sdk/provider@v1",
+          "version": 1
+        },
+        "consumer_contract": {
+          "id": "iteron/runtime/service/extension.sdk/consumer@v1",
+          "version": 1
+        },
+        "dependencies": [
+          "invariant/capabilityandpermission",
+          "invariant/replayandidentity"
+        ],
+        "non_optimization_reason": "Extension descriptors and read-only SDK contracts retain bounded identity and capability bindings; they grant no execution or lifecycle-writing authority.",
+        "closed_host_invariants": [
+          "capability_and_permission",
+          "replay_and_identity"
         ]
       },
       {
@@ -19297,7 +19322,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 386,
+          "line": 388,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23204,7 +23229,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 393,
+          "line": 395,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -34308,7 +34333,7 @@
         },
         {
           "path": "crates/ctx/src/context_provenance.rs",
-          "line": 436,
+          "line": 442,
           "evidence": "Rust path reference"
         }
       ]
@@ -34345,7 +34370,7 @@
         },
         {
           "path": "crates/ctx/src/context_provenance.rs",
-          "line": 441,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
@@ -34365,12 +34390,12 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 544,
+          "line": 577,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 401,
+          "line": 409,
           "evidence": "Rust path reference"
         },
         {
@@ -34961,12 +34986,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 308,
+          "line": 341,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 310,
+          "line": 343,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -34993,12 +35018,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 322,
+          "line": 355,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 324,
+          "line": 357,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35025,12 +35050,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 315,
+          "line": 348,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 317,
+          "line": 350,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35057,12 +35082,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 329,
+          "line": 362,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 331,
+          "line": 364,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35092,7 +35117,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 773,
+          "line": 806,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -35119,7 +35144,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 769,
+          "line": 802,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -35146,7 +35171,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1068,
+          "line": 1101,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -35173,7 +35198,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1067,
+          "line": 1100,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -35202,8 +35227,13 @@
       },
       "use_sites": [
         {
+          "path": "crates/ctx/src/memory.rs",
+          "line": 175,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 364,
+          "line": 372,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -35263,12 +35293,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 509,
+          "line": 542,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 913,
+          "line": 946,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -35313,7 +35343,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 284,
+          "line": 294,
           "evidence": "param_usize runtime resolution"
         },
         {
@@ -35378,22 +35408,22 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 239,
+          "line": 249,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 241,
+          "line": 251,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 350,
+          "line": 360,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory/file_store.rs",
-          "line": 352,
+          "line": 362,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -35582,7 +35612,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 628,
+          "line": 661,
           "evidence": "Rust path reference"
         },
         {
@@ -35614,7 +35644,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1327,
+          "line": 1358,
           "evidence": "Rust path reference"
         },
         {
@@ -35661,32 +35691,32 @@
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 71,
+          "line": 78,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 83,
+          "line": 90,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 181,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 209,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory_records/file.rs",
-          "line": 214,
+          "line": 188,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory_records/file.rs",
           "line": 216,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/ctx/src/memory_records/file.rs",
+          "line": 221,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/ctx/src/memory_records/file.rs",
+          "line": 223,
           "evidence": "Rust path reference"
         }
       ]
@@ -39015,22 +39045,22 @@
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 330,
+          "line": 331,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 420,
+          "line": 428,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 426,
+          "line": 434,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 872,
+          "line": 880,
           "evidence": "Rust path reference"
         },
         {
@@ -41426,7 +41456,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 554,
+          "line": 562,
           "evidence": "Rust path reference"
         },
         {
@@ -41724,7 +41754,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 509,
+          "line": 517,
           "evidence": "Rust path reference"
         },
         {
@@ -42055,12 +42085,12 @@
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 929,
+          "line": 937,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/qualification_campaign.rs",
-          "line": 1008,
+          "line": 1016,
           "evidence": "Rust path reference"
         },
         {
@@ -49746,7 +49776,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 288,
+          "line": 293,
           "evidence": "macro token reference"
         },
         {
@@ -49808,12 +49838,12 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 446,
+          "line": 447,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 288,
+          "line": 293,
           "evidence": "macro token reference"
         }
       ]
@@ -49845,7 +49875,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 297,
+          "line": 302,
           "evidence": "Rust path reference"
         }
       ]
@@ -49877,7 +49907,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 294,
+          "line": 299,
           "evidence": "Rust path reference"
         }
       ]
@@ -49909,7 +49939,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 295,
+          "line": 300,
           "evidence": "Rust path reference"
         }
       ]
@@ -49941,7 +49971,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 308,
+          "line": 313,
           "evidence": "Rust path reference"
         }
       ]
@@ -50062,17 +50092,17 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 31,
+          "line": 30,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 310,
+          "line": 315,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 312,
+          "line": 317,
           "evidence": "Rust path reference"
         }
       ]
@@ -50136,7 +50166,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 314,
+          "line": 319,
           "evidence": "Rust path reference"
         }
       ]
@@ -50200,7 +50230,7 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 306,
+          "line": 311,
           "evidence": "Rust path reference"
         }
       ]
@@ -50535,17 +50565,17 @@
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 25,
+          "line": 26,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 460,
+          "line": 441,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 463,
+          "line": 444,
           "evidence": "Rust path reference"
         },
         {
@@ -50679,6 +50709,119 @@
       ]
     },
     {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_executable_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1024 * 1024 * 1024",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_EXECUTABLE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 103,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_program_path_bytes",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_PROGRAM_PATH_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 31,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.max_workers",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "MAX_WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 43,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "marketplace.implementation_runtime.artifact_verification.workers",
+      "module": "tool_exposure",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "AtomicUsize",
+      "default": "AtomicUsize::new(0)",
+      "domain": {},
+      "krate": "marketplace",
+      "decl": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "marketplace",
+        "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+        "symbol": "WORKERS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 20,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/marketplace/src/implementation_runtime/artifact_verification.rs",
+          "line": 41,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "marketplace.implementation_runtime.max_implementation_state_evidence",
       "module": "tool_exposure",
       "class": "structural",
@@ -50700,12 +50843,12 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 456,
+          "line": 457,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/marketplace/src/implementation_runtime.rs",
-          "line": 458,
+          "line": 459,
           "evidence": "Rust path reference"
         }
       ]
@@ -50766,7 +50909,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 47,
+          "line": 46,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -50796,7 +50939,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 52,
+          "line": 51,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -50824,7 +50967,7 @@
       "use_sites": [
         {
           "path": "crates/marketplace/src/implementation_runtime/process.rs",
-          "line": 543,
+          "line": 524,
           "evidence": "Rust path reference"
         }
       ]
@@ -56713,7 +56856,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/client_agent_control.rs",
-          "line": 73,
+          "line": 88,
           "evidence": "Rust path reference"
         }
       ]
@@ -80671,37 +80814,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ]
@@ -83544,37 +83687,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ]
@@ -83730,37 +83873,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 271,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 286,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 790,
+          "line": 805,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 791,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 801,
+          "line": 816,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 803,
+          "line": 818,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 871,
+          "line": 886,
           "evidence": "Rust path reference"
         }
       ]
@@ -83787,12 +83930,12 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 643,
+          "line": 658,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 814,
+          "line": 829,
           "evidence": "Rust path reference"
         }
       ]
@@ -83819,7 +83962,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 828,
+          "line": 843,
           "evidence": "Rust path reference"
         }
       ]
@@ -83846,7 +83989,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 676,
+          "line": 691,
           "evidence": "Rust path reference"
         }
       ]
@@ -83856,8 +83999,8 @@
       "module": "budget_allocation",
       "class": "structural",
       "type": "array",
-      "rust_type": "[&str; 22]",
-      "default": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
+      "rust_type": "[&str; 23]",
+      "default": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"extension-sdk\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/service_graph.rs",
@@ -83873,7 +84016,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 780,
+          "line": 795,
           "evidence": "Rust path reference"
         }
       ]
@@ -83900,12 +84043,12 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 660,
+          "line": 675,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 668,
+          "line": 683,
           "evidence": "Rust path reference"
         }
       ]
@@ -83916,7 +84059,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "usize",
-      "default": "66",
+      "default": "67",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/service_graph.rs",
@@ -83932,12 +84075,12 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 269,
+          "line": 270,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 669,
+          "line": 684,
           "evidence": "Rust path reference"
         }
       ]
@@ -83980,7 +84123,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "&[ToolTextArtifact]",
-      "default": "&[\n    tool_text!(\n        \"repo_map\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"grep\",\n        \"crates/tools/src/grep_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_file\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"list_dir\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"glob\", \"crates/tools/src/fs_tools.rs:ToolSpec::description\"),\n    tool_text!(\n        \"submit_repair_evidence\",\n        \"crates/tools/src/repair_evidence.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"git_diff\", \"crates/tools/src/git.rs:ToolSpec::description\"),\n    tool_text!(\n        \"git_status\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"git_log\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_memory\",\n        \"crates/tools/src/mem.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"use_skill\",\n        \"crates/tools/src/skill.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"edit\", \"crates/tools/src/edit.rs:ToolSpec::description\"),\n    tool_text!(\n        \"apply_patch\",\n        \"crates/tools/src/multi_file_patch.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"write_file\",\n        \"crates/tools/src/write_file.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"bash\", \"crates/tools/src/shell.rs:ToolSpec::description\"),\n    tool_text!(\n        \"process_start\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_list\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_poll\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_write\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_resize\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_stop\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"lsp_query\",\n        \"crates/tools/src/lsp/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"web_fetch\", \"crates/tools/src/web.rs:ToolSpec::description\"),\n    tool_text!(\n        \"web_search\",\n        \"crates/tools/src/web.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"dispatch_agent\",\n        \"crates/tools/src/lib.rs:register_dispatch_agent\"\n    ),\n    tool_text!(\n        \"Workflow\",\n        \"crates/tools/src/workflow_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"tool_search\",\n        \"crates/tools/src/tool_search.rs:ToolSpec::description\"\n    ),\n]",
+      "default": "&[\n    tool_text!(\n        \"repo_map\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"grep\",\n        \"crates/tools/src/grep_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_file\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"list_dir\",\n        \"crates/tools/src/fs_tools.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"glob\", \"crates/tools/src/fs_tools.rs:ToolSpec::description\"),\n    tool_text!(\n        \"submit_repair_evidence\",\n        \"crates/tools/src/repair_evidence.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"update_plan\",\n        \"crates/tools/src/task_plan.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"git_diff\", \"crates/tools/src/git.rs:ToolSpec::description\"),\n    tool_text!(\n        \"git_status\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"git_log\",\n        \"crates/tools/src/git_observe.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"read_memory\",\n        \"crates/tools/src/mem.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"use_skill\",\n        \"crates/tools/src/skill.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"edit\", \"crates/tools/src/edit.rs:ToolSpec::description\"),\n    tool_text!(\n        \"apply_patch\",\n        \"crates/tools/src/multi_file_patch.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"write_file\",\n        \"crates/tools/src/write_file.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"bash\", \"crates/tools/src/shell.rs:ToolSpec::description\"),\n    tool_text!(\n        \"process_start\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_list\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_poll\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_write\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_resize\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"process_stop\",\n        \"crates/tools/src/process/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"lsp_query\",\n        \"crates/tools/src/lsp/mod.rs:ToolSpec::description\"\n    ),\n    tool_text!(\"web_fetch\", \"crates/tools/src/web.rs:ToolSpec::description\"),\n    tool_text!(\n        \"web_search\",\n        \"crates/tools/src/web.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"dispatch_agent\",\n        \"crates/tools/src/lib.rs:register_dispatch_agent\"\n    ),\n    tool_text!(\n        \"Workflow\",\n        \"crates/tools/src/workflow_tool.rs:ToolSpec::description\"\n    ),\n    tool_text!(\n        \"tool_search\",\n        \"crates/tools/src/tool_search.rs:ToolSpec::description\"\n    ),\n]",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/tool_text.rs",
@@ -84016,17 +84159,17 @@
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 144,
+          "line": 149,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 151,
+          "line": 156,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 165,
+          "line": 170,
           "evidence": "Rust path reference"
         }
       ]
@@ -84058,7 +84201,7 @@
         },
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 163,
+          "line": 168,
           "evidence": "Rust path reference"
         }
       ]
@@ -84085,7 +84228,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/tool_text.rs",
-          "line": 164,
+          "line": 169,
           "evidence": "Rust path reference"
         }
       ]
@@ -85556,7 +85699,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/bindings/run_state.rs",
-          "line": 144,
+          "line": 150,
           "evidence": "param_usize runtime resolution"
         },
         {
@@ -89084,6 +89227,14 @@
       "tool": "submit_repair_evidence",
       "module": "prompt_tool_description",
       "decl": "crates/tools/src/repair_evidence.rs:ToolSpec::description",
+      "effect": "only this built-in tool's model-visible ToolSpec.description; identity, schema and authority metadata are unchanged",
+      "overridable": true
+    },
+    {
+      "id": "tool/update_plan/description@v1",
+      "tool": "update_plan",
+      "module": "prompt_tool_description",
+      "decl": "crates/tools/src/task_plan.rs:ToolSpec::description",
       "effect": "only this built-in tool's model-visible ToolSpec.description; identity, schema and authority metadata are unchanged",
       "overridable": true
     },

@@ -48,7 +48,7 @@
     "marketplace": {
       "bounded": 15,
       "searchable": 1,
-      "structural": 47
+      "structural": 51
     },
     "mcp": {
       "bounded": 65,
@@ -118,6 +118,6 @@
   },
   "schema_version": 1,
   "settable": 1466,
-  "structural": 1084,
-  "total": 2550
+  "structural": 1088,
+  "total": 2554
 }
