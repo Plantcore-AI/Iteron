@@ -38,7 +38,7 @@
       "clap_default": 28,
       "policy_default_constructor": 653,
       "policy_fallback_call": 13,
-      "builder_quality_default": 3902,
+      "builder_quality_default": 3901,
       "include_str_asset": 3,
       "include_bytes_asset": 5,
       "dynamic_implementation_manifest": 2,
@@ -621,7 +621,7 @@
         },
         {
           "path": "crates/agents/src/controller/workflow_claim.rs",
-          "line": 662,
+          "line": 664,
           "evidence": "Rust path reference"
         }
       ],
@@ -3129,22 +3129,22 @@
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 297,
+          "line": 301,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 298,
+          "line": 302,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 454,
+          "line": 462,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 601,
+          "line": 613,
           "evidence": "Rust path reference"
         }
       ],
@@ -3174,12 +3174,12 @@
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 301,
+          "line": 305,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 456,
+          "line": 464,
           "evidence": "Rust path reference"
         }
       ],
@@ -4558,12 +4558,12 @@
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 300,
+          "line": 304,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 624,
+          "line": 636,
           "evidence": "Rust path reference"
         }
       ],
@@ -4588,18 +4588,18 @@
       "use_sites": [
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 300,
+          "line": 304,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 482,
+          "line": 490,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `LAST_SEQUENCE` at crates/cli/src/artifacts.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/artifacts.rs:300 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `LAST_SEQUENCE` at crates/cli/src/artifacts.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/artifacts.rs:304 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -4748,22 +4748,22 @@
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 297,
+          "line": 301,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 298,
+          "line": 302,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 454,
+          "line": 462,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 601,
+          "line": 613,
           "evidence": "Rust path reference"
         }
       ],
@@ -4793,12 +4793,12 @@
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 301,
+          "line": 305,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 456,
+          "line": 464,
           "evidence": "Rust path reference"
         }
       ],
@@ -4823,23 +4823,23 @@
       "use_sites": [
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 330,
+          "line": 334,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 375,
+          "line": 383,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/artifacts.rs",
-          "line": 417,
+          "line": 425,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "durability",
-      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_SOURCES` at crates/cli/src/artifacts.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/cli/src/artifacts.rs:330 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit source-specific Tier-2 disposition rule: `MAX_SOURCES` at crates/cli/src/artifacts.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/cli/src/artifacts.rs:334 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -4933,7 +4933,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1091,
+          "line": 1094,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -4963,12 +4963,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 676,
+          "line": 679,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/block.rs",
-          "line": 690,
+          "line": 693,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -4998,7 +4998,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/block.rs",
-          "line": 1228,
+          "line": 1231,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11323,13 +11323,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 411,
+          "line": 412,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "security",
-      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_BENEATH` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:411 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_BENEATH` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:412 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -11348,13 +11348,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 413,
+          "line": 414,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "security",
-      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_MAGICLINKS` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:413 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_MAGICLINKS` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:414 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -11373,13 +11373,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 412,
+          "line": 413,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "security",
-      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_SYMLINKS` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:412 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_SYMLINKS` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:413 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -11398,13 +11398,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 414,
+          "line": 415,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "security",
-      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_XDEV` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:414 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `verify_beneath::RESOLVE_NO_XDEV` at crates/cli/src/iteron_workspace_hook.rs — the value fixes authentication, cryptographic, or secret-handling shape; observed at crates/cli/src/iteron_workspace_hook.rs:415 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -26271,7 +26271,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/workflow_spawner/worktree.rs",
-          "line": 800,
+          "line": 804,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26301,12 +26301,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/workflow_spawner/worktree.rs",
-          "line": 375,
+          "line": 379,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner/worktree.rs",
-          "line": 508,
+          "line": 512,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26386,13 +26386,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/workflow_spawner/worktree.rs",
-          "line": 819,
+          "line": 823,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `UNREADABLE_PATH_IS_SYMLINK` at crates/cli/src/runtime/workflow_spawner/worktree.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime/workflow_spawner/worktree.rs:819 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `UNREADABLE_PATH_IS_SYMLINK` at crates/cli/src/runtime/workflow_spawner/worktree.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime/workflow_spawner/worktree.rs:823 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
