@@ -1,6 +1,7 @@
 //! One optional isolation lease and transport resource retained until actual physical retirement.
 //! A caller/worker must first observe a waited leader and zero processes in its private Job.
 use super::conpty::console::Console;
+use crate::durable_windows_state::WindowsPrivateScratch;
 use crate::windows_process_isolation::{WindowsIsolationLaunch, WindowsProcessIsolation};
 use std::io;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use tokio::sync::Notify;
 pub(super) struct NativeLaunchRetirement {
     console: Option<Arc<Console>>,
     launch: Option<WindowsIsolationLaunch>,
+    scratch: Option<WindowsPrivateScratch>,
     completion: Arc<RetirementCompletion>,
 }
 pub(super) struct RetirementCompletion {
@@ -46,6 +48,7 @@ impl NativeLaunchRetirement {
         Ok(Self {
             console,
             launch,
+            scratch: None,
             completion: Arc::new(RetirementCompletion {
                 known: AtomicBool::new(false),
                 notify: Notify::new(),
@@ -61,6 +64,31 @@ impl NativeLaunchRetirement {
         }
         Ok(())
     }
+    pub(super) fn bind_scratch(&mut self, scratch: WindowsPrivateScratch) {
+        self.scratch = Some(scratch);
+    }
+    pub(super) fn provision_scratch(&mut self) -> io::Result<()> {
+        self.scratch
+            .as_mut()
+            .ok_or_else(|| io::Error::other("native scratch custody missing"))?
+            .provision()
+    }
+    pub(super) fn scratch_file(&self) -> io::Result<&std::fs::File> {
+        self.scratch
+            .as_ref()
+            .ok_or_else(|| io::Error::other("native scratch custody missing"))?
+            .file()
+    }
+    pub(super) fn bind_isolation(
+        &mut self,
+        isolation: &Arc<WindowsProcessIsolation>,
+    ) -> io::Result<()> {
+        if self.launch.is_some() {
+            return Err(io::Error::other("native isolation already reserved"));
+        }
+        self.launch = Some(isolation.reserve_launch()?);
+        Ok(())
+    }
     pub(super) fn bind_console(&mut self, console: Arc<Console>) {
         self.console = Some(console);
     }
@@ -68,7 +96,7 @@ impl NativeLaunchRetirement {
         self.completion.clone()
     }
     pub(super) fn needs_worker(&self) -> bool {
-        self.launch.is_some()
+        self.launch.is_some() || self.scratch.is_some()
     }
     pub(super) fn begin_close(&self) {
         if let Some(console) = &self.console {
@@ -92,6 +120,12 @@ impl NativeLaunchRetirement {
             }
         }
         self.launch = None;
+        if let Some(scratch) = &mut self.scratch {
+            if scratch.retire().is_err() {
+                return false;
+            }
+        }
+        self.scratch = None;
         self.completion.known.store(true, Ordering::Release);
         self.completion.notify.notify_waiters();
         true

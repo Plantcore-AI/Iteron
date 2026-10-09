@@ -47,3 +47,21 @@ impl CollectedChild for iteron_support::owned_windows_job::OwnedWindowsChild {
         Some(self.job())
     }
 }
+
+#[cfg(windows)]
+impl CollectedChild for iteron_support::owned_windows_job::OwnedWindowsPipes {
+    fn process_id(&self) -> Option<u32> {
+        self.id()
+    }
+    fn request_kill(&mut self) -> io::Result<()> {
+        self.start_kill()
+    }
+    fn wait_status(&mut self) -> impl Future<Output = io::Result<ExitStatus>> + Send {
+        self.wait()
+    }
+    fn retained_job(
+        &self,
+    ) -> Option<std::sync::Arc<iteron_support::owned_windows_job::OwnedWindowsJob>> {
+        Some(self.job())
+    }
+}

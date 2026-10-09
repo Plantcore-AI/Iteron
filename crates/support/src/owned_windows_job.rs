@@ -39,6 +39,7 @@ mod native_retirement;
 mod native_setup;
 mod piped;
 pub use conpty::{OwnedWindowsPty, WindowsPtyInput, WindowsPtyOutput, WindowsPtyResize};
+pub use native_setup::WindowsSandboxLaunch;
 pub use piped::{OwnedWindowsPipes, WindowsPipeInput, WindowsPipeOutput};
 
 #[derive(Debug)]

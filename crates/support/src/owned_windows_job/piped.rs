@@ -7,7 +7,7 @@ use super::{
     native_launch::{Launch, Transport},
     native_process::NativeProcess,
     native_retirement::{NativeLaunchRetirement, RetirementCompletion},
-    native_setup::{IsolationSetup, Prepared},
+    native_setup::{IsolationSetup, Prepared, WindowsSandboxLaunch},
 };
 use crate::windows_process_isolation::WindowsProcessIsolation;
 use channels::Channels;
@@ -85,6 +85,33 @@ impl fmt::Debug for OwnedWindowsPipes {
     }
 }
 impl OwnedWindowsPipes {
+    pub async fn spawn_in_sandbox(
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        environment: &[(OsString, OsString)],
+        sandbox: WindowsSandboxLaunch,
+    ) -> Result<Self, WindowsJobLaunchError> {
+        if !sandbox.matches(executable, directory, environment) {
+            return Err(sandbox
+                .refuse(
+                    "native sandbox launch binding",
+                    io::Error::other("native sandbox launch differs from its frozen scope"),
+                )
+                .await);
+        }
+        let launch = match Launch::capture(executable, arguments, directory, environment) {
+            Ok(launch) => launch,
+            Err(error) => return Err(sandbox.refuse("pipe sandbox ABI projection", error).await),
+        };
+        Self::spawn_prepared(
+            launch,
+            sandbox.take(),
+            #[cfg(test)]
+            None,
+        )
+        .await
+    }
     pub async fn spawn_with_isolation(
         executable: &Path,
         arguments: &[OsString],
@@ -110,11 +137,24 @@ impl OwnedWindowsPipes {
         .await
     }
     async fn spawn_captured(
-        mut launch: Launch,
+        launch: Launch,
         setup: Option<IsolationSetup>,
         #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
     ) -> Result<Self, WindowsJobLaunchError> {
         let prepared = Prepared::admit(setup).await?;
+        Self::spawn_prepared(
+            launch,
+            prepared,
+            #[cfg(test)]
+            before_resume,
+        )
+        .await
+    }
+    async fn spawn_prepared(
+        mut launch: Launch,
+        prepared: Prepared,
+        #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
+    ) -> Result<Self, WindowsJobLaunchError> {
         let channels = match Channels::create().await {
             Ok(channels) => channels,
             Err(error) => return Err(prepared.refuse("private pipe transport", error).await),
@@ -230,6 +270,14 @@ impl OwnedWindowsPipes {
     }
     pub fn job(&self) -> Arc<OwnedWindowsJob> {
         self.job.clone()
+    }
+    pub fn id(&self) -> Option<u32> {
+        self.child.as_ref().and_then(NativeProcess::id)
+    }
+    pub fn start_kill(&self) -> io::Result<()> {
+        let job = self.job.terminate();
+        let child = self.child.as_ref().map_or(Ok(()), NativeProcess::kill);
+        job.and(child)
     }
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         self.cleanup()

@@ -6,16 +6,12 @@ use crate::{Confinement, SandboxError};
 use iteron_support::owned_windows_job::{
     OwnedWindowsPty, WindowsPtyInput, WindowsPtyOutput, WindowsPtyResize,
 };
-use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-const MAX_ENVIRONMENT_ENTRIES: usize = 4096;
-const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
-const MAX_SHELL_PATH_ENTRIES: usize = 256;
+use crate::windows_launch_plan::Plan;
 
 pub struct ConfinedPtyInput(WindowsPtyInput);
 impl ConfinedPtyInput {
@@ -61,10 +57,11 @@ impl ConfinedPtyResize {
 pub struct ConfinedPtyProcess {
     child: OwnedWindowsPty,
     control: ConfinedProcessControl,
+    backend: PersistentBackend,
 }
 impl ConfinedPtyProcess {
     pub fn backend(&self) -> PersistentBackend {
-        PersistentBackend::WindowsJobConPty
+        self.backend
     }
     pub fn control(&self) -> ConfinedProcessControl {
         self.control.clone()
@@ -92,107 +89,50 @@ pub async fn spawn_confined_pty_process(
     confinement: &Confinement,
     size: WindowSize,
 ) -> Result<ConfinedPtyProcess, SandboxError> {
-    // First, before even creating a console or its lifetime workers. There is no Windows OS
-    // isolation backend here; explicit unconfined posture is never a fallback for this request.
-    if !confinement.unconfined {
-        return Err(SandboxError::Unsupported);
-    }
-    let mut environment = match &confinement.child_environment {
-        Some(environment) => {
-            let bytes = environment.iter().try_fold(0_usize, |bytes, (key, value)| {
-                bytes
-                    .checked_add(key.as_encoded_bytes().len())
-                    .and_then(|bytes| bytes.checked_add(value.as_encoded_bytes().len()))
-                    .and_then(|bytes| bytes.checked_add(1))
-            });
-            if environment.len() > MAX_ENVIRONMENT_ENTRIES
-                || bytes.is_none_or(|bytes| bytes > MAX_ENVIRONMENT_BYTES)
-            {
-                return Err(SandboxError::Profile(
-                    "Windows PTY frozen environment exceeds its physical envelope".into(),
-                ));
-            }
-            environment.clone()
+    let plan = Plan::capture(command, confinement, None, true).await?;
+    let sandbox = plan.sandbox().await?;
+    let confined = sandbox.is_some();
+    let child = match sandbox {
+        Some(sandbox) => {
+            OwnedWindowsPty::spawn_in_sandbox(
+                &plan.executable,
+                &plan.arguments,
+                &plan.directory,
+                &plan.environment,
+                sandbox,
+                size.rows(),
+                size.cols(),
+            )
+            .await
         }
-        None => crate::bounded_child_environment(
-            true,
-            MAX_ENVIRONMENT_ENTRIES,
-            MAX_ENVIRONMENT_BYTES,
-            &[],
-            &confinement.sensitive_env_names,
-        )
-        .map_err(|reason| SandboxError::Profile(reason.into()))?,
-    };
-    environment.retain(|(name, _)| {
-        name.to_str().is_some_and(|name| {
-            !crate::is_shell_startup_env_key(name)
-                && !crate::is_secret_env_key(name)
-                && !confinement
-                    .sensitive_env_names
-                    .iter()
-                    .any(|blocked| blocked.eq_ignore_ascii_case(name))
-        })
-    });
-    let shell =
-        shell_from_snapshot(&environment).map_err(|reason| SandboxError::Profile(reason.into()))?;
-    for (name, value) in [
-        ("TERM", "xterm-256color"),
-        ("COLORTERM", "truecolor"),
-        ("PAGER", "cat"),
-        ("MANPAGER", "cat"),
-        ("GIT_PAGER", "cat"),
-        ("PIP_PROGRESS_BAR", "off"),
-        ("TQDM_DISABLE", "1"),
-    ] {
-        environment.retain(|(key, _)| {
-            !key.to_str()
-                .is_some_and(|key| key.eq_ignore_ascii_case(name))
-        });
-        environment.push((name.into(), value.into()));
+        None => {
+            OwnedWindowsPty::spawn(
+                &plan.executable,
+                &plan.arguments,
+                &plan.directory,
+                &plan.environment,
+                size.rows(),
+                size.cols(),
+            )
+            .await
+        }
     }
-    let child = OwnedWindowsPty::spawn(
-        &shell,
-        &[OsString::from("-c"), OsString::from(command)],
-        &confinement.workspace,
-        &environment,
-        size.rows(),
-        size.cols(),
-    )
-    .await
     .map_err(|error| SandboxError::WindowsLaunch(Box::new(error)))?;
     let control = ConfinedProcessControl::for_windows_job(child.job());
-    Ok(ConfinedPtyProcess { child, control })
-}
-
-fn shell_from_snapshot(environment: &[(OsString, OsString)]) -> Result<PathBuf, &'static str> {
-    let path = environment
-        .iter()
-        .find(|(key, _)| {
-            key.to_str()
-                .is_some_and(|key| key.eq_ignore_ascii_case("PATH"))
-        })
-        .map(|(_, value)| value)
-        .ok_or("Windows PTY needs an admitted PATH containing Git Bash")?;
-    for (index, directory) in std::env::split_paths(path).enumerate() {
-        if index >= MAX_SHELL_PATH_ENTRIES {
-            return Err("Windows PTY shell search exceeds its fixed bound");
-        }
-        if !directory.is_absolute() {
-            continue;
-        }
-        let executable = directory.join("bash.exe");
-        if executable.is_file() {
-            return executable
-                .canonicalize()
-                .map_err(|_| "Windows PTY shell identity unavailable");
-        }
-    }
-    Err("Windows PTY needs Git Bash in the admitted absolute PATH")
+    Ok(ConfinedPtyProcess {
+        child,
+        control,
+        backend: if confined {
+            PersistentBackend::WindowsLpacConPty
+        } else {
+            PersistentBackend::WindowsJobConPty
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::shell_from_snapshot;
+    use crate::windows_launch_plan::shell_from_snapshot;
     #[test]
     fn shell_selection_never_falls_back_to_ambient_or_relative_search() {
         assert!(shell_from_snapshot(&[]).is_err());

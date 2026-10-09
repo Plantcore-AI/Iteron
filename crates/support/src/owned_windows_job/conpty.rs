@@ -5,7 +5,7 @@ pub(super) mod pipes;
 
 use super::native_launch::{Launch, Transport};
 use super::native_retirement::{NativeLaunchRetirement, RetirementCompletion};
-use super::native_setup::{IsolationSetup, Prepared};
+use super::native_setup::{IsolationSetup, Prepared, WindowsSandboxLaunch};
 use super::{
     CLEANUP_POLL, LaunchCustody, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError, custody,
     native_process::NativeProcess,
@@ -106,6 +106,37 @@ impl fmt::Debug for OwnedWindowsPty {
 }
 
 impl OwnedWindowsPty {
+    pub async fn spawn_in_sandbox(
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        environment: &[(OsString, OsString)],
+        sandbox: WindowsSandboxLaunch,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self, WindowsJobLaunchError> {
+        if !sandbox.matches(executable, directory, environment) {
+            return Err(sandbox
+                .refuse(
+                    "native sandbox terminal binding",
+                    io::Error::other("native sandbox terminal differs from its frozen scope"),
+                )
+                .await);
+        }
+        let launch = match Launch::capture(executable, arguments, directory, environment) {
+            Ok(launch) => launch,
+            Err(error) => return Err(sandbox.refuse("PTY sandbox ABI projection", error).await),
+        };
+        Self::spawn_prepared(
+            launch,
+            rows,
+            cols,
+            sandbox.take(),
+            #[cfg(test)]
+            None,
+        )
+        .await
+    }
     pub async fn spawn(
         executable: &Path,
         arguments: &[OsString],
@@ -154,13 +185,30 @@ impl OwnedWindowsPty {
     }
 
     async fn spawn_captured(
-        mut launch: Launch,
+        launch: Launch,
         rows: u16,
         cols: u16,
         setup: Option<IsolationSetup>,
         #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
     ) -> Result<Self, WindowsJobLaunchError> {
         let prepared = Prepared::admit(setup).await?;
+        Self::spawn_prepared(
+            launch,
+            rows,
+            cols,
+            prepared,
+            #[cfg(test)]
+            before_resume,
+        )
+        .await
+    }
+    async fn spawn_prepared(
+        mut launch: Launch,
+        rows: u16,
+        cols: u16,
+        prepared: Prepared,
+        #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
+    ) -> Result<Self, WindowsJobLaunchError> {
         let pipes = match Pipes::create().await {
             Ok(pipes) => pipes,
             Err(error) => return Err(prepared.refuse("PTY private channels", error).await),

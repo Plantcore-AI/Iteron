@@ -21,12 +21,16 @@
 //!   - **Linux** (bubblewrap mount/PID/network namespaces): implemented when a trusted system
 //!     `bwrap` can create the required namespaces; otherwise it refuses closed. Seccomp and
 //!     Landlock defense-in-depth are not implemented yet and must not be inferred from this API.
+//!   - **Windows** (LPAC token, exact retained filesystem grants and network capability): native
+//!     process creation verifies the applied token before resuming. The same Job owns process
+//!     lifetime; pipe and ConPTY transports preserve the sealed grant owner until real Job0.
 //!
 //! `egress` is a capability the caller must explicitly request, and granting it is an operator
 //! decision recorded above this crate (ADR-007 §2: network tests are a separate, gated escalation).
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -37,6 +41,8 @@ pub mod bubblewrap;
 mod collected_child;
 mod owned_process_cleanup;
 mod persistent;
+#[cfg(windows)]
+mod persistent_windows;
 /// Pseudo-terminal transport for confined children. Unix-only: the whole module is `libc` ioctls,
 /// and the Windows equivalent is ConPTY (`CreatePseudoConsole`), a different API with different
 /// lifetime rules rather than a port of this one.
@@ -47,13 +53,18 @@ mod pty_async;
 #[cfg(any(unix, windows))]
 mod pty_size;
 #[cfg(windows)]
+mod windows_launch_plan;
+#[cfg(windows)]
+mod windows_sandbox;
+#[cfg(windows)]
 pub mod pty {
     pub use crate::pty_size::{MAX_WINDOW_DIMENSION, WindowSize};
 }
 pub mod seatbelt;
 
 pub use persistent::{
-    ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
+    ConfinedProcess, ConfinedProcessControl, ConfinedProcessError, ConfinedProcessInput,
+    ConfinedProcessOutput, PersistentBackend, spawn_confined_process,
     spawn_confined_process_from_workspace,
 };
 #[cfg(any(unix, windows))]
@@ -714,6 +725,7 @@ pub async fn terminate_process_group_and_reap(child: &mut tokio::process::Child)
 /// Shared child collector for Seatbelt and bubblewrap. stdout and stderr are drained concurrently
 /// for the entire run. On timeout we signal the process group, force-kill/reap after one bounded
 /// grace, then give the now-closed pipes a short bounded window to flush already-written bytes.
+#[cfg(unix)]
 pub(crate) async fn collect_child_output(
     child: tokio::process::Child,
     stdout: tokio::process::ChildStdout,
@@ -723,12 +735,17 @@ pub(crate) async fn collect_child_output(
     collect_owned_child_output(child, stdout, stderr, conf).await
 }
 
-async fn collect_owned_child_output<C: collected_child::CollectedChild>(
+async fn collect_owned_child_output<C, Out, Err>(
     mut child: C,
-    mut stdout: tokio::process::ChildStdout,
-    mut stderr: tokio::process::ChildStderr,
+    mut stdout: Out,
+    mut stderr: Err,
     conf: &Confinement,
-) -> Result<RunOutput, SandboxError> {
+) -> Result<RunOutput, SandboxError>
+where
+    C: collected_child::CollectedChild,
+    Out: AsyncRead + Unpin + Send,
+    Err: AsyncRead + Unpin + Send,
+{
     let owned_group = child.process_id();
     let mut group_owner = owned_process_cleanup::OwnedProcessGroup::capture(&child);
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
@@ -895,6 +912,7 @@ pub trait Sandbox: Send + Sync {
 ///
 /// The confined path is not a superset of this one and this one is not a widened version of it.
 /// They are two postures, and `Confinement::unconfined` documents what selecting this surrenders.
+#[cfg(not(windows))]
 pub(crate) async fn run_direct(
     command: &str,
     conf: &Confinement,
@@ -915,18 +933,10 @@ pub(crate) async fn run_direct(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     configure_process_group(&mut cmd);
-    #[cfg(not(windows))]
     let mut child = cmd.spawn().map_err(|e| {
         publish_output_io_failure(conf, None);
         SandboxError::Spawn(e.to_string())
     })?;
-    #[cfg(windows)]
-    let mut child = iteron_support::owned_windows_job::OwnedWindowsChild::spawn(cmd.as_std_mut())
-        .await
-        .map_err(|error| {
-            publish_output_io_failure(conf, None);
-            SandboxError::WindowsLaunch(Box::new(error))
-        })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         publish_output_io_failure(conf, Some(OutputStream::Stdout));
         SandboxError::Spawn("child stdout was not piped".into())
@@ -936,6 +946,14 @@ pub(crate) async fn run_direct(
         SandboxError::Spawn("child stderr was not piped".into())
     })?;
     collect_owned_child_output(child, stdout, stderr, conf).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn run_direct(
+    command: &str,
+    conf: &Confinement,
+) -> Result<RunOutput, SandboxError> {
+    windows_sandbox::run(command, conf).await
 }
 
 /// Pick the best backend for this platform. An unconfined confinement never reaches a backend's
@@ -953,7 +971,11 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
         // is absent, so it is safe to select here.
         Box::new(bubblewrap::Bubblewrap::new())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        Box::new(windows_sandbox::WindowsSandbox)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         Box::new(Unsupported)
     }

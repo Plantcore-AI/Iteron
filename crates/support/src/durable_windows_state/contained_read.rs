@@ -87,6 +87,14 @@ impl WindowsWorkspaceReader {
             u64::from(info.index_lo),
         ])
     }
+    pub fn matches_file(&self, file: &File) -> Result<bool, WindowsStateError> {
+        same_directory(
+            self.directories
+                .last()
+                .ok_or(WindowsStateError::Unavailable)?,
+            file,
+        )
+    }
     pub fn read_leaf(&self, name: &str, limit: usize) -> Result<Vec<u8>, WindowsStateError> {
         if limit > MAX_READER_BYTES {
             return Err(WindowsStateError::Unavailable);
