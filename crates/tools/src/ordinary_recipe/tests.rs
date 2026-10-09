@@ -54,6 +54,16 @@ async fn native_read_projection_cannot_override_immutable_arguments_or_claim_pur
     assert_eq!(spec.purity, native.purity);
     assert_eq!(spec.purity, Purity::Pure);
     assert_eq!(spec.capability, native.capability);
+    let unconfigured = registry.dispatch(call("sample__read", json!({}))).await;
+    assert!(unconfigured.is_error);
+    assert!(
+        unconfigured
+            .content
+            .contains("runtime policy was not installed")
+    );
+    registry
+        .install_observation_tool_policy(crate::ObservationToolPolicy::default())
+        .unwrap();
     let result = registry.dispatch(call("sample__read", json!({}))).await;
     assert!(!result.is_error);
     assert!(result.content.contains("read-anchor"));
@@ -198,6 +208,9 @@ async fn cached_native_read_still_obeys_exact_revocation() {
     let root = workspace();
     std::fs::write(root.join("f"), "old").unwrap();
     let mut registry = Registry::read_only(&root).unwrap();
+    registry
+        .install_observation_tool_policy(crate::ObservationToolPolicy::default())
+        .unwrap();
     let policy = Arc::new(Revoke(AtomicBool::new(false)));
     registry
         .register_ordinary_recipe(

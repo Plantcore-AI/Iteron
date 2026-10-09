@@ -765,7 +765,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: ".dispatch_stream_intent_captured(",
-        owners: &[("crates/cli/src/runtime/stream_tool_admission.rs", "declare")],
+        owners: &[("crates/cli/src/runtime/stream_tool_admission.rs", "admit")],
         guidance: "stream declarations open the actual ticket or pure ToolReady receipt before their captured future is admitted",
     },
     EffectPrimitive {
@@ -1322,18 +1322,36 @@ fn compact_source(source: &str) -> String {
 /// Select an actual production method of the canonical imported owner. Comments, literals,
 /// fixture methods and an unrelated/unused Agent facade do not participate in this proof.
 fn verification_method(source: &str, wanted: &str) -> Result<String, &'static str> {
+    canonical_method(
+        source,
+        wanted,
+        "implStrongVerificationGate<'_>{",
+        Some("use super::strong_verification::StrongVerificationGate;"),
+    )
+    .map(|method| compact_source(&method))
+}
+
+/// Lexical extraction shared by the two exact owners below. Callers pin the complete canonical
+/// impl/import spelling; arbitrary names, facades, attributed code and fixture methods fail.
+fn canonical_method(
+    source: &str,
+    wanted: &str,
+    owner_signature: &str,
+    import: Option<&str>,
+) -> Result<String, &'static str> {
     let source = executable_source(source);
     let lines = production_lines(&source);
-    let import = "use super::strong_verification::StrongVerificationGate;";
-    let imports: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, line))| line.trim() == import)
-        .collect();
-    if imports.len() != 1
-        || (imports[0].0 != 0 && lines[imports[0].0 - 1].1.trim_start().starts_with("#["))
-    {
-        return Err("verifier must import its exact unconditional StrongVerificationGate owner");
+    if let Some(import) = import {
+        let imports: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, line))| line.trim() == import)
+            .collect();
+        if imports.len() != 1
+            || (imports[0].0 != 0 && lines[imports[0].0 - 1].1.trim_start().starts_with("#["))
+        {
+            return Err("method must import its exact unconditional canonical owner");
+        }
     }
     let mut owner = None;
     let mut depth = 0_i32;
@@ -1364,11 +1382,11 @@ fn verification_method(source: &str, wanted: &str) -> Result<String, &'static st
             continue;
         }
         if pending_active_attribute
-            && (trimmed == import
-                || compact_source(trimmed) == "implStrongVerificationGate<'_>{"
+            && (import == Some(trimmed)
+                || compact_source(trimmed) == owner_signature
                 || (owner
                     .as_ref()
-                    .is_some_and(|(name, _)| name == "implStrongVerificationGate<'_>{")
+                    .is_some_and(|(name, _)| name == owner_signature)
                     && function_name(line).as_deref() == Some(wanted)))
         {
             return Err(
@@ -1376,13 +1394,13 @@ fn verification_method(source: &str, wanted: &str) -> Result<String, &'static st
             );
         }
         pending_active_attribute = false;
-        if trimmed.starts_with("impl ") {
+        if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
             owner = Some((compact_source(trimmed), depth + 1));
         }
         if collecting.is_none()
-            && owner.as_ref().is_some_and(|(name, level)| {
-                name == "implStrongVerificationGate<'_>{" && *level == depth
-            })
+            && owner
+                .as_ref()
+                .is_some_and(|(name, level)| name == owner_signature && *level == depth)
             && function_name(line).as_deref() == Some(wanted)
         {
             collecting = Some((String::new(), false));
@@ -1396,9 +1414,7 @@ fn verification_method(source: &str, wanted: &str) -> Result<String, &'static st
         if collecting.as_ref().is_some_and(|(_, armed)| *armed)
             && owner.as_ref().is_some_and(|(_, level)| depth == *level)
         {
-            found.push(compact_source(
-                &collecting.take().expect("method collection exists").0,
-            ));
+            found.push(collecting.take().expect("method collection exists").0);
         }
         if owner.as_ref().is_some_and(|(_, level)| depth < *level) {
             owner = None;
@@ -1469,6 +1485,145 @@ fn verifier_primitive_owner(needle: &str, relative: &std::path::Path, enclosing:
         && enclosing == required
 }
 
+fn validate_stream_source_owner(source: &str) -> Result<(), &'static str> {
+    let method = canonical_method(source, "admit", "impl<'a>StreamToolAdmission<'a>{", None)?;
+    let admit = compact_source(&method);
+    if !admit.starts_with("fnadmit(&mutself,index:usize,call:ToolUse)->Result<(),KernelError>{")
+        || admit.matches(".dispatch_stream_intent_captured(").count() != 1
+        || admit.matches("self.journal.open_tool(").count() != 1
+        || admit.matches(".append_ready(").count() != 1
+        || admit.matches("executor.spawn(").count() != 1
+    {
+        return Err("stream IO must have one actual private admission owner and physical handoff");
+    }
+    let purity =
+        "letpure=proposal.as_ref().is_ok_and(|proposal|proposal.intent.purity==Purity::Pure);";
+    if ["pure", "tickets", "source", "intent"]
+        .into_iter()
+        .any(|name| let_pattern_occurrences(&method, name) != 1)
+        || admit.matches("letpure=").count() != 1
+        || admit.matches(purity).count() != 1
+        || admit
+            .matches("letmuttickets=EarlyHookEffectTickets::default();")
+            .count()
+            != 1
+        || admit.matches("tickets.tool=").count() != 1
+    {
+        return Err("stream purity and ticket storage must come from the same exact proposal");
+    }
+    let open = admit
+        .find("tickets.tool=Some(self.journal.open_tool(")
+        .ok_or("streamed effect must open its exact tool intent")?;
+    // Comments/literals are already masked. The open is an unconditional statement in the
+    // top-level `if !pure` block, not a marker hidden behind a false or nested condition.
+    let mut blocks = Vec::new();
+    for (index, byte) in admit.as_bytes()[..open].iter().enumerate() {
+        match byte {
+            b'{' => blocks.push(index),
+            b'}' => {
+                blocks.pop();
+            }
+            _ => {}
+        }
+    }
+    if blocks.len() != 2
+        || blocks
+            .last()
+            .is_none_or(|index| !admit[..*index].ends_with("if!pure"))
+    {
+        return Err("nonpure stream calls must unconditionally open a tool intent in their branch");
+    }
+    let markers = [
+        "self.journal.record_decision(self.scope.turn,draft)?;",
+        "tickets.tool=Some(self.journal.open_tool(",
+        "letsource=match&tickets.tool{",
+        "Some(ticket)=>ticket.intent_sequence(),",
+        "None=>self.journal.append_ready(self.scope.turn,&declared,pure)?,",
+        "letpublication=self.scope.publication.for_call(&declared,source);",
+        "letfuture=self.scope.registry.dispatch_stream_intent_captured(intent);",
+        "lettask=executor.spawn(",
+    ];
+    let mut previous = None;
+    for marker in markers {
+        let positions: Vec<_> = admit
+            .match_indices(marker)
+            .map(|(index, _)| index)
+            .collect();
+        if positions.len() != 1 || previous.is_some_and(|prior| positions[0] <= prior) {
+            return Err(
+                "stream decision and exact intent/ToolReady receipt must precede executor IO",
+            );
+        }
+        previous = Some(positions[0]);
+    }
+    Ok(())
+}
+
+/// Count identifiers in real let patterns, including destructuring/if-let. Masked literals and
+/// identifier substrings do not count. A type/pattern we cannot distinguish refuses extra names.
+fn let_pattern_occurrences(source: &str, name: &str) -> usize {
+    let identifier = |character: char| character.is_alphanumeric() || character == '_';
+    source
+        .match_indices("let")
+        .filter(|(index, _)| {
+            source[..*index]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !identifier(c))
+                && source[*index + 3..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !identifier(c))
+        })
+        .map(|(index, _)| {
+            let pattern = source[index + 3..]
+                .split_once('=')
+                .map_or("", |(pattern, _)| pattern);
+            pattern
+                .split(|c: char| !identifier(c))
+                .filter(|token| *token == name)
+                .count()
+        })
+        .sum()
+}
+
+#[test]
+fn stream_source_guard_pins_real_admission_and_rejects_early_dispatch_or_facade_bait() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+            .expect("actual streamed-tool admission owner");
+    validate_stream_source_owner(&source).expect("real receipt-before-IO admission");
+    let dispatch = "let future = self.scope.registry.dispatch_stream_intent_captured(intent);";
+    assert!(source.contains(dispatch));
+    let early = source.replace(dispatch, "").replace(
+        "        let source = match &tickets.tool {",
+        &format!("        {dispatch}\n        let source = match &tickets.tool {{"),
+    );
+    for broken in [
+        early,
+        source.replace("impl<'a> StreamToolAdmission<'a> {", "impl Agent {"),
+        source.replace("    fn admit(", "    #[cfg(any())]\n    fn admit("),
+        source.replace("self.journal.open_tool(", "self.journal.undurable_tool("),
+        source.replace(".append_ready(", ".uncommitted_ready("),
+        source.replace("if !pure {", "if false {"),
+        source.replace("proposal.intent.purity == Purity::Pure", "true"),
+        source.replace("        if !pure {\n            let effect", "        let (pure,) = (true,);\n        if !pure {\n            let effect"),
+        source.replace("        let source = match &tickets.tool {", "        let (tickets,) = (EarlyHookEffectTickets::default(),);\n        let source = match &tickets.tool {"),
+        source.replace(
+            "Some(ticket) => ticket.intent_sequence(),",
+            "Some(_) => Seq(1),",
+        ),
+        source.replace("self.journal.open_tool(", "self.journal.undurable_tool(")
+            + "\n// tickets.tool = Some(self.journal.open_tool(\n",
+    ] {
+        assert!(validate_stream_source_owner(&broken).is_err());
+    }
+}
+
 #[test]
 fn verifier_source_guard_tracks_the_actual_ticket_owner_and_rejects_facade_or_literal_bait() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1529,6 +1684,11 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
             .expect("actual verifier execution owner must be readable");
     validate_verifier_source_owner(&verifier_source)
         .expect("actual verifier owner must retain ticket/task/dispatch/terminal order");
+    let stream_source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+            .expect("actual streamed-tool admission owner must be readable");
+    validate_stream_source_owner(&stream_source)
+        .expect("actual streamed tool must retain its decision and durable receipt before IO");
     let mut violations = Vec::new();
     let mut found: BTreeMap<&str, usize> = BTreeMap::new();
 

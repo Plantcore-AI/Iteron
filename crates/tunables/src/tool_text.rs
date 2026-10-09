@@ -65,6 +65,10 @@ pub const TOOL_TEXT_ARTIFACTS: &[ToolTextArtifact] = &[
         "submit_repair_evidence",
         "crates/tools/src/repair_evidence.rs:ToolSpec::description"
     ),
+    tool_text!(
+        "update_plan",
+        "crates/tools/src/task_plan.rs:ToolSpec::description"
+    ),
     tool_text!("git_diff", "crates/tools/src/git.rs:ToolSpec::description"),
     tool_text!(
         "git_status",

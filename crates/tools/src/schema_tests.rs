@@ -34,6 +34,8 @@ fn built_in_tool_description_catalog_is_total_at_the_registry_boundary() {
     let registered: Vec<_> = registry.specs().into_iter().map(|spec| spec.name).collect();
     let published: Vec<_> = iteron_tunables::TOOL_TEXT_ARTIFACTS
         .iter()
+        // The publication is the union of built-ins; this registry contains only enabled ones.
+        .filter(|artifact| artifact.tool != WORKFLOW_TOOL || cfg!(feature = "script-workflows"))
         .map(|artifact| artifact.tool.to_owned())
         .collect();
     assert_eq!(
