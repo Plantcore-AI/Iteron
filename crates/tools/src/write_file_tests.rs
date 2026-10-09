@@ -211,7 +211,9 @@ async fn confined_write_rejects_parent_swap_before_creation_without_outside_dire
     let root = TestRoot::new("swap-before-create-root");
     let outside = TestRoot::new("swap-before-create-outside");
     std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
-    let target = root.0.join("subdir/deep/new.txt");
+    // The descriptor owner receives canonical targets from production resolve_in_root. Keep
+    // these direct fixtures in that namespace too, including Darwin's protected temp aliases.
+    let target = root.0.canonicalize().unwrap().join("subdir/deep/new.txt");
     let result = crate::confined_fs::ConfinedTarget::open(&root.0, &target, true);
     assert!(result.is_err());
     assert!(!outside.0.join("deep").exists());
@@ -224,7 +226,7 @@ async fn confined_write_rejects_parent_swap_before_temporary_allocation() {
     let root = TestRoot::new("swap-before-temp-root");
     let outside = TestRoot::new("swap-before-temp-outside");
     std::fs::create_dir(root.0.join("subdir")).unwrap();
-    let target_path = root.0.join("subdir/new.txt");
+    let target_path = root.0.canonicalize().unwrap().join("subdir/new.txt");
     let target = std::sync::Arc::new(
         crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
     );
@@ -242,7 +244,7 @@ async fn confined_write_rejects_parent_swap_before_rename_and_cleans_pinned_temp
     let root = TestRoot::new("swap-before-rename-root");
     let outside = TestRoot::new("swap-before-rename-outside");
     std::fs::create_dir(root.0.join("subdir")).unwrap();
-    let target_path = root.0.join("subdir/new.txt");
+    let target_path = root.0.canonicalize().unwrap().join("subdir/new.txt");
     let target = std::sync::Arc::new(
         crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
     );
