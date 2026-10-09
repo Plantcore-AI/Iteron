@@ -95,6 +95,7 @@ impl Supervisor {
         rows: u16,
         cols: u16,
         launch: InstalledProcessLaunchPolicy,
+        confine: bool,
     ) -> Result<ProcessSnapshot, ActionError> {
         let policy = self.policy();
         self.start_with_mode(
@@ -104,7 +105,7 @@ impl Supervisor {
             cols,
             launch,
             policy,
-            true,
+            confine,
             super::max_job_runtime_secs(),
         )
         .await

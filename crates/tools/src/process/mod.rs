@@ -1,22 +1,25 @@
 //! Bounded persistent-process tools.
 //!
-//! These tools expose a real, session-owned kernel PTY under Linux bubblewrap or macOS Seatbelt.
+//! These tools expose a real, session-owned terminal under the host's execution posture.
+//! Linux/macOS confinement and Windows Job/ConPTY lifetime are distinct capabilities.
 //! Job identity, terminal input, resize, lifecycle, and cleanup all use the same supervisor handle,
 //! so model-facing calls and operator controls cannot drift into separate process tables.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod actor;
 mod output;
 mod policy;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod supervisor;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[path = "supervisor_unsupported.rs"]
 mod supervisor;
 mod types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 use crate::{CapturedToolExecution, Registry, ToolError, ToolExecution, capturedfut};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
@@ -442,13 +445,16 @@ pub(crate) fn register_with_supervisor(
 
 fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
     let launch_policy = registry.process_launch_policy_handle();
+    let confine_execution = registry.confine_execution_handle();
     registry.register_external_effect_captured(
         ToolSpec {
             name: "process_start".into(),
             description: format!(
-                "Start one confined background process on a real controlling PTY and return a stable \
-                 job ID. Linux uses bubblewrap; macOS uses Seatbelt; unavailable confinement refuses \
-                 before spawn. Session policy selects disabled, one-shot, or persistent lifetime and \
+                "Start one background process on a real controlling PTY and return a stable \
+                 job ID under the host-selected execution posture. Required confinement refuses \
+                 before spawn when its backend is unavailable; Windows unconfined transport uses a \
+                 private Job and ConPTY, which do not isolate filesystem or network access. Session policy selects disabled, \
+                 one-shot, or persistent lifetime and \
                  admits at most {MAX_BACKGROUND_JOBS} jobs; every job is stopped \
                  after {}s and retained output is bounded.",
                 max_job_runtime_secs()
@@ -471,6 +477,7 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
         move |call, root| {
             let supervisor = Arc::clone(&supervisor);
             let launch_policy = Arc::clone(&launch_policy);
+            let confine_execution = Arc::clone(&confine_execution);
             capturedfut::box_it(async move {
                 let Some(command) = required_string(&call.input, "command") else {
                     return definite_error(call.id, "command must be a non-empty string");
@@ -512,7 +519,7 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                 action_result(
                     call.id,
                     supervisor
-                        .start(&root, command, rows, cols, launch_policy)
+                        .start(&root, command, rows, cols, launch_policy, confine_execution.load(std::sync::atomic::Ordering::Relaxed))
                         .await,
                 )
             })

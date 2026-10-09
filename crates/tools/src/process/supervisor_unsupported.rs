@@ -12,7 +12,7 @@ use std::time::Duration;
 ///
 /// The registry and its non-process tools remain usable, but every operation that could start or
 /// control a child fails before crossing an effect boundary. This must not grow an unconfined
-/// Windows spawn path: Windows support is intentionally honest about the missing sandbox.
+/// spawn path on an unsupported platform.
 pub(crate) struct Supervisor {
     policy: Mutex<ProcessRuntimePolicy>,
 }
@@ -54,6 +54,7 @@ impl Supervisor {
         _rows: u16,
         _cols: u16,
         _launch: InstalledProcessLaunchPolicy,
+        _confine: bool,
     ) -> Result<ProcessSnapshot, ActionError> {
         Err(unsupported())
     }

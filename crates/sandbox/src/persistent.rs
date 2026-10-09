@@ -3,7 +3,9 @@
 //! This is deliberately not a PTY abstraction. Linux uses the same bubblewrap confinement as the
 //! one-shot sandbox plus its PID namespace and parent-death semantics. macOS uses Seatbelt plus a
 //! dedicated process group for protocol-style children that require distinct stdin/stdout/stderr.
-//! Windows still refuses before spawn because it needs a Job Object.
+//! The Windows pipe path in this module still refuses before spawn. The separately owned Windows
+//! ConPTY path retains an actual Job, and its token/filesystem/network boundary is admitted by the
+//! host independently of that lifetime mechanism.
 
 use crate::{Confinement, SandboxError};
 use std::fs::File;
@@ -25,6 +27,9 @@ pub enum PersistentBackend {
     /// receipt has to be able to say so -- a run that reports `macos-seatbelt-pty` when nothing
     /// was confined is a receipt that describes a different process than the one that ran.
     DirectPty,
+    /// Private Job tree plus ConPTY, with no filesystem/network isolation claim.
+    #[cfg(windows)]
+    WindowsJobConPty,
 }
 
 impl PersistentBackend {
@@ -35,6 +40,8 @@ impl PersistentBackend {
             Self::MacOsSeatbeltPipes => "macos-seatbelt-pipes",
             Self::MacOsSeatbeltPty => "macos-seatbelt-pty",
             Self::DirectPty => "direct-pty",
+            #[cfg(windows)]
+            Self::WindowsJobConPty => "windows-job-conpty-unconfined",
         }
     }
 }
@@ -56,6 +63,8 @@ pub struct ConfinedProcess {
 }
 
 struct ProcessGroupToken {
+    #[cfg(windows)]
+    job: Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
     #[cfg(unix)]
     pid: Option<u32>,
     armed: Mutex<bool>,
@@ -84,6 +93,15 @@ impl ProcessGroupToken {
 pub struct ConfinedProcessControl(Arc<ProcessGroupToken>);
 
 impl ConfinedProcessControl {
+    #[cfg(windows)]
+    pub(crate) fn for_windows_job(
+        job: Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
+    ) -> Self {
+        Self(Arc::new(ProcessGroupToken {
+            job,
+            armed: Mutex::new(true),
+        }))
+    }
     #[cfg(unix)]
     pub(crate) fn for_child(_pid: Option<u32>) -> Self {
         Self(Arc::new(ProcessGroupToken {
@@ -125,6 +143,10 @@ impl ConfinedProcessControl {
         self.spend_with(|| {
             #[cfg(unix)]
             self.0.signal(libc::SIGKILL);
+            #[cfg(windows)]
+            {
+                let _ = self.0.job.terminate();
+            }
         });
     }
 

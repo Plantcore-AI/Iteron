@@ -93,6 +93,26 @@ impl Drop for LocalAllocation {
     }
 }
 
+/// Retained current-user descriptor for a private kernel object. The syscall receives the
+/// descriptor only while this owner is live; it grants no filesystem or execution authority.
+pub(crate) struct PrivateObjectSecurity(Identity);
+
+impl PrivateObjectSecurity {
+    pub(crate) fn current() -> std::io::Result<Self> {
+        Identity::current()
+            .map(Self)
+            .map_err(|_| std::io::Error::other("private kernel security unavailable"))
+    }
+
+    pub(crate) fn attributes(&self) -> windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+            nLength: size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: self.0.descriptor.0,
+            bInheritHandle: 0,
+        }
+    }
+}
+
 struct Identity {
     token_user: Box<[usize]>,
     descriptor: LocalAllocation,

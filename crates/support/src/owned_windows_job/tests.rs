@@ -284,7 +284,7 @@ async fn owned_windows_job_string_projection_retains_actual_unassigned_suspended
         os_error: None,
         execution_may_have_started: false,
         cleanup_known: false,
-        custody: Some(Box::new(owned)),
+        custody: Some(super::LaunchCustody::Standard(Box::new(owned))),
     };
     assert!(!error.not_dispatched());
     let _public_message = error.to_string();
@@ -313,7 +313,7 @@ async fn owned_windows_job_string_projection_closes_actual_assigned_tree_after_e
         os_error: None,
         execution_may_have_started: true,
         cleanup_known: false,
-        custody: Some(Box::new(child)),
+        custody: Some(super::LaunchCustody::Standard(Box::new(child))),
     };
     let _public_message = error.to_string();
     drop(error);

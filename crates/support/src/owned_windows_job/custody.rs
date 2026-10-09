@@ -1,7 +1,7 @@
 //! Bounded physical custody when a caller drops an unknown launch or an active future.
 //! This worker publishes no model result, budget settlement, effect receipt or permission.
 
-use super::OwnedWindowsJob;
+use super::{OwnedWindowsJob, conpty::NativeLaunchRetirement, native_process::NativeProcess};
 use std::io;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -59,11 +59,12 @@ impl Admission {
     ) {
         let pool = self.pool.clone();
         let pending = Pending {
-            child,
+            child: child.map(PendingChild::Standard),
             job,
             wait_observed,
             admission: Some(self),
             closed: false,
+            native_retirement: None,
         };
         if let Err(error) = pool.queue.try_send(pending) {
             pool.healthy.store(false, Ordering::Release);
@@ -80,6 +81,33 @@ impl Admission {
                 .push(pending);
         }
     }
+    pub(super) fn defer_native(
+        self,
+        child: Option<NativeProcess>,
+        job: Arc<OwnedWindowsJob>,
+        wait_observed: bool,
+        native_retirement: Option<NativeLaunchRetirement>,
+    ) {
+        let pool = self.pool.clone();
+        let pending = Pending {
+            child: child.map(PendingChild::Native),
+            job,
+            wait_observed,
+            admission: Some(self),
+            closed: false,
+            native_retirement,
+        };
+        if let Err(error) = pool.queue.try_send(pending) {
+            pool.healthy.store(false, Ordering::Release);
+            let pending = match error {
+                mpsc::TrySendError::Full(value) | mpsc::TrySendError::Disconnected(value) => value,
+            };
+            pool.quarantined
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(pending);
+        }
+    }
 }
 impl Drop for Admission {
     fn drop(&mut self) {
@@ -87,12 +115,32 @@ impl Drop for Admission {
     }
 }
 
+enum PendingChild {
+    Standard(Child),
+    Native(NativeProcess),
+}
+impl PendingChild {
+    fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Standard(child) => child.kill(),
+            Self::Native(child) => child.kill(),
+        }
+    }
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Standard(child) => child.try_wait(),
+            Self::Native(child) => child.try_wait(),
+        }
+    }
+}
+
 struct Pending {
-    child: Option<Child>,
+    child: Option<PendingChild>,
     job: Arc<OwnedWindowsJob>,
     wait_observed: bool,
     admission: Option<Admission>,
     closed: bool,
+    native_retirement: Option<NativeLaunchRetirement>,
 }
 impl Pending {
     fn completed(&mut self) -> bool {
@@ -106,9 +154,14 @@ impl Pending {
                 self.child = None; // Release the actual process reference after real wait.
             }
         }
-        self.closed = self.wait_observed
+        let physical_closed = self.wait_observed
             && self.child.is_none()
             && self.job.active_processes().ok() == Some(0);
+        self.closed = physical_closed
+            && self.native_retirement.as_mut().is_none_or(|retirement| {
+                retirement.begin_close();
+                retirement.retire()
+            });
         self.closed
     }
 }
@@ -132,6 +185,7 @@ impl Drop for Pending {
                 wait_observed: self.wait_observed,
                 admission: Some(admission),
                 closed: false,
+                native_retirement: self.native_retirement.take(),
             };
             pool.quarantined
                 .lock()

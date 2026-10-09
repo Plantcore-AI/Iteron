@@ -30,8 +30,17 @@ use windows_sys::Win32::System::Threading::{
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
+mod conpty;
 #[path = "owned_windows_job/custody.rs"]
 mod custody;
+mod native_process;
+pub use conpty::{OwnedWindowsPty, WindowsPtyInput, WindowsPtyOutput, WindowsPtyResize};
+
+#[derive(Debug)]
+enum LaunchCustody {
+    Standard(Box<OwnedWindowsChild>),
+    Pty(Box<OwnedWindowsPty>),
+}
 
 const MAX_ACTIVE_PROCESSES: u32 = 256;
 const MAX_THREAD_ROWS: usize = 65_536;
@@ -48,7 +57,7 @@ pub struct WindowsJobLaunchError {
     os_error: Option<i32>,
     execution_may_have_started: bool,
     cleanup_known: bool,
-    custody: Option<Box<OwnedWindowsChild>>,
+    custody: Option<LaunchCustody>,
 }
 
 impl WindowsJobLaunchError {
@@ -63,7 +72,14 @@ impl WindowsJobLaunchError {
     /// Retry only the retained physical cleanup; this cannot clear uncertain dispatched effects.
     pub async fn retry_cleanup(&mut self) -> bool {
         if let Some(child) = self.custody.as_mut() {
-            self.cleanup_known = child.stop_and_reap().await;
+            self.cleanup_known = match child {
+                LaunchCustody::Standard(child) => child.stop_and_reap().await,
+                LaunchCustody::Pty(child) => {
+                    tokio::time::timeout(MAX_CLEANUP_WAIT * 2, child.cleanup())
+                        .await
+                        .is_ok_and(|result| result.is_ok())
+                }
+            };
             if self.cleanup_known {
                 self.custody = None;
             }
@@ -294,7 +310,7 @@ impl OwnedWindowsChild {
             os_error: error.raw_os_error(),
             execution_may_have_started,
             cleanup_known,
-            custody: (!cleanup_known).then(|| Box::new(self)),
+            custody: (!cleanup_known).then(|| LaunchCustody::Standard(Box::new(self))),
         }
     }
 }
@@ -343,6 +359,15 @@ impl OwnedWindowsJob {
     ) -> Result<OwnedHandle, (&'static str, io::Error)> {
         let pid = child.id();
         let process = child.as_raw_handle();
+        self.assign_suspended_process(process, pid)?;
+        primary_thread(pid).map_err(|error| ("primary thread lookup", error))
+    }
+
+    fn assign_suspended_process(
+        &self,
+        process: HANDLE,
+        pid: u32,
+    ) -> Result<(), (&'static str, io::Error)> {
         if unsafe { GetProcessId(process) } != pid {
             return Err((
                 "suspended process identity",
@@ -366,7 +391,7 @@ impl OwnedWindowsJob {
                 io::Error::other("not one process"),
             ));
         }
-        primary_thread(pid).map_err(|error| ("primary thread lookup", error))
+        Ok(())
     }
 
     /// An actual retained-handle query, never PID lookup or a report inferred from leader exit.

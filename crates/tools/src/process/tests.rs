@@ -632,6 +632,7 @@ async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
@@ -786,6 +787,7 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
@@ -918,6 +920,7 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
@@ -941,6 +944,7 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
         .unwrap();

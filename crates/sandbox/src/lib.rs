@@ -44,19 +44,28 @@ mod persistent;
 pub mod pty;
 #[cfg(unix)]
 mod pty_async;
+#[cfg(any(unix, windows))]
+mod pty_size;
+#[cfg(windows)]
+pub mod pty {
+    pub use crate::pty_size::{MAX_WINDOW_DIMENSION, WindowSize};
+}
 pub mod seatbelt;
 
 pub use persistent::{
     ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
     spawn_confined_process_from_workspace,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use persistent_pty::{
     ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess, ConfinedPtyResize,
     spawn_confined_pty_process,
 };
 
 #[cfg(unix)]
+mod persistent_pty;
+#[cfg(windows)]
+#[path = "persistent_pty_windows.rs"]
 mod persistent_pty;
 
 #[derive(Debug, thiserror::Error)]
