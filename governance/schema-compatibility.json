@@ -3199,6 +3199,11 @@
           "path": "governance/schema-compat/fixtures/record/blocks-v1.jsonl",
           "format": "jsonl",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/record/blocks-native-runtime-v1.jsonl",
+          "format": "jsonl",
+          "schema_version": 1
         }
       ],
       "fields": [

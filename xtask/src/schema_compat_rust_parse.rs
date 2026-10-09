@@ -115,15 +115,70 @@ mod tests {
         let source = read_bounded(root, EVENT_SOURCE, MAX_SOURCE_BYTES).unwrap();
         let shapes =
             tagged_enum_fields(&source, EVENT_KIND_SIGNATURE, "kind", 1, &BTreeMap::new()).unwrap();
-        // 29 original tags + `effect_done` and `effect_failed`, the two purely additive terminals
-        // the universal effect boundary (#16) introduced for non-registry classes, + the
-        // `artifact_produced` declaration a run makes about a product it wrote (#78), + the
-        // `tunables_snapshot` run-genesis companion (#187), + the seven the tunables runtime
-        // binding adds (#187): `policy_decision`, `policy_outcome`, `policy_bundle_snapshot`,
-        // `tunables_snapshot_v2`, `verification_policy`, `turn_ceiling_changed` and
-        // `provider_governor_decision`. Every one is a purely additive
-        // top-level tag under abi.md §4.3(b)2, so none bumped PROTOCOL_VERSION.
-        assert_eq!(shapes.len(), 40);
+        // Freeze the exact independently inventoried current tag set, rather than a count that
+        // can pass when one owner replaces another. Twelve v27 additive record tags have joined
+        // the forty historical tags; the enclosing protocol version is unchanged.
+        let expected_tags = [
+            "message_v2",
+            "compaction_v2",
+            "agent_cohort_installed_v1",
+            "ordinary_extension_bindings_v1",
+            "task_plan_updated_v1",
+            "tool_image_observed_v1",
+            "native_child_context_captured_v1",
+            "agent_input_admitted_v1",
+            "memory_reference_admitted_v1",
+            "turn_publication_v1",
+            "child_accounting_pending_v1",
+            "child_accounting_resolved_v1",
+            "approval",
+            "artifact_produced",
+            "checkpoint",
+            "compaction",
+            "context_injection",
+            "cost_projected",
+            "done",
+            "effect_done",
+            "effect_failed",
+            "effect_intent",
+            "effect_unknown",
+            "effort_changed",
+            "message",
+            "model_selected",
+            "notice",
+            "phase",
+            "policy_decision",
+            "policy_bundle_snapshot",
+            "policy_outcome",
+            "policy_changed",
+            "provider_governor_decision",
+            "rate_card_bound",
+            "run_start",
+            "subagent_finished",
+            "subagent_finished_v2",
+            "subagent_spawned",
+            "submission_rejected",
+            "text",
+            "thinking",
+            "tool_done",
+            "tool_ready",
+            "tunables_snapshot",
+            "tunables_snapshot_v2",
+            "turn_ceiling_changed",
+            "turn_end",
+            "turn_start",
+            "usd_ceiling_changed",
+            "verification_policy",
+            "workflow",
+            "workflow_v2",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        assert_eq!(
+            shapes.keys().cloned().collect::<BTreeSet<_>>(),
+            expected_tags
+        );
         assert_eq!(
             shapes["notice"],
             BTreeSet::from(["kind".to_owned(), "text".to_owned()])
@@ -140,6 +195,18 @@ mod tests {
                 "verdict".to_owned(),
                 "workspace".to_owned(),
             ])
+        );
+        assert_eq!(
+            shapes["message_v2"],
+            BTreeSet::from(["kind".to_owned(), "message".to_owned()])
+        );
+        assert_eq!(
+            shapes["compaction_v2"],
+            BTreeSet::from(["kind".to_owned(), "messages".to_owned()])
+        );
+        assert_eq!(
+            shapes["native_child_context_captured_v1"],
+            BTreeSet::from(["kind".to_owned(), "context".to_owned()])
         );
         assert!(shapes.contains_key("tunables_snapshot"));
         assert!(shapes.contains_key("subagent_finished_v2"));

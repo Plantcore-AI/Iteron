@@ -1063,6 +1063,16 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             !source_form_invariant_matches(&wrong_value),
             "{expected_id}"
         );
+        assert!(
+            validate(std::slice::from_ref(&wrong_value)).is_err(),
+            "{expected_id}"
+        );
+        wrong_value.review_evidence = wrong_value.review_evidence.map(|evidence| {
+            evidence.replace(
+                "closed source-form invariant rule",
+                "unproven structural label",
+            )
+        });
         assert!(validate(&[wrong_value]).is_err(), "{expected_id}");
         let mut wrong_identity = row.clone();
         wrong_identity.id.push_str(".foreign");
@@ -1070,9 +1080,11 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             !source_form_invariant_matches(&wrong_identity),
             "{expected_id}"
         );
+        assert!(validate(&[wrong_identity]).is_err(), "{expected_id}");
         let mut wrong_path = row.clone();
         wrong_path.owner.path.push_str(".foreign");
         assert!(!source_form_invariant_matches(&wrong_path), "{expected_id}");
+        assert!(validate(&[wrong_path]).is_err(), "{expected_id}");
     }
 }
 

@@ -3647,10 +3647,22 @@ AbCdEf1234567890AbCdEf1234567890"
             });
             assert_eq!(events.len(), lines.len(), "{}", path.display());
             assert!(!events.is_empty(), "{}", path.display());
-            assert!(matches!(
-                events[0].kind,
-                EventKind::TurnStart | EventKind::RunStart { .. }
-            ));
+            if fixture["path"]
+                == "governance/schema-compat/fixtures/record/rollout-native-runtime-v16.jsonl"
+            {
+                // This exact additive corpus exercises runtime events, not a session genesis.
+                // Its frozen hash chain begins with the declared neutral fixture marker.
+                assert_eq!(fixture["schema_version"], 16);
+                assert!(matches!(
+                    &events[0].kind,
+                    EventKind::Notice { text } if text == "schema compatibility fixture"
+                ));
+            } else {
+                assert!(matches!(
+                    events[0].kind,
+                    EventKind::TurnStart | EventKind::RunStart { .. }
+                ));
+            }
             if fixture["schema_version"] == 4 {
                 assert!(matches!(
                     &events[0].kind,

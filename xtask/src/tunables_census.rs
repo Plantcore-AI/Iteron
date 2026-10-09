@@ -998,6 +998,21 @@ fn validate(rows: &[CensusRow]) -> Result<()> {
                     bail!("{} carries an unregistered invariant override", row.id);
                 }
                 let exact_source_invariant = source_form_invariant_matches(row);
+                let owned_source_form = row.tier2_id.is_none()
+                    && matches!(
+                        row.candidate_kind,
+                        CensusCandidateKind::PolicyDefaultConstructor
+                            | CensusCandidateKind::PolicyFallbackCall
+                            | CensusCandidateKind::BuilderQualityDefault
+                    );
+                if (owned_source_form || evidence.contains("closed source-form invariant rule"))
+                    && !exact_source_invariant
+                {
+                    bail!(
+                        "{} no longer matches its closed source-form invariant proof",
+                        row.id
+                    );
+                }
                 if exact_source_invariant && !evidence.contains("closed source-form invariant rule")
                 {
                     bail!("{} has incomplete source-form invariant evidence", row.id);

@@ -253,11 +253,15 @@ mod tests {
     fn actual_forwarding_refuses_redirected_producer_and_unnamed_trait_authority() {
         merge(common(), writer()).unwrap();
         let mut redirect = writer();
-        redirect.items[0] = syn::parse_quote!(use crate::fake::DEFAULT_SCHEMA_VERSION);
+        redirect.items[0] = syn::parse_quote!(
+            use crate::fake::DEFAULT_SCHEMA_VERSION;
+        );
         assert!(merge(common(), redirect).is_err());
         let mut conditional = writer();
-        conditional.items[0] =
-            syn::parse_quote!(#[cfg(unix)] use crate::machine_projection::DEFAULT_SCHEMA_VERSION);
+        conditional.items[0] = syn::parse_quote!(
+            #[cfg(unix)]
+            use crate::machine_projection::DEFAULT_SCHEMA_VERSION;
+        );
         assert!(merge(common(), conditional).is_err());
         let mut fake = writer();
         fake.items.push(syn::parse_quote!(
@@ -265,9 +269,9 @@ mod tests {
         ));
         assert!(merge(common(), fake).is_err());
         let mut trait_import = writer();
-        trait_import
-            .items
-            .push(syn::parse_quote!(use evil::Write as _));
+        trait_import.items.push(syn::parse_quote!(
+            use evil::Write as _;
+        ));
         assert!(merge(common(), trait_import).is_err());
         let mut duplicate = writer();
         duplicate.items.push(syn::parse_quote!(
