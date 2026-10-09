@@ -337,3 +337,35 @@ async fn refusal_record_fault_does_not_publish_a_predicted_source_receipt() {
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn misspelled_unregistered_tool_does_not_claim_an_extension_refusal() {
+    use iteron_protocol::refusal::{RefusalOriginV1, RefusalReasonV1};
+    let (root, mut agent, mut call) = fixture();
+    call.name = "write_flie".into();
+    let (events, mut reader) = tokio::sync::mpsc::channel(32);
+    agent.set_resident_ui(events);
+    let draft = proposal(&agent, &call);
+    assert!(matches!(
+        draft,
+        Err(iteron_tools::ToolPolicyError::UnknownTool(_))
+    ));
+    let result = agent
+        .tool_declaration_admission(TurnId(0), Trust::Workspace)
+        .run(&call, draft)
+        .await
+        .unwrap();
+    assert!(matches!(result, ToolAdmissionDecision::Refused(_)));
+    let observation = std::iter::from_fn(|| reader.try_recv().ok())
+        .find_map(|event| match event {
+            crate::runtime::RuntimeFrontendEvent::Refusal(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(observation.reason, RefusalReasonV1::InvalidRequest);
+    assert_eq!(observation.origin(), RefusalOriginV1::Unknown);
+    assert!(observation.source.is_some());
+    assert!(!root.join("result.txt").exists());
+    drop(agent);
+    std::fs::remove_dir_all(root).unwrap();
+}

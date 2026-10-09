@@ -120,7 +120,7 @@ impl ToolDeclarationAdmission<'_> {
                             .map_or(RefusalReasonV1::CapabilityCeiling, |_| {
                                 RefusalReasonV1::ExtensionDenied
                             }),
-                        ToolPolicyError::UnknownTool(_) => RefusalReasonV1::ExtensionUnavailable,
+                        ToolPolicyError::UnknownTool(_) => RefusalReasonV1::InvalidRequest,
                         _ => RefusalReasonV1::Unknown,
                     },
                 );
