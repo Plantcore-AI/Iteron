@@ -331,6 +331,9 @@ impl Block {
                     card.class,
                     workflow_status_label(card.status)
                 );
+                if let Some(reason) = &card.reason {
+                    s.push_str(&format!("reason: {reason}\n"));
+                }
                 for task in &card.tasks {
                     s.push_str(&format!(
                         "- [{}] {} — {}",

@@ -897,7 +897,14 @@ async fn host_refuses_invalid_discovery_without_leaving_pending_or_installing_it
         .unwrap()
         .unwrap();
     assert!(!after.discovery_pending());
-    assert!(after.discovery_error().is_some());
+    assert!(after.discovery_error().is_none());
+    assert!(
+        after
+            .entry("invalid-discovery")
+            .unwrap()
+            .catalog_error
+            .is_some()
+    );
     assert!(
         before.discovery_pending(),
         "the old readonly value is immutable"
@@ -908,8 +915,9 @@ async fn host_refuses_invalid_discovery_without_leaving_pending_or_installing_it
     let page = owner.read(&query).unwrap();
     assert_eq!(page["inventory_digest_sha256"], after.inventory_digest());
     assert_eq!(page["records"][0]["discovery_pending"], false);
-    assert!(page["records"][0]["discovery_error"].is_string());
-    assert!(owner.first_frame().is_err());
+    assert!(page["records"][0]["discovery_error"].is_null());
+    assert!(page["records"][0]["catalog_error"].is_string());
+    assert!(owner.first_frame().is_ok());
     server.join().unwrap();
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
 }

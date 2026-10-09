@@ -2833,6 +2833,7 @@ async fn optional_maintenance_saturation_does_not_flush_or_await_parent_cosmetic
     ends.events
         .bind_lifecycle_identity(thread.clone(), agent.rollout.run_id().clone());
     ends.events.contract.bind_artifact_owner(&agent);
+    let occupied_seq = ends.events.next_seq;
     ends.events
         .publish(ServerEvent::Notice("occupied mandatory queue entry".into()))
         .await
@@ -2865,7 +2866,7 @@ async fn optional_maintenance_saturation_does_not_flush_or_await_parent_cosmetic
         current["event"]["observation"]["journal_revision"],
         observation.journal_revision
     );
-    assert_eq!(handle.events.recv().await.unwrap().seq, 0);
+    assert_eq!(handle.events.recv().await.unwrap().seq, occupied_seq);
     assert!(ends.events.try_publish_maintenance(event));
     assert_eq!(handle.events.recv().await.unwrap().seq, next_seq);
     assert_eq!(ends.events.pending_cosmetic.bytes, pending_bytes);
@@ -3074,6 +3075,8 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
     use sha2::Digest;
     let workspace = temp_workspace("sdk-public-read");
     let mut agent = agent_in(&workspace);
+    let provider = Arc::new(BlockingSteerProvider::default());
+    agent.provider = provider.clone();
     let configuration = serde_json::json!({
         "provider_id": "provider-a",
         "model_id": "m",
@@ -3117,7 +3120,7 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
                         version: 1,
                         name: "sample__events".into(),
                         event_ids: vec!["model.request_sent".into()],
-                        queue_capacity: 4,
+                        queue_capacity: 64,
                     }),
                 },
             ],
@@ -3126,14 +3129,6 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
         )
         .unwrap();
     let captured = agent.ordinary_extensions_port().unwrap();
-    assert_eq!(
-        agent
-            .run("produce an actual ordinary SDK lifecycle observation")
-            .await
-            .unwrap(),
-        iteron_protocol::Outcome::Done
-    );
-    let expected = captured.snapshot().unwrap();
     let (_handle, mut ends) = wire().unwrap();
     let thread = SessionId("session-control-plane".into());
     let run = agent.rollout.run_id().clone();
@@ -3147,6 +3142,52 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
         crate::workflow::WorkflowSupervisor::new(settled),
     );
     let surface = super::ordinary_extensions::OrdinaryExtensionsSurface::capture(&agent);
+    // The lossy subscription is not historical replay. Consume the actual public event
+    // while its physical provider call is held, before later lifecycle rows can evict it.
+    let running = tokio::spawn(async move {
+        let result = agent
+            .run("produce an actual ordinary SDK lifecycle observation")
+            .await;
+        (agent, result)
+    });
+    tokio::time::timeout(Duration::from_secs(3), provider.started.notified())
+        .await
+        .expect("the actual provider invocation must be reached");
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        OrdinaryExtensionReadV1::Events {
+            thread_id: thread.clone(),
+            run_id: run.clone(),
+            name: "sample__events".into(),
+            limit: 64,
+            timeout_ms: 0,
+        },
+        reply,
+    );
+    let ControlReply::OrdinaryExtensions(actual) = receive.await.unwrap() else {
+        panic!("actual lifecycle reader")
+    };
+    assert_eq!(
+        actual["data"]["delivery"],
+        "lossy_content_free_lifecycle_bus_not_durable_replay"
+    );
+    assert!(!actual["data"]["events"].as_array().unwrap().is_empty());
+    assert!(
+        actual["data"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| { event["run_id"] == run.0 && event["event_id"] == "model.request_sent" })
+    );
+    provider.release.notify_one();
+    let (agent, outcome) = tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .expect("the released provider must complete")
+        .unwrap();
+    assert_eq!(outcome.unwrap(), iteron_protocol::Outcome::Done);
+    let expected = captured.snapshot().unwrap();
     let (reply, receive) = tokio::sync::oneshot::channel();
     surface.dispatch(
         &activity,
@@ -3173,27 +3214,6 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
         actual["data"]["status"]["widgets"]["items"][0]["values"]["tool_calls"]["value"],
         "0"
     );
-    let (reply, receive) = tokio::sync::oneshot::channel();
-    surface.dispatch(
-        &activity,
-        ends.events.contract.clone(),
-        OrdinaryExtensionReadV1::Events {
-            thread_id: thread.clone(),
-            run_id: run.clone(),
-            name: "sample__events".into(),
-            limit: 64,
-            timeout_ms: 0,
-        },
-        reply,
-    );
-    let ControlReply::OrdinaryExtensions(actual) = receive.await.unwrap() else {
-        panic!("actual lifecycle reader")
-    };
-    assert_eq!(
-        actual["data"]["delivery"],
-        "lossy_content_free_lifecycle_bus_not_durable_replay"
-    );
-    assert!(!actual["data"]["events"].as_array().unwrap().is_empty());
     let barrier = activity.adoption_barrier().await.unwrap();
     assert!(
         ends.events

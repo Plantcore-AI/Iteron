@@ -29,7 +29,7 @@ const DIGEST_PREFIX_CHARS: usize = 12;
 pub(super) fn registry_catalog() -> Catalog {
     Catalog::new(
         format_args!(
-            "tunables · catalog · {} families · simulation only",
+            "tunables · simulation only · catalog · {} families",
             iteron_tunables::families().len()
         ),
         iteron_tunables::families()
@@ -289,7 +289,7 @@ pub(super) fn simulation_catalog(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Catalog::new(
         format_args!(
-            "tunables · {} · {} families · {} failures · simulation only",
+            "tunables · simulation only · {} · {} families · {} failures",
             view.status,
             entries.len(),
             view.failure_count
@@ -352,7 +352,7 @@ fn report_catalog(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Catalog::new(
         format_args!(
-            "tunables · {atomic_status} · {} families · {failure_count} failures · simulation only",
+            "tunables · simulation only · {atomic_status} · {} families · {failure_count} failures",
             entries.len()
         ),
         entries,

@@ -724,10 +724,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(known.outcome, Disposition::KnownFailure);
-        assert_eq!(
-            known.message,
-            "export failed before dispatch: request exceeds bound"
-        );
+        assert_eq!(known.message, "export not published: request exceeds bound");
     }
 
     #[tokio::test]

@@ -6,10 +6,24 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum ProviderCatalogCommandV1 {
+    #[serde(deserialize_with = "deserialize_empty_command")]
     FirstFrame,
+    #[serde(deserialize_with = "deserialize_empty_command")]
     Refresh,
-    Retry { selection: ClientModelSelectionV1 },
+    Retry {
+        selection: ClientModelSelectionV1,
+    },
 }
+fn deserialize_empty_command<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct EmptyCommand {}
+    EmptyCommand::deserialize(deserializer).map(|_| ())
+}
+
 impl ProviderCatalogCommandV1 {
     pub(super) fn into_control(self) -> ProviderCatalogControl {
         match self {

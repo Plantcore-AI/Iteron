@@ -1332,6 +1332,11 @@ mod provider_catalog_reply_tests {
     #[test]
     fn failed_host_discovery_is_public_truth_without_a_full_catalog_payload() {
         let directory = ProviderDirectory::inspect_local(&[]).unwrap();
+        let providers = directory.entries().len();
+        assert!(
+            providers > 0,
+            "the host retains its builtin provider entries"
+        );
         let view = ProviderCatalogView::capture(
             &directory,
             &ModelSelection {
@@ -1347,7 +1352,7 @@ mod provider_catalog_reply_tests {
         assert_eq!(reply["discovery_pending"], false);
         assert_eq!(reply["discovery_error"], "actual catalog rejected");
         assert_eq!(reply["source"], "host_captured_inventory");
-        assert_eq!(reply["providers"], 0);
+        assert_eq!(reply["providers"], providers);
         assert!(reply.get("models").is_none());
     }
 }

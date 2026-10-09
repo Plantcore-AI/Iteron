@@ -6977,7 +6977,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .first_token_stall()
             .expect("a stalled stream is described");
         assert_eq!(stalled.state, FirstTokenState::Stalled);
-        assert!(stalled.label().contains("may be stalled"));
+        assert!(stalled.label().contains("no provider response"));
+        assert!(!stalled.label().contains("accepted"));
+        app.activity_observations
+            .observe_provider_response(Instant::now());
+        let accepted_stall = app.first_token_stall().unwrap();
+        assert!(accepted_stall.label().contains("may be stalled"));
+        assert_ne!(accepted_stall.label(), stalled.label());
         assert_ne!(
             accepted.label(),
             stalled.label(),
@@ -7342,7 +7348,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
         app.effort = Effort::Ultracode;
 
-        let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        // At narrower widths lower-priority metrics intentionally yield to route identity.
+        let mut term = Terminal::new(TestBackend::new(240, 12)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = buffer_text(&term);
         let statusline = s.lines().last().unwrap_or_default();
@@ -8328,6 +8335,8 @@ mod large_logical_viewport_tests {
             open: true,
         });
         app.stream_text("newest answer remains visible");
+        // Commit the real streaming scrubber boundary before asserting its full retained text.
+        app.finish_text_boundary();
         let screen = render_text(&mut app, 80, 22);
         assert!(app.viewport.total_rows() > usize::from(u16::MAX));
         assert!(app.view_scroll > usize::from(u16::MAX));

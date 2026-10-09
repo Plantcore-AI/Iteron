@@ -48,7 +48,7 @@ impl CapturedClientInventory {
                 "catalog_available":entry.catalog.is_some(),"catalog_stale":entry.catalog_stale,
                 "catalog_enabled":entry.catalog_enabled,"catalog_provenance":safe(&entry.catalog_provenance_label()),"model_count":model_count,
                 "discovery_pending":view.entry(entry.id()).is_some_and(|entry| entry.discovery_pending),
-                "discovery_error":view.discovery_error()}));
+                "discovery_error":view.discovery_error(),"catalog_error":entry.catalog_error.as_deref().map(safe)}));
             if let Some(catalog) = &entry.catalog {
                 for model in &catalog.models {
                     if models.len() >= MAX_MODELS {
