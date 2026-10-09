@@ -151,7 +151,12 @@ impl ActivitySurface {
                     Ok(value) => ControlReply::ActivityCenter(
                         json!({"type":"activity_center_v1","thread_id":thread,"run_id":run,"data":value}),
                     ),
-                    Err(reason) => ControlReply::Refused(reason),
+                    Err(error) => {
+                        if let Some(refusal) = &error.refusal {
+                            let _ = reader.observe_scoped_native_refusal(&thread, &run, refusal);
+                        }
+                        error.into_reply()
+                    }
                 }
             } else {
                 ControlReply::Refused("activity scope changed".into())
@@ -169,19 +174,57 @@ fn binding(agent: &Agent) -> Binding {
         verifier: agent.verification_task_port(),
     }
 }
+struct ActivityFailure {
+    message: String,
+    refusal: Option<iteron_protocol::refusal::HostRefusalV1>,
+}
+impl From<String> for ActivityFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            refusal: None,
+        }
+    }
+}
+impl From<&str> for ActivityFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl ActivityFailure {
+    fn process(error: iteron_tools::ProcessControlError) -> Self {
+        match super::refusal_projection::process_reply(error) {
+            ControlReply::RefusedWithOrigin { message, refusal } => Self {
+                message,
+                refusal: Some(*refusal),
+            },
+            ControlReply::Refused(message) => message.into(),
+            _ => unreachable!("process refusal projection returns a refusal"),
+        }
+    }
+    fn into_reply(self) -> ControlReply {
+        match self.refusal {
+            Some(refusal) => ControlReply::RefusedWithOrigin {
+                message: self.message,
+                refusal: Box::new(refusal),
+            },
+            None => ControlReply::Refused(self.message),
+        }
+    }
+}
 async fn execute(
     binding: &Binding,
     processes: Option<&iteron_tools::ProcessControl>,
     mcp: Option<&crate::mcp::McpRuntimeControl>,
     workflows: &crate::workflow::WorkflowSupervisor,
     command: ActivityControlV1,
-) -> Result<Value, String> {
+) -> Result<Value, ActivityFailure> {
     match command {
         ActivityControlV1::List{..}=>{
             let agents=match &binding.agents {Some(port)=>Some(port.list(AgentActor::Operator).map_err(|_|"agent owner unavailable")?),None=>None};
             let mut activities=Vec::new(); let mut omitted=0_usize;
             if let Some(processes)=processes {
-                let entries=processes.list().map_err(|error|error.message)?;
+                let entries=processes.list().map_err(ActivityFailure::process)?;
                 if let Some(entries)=entries.as_array() { for entry in entries.iter().take(64) {
                     let id=entry["job_id"].as_str().or_else(||entry["id"].as_str()).ok_or("process owner identity unavailable")?;
                     activities.push(json!({"target":{"kind":"process","job_id":id},"source":"actual_process_supervisor","state":entry["state"],"details":scrub(entry),"stop_supported":true}));
@@ -203,17 +246,17 @@ async fn execute(
             Ok(json!({"activities":activities,"omitted":omitted,"dropped_verifier_tasks":verifier["dropped_tasks"],"owners":{"processes":processes.is_some(),"persistent_agents":agents.is_some(),"mcp":mcp.is_some(),"workflows":true,"verifier":true},"recovery":"persistent controller and verified verifier effects retain state; process/MCP/session workflow entries describe only these captured live owners"}))
         }
         ActivityControlV1::Inspect{target,stdout_cursor,stderr_cursor,..}=>match target {
-            ActivityTargetV1::Verifier{task_id}=>binding.verifier.inspect(&binding.run,&task_id).map_err(str::to_string),
-            ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.poll(&job_id,stdout_cursor,stderr_cursor,0).await.map(|value|scrub(&value)).map_err(|error|error.message),
+            ActivityTargetV1::Verifier{task_id}=>binding.verifier.inspect(&binding.run,&task_id).map_err(|error| ActivityFailure::from(error)),
+            ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.poll(&job_id,stdout_cursor,stderr_cursor,0).await.map(|value|scrub(&value)).map_err(ActivityFailure::process),
             ActivityTargetV1::PersistentAgent{agent_id,..}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.inspect(AgentActor::Operator,agent_id).map(|view|json!({"source":"durable_agent_controller","view": ({let mut value=scrub(&serde_json::to_value(&view).unwrap_or(Value::Null));value["partial_output"]=serde_json::to_value(&view.partial_output).unwrap_or(Value::Null);value})})).map_err(|_|"agent inspection refused".into()),
             ActivityTargetV1::Workflow{run_id}=>workflows.inventory().into_iter().find(|run|run.run_id==run_id).map(|run|json!({"run_id":run.run_id,"name":iteron_record::redact::scrub(&run.name),"state":format!("{:?}",run.status).to_lowercase(),"running_agents":run.running_agents,"finished_agents":run.finished_agents,"source":"actual_session_workflow_supervisor"})).ok_or("workflow not retained".into()),
             ActivityTargetV1::Mcp{name}=>mcp.ok_or("MCP owner unavailable")?.health().into_iter().find(|server|server.name==name).map(|server|scrub(&serde_json::to_value(server).unwrap_or(Value::Null))).ok_or("MCP server not retained".into()),
         },
         ActivityControlV1::Stop{target,request_id,..}=>match target {
-            ActivityTargetV1::Verifier{task_id}=>binding.verifier.cancel(&binding.run,&task_id).map_err(str::to_string),
-            ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.stop(&job_id).await.map(|value|scrub(&value)).map_err(|error|error.message),
+            ActivityTargetV1::Verifier{task_id}=>binding.verifier.cancel(&binding.run,&task_id).map_err(|error| ActivityFailure::from(error)),
+            ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.stop(&job_id).await.map(|value|scrub(&value)).map_err(ActivityFailure::process),
             ActivityTargetV1::PersistentAgent{agent_id,epoch}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.command(AgentActor::Operator,&request_id,AgentCommandV1::Interrupt{agent_id,epoch:epoch.ok_or("missing observed agent epoch")?}).map(|receipt|json!({"receipt":receipt,"stop_requested":true,"terminal_observed":false})).map_err(|_|"agent interruption refused".into()),
-            ActivityTargetV1::Workflow{run_id}=>workflows.cancel_for_operator(&run_id).map(|run|json!({"run_id":run.run_id,"stop_requested":true,"terminal_observed":false})),
+            ActivityTargetV1::Workflow{run_id}=>workflows.cancel_for_operator(&run_id).map(|run|json!({"run_id":run.run_id,"stop_requested":true,"terminal_observed":false})).map_err(ActivityFailure::from),
             ActivityTargetV1::Mcp{name}=>{ let mcp=mcp.ok_or("MCP owner unavailable")?; if !mcp.cancel(&name){return Err("MCP cancellation refused".into());} Ok(json!({"name":name,"stop_requested":true,"terminal_observed":false,"meaning":"cancel current actor operation"})) },
         }
     }

@@ -107,11 +107,7 @@ async fn apply_job_control(
     };
     match result {
         Ok(value) => ControlReply::Jobs(value),
-        Err(error) => ControlReply::Refused(if error.unknown {
-            format!("job control outcome is unknown: {}", error.message)
-        } else {
-            error.message
-        }),
+        Err(error) => super::refusal_projection::process_reply(error),
     }
 }
 
@@ -133,10 +129,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
             let proposal = match iteron_ctx::MemoryRecallStrategy::authorize_project_write_with(
                 memory_strategy.as_ref(),
@@ -208,10 +204,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
             let proposal = match iteron_ctx::MemoryRecallStrategy::authorize_project_write_with(
                 memory_strategy.as_ref(),
@@ -266,10 +262,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
             match iteron_ctx::MemoryStore::at(&workspace).remove_checked(&id) {
                 Ok(true) => {
@@ -621,9 +617,7 @@ pub(super) async fn apply_control(
             let checkpoint = match agent.tunables_checkpoint() {
                 Ok(checkpoint) => checkpoint.clone(),
                 Err(error) => {
-                    let _ = request
-                        .reply
-                        .send(ControlReply::Refused(error.public_summary().to_owned()));
+                    let _ = request.reply.send(ControlReply::refused_by(&error));
                     return;
                 }
             };
@@ -809,7 +803,7 @@ pub(super) async fn apply_control(
         Control::SetEffort(next) => {
             match agent.transition_effort(next, iteron_protocol::RuntimePolicySource::Operator) {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::SetPermissionMode(next) => {
@@ -817,7 +811,7 @@ pub(super) async fn apply_control(
                 .transition_permission_mode(next, iteron_protocol::RuntimePolicySource::Operator)
             {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::SetCapabilityRule {
@@ -829,7 +823,7 @@ pub(super) async fn apply_control(
             iteron_protocol::RuntimePolicySource::Operator,
         ) {
             Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-            Err(error) => ControlReply::Refused(error.public_summary()),
+            Err(error) => ControlReply::refused_by(&error),
         },
         Control::SetToolRule { tool, verdict } => {
             if tool.is_empty()
@@ -851,7 +845,7 @@ pub(super) async fn apply_control(
                     iteron_protocol::RuntimePolicySource::Operator,
                 ) {
                     Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-                    Err(error) => ControlReply::Refused(error.public_summary()),
+                    Err(error) => ControlReply::refused_by(&error),
                 }
             }
         }
@@ -861,7 +855,7 @@ pub(super) async fn apply_control(
                     report: Box::new(report),
                     snapshot: Box::new(snapshot_of(agent)),
                 },
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             };
             agent.settle_standalone_control_interrupt();
             reply
@@ -870,7 +864,7 @@ pub(super) async fn apply_control(
             None => ControlReply::TurnBudget(agent.turn_budget()),
             Some(max_turns) => match agent.set_turn_ceiling(max_turns) {
                 Ok(state) => ControlReply::TurnBudget(state),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             },
         },
         Control::Side(request) => {
@@ -984,10 +978,7 @@ pub(super) async fn apply_control(
                         blocked,
                     }
                 }
-                Err(error) => ControlReply::Refused(format!(
-                    "cannot adopt that session here: {}",
-                    error.public_summary()
-                )),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::Workflow(control) => {
@@ -1001,6 +992,11 @@ pub(super) async fn apply_control(
         }
     };
     events.contract.refresh_path_completion(agent);
+    if let ControlReply::RefusedWithOrigin { refusal, .. } = &reply {
+        let _ = events
+            .publish(ServerEvent::Refusal((**refusal).clone()))
+            .await;
+    }
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
     let reply = if let Some((presentation, _admission)) = navigation {
         match reply {
@@ -1055,7 +1051,10 @@ pub(super) async fn apply_control(
                 }
                 Some(navigation)
             }
-            ControlReply::Refused(reason) => {
+            ControlReply::Refused(reason)
+            | ControlReply::RefusedWithOrigin {
+                message: reason, ..
+            } => {
                 if let Some(execution) = presentation.execution.as_mut() {
                     execution.reason = Some(reason);
                 }
@@ -1076,11 +1075,6 @@ pub(super) async fn apply_control(
     } else {
         reply
     };
-    if let ControlReply::RefusedWithOrigin { refusal, .. } = &reply {
-        let _ = events
-            .publish(ServerEvent::Refusal((**refusal).clone()))
-            .await;
-    }
     let _ = request.reply.send(reply);
 }
 

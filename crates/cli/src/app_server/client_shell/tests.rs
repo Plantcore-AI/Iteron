@@ -130,6 +130,7 @@ async fn actual_host_plan_and_authority_ceiling_refuse_before_marker_or_provider
         .agent
         .configure_initial_runtime_policy(Effort::Low, PermissionMode::Plan, PermissionRules::new())
         .unwrap();
+    fixture.reader.bind_artifact_owner(&fixture.agent);
     let ControlReply::OperatorShell(refused) = fixture
         .start("printf forbidden > marker", None)
         .await
@@ -138,6 +139,25 @@ async fn actual_host_plan_and_authority_ceiling_refuse_before_marker_or_provider
         panic!("shell receipt expected");
     };
     assert_eq!(refused.outcome, ShellOutcome::NotStarted);
+    assert_eq!(
+        refused.refusal,
+        Some(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied)
+    );
+    let scope = fixture.reader.snapshot().unwrap();
+    let observed = fixture
+        .reader
+        .refusals_v1(iteron_protocol::client_refusal::RefusalsReadV1 {
+            thread_id: scope.thread_id,
+            run_id: scope.run_id,
+        });
+    assert_eq!(observed["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(observed["observations"][0]["origin"], "host_policy");
+    assert_eq!(
+        observed["observations"][0]["refusal"]["effects"],
+        "not_dispatched"
+    );
+    assert!(observed["observations"][0]["source_eq_sequence"].is_null());
+    assert!(observed["observations"][0]["refusal"]["source"].is_null());
     assert!(!fixture.root.join("marker").exists());
     fixture
         .agent

@@ -7,10 +7,18 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 const MAX_REFUSALS: usize = 64;
 const MAX_SUBJECT_BYTES: usize = 2048;
+fn subjects_bounded(observation: &HostRefusalV1) -> bool {
+    [observation.tool.as_ref(), observation.tool_use_id.as_ref()]
+        .into_iter()
+        .flatten()
+        .all(|value| value.len() <= MAX_SUBJECT_BYTES && value.capacity() <= MAX_SUBJECT_BYTES)
+}
 #[derive(Default)]
 pub(super) struct RefusalReader {
     scope: Option<(SessionId, TenantId, RunId)>,
-    rows: VecDeque<(u64, HostRefusalV1)>,
+    rows: VecDeque<(u64, Option<u64>, HostRefusalV1)>,
+    next_observation: u64,
+    last_eq_sequence: u64,
     omitted: u64,
 }
 impl RefusalReader {
@@ -25,36 +33,52 @@ impl RefusalReader {
         self.scope = Some((thread, tenant, run));
         self.rows.clear();
         self.omitted = 0;
+        self.next_observation = 1;
+        self.last_eq_sequence = 0;
     }
     pub(super) fn observe(&mut self, eq_sequence: u64, observation: &HostRefusalV1) -> bool {
         let Some((_, tenant, run)) = &self.scope else {
             return false;
         };
         if eq_sequence == 0
-            || observation
-                .tool
-                .as_ref()
-                .is_some_and(|v| v.len() > MAX_SUBJECT_BYTES)
-            || observation
-                .tool_use_id
-                .as_ref()
-                .is_some_and(|v| v.len() > MAX_SUBJECT_BYTES)
+            || !subjects_bounded(observation)
             || observation.source.as_ref().is_some_and(|source| {
                 source.tenant != *tenant || source.run_id != *run || source.sequence.0 == 0
             })
         {
             return false;
         }
-        if let Some((old, value)) = self.rows.back()
-            && eq_sequence <= *old
-        {
-            return eq_sequence == *old && value == observation;
+        if eq_sequence <= self.last_eq_sequence {
+            return self
+                .rows
+                .iter()
+                .any(|(_, source, value)| *source == Some(eq_sequence) && value == observation);
         }
+        self.last_eq_sequence = eq_sequence;
+        self.retain(Some(eq_sequence), observation)
+    }
+    pub(super) fn observe_local(&mut self, observation: &HostRefusalV1) -> bool {
+        // This path is private to actual scoped host callbacks held under the adoption lease.
+        // It has no EQ or WAL receipt; neither sequence is guessed from the current snapshot.
+        if self.scope.is_none() || observation.source.is_some() || !subjects_bounded(observation) {
+            return false;
+        }
+        self.retain(None, observation)
+    }
+    fn retain(&mut self, source_eq_sequence: Option<u64>, observation: &HostRefusalV1) -> bool {
+        let Some(next) = self.next_observation.checked_add(1) else {
+            return false;
+        };
         if self.rows.len() == MAX_REFUSALS {
             self.rows.pop_front();
             self.omitted = self.omitted.saturating_add(1);
         }
-        self.rows.push_back((eq_sequence, observation.clone()));
+        self.rows.push_back((
+            self.next_observation,
+            source_eq_sequence,
+            observation.clone(),
+        ));
+        self.next_observation = next;
         true
     }
     pub(super) fn read(&self, command: RefusalsReadV1) -> Value {
@@ -67,11 +91,23 @@ impl RefusalReader {
         if *thread != command.thread_id || *run != command.run_id {
             return json!({"type":"refusals_refused_v1","reason_code":"scope_mismatch"});
         }
-        let rows=self.rows.iter().map(|(seq,value)|json!({"observation_sequence":seq,"origin":value.origin(),"summary":value.summary(),"refusal":value})).collect::<Vec<_>>();
+        let rows=self.rows.iter().map(|(seq,source,value)|json!({"observation_sequence":seq,"source_eq_sequence":source,"origin":value.origin(),"summary":value.summary(),"refusal":value})).collect::<Vec<_>>();
         json!({"type":"refusals_snapshot_v1","thread_id":thread,"run_id":run,"observations":rows,"omitted":self.omitted,"source":"live_host_provenance","delivery":"bounded_snapshot_not_historical_error_reclassification"})
     }
 }
 impl ControlReply {
+    pub(super) fn extension_refused(message: String) -> Self {
+        Self::RefusedWithOrigin {
+            message: iteron_record::redact::scrub(&message),
+            refusal: Box::new(HostRefusalV1 {
+                reason: RefusalReasonV1::ExtensionDenied,
+                source: None,
+                tool: None,
+                tool_use_id: None,
+                effects: iteron_protocol::refusal::RefusalEffectStateV1::NotDispatched,
+            }),
+        }
+    }
     pub(super) fn refused_by(error: &crate::runtime::KernelError) -> Self {
         Self::RefusedWithOrigin {
             message: error.public_summary(),
@@ -84,6 +120,30 @@ pub(crate) fn reply_value(message: String, refusal: HostRefusalV1) -> Value {
 }
 pub(crate) fn unknown_reply(message: String) -> Value {
     reply_value(message, HostRefusalV1::unscoped(RefusalReasonV1::Unknown))
+}
+pub(super) fn process_reply(error: iteron_tools::ProcessControlError) -> ControlReply {
+    let message = if error.unknown {
+        format!("job control outcome is unknown: {}", error.message)
+    } else {
+        error.message
+    };
+    match error.refusal {
+        Some(reason) => ControlReply::RefusedWithOrigin {
+            message,
+            refusal: Box::new(HostRefusalV1 {
+                reason,
+                source: None,
+                tool: None,
+                tool_use_id: None,
+                effects: if error.unknown {
+                    iteron_protocol::refusal::RefusalEffectStateV1::Unknown
+                } else {
+                    iteron_protocol::refusal::RefusalEffectStateV1::Unavailable
+                },
+            }),
+        },
+        None => ControlReply::Refused(message),
+    }
 }
 pub(crate) fn heap_bytes(value: &HostRefusalV1) -> usize {
     512_usize
@@ -179,5 +239,47 @@ mod tests {
         assert!(rows[0]["refusal"]["source"].is_null());
         assert!(!reader.observe(64, &value));
         assert!(reader.observe(65, &value));
+    }
+
+    #[test]
+    fn native_callback_cannot_clone_an_oversized_subject_or_retained_allocation() {
+        let mut reader = RefusalReader::default();
+        reader.bind(
+            SessionId("session-run".into()),
+            TenantId::default(),
+            RunId("run".into()),
+        );
+        let mut value = HostRefusalV1::unscoped(RefusalReasonV1::ExtensionDenied);
+        value.tool = Some("x".repeat(MAX_SUBJECT_BYTES + 1));
+        assert!(!reader.observe_local(&value));
+        assert!(!reader.observe(1, &value));
+        let mut retained = String::with_capacity(MAX_SUBJECT_BYTES + 1);
+        retained.push_str("small");
+        value.tool = Some(retained);
+        assert!(!reader.observe_local(&value));
+        assert!(reader.rows.is_empty());
+    }
+    #[test]
+    fn native_process_source_keeps_unknown_execution_and_absent_receipt() {
+        let reply = process_reply(iteron_tools::ProcessControlError {
+            message: "foreign administrator denial prose".into(),
+            unknown: true,
+            refusal: Some(RefusalReasonV1::ResourceUnavailable),
+        });
+        let ControlReply::RefusedWithOrigin { refusal, .. } = reply else {
+            panic!("typed native source");
+        };
+        assert_eq!(refusal.effects, RefusalEffectStateV1::Unknown);
+        assert!(refusal.source.is_none());
+        assert_ne!(
+            refusal.origin(),
+            iteron_protocol::refusal::RefusalOriginV1::AdministratorPolicy
+        );
+        let opaque = process_reply(iteron_tools::ProcessControlError {
+            message: "operating-system sandbox denied".into(),
+            unknown: false,
+            refusal: None,
+        });
+        assert!(matches!(opaque, ControlReply::Refused(_)));
     }
 }

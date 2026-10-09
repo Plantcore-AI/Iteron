@@ -189,6 +189,24 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn observe_scoped_native_refusal(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        refusal: &iteron_protocol::refusal::HostRefusalV1,
+    ) -> bool {
+        self.with_mut(|projection| {
+            if projection
+                .snapshot
+                .as_ref()
+                .is_none_or(|scope| scope.thread_id != *thread || scope.run_id != *run)
+            {
+                return false;
+            }
+            projection.refusals.observe_local(refusal)
+        })
+    }
+
     pub(super) fn refusals_v1(
         &self,
         command: iteron_protocol::client_refusal::RefusalsReadV1,

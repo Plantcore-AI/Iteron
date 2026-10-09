@@ -423,6 +423,26 @@ pub(super) fn apply_transcript_effect_event(
             return;
         }
 
+        if let Some(reason) = shell.refusal {
+            let refusal = iteron_protocol::refusal::HostRefusalV1 {
+                reason,
+                source: None,
+                tool: Some("operator_shell".into()),
+                tool_use_id: None,
+                effects: match shell.outcome {
+                    crate::client_effects::shell::ShellOutcome::NotStarted => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::NotDispatched
+                    }
+                    crate::client_effects::shell::ShellOutcome::OutcomeUnknown => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::Unknown
+                    }
+                    crate::client_effects::shell::ShellOutcome::Completed => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::Settled
+                    }
+                },
+            };
+            super::refusal::show(app, &refusal);
+        }
         app.push_shell_card(&shell.command, shell.body, shell.ok, shell.code);
         return;
     }

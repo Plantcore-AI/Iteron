@@ -212,6 +212,25 @@ pub(super) fn dispatch(
         } else {
             physical.await
         };
+        if let Some(reason) = completion.refusal {
+            let refusal = iteron_protocol::refusal::HostRefusalV1 {
+                reason,
+                source: None,
+                tool: Some("operator_shell".into()),
+                tool_use_id: None,
+                effects: match completion.outcome {
+                    crate::client_effects::shell::ShellOutcome::NotStarted => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::NotDispatched
+                    }
+                    crate::client_effects::shell::ShellOutcome::OutcomeUnknown => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::Unknown
+                    }
+                    _ => iteron_protocol::refusal::RefusalEffectStateV1::Settled,
+                },
+            };
+            let _ =
+                reader.observe_scoped_native_refusal(&command.thread_id, &command.run_id, &refusal);
+        }
         custody.finish(completion.cleanup);
         let _ = reply.send(ControlReply::OperatorShell(completion));
     });
