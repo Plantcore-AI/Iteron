@@ -395,7 +395,9 @@ fn current_fixture_coverage_preserves_wire_version_and_every_frozen_byte() {
         repo.write(V1, old_bytes);
         let mut previous = contract(1, 1, fields, vec![fixture(V1, 1)], vec![]);
         if !stamped {
-            previous["surfaces"][0]["id"] = json!("record.block.text");
+            // This tests generic versionless coverage, without claiming the separate record
+            // payload inventory (which also requires its complete Event envelope authority).
+            previous["surfaces"][0]["id"] = json!("test.versionless-text");
             previous["surfaces"][0]["version_field"] = Value::Null;
             previous["surfaces"][0]["selector"] = json!({"field": "type", "value": "text"});
         }
