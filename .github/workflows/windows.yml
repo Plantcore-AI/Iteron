@@ -284,9 +284,22 @@ jobs:
             return (-join $buffer[0..($count - 1)])
           }
           function Invoke-Prerequisite([string]$executable, [string]$arguments) {
+            if (-not [System.IO.Path]::IsPathRooted($executable)) {
+              throw 'native prerequisite executable must be an absolute selected path'
+            }
+            $executable = [System.IO.Path]::GetFullPath($executable)
+            if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+              throw "native prerequisite selected executable is absent: $executable"
+            }
+            $workingDirectory = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+            if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) {
+              throw 'native prerequisite selected source working directory is absent'
+            }
+            Write-Host "Native prerequisite executable: $executable; cwd: $workingDirectory"
             $process = New-Object System.Diagnostics.Process
             $process.StartInfo.FileName = $executable
             $process.StartInfo.Arguments = $arguments
+            $process.StartInfo.WorkingDirectory = $workingDirectory
             $process.StartInfo.UseShellExecute = $false
             $process.StartInfo.CreateNoWindow = $true
             $process.StartInfo.RedirectStandardOutput = $true
@@ -298,7 +311,13 @@ jobs:
               }
             }
             try {
-              if (-not $process.Start()) { throw 'native prerequisite did not start' }
+              try {
+                $started = $process.Start()
+              } catch [System.ComponentModel.Win32Exception] {
+                $nativeError = $_.Exception.GetBaseException().NativeErrorCode
+                throw "native prerequisite launch unavailable (Win32 $nativeError): executable=$executable; cwd=$workingDirectory"
+              }
+              if (-not $started) { throw 'native prerequisite did not start' }
               if (-not $process.WaitForExit(10000)) {
                 try { $process.Kill() } catch { }
                 $null = $process.WaitForExit(2000)
@@ -314,7 +333,9 @@ jobs:
           }
           # Require the actual Git for Windows installation, then select its own Bash for the
           # product fixtures. A WSL alias or merely finding some command named bash is insufficient.
-          $git = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+          $git = [System.IO.Path]::GetFullPath(
+            (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+          )
           $version = Invoke-Prerequisite $git '--version'
           if ($version -notmatch '^git version [^\r\n]+\.windows\.[0-9]+\s*$') {
             throw 'native shell gate requires Git for Windows'
@@ -329,6 +350,7 @@ jobs:
             $directory = [System.IO.Path]::GetDirectoryName($directory)
           }
           if (-not $bash) { throw 'Git for Windows Bash is unavailable' }
+          $bash = [System.IO.Path]::GetFullPath($bash)
           $probe = Invoke-Prerequisite $bash '--noprofile --norc -c "printf iteron-native-bash-prerequisite"'
           if ($probe -cne 'iteron-native-bash-prerequisite') { throw 'actual Bash prerequisite failed' }
           $env:PATH = "$(Split-Path -Parent $bash);$env:PATH"
