@@ -7,6 +7,7 @@ use super::{
     native_launch::{Launch, Transport},
     native_process::NativeProcess,
     native_retirement::{NativeLaunchRetirement, RetirementCompletion},
+    native_setup::{IsolationSetup, Prepared},
 };
 use crate::windows_process_isolation::WindowsProcessIsolation;
 use channels::Channels;
@@ -91,21 +92,18 @@ impl OwnedWindowsPipes {
         environment: &[(OsString, OsString)],
         isolation: Option<Arc<WindowsProcessIsolation>>,
     ) -> Result<Self, WindowsJobLaunchError> {
-        if let Some(isolation) = &isolation {
-            isolation
-                .validate_launch(executable, directory)
-                .and_then(|()| isolation.validate_environment(environment))
-                .map_err(|error| {
-                    WindowsJobLaunchError::before_creation("pipe isolation binding", error)
-                })?;
-        }
         let launch =
             Launch::capture(executable, arguments, directory, environment).map_err(|error| {
                 WindowsJobLaunchError::before_creation("pipe ABI projection", error)
             })?;
         Self::spawn_captured(
             launch,
-            isolation,
+            isolation.map(|isolation| IsolationSetup {
+                isolation,
+                executable: executable.to_owned(),
+                directory: directory.to_owned(),
+                environment: environment.to_vec(),
+            }),
             #[cfg(test)]
             None,
         )
@@ -113,19 +111,15 @@ impl OwnedWindowsPipes {
     }
     async fn spawn_captured(
         mut launch: Launch,
-        isolation: Option<Arc<WindowsProcessIsolation>>,
+        setup: Option<IsolationSetup>,
         #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
     ) -> Result<Self, WindowsJobLaunchError> {
-        let admission = custody::Admission::acquire().map_err(|error| {
-            WindowsJobLaunchError::before_creation("pipe physical custody admission", error)
-        })?;
-        let job =
-            Arc::new(OwnedWindowsJob::create().map_err(|error| {
-                WindowsJobLaunchError::before_creation("pipe private Job", error)
-            })?);
-        let channels = Channels::create().await.map_err(|error| {
-            WindowsJobLaunchError::before_creation("private pipe transport", error)
-        })?;
+        let prepared = Prepared::admit(setup).await?;
+        let channels = match Channels::create().await {
+            Ok(channels) => channels,
+            Err(error) => return Err(prepared.refuse("private pipe transport", error).await),
+        };
+        let (admission, job, retirement) = prepared.into_parts(None);
         let mut owned = Self {
             child: None,
             job,
@@ -134,15 +128,9 @@ impl OwnedWindowsPipes {
             input: Some(WindowsPipeInput(Some(channels.input))),
             output: Some(WindowsPipeOutput(channels.output)),
             error: Some(WindowsPipeOutput(channels.error)),
-            retirement: Some(NativeLaunchRetirement::new(None, isolation)),
+            retirement: Some(retirement),
             retirement_wait: None,
         };
-        if let Some(retirement) = &mut owned.retirement {
-            if let Err(error) = retirement.claim() {
-                drop(channels.child_handles);
-                return Err(owned.refuse("pipe isolation claim", error, false).await);
-            }
-        }
         let [input, output, error] = &channels.child_handles;
         let isolation = owned
             .retirement

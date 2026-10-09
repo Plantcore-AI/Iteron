@@ -1,7 +1,7 @@
 //! One optional isolation lease and transport resource retained until actual physical retirement.
 //! A caller/worker must first observe a waited leader and zero processes in its private Job.
 use super::conpty::console::Console;
-use crate::windows_process_isolation::WindowsProcessIsolation;
+use crate::windows_process_isolation::{WindowsIsolationLaunch, WindowsProcessIsolation};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,9 +10,7 @@ use tokio::sync::Notify;
 
 pub(super) struct NativeLaunchRetirement {
     console: Option<Arc<Console>>,
-    isolation: Option<Arc<WindowsProcessIsolation>>,
-    claimed: bool,
-    retirement_failed: bool,
+    launch: Option<WindowsIsolationLaunch>,
     completion: Arc<RetirementCompletion>,
 }
 pub(super) struct RetirementCompletion {
@@ -24,6 +22,8 @@ impl RetirementCompletion {
         tokio::time::timeout(allowance, async {
             loop {
                 let notified = self.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 if self.known.load(Ordering::Acquire) {
                     return;
                 }
@@ -38,33 +38,37 @@ impl NativeLaunchRetirement {
     pub(super) fn new(
         console: Option<Arc<Console>>,
         isolation: Option<Arc<WindowsProcessIsolation>>,
-    ) -> Self {
-        Self {
+    ) -> io::Result<Self> {
+        let launch = isolation
+            .as_ref()
+            .map(WindowsProcessIsolation::reserve_launch)
+            .transpose()?;
+        Ok(Self {
             console,
-            isolation,
-            claimed: false,
-            retirement_failed: false,
+            launch,
             completion: Arc::new(RetirementCompletion {
                 known: AtomicBool::new(false),
                 notify: Notify::new(),
             }),
-        }
+        })
     }
     pub(super) fn isolation(&self) -> Option<&WindowsProcessIsolation> {
-        self.isolation.as_deref()
+        self.launch.as_ref().map(WindowsIsolationLaunch::isolation)
     }
-    pub(super) fn claim(&mut self) -> io::Result<()> {
-        if let Some(isolation) = &self.isolation {
-            isolation.claim_launch()?;
-            self.claimed = true;
+    pub(super) fn install(&self) -> io::Result<()> {
+        if let Some(launch) = &self.launch {
+            launch.install()?;
         }
         Ok(())
+    }
+    pub(super) fn bind_console(&mut self, console: Arc<Console>) {
+        self.console = Some(console);
     }
     pub(super) fn observation(&self) -> Arc<RetirementCompletion> {
         self.completion.clone()
     }
     pub(super) fn needs_worker(&self) -> bool {
-        self.claimed && self.isolation.is_some()
+        self.launch.is_some()
     }
     pub(super) fn begin_close(&self) {
         if let Some(console) = &self.console {
@@ -76,21 +80,18 @@ impl NativeLaunchRetirement {
             .console
             .as_ref()
             .is_some_and(|console| !console.closed())
-            || self.retirement_failed
         {
             return false;
         }
-        if self.claimed {
-            if let Some(isolation) = &self.isolation {
-                if isolation.retire_after_terminal().is_err() {
-                    // Keep this exact lease/physical admission after an uncertain ACL transaction.
-                    self.retirement_failed = true;
-                    return false;
-                }
+        if let Some(launch) = &self.launch {
+            if launch.retire_after_terminal().is_err() {
+                // Only this sealed reservation owns cleanup; a reused Arc never mints it.
+                // Retain the same reservation for the physical worker's bounded later probes.
+                // The backend removes only this fresh SID and tracks each completed revocation.
+                return false;
             }
-            self.claimed = false;
         }
-        self.isolation = None;
+        self.launch = None;
         self.completion.known.store(true, Ordering::Release);
         self.completion.notify.notify_waiters();
         true

@@ -36,6 +36,7 @@ mod custody;
 mod native_launch;
 mod native_process;
 mod native_retirement;
+mod native_setup;
 mod piped;
 pub use conpty::{OwnedWindowsPty, WindowsPtyInput, WindowsPtyOutput, WindowsPtyResize};
 pub use piped::{OwnedWindowsPipes, WindowsPipeInput, WindowsPipeOutput};
@@ -45,6 +46,7 @@ enum LaunchCustody {
     Standard(Box<OwnedWindowsChild>),
     Pty(Box<OwnedWindowsPty>),
     Pipes(Box<OwnedWindowsPipes>),
+    Setup(Arc<native_retirement::RetirementCompletion>),
 }
 
 const MAX_ACTIVE_PROCESSES: u32 = 256;
@@ -89,6 +91,7 @@ impl WindowsJobLaunchError {
                         .await
                         .is_ok_and(|result| result.is_ok())
                 }
+                LaunchCustody::Setup(observation) => observation.observe(MAX_CLEANUP_WAIT).await,
             };
             if self.cleanup_known {
                 self.custody = None;

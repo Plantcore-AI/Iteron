@@ -5,6 +5,7 @@ pub(super) mod pipes;
 
 use super::native_launch::{Launch, Transport};
 use super::native_retirement::{NativeLaunchRetirement, RetirementCompletion};
+use super::native_setup::{IsolationSetup, Prepared};
 use super::{
     CLEANUP_POLL, LaunchCustody, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError, custody,
     native_process::NativeProcess,
@@ -134,25 +135,18 @@ impl OwnedWindowsPty {
         rows: u16,
         cols: u16,
     ) -> Result<Self, WindowsJobLaunchError> {
-        if let Some(isolation) = &isolation {
-            isolation
-                .validate_launch(executable, directory)
-                .map_err(|error| {
-                    WindowsJobLaunchError::before_creation("PTY isolation binding", error)
-                })?;
-            isolation
-                .validate_environment(environment)
-                .map_err(|error| {
-                    WindowsJobLaunchError::before_creation("PTY isolation environment", error)
-                })?;
-        }
         let launch = Launch::capture(executable, arguments, directory, environment)
             .map_err(|error| WindowsJobLaunchError::before_creation("PTY ABI projection", error))?;
         Self::spawn_captured(
             launch,
             rows,
             cols,
-            isolation,
+            isolation.map(|isolation| IsolationSetup {
+                isolation,
+                executable: executable.to_owned(),
+                directory: directory.to_owned(),
+                environment: environment.to_vec(),
+            }),
             #[cfg(test)]
             None,
         )
@@ -163,28 +157,27 @@ impl OwnedWindowsPty {
         mut launch: Launch,
         rows: u16,
         cols: u16,
-        isolation: Option<Arc<WindowsProcessIsolation>>,
+        setup: Option<IsolationSetup>,
         #[cfg(test)] before_resume: Option<fn(&NativeProcess, &OwnedWindowsJob) -> io::Result<()>>,
     ) -> Result<Self, WindowsJobLaunchError> {
-        // Both lifetime workers and their hard populations are admitted before native creation.
-        let admission = custody::Admission::acquire().map_err(|error| {
-            WindowsJobLaunchError::before_creation("PTY physical custody admission", error)
-        })?;
-        let job = Arc::new(OwnedWindowsJob::create().map_err(|error| {
-            WindowsJobLaunchError::before_creation("PTY private Job creation", error)
-        })?);
-        let pipes = Pipes::create().await.map_err(|error| {
-            WindowsJobLaunchError::before_creation("PTY private channels", error)
-        })?;
-        let console = Console::create(
+        let prepared = Prepared::admit(setup).await?;
+        let pipes = match Pipes::create().await {
+            Ok(pipes) => pipes,
+            Err(error) => return Err(prepared.refuse("PTY private channels", error).await),
+        };
+        let console = match Console::create(
             pipes.console_input.as_raw_handle(),
             pipes.console_output.as_raw_handle(),
             rows,
             cols,
-        )
-        .map_err(|error| {
-            WindowsJobLaunchError::before_creation("PTY native console creation", error)
-        })?;
+        ) {
+            Ok(console) => console,
+            Err(error) => {
+                drop(pipes);
+                return Err(prepared.refuse("PTY native console creation", error).await);
+            }
+        };
+        let (admission, job, retirement) = prepared.into_parts(Some(console.clone()));
         let mut owned = Self {
             child: None,
             job,
@@ -193,16 +186,9 @@ impl OwnedWindowsPty {
             console: console.clone(),
             input: Some(WindowsPtyInput(Some(pipes.input))),
             output: Some(WindowsPtyOutput(pipes.output)),
-            retirement: Some(NativeLaunchRetirement::new(Some(console), isolation)),
+            retirement: Some(retirement),
             retirement_wait: None,
         };
-        if let Some(retirement) = &mut owned.retirement {
-            if let Err(error) = retirement.claim() {
-                drop(pipes.console_input);
-                drop(pipes.console_output);
-                return Err(owned.refuse("PTY isolation claim", error, false).await);
-            }
-        }
         let isolation = owned
             .retirement
             .as_ref()
