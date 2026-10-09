@@ -3183,8 +3183,7 @@ mod gate_integration_tests {
         ));
         drop(environment_mismatch);
 
-        let mut graph_mismatch = agent_for(&ws);
-        pin_test_tunables(&mut graph_mismatch);
+        let mut graph_mismatch = workflow_seam_agent(&ws);
         let mut identities = graph_mismatch
             .effective_content
             .clone()
@@ -3231,6 +3230,58 @@ mod gate_integration_tests {
         agent
     }
 
+    #[cfg(not(feature = "script-workflows"))]
+    #[test]
+    fn disabled_script_preparation_is_unavailable_before_journal_or_launcher_effects() {
+        struct MustNotLaunch;
+        impl crate::workflow::WorkflowLauncher for MustNotLaunch {
+            fn launch(&self, _: crate::workflow::PreparedWorkflow) -> crate::workflow::Launched {
+                panic!("a disabled script engine must never reach a launcher")
+            }
+        }
+        let ws = temp_ws("workflow-disabled-preparation");
+        std::fs::write(ws.join("seam.mjs"), SEAM_SCRIPT).unwrap();
+        let mut agent = workflow_seam_agent(&ws);
+        agent.set_workflow_launcher(std::sync::Arc::new(MustNotLaunch));
+        let (progress, mut events) = tokio::sync::mpsc::channel(4);
+        agent.set_workflow_progress(progress);
+        let before = std::fs::read(agent.rollout.path()).unwrap();
+        let directory = agent.runtime_state_dir.join("subagents/workflows");
+        assert!(
+            !agent
+                .registry
+                .specs()
+                .iter()
+                .any(|tool| tool.name == iteron_tools::WORKFLOW_TOOL)
+        );
+        for input in [
+            serde_json::json!({"script": SEAM_SCRIPT}),
+            serde_json::json!({"script": SEAM_SCRIPT, "background": true}),
+            serde_json::json!({"scriptPath": "seam.mjs"}),
+        ] {
+            let error = match agent.prepare_workflow(&input) {
+                Ok(_) => panic!("the default profile cannot prepare a JavaScript engine"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains(&iteron_workflow::ScriptWorkflowsUnavailable.to_string()),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(agent.rollout.path()).unwrap(), before);
+            assert!(
+                !directory.exists(),
+                "no run manifest, script cache, or journal may be created"
+            );
+            assert!(
+                events.try_recv().is_err(),
+                "no workflow lifecycle was dispatched"
+            );
+        }
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn preparing_a_workflow_admits_and_records_it_before_anything_starts_it() {
         let ws = temp_ws("workflow-prepare");
@@ -3268,6 +3319,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[test]
     fn preparing_a_panel_resume_reuses_the_persisted_identity_and_cache_source() {
         let ws = temp_ws("workflow-panel-resume");
@@ -3307,6 +3359,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn with_no_launcher_installed_a_prepared_run_is_the_engine_run_it_always_was() {
         let ws = temp_ws("workflow-default-launcher");
@@ -3336,6 +3389,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn an_installed_launcher_starts_the_run_instead_of_the_kernel() {
         struct RecordingLauncher {
@@ -3383,6 +3437,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_background_request_with_no_owner_runs_in_turn_and_says_it_was_not_granted() {
         let ws = temp_ws("workflow-background-unowned");
@@ -3392,6 +3447,7 @@ mod gate_integration_tests {
         let result = agent
             .launch_workflow(
                 TurnId(0),
+                0,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
@@ -3410,6 +3466,7 @@ mod gate_integration_tests {
 
     /// Generic workflows remain in-turn by default so their evidence is available to the model;
     /// explicit independent work may opt into a session-owned background run.
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_workflow_waits_by_default_and_detaches_only_when_asked_to() {
         #[derive(Clone)]
@@ -3421,6 +3478,9 @@ mod gate_integration_tests {
             ) -> crate::workflow::Launched {
                 self.0
                     .store(prepared.background, std::sync::atomic::Ordering::SeqCst);
+                if !prepared.background {
+                    return crate::workflow::launch_prepared(None, prepared);
+                }
                 crate::workflow::Launched::Detached(crate::workflow::DetachedRun {
                     run_id: prepared.run_id.clone(),
                     name: prepared.name.clone(),
@@ -3435,7 +3495,7 @@ mod gate_integration_tests {
         agent.set_workflow_launcher(std::sync::Arc::new(Recording(asked.clone())));
 
         agent
-            .launch_workflow(TurnId(0), serde_json::json!({ "script": SEAM_SCRIPT }))
+            .launch_workflow(TurnId(0), 0, serde_json::json!({ "script": SEAM_SCRIPT }))
             .await
             .expect("a launch with no `background` key");
         assert!(
@@ -3446,19 +3506,37 @@ mod gate_integration_tests {
         agent
             .launch_workflow(
                 TurnId(0),
+                1,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
             .expect("an explicit in-turn launch");
         assert!(
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "a finite native parent retains its actual whole-turn budget owner"
+        );
+        // Exercise the explicit detachment request with a truthful operator-installed turn
+        // ceiling. This changes only this fixture, through the same durable public transition;
+        // its 30s wall deadline and finite engine call/concurrency ceilings remain installed.
+        agent.set_turn_ceiling(Budget::UNLIMITED_TURNS).unwrap();
+        agent
+            .launch_workflow(
+                TurnId(0),
+                2,
+                serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
+            )
+            .await
+            .expect("the explicit operator scope permits a requested detached launch");
+        assert!(
             asked.load(std::sync::atomic::Ordering::SeqCst),
-            "`background: true` is how a model asks to detach independent work"
+            "`background: true` is how an eligible model call asks to detach independent work"
         );
 
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_detached_launch_returns_a_receipt_that_cannot_be_read_as_a_result() {
         struct Detaching;
@@ -3478,11 +3556,16 @@ mod gate_integration_tests {
 
         let ws = temp_ws("workflow-detached-receipt");
         let mut agent = workflow_seam_agent(&ws);
+        // A finite native parent's accounting is turn-owned and cannot detach. Install the
+        // explicit operator ceiling required by this receipt-contract fixture; wall/call caps
+        // are unchanged and the test launcher claims no engine completion.
+        agent.set_turn_ceiling(Budget::UNLIMITED_TURNS).unwrap();
         agent.set_workflow_launcher(std::sync::Arc::new(Detaching));
 
         let receipt = agent
             .launch_workflow(
                 TurnId(0),
+                0,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
@@ -3508,15 +3591,20 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn collect_and_cancel_answer_without_preparing_or_recording_a_run() {
         let ws = temp_ws("workflow-collect-unowned");
         let mut agent = workflow_seam_agent(&ws);
         let workflows_dir = agent.runtime_state_dir.join("subagents").join("workflows");
 
-        for field in ["collect", "cancel"] {
+        for (index, field) in ["collect", "cancel"].into_iter().enumerate() {
             let answer = agent
-                .launch_workflow(TurnId(0), serde_json::json!({ field: "wf-not-here" }))
+                .launch_workflow(
+                    TurnId(0),
+                    index,
+                    serde_json::json!({ field: "wf-not-here" }),
+                )
                 .await
                 .expect("an unknown run is answered, not an error");
             assert!(answer.contains("not owned by this session"), "{answer}");
@@ -3528,16 +3616,60 @@ mod gate_integration_tests {
         let launched = agent
             .launch_workflow(
                 TurnId(0),
+                2,
                 serde_json::json!({ "script": SEAM_SCRIPT, "collect": "  " }),
             )
             .await
             .expect("a blank collect falls through to the launch");
         assert!(launched.contains("Result:"), "{launched}");
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let intents = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { id, tool, .. } if tool == iteron_tools::WORKFLOW_TOOL => {
+                    Some(id.0.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            intents.len(),
+            3,
+            "each declaration crosses its real admission once"
+        );
+        assert_eq!(
+            intents
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "separate authored calls cannot reuse the same physical ticket"
+        );
+        let completed = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    tool: Some(tool),
+                    ..
+                } if tool == iteron_tools::WORKFLOW_TOOL => Some(result.tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completed,
+            [
+                "fixture-workflow-0",
+                "fixture-workflow-1",
+                "fixture-workflow-2"
+            ]
+        );
 
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[test]
     fn preparing_a_workflow_refuses_before_it_records_anything() {
         let unbound_ws = temp_ws("workflow-prepare-unbound");
@@ -4318,6 +4450,7 @@ mod gate_integration_tests {
     /// inputs.  Multiple scheduler opportunities are expected (one explicit admission plus one
     /// per provider turn); the invariant is one durable terminal for every minted opportunity,
     /// not one decision per slot for the lifetime of a run.
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn h03_all_exercised_slot_seams_are_durable_unique_and_leave_no_pending_opportunity() {
         let ws = temp_ws("h03-nine-live-slots");
@@ -13189,12 +13322,13 @@ ant-api03-SuperSecretModelToken12345"
             "the main model receives the first and only turn"
         );
         assert_eq!(requests[0].system, "sys");
-        assert!(
+        assert_eq!(
             requests[0]
                 .tools
                 .iter()
                 .any(|tool| tool.name == iteron_tools::WORKFLOW_TOOL),
-            "Ultracode keeps the generic Workflow tool available to the main model"
+            cfg!(feature = "script-workflows"),
+            "only the explicit script profile advertises the generic Workflow tool"
         );
         drop(requests);
         assert!(
@@ -13263,20 +13397,53 @@ ant-api03-SuperSecretModelToken12345"
             2,
             "the model acts before and after its Workflow result"
         );
+        let result = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|block| match block {
+                Block::ToolResult(result) if result.tool_use_id == "workflow-1" => Some(result),
+                _ => None,
+            })
+            .expect("the ordinary writer loop returns the exact model-requested tool outcome");
+        #[cfg(feature = "script-workflows")]
         assert!(
-            requests[1].messages.iter().any(|message| {
-                message.content.iter().any(|block| matches!(
-                    block,
-                    Block::ToolResult(result) if result.tool_use_id == "workflow-1" && !result.is_error
-                ))
-            }),
-            "the ordinary writer loop returns the explicit Workflow result to the model"
+            !result.is_error,
+            "the explicit script profile executes its Workflow: {result:?}"
         );
+        #[cfg(not(feature = "script-workflows"))]
+        {
+            assert!(result.is_error, "the disabled tool cannot execute a script");
+            assert!(result.content.contains("unknown tool"), "{result:?}");
+            assert!(
+                requests[0]
+                    .tools
+                    .iter()
+                    .all(|tool| tool.name != iteron_tools::WORKFLOW_TOOL)
+            );
+        }
         drop(requests);
         let listed = crate::workflow::list_runs(&runs.join("subagents/workflows"));
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "seam");
-        assert_eq!(listed[0].status, "done");
+        #[cfg(feature = "script-workflows")]
+        {
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "seam");
+            assert_eq!(listed[0].status, "done");
+        }
+        #[cfg(not(feature = "script-workflows"))]
+        {
+            assert!(listed.is_empty());
+            assert!(!runs.join("subagents/workflows").exists());
+            let events = iteron_record::replay(agent.rollout.path()).unwrap();
+            assert!(events.iter().all(|event| {
+                !matches!(
+                    &event.kind,
+                    EventKind::Workflow { .. } | EventKind::WorkflowV2 { .. }
+                ) && !matches!(&event.kind, EventKind::EffectIntent { tool, .. }
+                        if tool == iteron_tools::WORKFLOW_TOOL
+                            || Some(tool.as_str()) == iteron_kernel::effect_class::EffectClass::Workflow.label())
+            }));
+        }
 
         drop(agent);
         let _ = std::fs::remove_dir_all(&ws);

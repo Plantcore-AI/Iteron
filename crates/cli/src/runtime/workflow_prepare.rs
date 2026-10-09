@@ -39,34 +39,35 @@ impl Agent {
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
         self.prepare_kernel_workflow(input, resume)
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "script-workflows"))]
     pub(super) async fn launch_workflow(
         &mut self,
         turn: iteron_protocol::TurnId,
+        index: usize,
         input: serde_json::Value,
     ) -> Result<String, String> {
-        let projection = self.turn_result_projection_budget(
-            super::context_runtime::ContextBudgetInspection::from_policy(
-                Default::default(),
-                Default::default(),
-            ),
-            &[],
-        );
-        let (execution, output) = self.kernel_special_execution(
-            turn,
-            0,
-            super::kernel_special_execution::KernelSpecialKind::Workflow,
-            projection,
-        );
         let call = iteron_protocol::ToolUse {
-            id: "fixture-workflow".into(),
+            id: format!("fixture-workflow-{index}"),
             name: iteron_tools::WORKFLOW_TOOL.into(),
             input,
         };
+        let projection = self.turn_result_projection_budget(
+            super::context_runtime::ContextBudgetInspection::from_policy(
+                Default::default(),
+                self.context_budget_policy,
+            ),
+            std::slice::from_ref(&call),
+        );
+        let (execution, output) = self.kernel_special_execution(
+            turn,
+            index,
+            super::kernel_special_execution::KernelSpecialKind::Workflow,
+            projection,
+        );
         let result = execution
             .run(
                 turn,
-                0,
+                index,
                 &call,
                 iteron_protocol::Capability::CodeExecuting,
                 output,
