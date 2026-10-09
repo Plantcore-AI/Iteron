@@ -109,6 +109,24 @@ fn confirmed_images_and_compaction_keep_actual_order_through_private_cas_and_reo
         .unwrap();
     let path = writer.path().to_owned();
     drop(writer);
+    let physical_before_reopen = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        Rollout::open(
+            &root,
+            &RunId("versioned-images".into()),
+            TenantId("other".into())
+        ),
+        Err(iteron_record::RecordError::TenantMismatch { .. })
+    ));
+    let reopened_writer = Rollout::open(
+        &root,
+        &RunId("versioned-images".into()),
+        TenantId::default(),
+    )
+    .expect("writer tail admission must resolve real private image fields before typed decoding");
+    assert_eq!(reopened_writer.next_sequence(), Seq(7));
+    drop(reopened_writer);
+    assert_eq!(std::fs::read(&path).unwrap(), physical_before_reopen);
     let reopened = replay(&path).unwrap();
     assert_eq!(reopened.len(), 7);
     let message_event = reopened

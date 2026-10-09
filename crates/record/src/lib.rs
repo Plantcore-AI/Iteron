@@ -1398,7 +1398,7 @@ impl Rollout {
             }
         }
         let (seq, event_count, physical_line_count, last_hash) =
-            match Self::scan_tail(&mut file, &tenant) {
+            match Self::scan_tail(&mut file, &dir, &tenant) {
                 Ok(tail) => tail,
                 Err(error) => {
                     // Make the early-return release explicit. Dropping the descriptor also releases
@@ -1453,6 +1453,7 @@ impl Rollout {
     /// FINAL line is treated as torn — the file is truncated back to before it.
     fn scan_tail(
         file: &mut File,
+        runs_dir: &Path,
         tenant: &TenantId,
     ) -> Result<(Seq, usize, usize, String), RecordError> {
         file.seek(SeekFrom::Start(0))?;
@@ -1523,7 +1524,11 @@ impl Rollout {
                             computed,
                         });
                     }
-                    let event: Event = serde_json::from_value(cl.payload)?;
+                    // Verify the stored chain before resolving private fields. Typed image
+                    // values require their real pixels, never the CAS marker's spelling.
+                    let mut payload = cl.payload;
+                    content_store::hydrate_event_payload(runs_dir, tenant, &mut payload)?;
+                    let event: Event = serde_json::from_value(payload)?;
                     validate_event_bounds(&event)?;
                     last = cl.hash;
                     next_seq = next_seq.next();
