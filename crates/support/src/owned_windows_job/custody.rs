@@ -1,7 +1,9 @@
 //! Bounded physical custody when a caller drops an unknown launch or an active future.
 //! This worker publishes no model result, budget settlement, effect receipt or permission.
 
-use super::{OwnedWindowsJob, conpty::NativeLaunchRetirement, native_process::NativeProcess};
+use super::{
+    OwnedWindowsJob, native_process::NativeProcess, native_retirement::NativeLaunchRetirement,
+};
 use std::io;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

@@ -1,20 +1,21 @@
-//! Bounded native ABI projection for one already-owned console and one exact frozen environment.
+//! Bounded native ABI projection for owned terminal or pipe transport and a frozen environment.
 //! The application path is explicit; CreateProcess cannot search ambient PATH/current-directory.
-use super::console::Console;
+use super::conpty::console::Console;
 use crate::windows_process_isolation::WindowsProcessIsolation;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
-    PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTUPINFOEXW,
-    UpdateProcThreadAttribute,
+    PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
 
@@ -22,6 +23,15 @@ const MAX_COMMAND_UNITS: usize = 32_767;
 const MAX_ENV_ENTRIES: usize = 4096;
 const MAX_ENV_UNITS: usize = 1_048_576;
 const MAX_ATTRIBUTE_BYTES: usize = 64 * 1024;
+
+pub(super) enum Transport<'a> {
+    Console(&'a Console),
+    Pipes {
+        input: &'a OwnedHandle,
+        output: &'a OwnedHandle,
+        error: &'a OwnedHandle,
+    },
+}
 
 pub(super) struct Launch {
     executable: Vec<u16>,
@@ -40,7 +50,7 @@ impl Launch {
         if !executable.is_absolute() || !directory.is_absolute() || arguments.len() > 64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "native PTY launch requires exact absolute paths and bounded arguments",
+                "native process launch requires exact absolute paths and bounded arguments",
             ));
         }
         let executable_wide = terminated(executable.as_os_str(), MAX_COMMAND_UNITS)?;
@@ -56,7 +66,7 @@ impl Launch {
             if command.len() >= MAX_COMMAND_UNITS {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "native PTY command exceeds the Windows ABI bound",
+                    "native process command exceeds the Windows ABI bound",
                 ));
             }
         }
@@ -124,17 +134,38 @@ impl Launch {
 
     pub(super) fn create_suspended(
         &mut self,
-        console: &Console,
+        transport: Transport<'_>,
         isolation: Option<&WindowsProcessIsolation>,
     ) -> io::Result<PROCESS_INFORMATION> {
         if let Some(isolation) = isolation {
             isolation.validate_scope_still_bound()?;
         }
         let lpac_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
-        let mut attributes = Attributes::console(console.raw()?, isolation, &lpac_policy)?;
+        let (console, handles) = match transport {
+            Transport::Console(console) => (Some(console.raw()?), None),
+            Transport::Pipes {
+                input,
+                output,
+                error,
+            } => (
+                None,
+                Some([
+                    input.as_raw_handle(),
+                    output.as_raw_handle(),
+                    error.as_raw_handle(),
+                ]),
+            ),
+        };
+        let mut attributes = Attributes::new(console, handles.as_ref(), isolation, &lpac_policy)?;
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.lpAttributeList = attributes.pointer();
+        if let Some(handles) = handles {
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.hStdInput = handles[0];
+            startup.StartupInfo.hStdOutput = handles[1];
+            startup.StartupInfo.hStdError = handles[2];
+        }
         let mut information = PROCESS_INFORMATION::default();
         let created = unsafe {
             CreateProcessW(
@@ -142,7 +173,7 @@ impl Launch {
                 self.command.as_mut_ptr(),
                 null(),
                 null(),
-                0,
+                i32::from(handles.is_some()),
                 CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                 self.environment.as_ptr().cast(),
                 self.directory.as_ptr(),
@@ -162,8 +193,9 @@ struct Attributes {
     initialized: bool,
 }
 impl Attributes {
-    fn console(
-        console: isize,
+    fn new(
+        console: Option<isize>,
+        handles: Option<&[windows_sys::Win32::Foundation::HANDLE; 3]>,
         isolation: Option<&WindowsProcessIsolation>,
         lpac_policy: &u32,
     ) -> io::Result<Self> {
@@ -176,7 +208,7 @@ impl Attributes {
         }
         if bytes == 0 || bytes > MAX_ATTRIBUTE_BYTES {
             return Err(io::Error::other(
-                "native PTY attribute envelope unavailable",
+                "native process attribute envelope unavailable",
             ));
         }
         let mut attributes = Self {
@@ -189,13 +221,28 @@ impl Attributes {
             return Err(io::Error::last_os_error());
         }
         attributes.initialized = true;
+        let (attribute, value, size) = if let Some(console) = console {
+            (
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                console as *const std::ffi::c_void,
+                size_of::<isize>(),
+            )
+        } else {
+            let handles =
+                handles.ok_or_else(|| io::Error::other("native transport handles missing"))?;
+            (
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                handles.as_ptr().cast(),
+                size_of_val(handles),
+            )
+        };
         if unsafe {
             UpdateProcThreadAttribute(
                 attributes.pointer(),
                 0,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-                console as *const _,
-                size_of::<isize>(),
+                attribute as usize,
+                value,
+                size,
                 null_mut(),
                 null(),
             )
@@ -255,7 +302,7 @@ fn terminated(value: &OsStr, limit: usize) -> io::Result<Vec<u16>> {
     if units.is_empty() || units.len() >= limit || units.contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "native PTY path exceeds its terminated ABI envelope",
+            "native process path exceeds its terminated ABI envelope",
         ));
     }
     Ok(units.into_iter().chain([0]).collect())
@@ -266,7 +313,7 @@ fn quote(value: &OsStr, output: &mut Vec<u16>) -> io::Result<()> {
     if units.len() >= MAX_COMMAND_UNITS || units.contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "native PTY argument exceeds its ABI envelope",
+            "native process argument exceeds its ABI envelope",
         ));
     }
     output.push(u16::from(b'"'));
@@ -292,6 +339,6 @@ fn quote(value: &OsStr, output: &mut Vec<u16>) -> io::Result<()> {
 fn invalid_environment() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "native PTY environment exceeds its exact frozen envelope",
+        "native process environment exceeds its exact frozen envelope",
     )
 }

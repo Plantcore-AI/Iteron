@@ -54,7 +54,10 @@ impl Pipes {
     }
 }
 
-async fn channel(name: &str, parent_writes: bool) -> io::Result<(NamedPipeServer, OwnedHandle)> {
+pub(in crate::owned_windows_job) async fn channel(
+    name: &str,
+    parent_writes: bool,
+) -> io::Result<(NamedPipeServer, OwnedHandle)> {
     let server = {
         let security = PrivateObjectSecurity::current()?;
         let mut attributes = security.attributes();

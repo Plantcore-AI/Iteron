@@ -1,16 +1,16 @@
 //! Native persistent terminal ownership. Job/ConPTY provide lifecycle and terminal transport;
 //! they deliberately make no claim of filesystem, network, credential, or token confinement.
-mod console;
-mod launch;
-mod pipes;
+pub(super) mod console;
+pub(super) mod pipes;
 
+use super::native_launch::{Launch, Transport};
+use super::native_retirement::{NativeLaunchRetirement, RetirementCompletion};
 use super::{
     CLEANUP_POLL, LaunchCustody, MAX_CLEANUP_WAIT, OwnedWindowsJob, WindowsJobLaunchError, custody,
     native_process::NativeProcess,
 };
 use crate::windows_process_isolation::WindowsProcessIsolation;
 use console::Console;
-use launch::Launch;
 use pipes::Pipes;
 use std::ffi::OsString;
 use std::fmt;
@@ -20,12 +20,10 @@ use std::path::Path;
 use std::pin::Pin;
 use std::process::ExitStatus;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::windows::named_pipe::NamedPipeServer;
-use tokio::sync::Notify;
 use windows_sys::Win32::System::Threading::{GetProcessIdOfThread, ResumeThread};
 
 pub struct WindowsPtyInput(Option<NamedPipeServer>);
@@ -97,60 +95,6 @@ pub struct OwnedWindowsPty {
     retirement_wait: Option<Arc<RetirementCompletion>>,
 }
 
-/// This resource follows physical custody when a caller drops a pending launch. ACL/profile
-/// retirement requires the real Job to be empty and native console close to have completed.
-pub(super) struct NativeLaunchRetirement {
-    console: Arc<Console>,
-    isolation: Option<Arc<WindowsProcessIsolation>>,
-    claimed: bool,
-    retirement_failed: bool,
-    completion: Arc<RetirementCompletion>,
-}
-struct RetirementCompletion {
-    known: AtomicBool,
-    notify: Notify,
-}
-impl RetirementCompletion {
-    async fn observe(&self, allowance: Duration) -> bool {
-        tokio::time::timeout(allowance, async {
-            loop {
-                let notified = self.notify.notified();
-                if self.known.load(Ordering::Acquire) {
-                    return;
-                }
-                notified.await;
-            }
-        })
-        .await
-        .is_ok()
-    }
-}
-impl NativeLaunchRetirement {
-    pub(super) fn begin_close(&self) {
-        self.console.begin_close();
-    }
-
-    pub(super) fn retire(&mut self) -> bool {
-        if !self.console.closed() || self.retirement_failed {
-            return false;
-        }
-        if self.claimed {
-            if let Some(isolation) = &self.isolation {
-                if isolation.retire_after_terminal().is_err() {
-                    // An uncertain ACL/profile transaction is never retried as a new operation.
-                    // Keep its exact lease and physical admission, even after the process exits.
-                    self.retirement_failed = true;
-                    return false;
-                }
-            }
-            self.claimed = false;
-        }
-        self.isolation = None;
-        self.completion.known.store(true, Ordering::Release);
-        self.completion.notify.notify_waiters();
-        true
-    }
-}
 impl fmt::Debug for OwnedWindowsPty {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -249,34 +193,22 @@ impl OwnedWindowsPty {
             console: console.clone(),
             input: Some(WindowsPtyInput(Some(pipes.input))),
             output: Some(WindowsPtyOutput(pipes.output)),
-            retirement: Some(NativeLaunchRetirement {
-                console,
-                isolation,
-                claimed: false,
-                retirement_failed: false,
-                completion: Arc::new(RetirementCompletion {
-                    known: AtomicBool::new(false),
-                    notify: Notify::new(),
-                }),
-            }),
+            retirement: Some(NativeLaunchRetirement::new(Some(console), isolation)),
             retirement_wait: None,
         };
         if let Some(retirement) = &mut owned.retirement {
-            if let Some(isolation) = &retirement.isolation {
-                if let Err(error) = isolation.claim_launch() {
-                    drop(pipes.console_input);
-                    drop(pipes.console_output);
-                    return Err(owned.refuse("PTY isolation claim", error, false).await);
-                }
-                retirement.claimed = true;
+            if let Err(error) = retirement.claim() {
+                drop(pipes.console_input);
+                drop(pipes.console_output);
+                return Err(owned.refuse("PTY isolation claim", error, false).await);
             }
         }
         let isolation = owned
             .retirement
             .as_ref()
-            .and_then(|value| value.isolation.as_deref());
+            .and_then(NativeLaunchRetirement::isolation);
         let created = launch
-            .create_suspended(&owned.console, isolation)
+            .create_suspended(Transport::Console(&owned.console), isolation)
             .map(|information| {
                 // Successful native creation returns both valid owned handles. This synchronous
                 // projection ensures no raw HANDLE-bearing ABI value crosses an async suspension.
@@ -323,7 +255,7 @@ impl OwnedWindowsPty {
                 if let Some(isolation) = owned
                     .retirement
                     .as_ref()
-                    .and_then(|value| value.isolation.as_ref())
+                    .and_then(NativeLaunchRetirement::isolation)
                 {
                     isolation.verify_child(process.as_handle())?;
                 }
@@ -412,8 +344,8 @@ impl OwnedWindowsPty {
             return Err(io::Error::other("PTY terminal cleanup remains unknown"));
         }
         if let Some(mut retirement) = self.retirement.take() {
-            if retirement.claimed && retirement.isolation.is_some() {
-                let observation = retirement.completion.clone();
+            if retirement.needs_worker() {
+                let observation = retirement.observation();
                 let Some(admission) = self.admission.take() else {
                     self.retirement = Some(retirement);
                     return Err(io::Error::other("PTY retirement custody admission missing"));

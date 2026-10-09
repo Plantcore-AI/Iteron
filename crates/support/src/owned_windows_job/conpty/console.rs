@@ -26,7 +26,7 @@ struct Completion {
     notify: Notify,
 }
 
-pub(super) struct Console {
+pub(in crate::owned_windows_job) struct Console {
     active: Mutex<Option<HPCON>>,
     close: mpsc::SyncSender<Option<HPCON>>,
     completion: Arc<Completion>,
@@ -118,7 +118,7 @@ impl Console {
         }))
     }
 
-    pub(super) fn raw(&self) -> io::Result<HPCON> {
+    pub(in crate::owned_windows_job) fn raw(&self) -> io::Result<HPCON> {
         self.active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -142,7 +142,7 @@ impl Console {
         Ok(())
     }
 
-    pub(super) fn begin_close(&self) {
+    pub(in crate::owned_windows_job) fn begin_close(&self) {
         if let Some(raw) = self
             .active
             .lock()
@@ -177,7 +177,7 @@ impl Console {
         .is_ok()
     }
 
-    pub(super) fn closed(&self) -> bool {
+    pub(in crate::owned_windows_job) fn closed(&self) -> bool {
         self.completion.closed.load(Ordering::Acquire)
     }
 }

@@ -33,13 +33,18 @@ use windows_sys::Win32::System::Threading::{
 mod conpty;
 #[path = "owned_windows_job/custody.rs"]
 mod custody;
+mod native_launch;
 mod native_process;
+mod native_retirement;
+mod piped;
 pub use conpty::{OwnedWindowsPty, WindowsPtyInput, WindowsPtyOutput, WindowsPtyResize};
+pub use piped::{OwnedWindowsPipes, WindowsPipeInput, WindowsPipeOutput};
 
 #[derive(Debug)]
 enum LaunchCustody {
     Standard(Box<OwnedWindowsChild>),
     Pty(Box<OwnedWindowsPty>),
+    Pipes(Box<OwnedWindowsPipes>),
 }
 
 const MAX_ACTIVE_PROCESSES: u32 = 256;
@@ -75,6 +80,11 @@ impl WindowsJobLaunchError {
             self.cleanup_known = match child {
                 LaunchCustody::Standard(child) => child.stop_and_reap().await,
                 LaunchCustody::Pty(child) => {
+                    tokio::time::timeout(MAX_CLEANUP_WAIT * 2, child.cleanup())
+                        .await
+                        .is_ok_and(|result| result.is_ok())
+                }
+                LaunchCustody::Pipes(child) => {
                     tokio::time::timeout(MAX_CLEANUP_WAIT * 2, child.cleanup())
                         .await
                         .is_ok_and(|result| result.is_ok())
