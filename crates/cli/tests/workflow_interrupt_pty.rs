@@ -1,4 +1,6 @@
 //! `iteron workflow run` must be interruptible from the keyboard.
+//! The default profile refuses scripts before terminal or workflow effects; the two live engine
+//! oracles apply only when the explicit script-workflows feature is enabled.
 //!
 //! The live tree enables crossterm raw mode, which clears `ISIG`: the terminal stops turning Ctrl-C
 //! into `SIGINT`, so the operator's only interrupt is an ordinary key event that the render loop has
@@ -30,7 +32,9 @@ const FIXTURE_KEY: &str = "bounded-offline-placeholder";
 /// The default-folded card's affordance — proof that a real live frame is on screen and therefore
 /// that raw mode is already on and SIGINT already suppressed. Narrator logs intentionally remain
 /// hidden until the operator expands the run.
+#[cfg(feature = "script-workflows")]
 const LIVE_FRAME_MARKER: &str = "ctrl+o expand";
+#[cfg(feature = "script-workflows")]
 const CTRL_C: &[u8] = b"\x03";
 const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
@@ -53,6 +57,7 @@ for (;;) {}
 /// A workflow that finishes on its own, calling no agents. The interrupt work rerouted `run` through
 /// the background `launch` path and made `stopped` decide the exit status, so an ordinary completed
 /// run must still render, settle and report success.
+#[cfg(feature = "script-workflows")]
 const COMPLETES_IMMEDIATELY: &str = r#"export const meta = {
   name: 'completes-fixture',
   description: 'returns without interruption',
@@ -252,6 +257,7 @@ impl WorkflowPty {
         String::from_utf8_lossy(&self.capture).into_owned()
     }
 
+    #[cfg(feature = "script-workflows")]
     fn wait_for_text(&mut self, needle: &str) {
         let deadline = Instant::now() + STEP_TIMEOUT;
         while Instant::now() < deadline {
@@ -266,6 +272,7 @@ impl WorkflowPty {
         );
     }
 
+    #[cfg(feature = "script-workflows")]
     fn send(&mut self, bytes: &[u8]) {
         let writer = self.writer.as_mut().expect("PTY writer is open");
         writer.write_all(bytes).expect("write to PTY");
@@ -274,9 +281,17 @@ impl WorkflowPty {
 
     fn wait_for_exit(&mut self) -> portable_pty::ExitStatus {
         let deadline = Instant::now() + STEP_TIMEOUT;
-        let mut child = self.child.take().expect("PTY child is running");
         loop {
-            if let Some(status) = child.try_wait().expect("poll PTY child") {
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .expect("PTY child is running")
+                .try_wait()
+                .expect("poll PTY child")
+            {
+                // Until actual exit, keep the child in the owner so timeout/panic Drop still
+                // performs its existing physical kill and wait.
+                drop(self.child.take());
                 // Drain whatever the child wrote on its way out (the restore sequences live here).
                 while self.pump(Duration::from_millis(50)) {}
                 return status;
@@ -310,6 +325,48 @@ impl Drop for WorkflowPty {
     }
 }
 
+#[cfg(not(feature = "script-workflows"))]
+#[test]
+fn disabled_script_profile_refuses_before_terminal_workflow_or_provider_effects() {
+    let scratch = Scratch::new("disabled");
+    scratch.configure_offline_provider();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["base_url"] = json!(format!("http://{}/v1", listener.local_addr().unwrap()));
+    let config_bytes = serde_json::to_vec(&config).unwrap();
+    std::fs::write(&config_path, &config_bytes).unwrap();
+    let script = scratch.write_script(SPIN_FOREVER);
+    let script_bytes = std::fs::read(&script).unwrap();
+    let mut pty = WorkflowPty::spawn(&scratch, &script);
+    let status = pty.wait_for_exit();
+    let transcript = pty.text();
+
+    assert_eq!(status.exit_code(), 2, "{transcript}");
+    assert!(
+        transcript.contains(&iteron_workflow::ScriptWorkflowsUnavailable.to_string()),
+        "the unavailable engine must be reported explicitly: {transcript}"
+    );
+    assert!(!transcript.contains("spinning until interrupted"));
+    for marker in [ENTER_ALTERNATE_SCREEN, LEAVE_ALTERNATE_SCREEN, SHOW_CURSOR] {
+        assert!(!transcript.contains(marker), "{transcript:?}");
+    }
+    assert_eq!(pty.current_termios(), pty.baseline_termios);
+    assert!(
+        !scratch.runs().exists(),
+        "no run, script cache or WAL was admitted"
+    );
+    assert_eq!(std::fs::read(&script).unwrap(), script_bytes);
+    assert_eq!(std::fs::read(&config_path).unwrap(), config_bytes);
+    assert_eq!(std::fs::read_dir(scratch.repo()).unwrap().count(), 1);
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}
+
+#[cfg(feature = "script-workflows")]
 #[test]
 fn ctrl_c_stops_a_running_workflow_restores_the_terminal_and_exits_non_zero() {
     let scratch = Scratch::new("ctrl-c");
@@ -347,6 +404,7 @@ fn ctrl_c_stops_a_running_workflow_restores_the_terminal_and_exits_non_zero() {
     );
 }
 
+#[cfg(feature = "script-workflows")]
 #[test]
 fn a_workflow_nobody_interrupted_still_settles_clean_and_exits_zero() {
     let scratch = Scratch::new("completes");
