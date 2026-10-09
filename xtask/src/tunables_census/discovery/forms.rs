@@ -222,6 +222,38 @@ pub(super) fn source_invariant_disposition(
             "the ordinary-client constructor fixes PlantCore admission off and cannot grant bootstrap authority",
         ),
         (
+            "crates/mcp/src/supervisor/config.rs",
+            "McpLaunchConfig::new",
+            "inline::Self::field::advertises_elicitation",
+            "false",
+            InvariantKind::Authority,
+            "a fresh MCP launch cannot advertise elicitation until its owner explicitly enables that capability",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "McpLaunchConfig::new",
+            "inline::Self::field::protocol_mode",
+            "crate :: McpProtocolMode :: Stateful",
+            InvariantKind::WireCompatibility,
+            "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "MemBudget::fit_content_bytes",
+            "inline::Self::field::index_bytes",
+            "0",
+            InvariantKind::HardBudget,
+            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "MemBudget::fit_content_bytes",
+            "inline::Self::field::recall_bytes",
+            "0",
+            InvariantKind::HardBudget,
+            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
+        ),
+        (
             "crates/cli/src/queue_policy.rs",
             "FrontendQueuePolicy::owner",
             "inline::Self::new::argument_3",
@@ -379,33 +411,26 @@ pub(super) fn source_invariant_disposition(
         }
     }
 
-    if identity.contains("crates/cli/src/mcp/commands.rs")
-        && identity.contains("mcpserverconfig")
-        && identity.contains("field::transport")
-    {
-        return Some(invariant(
-            InvariantKind::Authority,
-            "the mutually exclusive URL and stdio command inputs select their fixed MCP transport",
-        ));
-    }
-    if identity.contains("crates/mcp/src/supervisor/config.rs")
-        && identity.contains("mcplaunchconfig::new")
-        && (identity.contains("field::advertises_elicitation")
-            || identity.contains("field::advertises::elicitation"))
-    {
-        return Some(invariant(
-            InvariantKind::Authority,
-            "a fresh MCP launch cannot advertise elicitation until its owner explicitly enables that capability",
-        ));
-    }
-    if identity.contains("crates/mcp/src/supervisor/config.rs")
-        && identity.contains("mcplaunchconfig::new")
-        && (identity.contains("field::protocol_mode") || identity.contains("field::protocol::mode"))
-    {
-        return Some(invariant(
-            InvariantKind::WireCompatibility,
-            "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
-        ));
+    // The same exact field is initialized in two mutually exclusive input arms. Preserve each
+    // source occurrence and its actual transport literal, including ordinal 2 on the stdio arm.
+    for (expected, ordinal) in [
+        ("McpTransportConfig :: Http", 1),
+        ("McpTransportConfig :: Stdio", 2),
+    ] {
+        if value == expected.to_ascii_lowercase()
+            && inline_identity_matches_at(
+                &identity,
+                "crates/cli/src/mcp/commands.rs",
+                "add",
+                "inline::McpServerConfig::field::transport",
+                ordinal,
+            )
+        {
+            return Some(invariant(
+                InvariantKind::Authority,
+                "the mutually exclusive URL and stdio command inputs select their fixed MCP transport",
+            ));
+        }
     }
     if (identity.contains("crates/cli/src/machine_contract.rs")
         || identity.contains("cli.machine.contract"))
@@ -433,16 +458,6 @@ pub(super) fn source_invariant_disposition(
         return Some(invariant(
             InvariantKind::Durability,
             "the session-delta hard envelope bounds crash recovery and index compaction",
-        ));
-    }
-    if identity.contains("crates/ctx/src/memory.rs")
-        && identity.contains("membudget::fit_content_bytes")
-        && (identity.contains("index_bytes") || identity.contains("recall_bytes"))
-        && value == "0"
-    {
-        return Some(invariant(
-            InvariantKind::HardBudget,
-            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
         ));
     }
     if ((identity.contains("crates/tools/src/process/supervisor.rs")
@@ -832,13 +847,23 @@ pub(super) fn inline_identity_matches(
     owner: &str,
     symbol: &str,
 ) -> bool {
+    inline_identity_matches_at(identity, path, owner, symbol, 1)
+}
+
+fn inline_identity_matches_at(
+    identity: &str,
+    path: &str,
+    owner: &str,
+    symbol: &str,
+    ordinal: usize,
+) -> bool {
     let Some(krate) = path.split('/').nth(1) else {
         return false;
     };
     identity.eq_ignore_ascii_case(&format!("{path}::{owner}::{symbol}"))
         || identity.eq_ignore_ascii_case(&format!(
             "{path}::{owner}::{}",
-            stable_id(krate, path, &format!("{owner}.{symbol}.1"))
+            stable_id(krate, path, &format!("{owner}.{symbol}.{ordinal}"))
         ))
 }
 

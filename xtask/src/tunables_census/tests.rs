@@ -948,6 +948,36 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             InvariantKind::Authority,
         ),
         (
+            "crates/cli/src/mcp/commands.rs",
+            "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.2",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "mcp.supervisor.config.mcplaunchconfig.new.inline.self.field.advertises.elicitation.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "mcp.supervisor.config.mcplaunchconfig.new.inline.self.field.protocol.mode.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "ctx.memory.membudget.fit.content.bytes.inline.self.field.index.bytes.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "ctx.memory.membudget.fit.content.bytes.inline.self.field.recall.bytes.1",
+            InvariantKind::HardBudget,
+        ),
+        (
             "crates/cli/src/app_server/session_factory.rs",
             "cli.app.server.session.factory.sessionfactory.verified.inline.replayreadlimits.field.events.1",
             InvariantKind::HardBudget,
@@ -1043,7 +1073,7 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             InvariantKind::HardBudget,
         ),
     ];
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 26);
     for (path, expected_id, kind) in cases {
         let source = std::fs::read_to_string(root.join(path)).unwrap();
         let krate = path.split('/').nth(1).unwrap();
@@ -1086,6 +1116,14 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             "{expected_id}"
         );
         assert!(validate(&[wrong_identity]).is_err(), "{expected_id}");
+        let mut wrong_ordinal = row.clone();
+        let (prefix, _) = wrong_ordinal.id.rsplit_once('.').unwrap();
+        wrong_ordinal.id = format!("{prefix}.3");
+        assert!(
+            !source_form_invariant_matches(&wrong_ordinal),
+            "{expected_id}"
+        );
+        assert!(validate(&[wrong_ordinal]).is_err(), "{expected_id}");
         let mut wrong_path = row.clone();
         wrong_path.owner.path.push_str(".foreign");
         assert!(!source_form_invariant_matches(&wrong_path), "{expected_id}");
@@ -1096,6 +1134,30 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
 #[test]
 fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
     for (path, source) in [
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "fn add() { let _ = McpServerConfig { transport: OtherTransport::Http }; }",
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "fn other_add() { let _ = McpServerConfig { transport: McpTransportConfig::Http }; }",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "impl McpLaunchConfig { fn new() -> Self { Self { advertises_elicitation: true, protocol_mode: crate::McpProtocolMode::Stateless } } }",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "impl OtherMcpLaunchConfig { fn new() -> Self { Self { advertises_elicitation: false, protocol_mode: crate::McpProtocolMode::Stateful } } }",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "impl MemBudget { fn fit_content_bytes() -> Self { Self { index_bytes: 1, recall_bytes: 1 } } }",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "impl OtherMemBudget { fn fit_content_bytes() -> Self { Self { index_bytes: 0, recall_bytes: 0 } } }",
+        ),
         (
             "crates/cli/src/app_server/plantcore.rs",
             "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Required } } }",
