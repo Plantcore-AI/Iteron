@@ -49,6 +49,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    McpInputsV1 {
+        command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+    },
     SideV1 {
         command: iteron_protocol::client_interaction::SideCommandV1,
     },
@@ -303,6 +306,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::McpInputsV1 { command } = self {
+            return command.is_read_only();
+        }
         if let Self::SideV1 { command } = self {
             return command.is_read_only();
         }
@@ -352,6 +358,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::McpInputsV1 { .. } => {
+                unreachable!("public input commands address the captured callback owner")
+            }
             Self::SideV1 { command } => Control::SideV1(command),
             Self::WorkspaceRewindV1 { command } => Control::WorkspaceRewind {
                 command,
@@ -576,6 +585,19 @@ fn product_refused(reason_code: &'static str) -> Value {
 pub(super) type Pending =
     Pin<Box<dyn Future<Output = Result<(u64, ControlReply)>> + Send + 'static>>;
 
+pub(super) fn dispatch_input(
+    client: crate::app_server::AppServerClient,
+    request_id: u64,
+    command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+) -> Pending {
+    Box::pin(async move {
+        Ok((
+            request_id,
+            ControlReply::McpInputs(client.mcp_inputs_v1(command).await),
+        ))
+    })
+}
+
 pub(super) fn dispatch(
     sender: mpsc::Sender<ControlRequest>,
     request_id: u64,
@@ -606,6 +628,7 @@ pub(super) async fn receive(pending: &mut Option<Pending>) -> Result<(u64, Contr
 
 pub(super) fn reply_value(reply: ControlReply) -> Value {
     match reply {
+        ControlReply::McpInputs(value) => value,
         #[cfg(feature = "legacy-plantcore")]
         ControlReply::PlantcoreBootstrapAccepted(accepted) => json!({
             "type": "plantcore_run_bootstrap_accepted_v1",
@@ -803,6 +826,20 @@ fn snapshot_value(snapshot: &SessionSnapshot) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_input_observer_wire_cannot_handoff_an_operator_answer() {
+        let mut source = json!({"type":"mcp_inputs_v1","command":{"thread_id":"session-run","run_id":"run","command":{"action":"read"}}});
+        let read: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(read.is_read_only());
+        source["command"]["command"] =
+            json!({"action":"respond","request_id":1,"answer":{"action":"reject"}});
+        let response: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(!response.is_read_only());
+        source["command"]["command"]["answer"]["values"] =
+            json!([{"field_index":0,"content":"private-value"}]);
+        assert!(serde_json::from_value::<WireControl>(source).is_err());
+    }
 
     #[test]
     fn ordinary_sdk_observer_wire_is_readonly_and_cannot_install_or_emit() {

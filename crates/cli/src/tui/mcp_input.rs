@@ -118,6 +118,35 @@ impl App {
         }
         Ok(())
     }
+    pub(super) fn reconcile_mcp_inputs(&mut self, session: &Session) -> bool {
+        if !self.mcp_form.is_waiting() {
+            return false;
+        }
+        let Some(snapshot) = session.client.mcp_inputs_snapshot() else {
+            return false;
+        };
+        let Some(selected) = session.client.thread_snapshot_v1() else {
+            return false;
+        };
+        if snapshot.thread_id != selected.thread_id || snapshot.run_id != selected.run_id {
+            return false;
+        }
+        let mut changed = false;
+        for closed in &snapshot.closed {
+            self.mcp_form
+                .queued
+                .retain(|prompt| prompt.request_id != closed.request_id);
+            if self.mcp_form.advance(closed.request_id) {
+                self.status = if self.mcp_form.is_waiting() {
+                    "MCP server is waiting for your input".into()
+                } else {
+                    format!("MCP input {:?}", closed.state).to_lowercase()
+                };
+                changed = true;
+            }
+        }
+        changed
+    }
     pub(super) fn clear_mcp_inputs(&mut self) {
         self.mcp_form.clear();
     }

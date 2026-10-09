@@ -91,6 +91,9 @@ pub(super) fn wire_with_queue_policy(
         lifecycle_hooks,
     );
     client.contract = publisher.contract.clone();
+    client
+        .contract
+        .bind_mcp_input_owner(mcp_input.owner.clone());
     if let Some(exclusion) = client.session_submission_exclusion() {
         client.contract.bind_submission_exclusion(exclusion);
     }

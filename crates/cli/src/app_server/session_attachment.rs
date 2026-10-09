@@ -96,6 +96,21 @@ pub(crate) fn attach(
     )
 }
 
+/// Explicit authenticated remote interaction mode. Form responses remain separate from kernel
+/// permission approvals; one-shot callers keep their existing handler-free composition.
+pub(crate) fn attach_remote(
+    agent: Agent,
+    lossless_events: bool,
+) -> Result<Attached, ProtocolVersionError> {
+    attach_with_inputs(
+        agent,
+        false,
+        lossless_events,
+        PlantcoreAdmission::disabled(),
+        true,
+    )
+}
+
 #[cfg(feature = "legacy-plantcore")]
 pub(crate) fn attach_plantcore(
     agent: Agent,
@@ -112,10 +127,25 @@ pub(crate) fn attach_plantcore(
 }
 
 pub(super) fn attach_with_plantcore(
+    agent: Agent,
+    interactive_approvals: bool,
+    lossless_events: bool,
+    plantcore: PlantcoreAdmission,
+) -> Result<Attached, ProtocolVersionError> {
+    attach_with_inputs(
+        agent,
+        interactive_approvals,
+        lossless_events,
+        plantcore,
+        interactive_approvals,
+    )
+}
+fn attach_with_inputs(
     mut agent: Agent,
     interactive_approvals: bool,
     lossless_events: bool,
     plantcore: PlantcoreAdmission,
+    input_handler: bool,
 ) -> Result<Attached, ProtocolVersionError> {
     let machine_schema_version = if plantcore.is_enabled() {
         crate::machine_projection::V7_SCHEMA_VERSION
@@ -181,10 +211,12 @@ pub(super) fn attach_with_plantcore(
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
     let session_factory = super::session_factory::SessionFactory::capture(&agent, &handle.client);
-    let task = tokio::spawn(
-        AppServer::new_with_session_factory(agent, ends, interactive_approvals, session_factory)
-            .serve(),
-    );
+    let server =
+        AppServer::new_with_session_factory(agent, ends, interactive_approvals, session_factory);
+    if input_handler && !interactive_approvals {
+        server.enable_input_handler();
+    }
+    let task = tokio::spawn(server.serve());
 
     Ok(Attached {
         handle,

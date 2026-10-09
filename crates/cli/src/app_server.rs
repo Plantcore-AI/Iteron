@@ -125,7 +125,9 @@ mod session_hooks;
 mod session_services;
 #[cfg(feature = "legacy-plantcore")]
 pub(crate) use session_attachment::attach_plantcore;
-pub(crate) use session_attachment::{AppServerHandle, Attached, SessionFacts, ToolFact, attach};
+pub(crate) use session_attachment::{
+    AppServerHandle, Attached, SessionFacts, ToolFact, attach, attach_remote,
+};
 mod event_publisher;
 pub(crate) use event_publisher::EventPublisher;
 
@@ -146,6 +148,7 @@ mod inventory_control;
 mod live_workflow_control;
 mod mcp_control;
 mod mcp_input;
+mod mcp_input_public;
 mod model_control;
 mod operator_status;
 #[cfg(feature = "legacy-plantcore")]

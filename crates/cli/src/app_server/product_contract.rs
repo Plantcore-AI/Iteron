@@ -135,6 +135,7 @@ struct Projection {
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
     maintenance_gaps: u64,
+    mcp_inputs: Option<super::mcp_input_public::InputBinding>,
     export: Option<super::client_export::ExportBinding>,
     submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
     shell: Option<Arc<super::client_shell::ShellService>>,
@@ -186,6 +187,40 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn bind_mcp_input_owner(&self, owner: super::mcp_input::PendingInputs) {
+        self.with_mut(|projection| {
+            projection.mcp_inputs =
+                Some(super::mcp_input_public::InputBinding { owner, gate: None })
+        });
+    }
+    #[cfg(test)]
+    pub(super) fn bind_mcp_input_gate_for_test(&self, gate: Arc<tokio::sync::RwLock<()>>) {
+        self.with_mut(|projection| {
+            if let Some(binding) = projection.mcp_inputs.as_mut() {
+                binding.gate = Some(gate);
+            }
+        });
+    }
+    pub(super) fn mcp_input_binding(
+        &self,
+    ) -> Option<(ThreadSnapshotV1, super::mcp_input_public::InputBinding)> {
+        self.with_mut(|projection| {
+            Some((projection.snapshot.clone()?, projection.mcp_inputs.clone()?))
+        })
+    }
+    pub(super) async fn mcp_inputs_v1(
+        &self,
+        command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+    ) -> serde_json::Value {
+        super::mcp_input_public::execute(self.clone(), command).await
+    }
+    pub(super) fn mcp_inputs_snapshot(
+        &self,
+    ) -> Option<iteron_protocol::client_mcp_input::McpInputsSnapshotV1> {
+        let (scope, binding) = self.mcp_input_binding()?;
+        Some(binding.owner.snapshot(&scope.thread_id, &scope.run_id))
+    }
+
     pub(super) fn lab_admission(
         &self,
     ) -> Option<(
@@ -384,6 +419,11 @@ impl ContractReader {
         agent: &crate::runtime::Agent,
         activity: &super::activity_control::ActivitySurface,
     ) {
+        self.with_mut(|projection| {
+            if let Some(binding) = projection.mcp_inputs.as_mut() {
+                binding.gate = Some(activity.client_effect_gate());
+            }
+        });
         let binding = super::client_export::ExportBinding::capture(agent, self, activity);
         self.with_mut(|projection| projection.export = binding);
         let completion = super::path_completion::CompletionBinding::capture(agent, self, activity);

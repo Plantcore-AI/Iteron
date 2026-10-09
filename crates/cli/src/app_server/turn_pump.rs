@@ -22,10 +22,7 @@ pub(super) struct RunningTurnPump<'a> {
     pub(super) activity_overflow: &'a crate::runtime::turn_activity::ActivitySink,
     pub(super) mcp_input_requests: &'a mut mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
     pub(super) mcp_input_responses: &'a mut mpsc::Receiver<McpInputResponse>,
-    pub(super) pending_mcp_inputs: &'a mut std::collections::BTreeMap<
-        u64,
-        tokio::sync::oneshot::Sender<iteron_mcp::McpInputDecision>,
-    >,
+    pub(super) pending_mcp_inputs: &'a mut mcp_input::PendingInputs,
     pub(super) stop_hooks: &'a mut Option<crate::runtime::hooks::StopHookObserverRuntime>,
     pub(super) settled_rx: &'a mut mpsc::Receiver<crate::workflow::RunSettled>,
     pub(super) to_kernel: &'a mpsc::Sender<TurnSubmission>,

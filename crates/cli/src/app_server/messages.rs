@@ -526,6 +526,7 @@ pub(crate) enum SideRequest {
 /// What a control request answers with.
 #[derive(Debug)]
 pub(crate) enum ControlReply {
+    McpInputs(serde_json::Value),
     WorkspaceRewound(Box<WorkspaceRewound>),
     SessionNavigated(Box<NavigatedSession>),
     OrdinaryExtensions(serde_json::Value),

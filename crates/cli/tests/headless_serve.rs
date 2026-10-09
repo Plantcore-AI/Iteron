@@ -1721,3 +1721,7 @@ mod experiment_lab_journey;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "headless_serve/side_journey.rs"]
 mod side_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[path = "headless_serve/mcp_input_journey.rs"]
+mod mcp_input_journey;

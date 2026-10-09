@@ -516,8 +516,19 @@ impl<'a> ConnectionSession<'a> {
                                 .await?;
                                 continue;
                             }
+                            if let control::WireControl::McpInputsV1 { command } = &control
+                                && command.validate().is_err() {
+                                drop(control);
+                                drop(input_guard);
+                                send_frame(&mut self.writer, shared.outbound_budget, shared.frame_preparers,
+                                    shared.fragment_encoders, error_frame("invalid_input_request", "MCP input request exceeds its finite scoped contract")).await?;
+                                continue;
+                            }
                             drop(input_guard);
                             match control {
+                                control::WireControl::McpInputsV1 { command } => {
+                                    self.pending_control = Some(control::dispatch_input(shared.client.clone(), request_id, command));
+                                }
                                 control::WireControl::MaintenanceV1 { command } => {
                                     let subscribe = matches!(&command, iteron_protocol::advisory_maintenance_control::MaintenanceReadV1::Subscribe { .. });
                                     if subscribe { self.observations.maintenance = shared.maintenance.subscribe(); }

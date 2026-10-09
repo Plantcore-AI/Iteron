@@ -340,6 +340,17 @@ impl AppServerClient {
         self.contract.maintenance_gaps()
     }
 
+    pub(crate) async fn mcp_inputs_v1(
+        &self,
+        command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+    ) -> serde_json::Value {
+        self.contract.mcp_inputs_v1(command).await
+    }
+    pub(crate) fn mcp_inputs_snapshot(
+        &self,
+    ) -> Option<iteron_protocol::client_mcp_input::McpInputsSnapshotV1> {
+        self.contract.mcp_inputs_snapshot()
+    }
     pub(crate) fn maintenance_v1(
         &self,
         command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,

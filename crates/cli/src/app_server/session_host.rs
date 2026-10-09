@@ -35,6 +35,7 @@ pub(crate) struct AppServer {
     pub(super) activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
     pub(super) mcp_input_requests: mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
     pub(super) mcp_input_responses: mpsc::Receiver<McpInputResponse>,
+    pub(super) mcp_input_owner: mcp_input::PendingInputs,
     pub(super) plantcore: PlantcoreAdmission,
 }
 
@@ -88,9 +89,16 @@ impl AppServer {
             lifecycle_hook_runtime,
             to_kernel,
             activity: ends.activity,
+            mcp_input_owner: ends.mcp_input.owner,
             mcp_input_requests: ends.mcp_input.requests,
             mcp_input_responses: ends.mcp_input.responses,
             plantcore: ends.plantcore,
+        }
+    }
+
+    pub(super) fn enable_input_handler(&self) {
+        if let Some(runtime) = self.agent.mcp_runtime_control() {
+            let _ = runtime.install_mrtr_handler(self.mcp_input_owner.handler());
         }
     }
 
@@ -136,9 +144,10 @@ impl AppServer {
             mut activity,
             mut mcp_input_requests,
             mut mcp_input_responses,
+            mcp_input_owner,
             mut plantcore,
         } = self;
-        let mut pending_mcp_inputs = std::collections::BTreeMap::new();
+        let mut pending_mcp_inputs = mcp_input_owner;
         let mut maintenance =
             super::advisory_maintenance::MaintenanceObserver::new(events.contract.clone());
 

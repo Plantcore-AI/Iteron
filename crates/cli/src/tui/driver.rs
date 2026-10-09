@@ -374,6 +374,7 @@ pub async fn run(
     // return; relying on `Drop` would only abort the async shell and could orphan a helper process.
     let tui_result: anyhow::Result<()> = async {
     loop {
+        if app.reconcile_mcp_inputs(&session) { redraw = true; }
         if let Some(receipt)=session.client.model_preference_after(model_preference_revision) {
             model_preference_revision=receipt.revision;
             event_actions::show_model_preference(&mut app,receipt);
