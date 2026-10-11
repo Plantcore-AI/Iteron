@@ -452,6 +452,15 @@ async fn actual_installed_main_retries_a_preworking_refusal_without_reconstructi
     ));
     assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
     assert!(main.transcript_state.working().is_none());
+    // Main's admitted controller task consumes one conservative lifetime slot even when
+    // unsupported media is refused before physical provider dispatch. A retry never refunds it.
+    assert_eq!(
+        host.inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .usage
+            .turns,
+        1
+    );
     assert_eq!(
         main.transcript_state.live_owner(&main.rollout),
         Some(AgentIdV1(1))
@@ -502,7 +511,7 @@ async fn actual_installed_main_retries_a_preworking_refusal_without_reconstructi
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
     let view = host.inspect(AgentActor::Operator, AgentIdV1(1)).unwrap();
     assert_eq!(view.state, AgentStateV1::Idle);
-    assert_eq!(view.usage.turns, 1);
+    assert_eq!(view.usage.turns, 2);
     assert!(
         !runtime
             .residents
