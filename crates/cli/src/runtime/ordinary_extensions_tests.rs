@@ -122,7 +122,10 @@ fn bindings() -> Vec<OrdinaryBinding> {
                 version: 1,
                 name: "sample__events".into(),
                 event_ids: vec!["model.request_sent".into()],
-                queue_capacity: 4,
+                // The real bus queues all lifecycle IDs before this reader filters them.
+                // This finite two-turn journey reads after completion, so retain its context
+                // and tool events too; the ordinary delivery contract remains lossy.
+                queue_capacity: 256,
             }),
             iteron_marketplace::Surface::EventSubscription,
             CapabilitySet::only(Capability::ReadOnly),
@@ -155,7 +158,9 @@ async fn actual_main_native_recipe_and_same_owner_status_events_reopen_without_r
     );
     assert_eq!(provider.calls.load(Ordering::Acquire), 2);
     let events = port.events("sample__events", 64, 0).unwrap();
-    assert!(!events.events.is_empty());
+    assert!(events.events.iter().any(|event| {
+        event.event_id.as_str() == "model.request_sent" && event.run_id.as_ref() == Some(&run)
+    }));
     let status = port.snapshot().unwrap();
     assert!(
         matches!(&status.status.widgets[0].values[&StatusFactV1::ToolCalls],HostStatusValueV1::Known{value}if value=="1")

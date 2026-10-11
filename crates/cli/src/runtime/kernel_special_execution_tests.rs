@@ -271,6 +271,8 @@ async fn dropped_actual_direct_await_preserves_unresolved_physical_intent() {
 #[tokio::test]
 async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission_is_full() {
     let (mut host, calls) = host("kernel-accounting-pressure");
+    // Unknown child accounting closes finite admission; the default has no turn ceiling.
+    host.set_turn_ceiling(4).unwrap();
     let call = ToolUse {
         id: "known-at-capacity".into(),
         name: iteron_tools::DISPATCH_AGENT.into(),
