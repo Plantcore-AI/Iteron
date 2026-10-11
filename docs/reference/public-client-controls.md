@@ -5,6 +5,21 @@ owners. A control reply is a result from that owner; an SQ submission receipt re
 receipt and does not prove an authorized effect. This document does not change TurnStart retry
 or durable admission semantics.
 
+## Permission prompts in an attached service
+
+The operator can select `iteron serve --client-approvals` to let authenticated compatible
+clients answer the existing permission prompts. This uses the same kernel decision owner as
+the local TUI. A connection, Hello or model output cannot enable this capability. The ordinary
+service and one-shot paths keep finite noninteractive refusal when a required approval is absent;
+explicit permission bypass retains its existing meaning.
+
+Product V1 reports the pending approval ID and the exact active turn. `approval_respond`
+requires both IDs and the authenticated thread. Its initial queue receipt does not prove the
+decision was applied. The later source-owned resolution settles the winning response; stale,
+duplicate and competing replies cannot grant a different turn. Interrupt and the admitted
+wall deadline cancel the same pending transaction. Detaching a terminal leaves the prompt with
+the independent service so another authorized client can answer before that deadline.
+
 ## Compatibility and authority
 
 The kernel SQ/EQ version gate remains exact. A current client can request ordinary controls.

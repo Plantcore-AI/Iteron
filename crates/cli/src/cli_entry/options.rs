@@ -34,6 +34,10 @@ pub(crate) enum LocalCommand {
         /// Loopback TCP address for bounded JSONL frames. Port 0 asks the OS to choose one.
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: std::net::SocketAddr,
+        /// Allow authenticated operator clients to answer existing permission prompts.
+        /// Without this explicit selection, operations requiring approval refuse finitely.
+        #[arg(long)]
+        client_approvals: bool,
         /// Require one digest-verified PlantCore bootstrap before the first user input.
         #[cfg_attr(feature = "legacy-plantcore", arg(long))]
         #[cfg_attr(not(feature = "legacy-plantcore"), arg(skip))]
@@ -601,6 +605,27 @@ pub(crate) struct Cli {
 mod standalone_tests {
     use super::{Cli, LocalCommand};
     use clap::Parser;
+
+    #[test]
+    fn remote_permission_prompts_require_the_explicit_operator_service_selection() {
+        assert!(matches!(
+            Cli::try_parse_from(["iteron", "serve"]).unwrap().command,
+            Some(LocalCommand::Serve {
+                client_approvals: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["iteron", "serve", "--client-approvals"])
+                .unwrap()
+                .command,
+            Some(LocalCommand::Serve {
+                client_approvals: true,
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["iteron", "--client-approvals", "-p", "one-shot"]).is_err());
+    }
 
     #[test]
     fn actual_standalone_serve_parser_has_no_legacy_controls() {

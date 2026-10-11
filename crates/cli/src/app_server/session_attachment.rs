@@ -97,15 +97,16 @@ pub(crate) fn attach(
     )
 }
 
-/// Explicit authenticated remote interaction mode. Form responses remain separate from kernel
-/// permission approvals; one-shot callers keep their existing handler-free composition.
+/// Explicit authenticated remote interaction mode. The operator separately chooses the existing
+/// kernel approval channel; an ordinary connection cannot enable it. Forms use their same owner.
 pub(crate) fn attach_remote(
     agent: Agent,
     lossless_events: bool,
+    client_approvals: bool,
 ) -> Result<Attached, ProtocolVersionError> {
     attach_with_inputs(
         agent,
-        false,
+        client_approvals,
         lossless_events,
         PlantcoreAdmission::disabled(),
         true,

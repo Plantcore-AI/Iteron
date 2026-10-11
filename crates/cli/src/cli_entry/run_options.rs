@@ -124,10 +124,16 @@ pub(crate) fn resolve(
     let has_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     let headless_serve = matches!(cli.command.as_ref(), Some(LocalCommand::Serve { .. }));
     if let Some(LocalCommand::Serve {
-        listen, plantcore, ..
+        listen,
+        plantcore,
+        client_approvals,
+        ..
     }) = &cli.command
     {
         validate_serve_listen(*listen, *plantcore)?;
+        if *plantcore && *client_approvals {
+            anyhow::bail!("client approvals belong to the standalone service");
+        }
     }
     // One-shot only with -p/--print (which requires a task), or when there is no TTY and a task was
     // given (pipeline use). Otherwise the interactive TUI is the default (user: 默认 TUI 打开).
