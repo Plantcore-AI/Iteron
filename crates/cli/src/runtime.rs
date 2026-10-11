@@ -138,6 +138,7 @@ mod artifact_publication;
 pub(crate) mod bounded_verify;
 mod budget_control;
 mod final_evidence;
+mod native_change_evidence;
 mod final_evidence_runtime;
 pub use budget_control::TurnBudgetState;
 pub(crate) mod client_inventory;

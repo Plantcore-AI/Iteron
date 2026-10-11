@@ -25,6 +25,7 @@ pub(super) enum EarlyToolOutcome {
         publication_error: Option<String>,
         captured_images: Vec<iteron_tools::CapturedToolImage>,
         refusal: Option<iteron_protocol::refusal::RefusalReasonV1>,
+        native_change: Option<super::native_change_evidence::NativeChangeObservation>,
     },
     Refused {
         reason: String,
@@ -162,6 +163,8 @@ impl EarlyToolExecutor {
                 .publish_execution(&admitted.call, &execution)
                 .err();
             let refusal = execution.refusal_reason();
+            let native_change =
+                super::native_change_evidence::NativeChangeObservation::capture(&execution);
             let captured_images = std::mem::take(&mut execution.captured_images);
             let result = execution.into_result();
             let managed = tool_output_spill::manage_result(admitted.spill_store.as_deref(), result);
@@ -174,6 +177,7 @@ impl EarlyToolExecutor {
                 publication_error,
                 captured_images,
                 refusal,
+                native_change,
             }
         });
         EarlyToolTask(handle)

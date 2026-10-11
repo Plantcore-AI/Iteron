@@ -75,6 +75,11 @@ fn admission(call: ToolUse) -> OrderedCallAdmission {
 #[tokio::test]
 async fn real_native_write_and_one_confirmed_terminal_survive_reopen() {
     let (directory, mut agent, call) = fixture();
+    agent
+        .effect_journal
+        .guard_recovery(&mut agent.rollout, &mut agent.ledger)
+        .unwrap();
+    agent.effect_journal.begin_operator_turn(TurnId(0));
     let estimate = agent
         .context_estimator
         .estimate_uncached("system", &[], &[]);
@@ -90,6 +95,30 @@ async fn real_native_write_and_one_confirmed_terminal_survive_reopen() {
         std::fs::read_to_string(directory.join("result.txt")).unwrap(),
         "physical owner write"
     );
+    let done = agent
+        .rollout
+        .append(&iteron_protocol::Event {
+            seq: iteron_protocol::Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::Done {
+                outcome: "Done".into(),
+            },
+        })
+        .unwrap();
+    let fact = agent
+        .effect_journal
+        .publish_final_evidence(&agent.rollout, TurnId(0), done, true, "tests passed")
+        .unwrap();
+    assert_eq!(
+        fact.work_state,
+        iteron_protocol::final_evidence::HostFinalWorkStateV1::ChangedUnverified
+    );
+    assert_eq!(fact.observed_native_file_changes, 1);
+    assert!(fact.native_change_evidence_valid());
+    assert!(!fact.workspace_diff_inspected && !fact.test_suite_identity_verified);
+    assert!(iteron_record::replay(agent.rollout.path()).unwrap().iter().any(|event|
+        Some(event.seq) == fact.native_change_source_seq
+        && matches!(&event.kind, EventKind::ToolDone { result, effect_id:Some(_), .. } if !result.is_error && result.tool_use_id == "actual-write")));
     let path = agent.rollout.path().to_owned();
     drop(agent);
     let reopened = Rollout::open(
@@ -116,6 +145,7 @@ async fn actual_intent_refusal_prevents_native_io_and_terminal_refusal_preserves
         DurableAppendFault::ToolDone,
     ] {
         let (directory, mut agent, call) = fixture();
+        agent.effect_journal.begin_operator_turn(TurnId(0));
         agent.fail_next_durable_append = Some(fault);
         let estimate = agent
             .context_estimator
@@ -145,6 +175,28 @@ async fn actual_intent_refusal_prevents_native_io_and_terminal_refusal_preserves
             .filter(|row| matches!(row.kind, EventKind::EffectIntent { .. }))
             .count();
         assert_eq!(pending, usize::from(fault == DurableAppendFault::ToolDone));
+        let actual_done = agent
+            .rollout
+            .append(&iteron_protocol::Event {
+                seq: iteron_protocol::Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "HarnessError".into(),
+                },
+            })
+            .unwrap();
+        // This fixture deliberately appends a diagnostic terminal after the injected barrier
+        // failure. It is not a successful runtime recovery or a replacement ToolDone.
+        let evidence = agent
+            .effect_journal
+            .publish_final_evidence(&agent.rollout, TurnId(0), actual_done, false, "changed")
+            .unwrap();
+        assert_eq!(evidence.observed_native_file_changes, 0);
+        assert!(evidence.native_change_source_seq.is_none());
+        assert_eq!(
+            evidence.work_state,
+            iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified
+        );
         drop(agent);
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -226,3 +226,21 @@ Trace reads one verified physical record, includes genesis when `after_seq` is a
 `maintenance_v1` accepts `read {thread_id, after_revision?, limit?}` (1..64) and `subscribe {thread_id}`. It captures the adopted run's real readonly maintenance port. Observations are bounded current-state snapshots with the independent journal's revision, digest and original job IDs; they are not a lossless transition cursor. `after_revision` is a freshness bound. No request accepts target/path/actor/work/state/lease fields. Subscribe remains attached through an initial unavailable journal and reconciles explicit broadcast gaps by Read. Frames `advisory_maintenance_v1` and `maintenance_availability_v1` do not advance the legacy replay cursor. Only successful journal observations carry job state; availability/reconciliation errors never create a durable job transition.
 
 TUI `/finalization` reads both actual answer/Done sources and this separate advisory snapshot. The parent answer and terminal do not await optional route-cache or token-calibration completion. An enqueue attempt alone does not mean queued, running or completed. Restored queued/running jobs require the journal owner's reconciliation policy; public clients cannot supply recovery evidence.
+
+
+## Completion observations
+
+`host_final_evidence_v1` reads one actual current live-invocation host observation. Optional
+`observed_native_file_changes`, `native_change_source_seq` and `work_state` facts describe only
+byte-changing guarded native file commits joined to a successful same-run `ToolDone`. A newly
+created empty file counts; an identical-byte replacement does not. Repeat commits to one file
+count separately. The last change source is the actual committed tool terminal, before the
+observation's actual `Done` source.
+
+`changed_unverified` means such native changes were observed and relevant test-suite identity
+remains unverified. Neither a generic successful shell command, write permission, model prose
+nor `Done` can create this category. An optional configured check reports its own observed
+pass/failure separately; it does not certify a relevant test suite. No current workspace scan,
+net or distinct dirty-file count, absence-of-problems claim, mandatory check or new approval is
+introduced. Counts reset for the next live invocation and are not reconstructed as positive
+claims after service restart. Defaults omit the new fields and accept their absence.

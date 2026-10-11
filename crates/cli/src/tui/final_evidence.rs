@@ -74,7 +74,10 @@ fn render(app: &mut App, fact: &HostFinalEvidenceV1) {
                     "not observed"
                 },
             ),
+            kv("observed work", fact.work_state.label()),
+            kv("observed native file commits", &fact.observed_native_file_changes.to_string()),
             kv("test-suite identity", "unverified"),
+            block::PanelRow::Note("Shows observed native file commits from this task. Repeat commits to a file each count; current workspace not scanned. Relevant test-suite identity remains unverified.".into()),
         ],
     );
 }
@@ -102,6 +105,7 @@ pub(super) fn remote(
         || fact.source_seq.0 == 0
         || fact.first_turn > fact.final_turn
         || fact.observed_tool_failures > fact.observed_tool_completions
+        || !fact.native_change_evidence_valid()
         || fact.workspace_diff_inspected
         || fact.test_suite_identity_verified
         || fact
@@ -140,6 +144,9 @@ mod tests {
             source_seq: Seq(8),
             observed_tool_completions: 1,
             observed_tool_failures: 0,
+            observed_native_file_changes: 0,
+            native_change_source_seq: None,
+            work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
             configured_check: HostConfiguredCheckV1::NotObserved,
             configured_check_source_seq: None,
             effects_known: true,
@@ -178,6 +185,9 @@ mod tests {
             source_seq: Seq(17),
             observed_tool_completions: 0,
             observed_tool_failures: 0,
+            observed_native_file_changes: 0,
+            native_change_source_seq: None,
+            work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
             configured_check: HostConfiguredCheckV1::NotObserved,
             configured_check_source_seq: None,
             effects_known: true,
@@ -207,5 +217,70 @@ mod tests {
         assert!(!app.run.running());
         remote(&mut app, &value, &thread, &tenant, &run);
         assert_eq!(app.history.blocks().len(), 1);
+    }
+    #[test]
+    fn changed_native_receipts_render_positive_work_without_suite_or_current_workspace_claims() {
+        let mut app = App::new();
+        let thread = iteron_protocol::SessionId("thread".into());
+        let run = RunId("native-run".into());
+        let tenant = TenantId::default();
+        let fact = HostFinalEvidenceV1 {
+            tenant: tenant.clone(),
+            run_id: run.clone(),
+            first_turn: TurnId(0),
+            final_turn: TurnId(1),
+            source_seq: Seq(17),
+            observed_tool_completions: 1,
+            observed_tool_failures: 0,
+            observed_native_file_changes: 2,
+            native_change_source_seq: Some(Seq(12)),
+            work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::ChangedUnverified,
+            configured_check: HostConfiguredCheckV1::NotObserved,
+            configured_check_source_seq: None,
+            effects_known: true,
+            write_capable_effect_admitted: true,
+            coverage: HostFinalCoverageV1::LiveInvocation,
+            workspace_diff_inspected: false,
+            test_suite_identity_verified: false,
+            correction: None,
+        };
+        let value = serde_json::json!({"type":"host_final_evidence_v1","thread_id":thread,"run_id":run,"evidence":fact,"source":"actual_host_receipt","historical_recovery":false});
+        for field in [
+            "work_state",
+            "native_change_source_seq",
+            "observed_native_file_changes",
+        ] {
+            let mut forged = value.clone();
+            forged["evidence"][field] = match field {
+                "work_state" => serde_json::json!("unverified"),
+                "native_change_source_seq" => serde_json::json!(17),
+                _ => serde_json::json!(0),
+            };
+            remote(&mut app, &forged, &thread, &tenant, &run);
+            assert!(app.history.blocks().is_empty());
+        }
+        remote(&mut app, &value, &thread, &tenant, &run);
+        let semantic = app.history.blocks().last().unwrap().to_text();
+        assert!(semantic.contains("Native changes committed"));
+        assert!(semantic.contains("observed native file commits"));
+        assert!(semantic.contains("current workspace not scanned"));
+        assert!(semantic.contains("suite unverified"));
+        assert!(!semantic.contains("suite passed") && !semantic.contains("no problem found"));
+        assert!(!app.run.running());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::draw(frame, &mut app))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Native changes committed"));
+        assert!(rendered.contains("unverified"));
+        assert!(!rendered.contains("suite passed"));
     }
 }

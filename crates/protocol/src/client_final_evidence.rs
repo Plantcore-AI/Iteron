@@ -30,6 +30,12 @@ pub fn description(fact: &crate::final_evidence::HostFinalEvidenceV1) -> &'stati
         }
         HostConfiguredCheckV1::Failed => "Configured check failed.",
         HostConfiguredCheckV1::Unknown => "Check outcome is unconfirmed.",
+        HostConfiguredCheckV1::NotObserved
+            if fact.work_state
+                == crate::final_evidence::HostFinalWorkStateV1::ChangedUnverified =>
+        {
+            "Native changes committed; relevant tests remain unverified."
+        }
         HostConfiguredCheckV1::NotObserved => {
             "No configured check was observed; test-suite success is unverified."
         }

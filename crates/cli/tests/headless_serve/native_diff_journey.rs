@@ -73,7 +73,7 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
             0,
             "diff-write",
             "write_file",
-            json!({"path":"whole.txt","content":write_after}),
+            json!({"path":"whole.txt","content":write_after,"expected_sha256":hex::encode(Sha256::digest(write_before.as_bytes()))}),
         ),
         native_call(
             1,
@@ -146,6 +146,34 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
         fs::read_to_string(scratch.repo().join("b.txt")).unwrap(),
         "b header\nchanged\nb footer\n"
     );
+    let run_id = thread_id.strip_prefix("session-").unwrap();
+    send(
+        &mut connection,
+        control(
+            490,
+            PROTOCOL_VERSION,
+            json!({"type":"host_final_evidence_v1","command":{"thread_id":thread_id,"run_id":run_id}}),
+        ),
+    );
+    let final_fact = matching_control(&mut reader, 490);
+    assert_eq!(final_fact["source"], "actual_host_receipt");
+    assert_eq!(final_fact["run_id"], run_id);
+    assert_eq!(final_fact["evidence"]["work_state"], "changed_unverified");
+    // Four native completions changed five members (the two-file patch is one tool).
+    // This is not a filesystem scan or a count of current distinct dirty files.
+    assert_eq!(final_fact["evidence"]["observed_native_file_changes"], 5);
+    assert_eq!(final_fact["evidence"]["observed_tool_completions"], 4);
+    assert_eq!(final_fact["evidence"]["configured_check"], "not_observed");
+    assert_eq!(final_fact["evidence"]["workspace_diff_inspected"], false);
+    assert_eq!(
+        final_fact["evidence"]["test_suite_identity_verified"],
+        false
+    );
+    let native_source = final_fact["evidence"]["native_change_source_seq"]
+        .as_u64()
+        .unwrap();
+    let done_source = final_fact["evidence"]["source_seq"].as_u64().unwrap();
+    assert!(native_source > 0 && native_source < done_source);
     let listing = artifact_list(&mut connection, &mut reader, &thread_id, 500);
     let diffs = manifests(&listing);
     assert_eq!(
@@ -174,6 +202,11 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
     child.stop();
     let run_id = thread_id.strip_prefix("session-").unwrap();
     let events = iteron_record::load_forked(&scratch.runs(), &RunId(run_id.into())).unwrap();
+    assert!(events.iter().any(|event| event.seq.0 == native_source
+        && matches!(&event.kind, EventKind::ToolDone { result, tool:Some(tool), effect_id:Some(_)}
+            if tool == "write_file" && result.tool_use_id == "diff-create" && !result.is_error)));
+    assert!(events.iter().any(|event| event.seq.0 == done_source
+        && matches!(&event.kind, EventKind::Done { outcome } if outcome == "Done")));
     let (restarted, token, address) = launch(&scratch, &scratch.repo(), 2, &["--resume", run_id]);
     let mut connection = connect(address);
     send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));

@@ -145,6 +145,15 @@ impl ToolExecutionJournal<'_> {
         })
     }
 
+    pub(super) fn observe_native_change(
+        &mut self,
+        terminal: &ToolTerminalReceipt,
+        observed: &super::native_change_evidence::NativeChangeObservation,
+    ) {
+        self.effects
+            .observe_native_change(self.rollout, terminal, observed);
+    }
+
     fn record_known_result(
         &mut self,
         ticket: effects::EffectTicket,

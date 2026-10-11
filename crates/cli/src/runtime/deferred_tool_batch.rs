@@ -123,6 +123,7 @@ impl DeferredToolBatch<'_> {
                 publication_error,
                 captured_images,
                 refusal,
+                native_change,
             } = receipt;
             if let Some(visible) = projected_visible {
                 self.scope.events.projected(visible);
@@ -133,7 +134,9 @@ impl DeferredToolBatch<'_> {
                 ManagedToolExecution::Unknown(managed) => (managed, false),
             };
             let committed = if definite
-                && (refusal.is_some() || (!managed.result.is_error && !captured_images.is_empty()))
+                && (native_change.is_some()
+                    || refusal.is_some()
+                    || (!managed.result.is_error && !captured_images.is_empty()))
             {
                 self.journal
                     .known_result_receipt(
@@ -144,6 +147,9 @@ impl DeferredToolBatch<'_> {
                         &self.scope.events,
                     )
                     .map(|receipt| {
+                        if let Some(change) = &native_change {
+                            self.journal.observe_native_change(&receipt, change);
+                        }
                         if let Some(reason) = refusal {
                             super::refusal_provenance::publish_tool_refusal(
                                 &self.scope.events,

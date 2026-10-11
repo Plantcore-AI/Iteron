@@ -2,6 +2,7 @@
 //! answer claims are read for a host correction, never treated as verification or permission.
 use iteron_protocol::final_evidence::{
     HostConfiguredCheckV1, HostFinalCorrectionV1, HostFinalCoverageV1, HostFinalEvidenceV1,
+    HostFinalWorkStateV1,
 };
 use iteron_protocol::{
     RunId, Seq, TenantId, TurnId, VerificationConsensusEvidence, VerificationOutcomeEvidence,
@@ -14,6 +15,8 @@ pub(super) struct HostFinalEvidenceOwner {
     failures: u64,
     check: Option<(HostConfiguredCheckV1, Seq)>,
     write_admitted: bool,
+    native_changes: u64,
+    native_source: Option<Seq>,
     last_receipt: Option<Seq>,
     overflow: bool,
     published: Option<HostFinalEvidenceV1>,
@@ -44,6 +47,29 @@ impl HostFinalEvidenceOwner {
             } else {
                 self.overflow = true;
             }
+        }
+    }
+    pub(super) fn native_change(
+        &mut self,
+        terminal: &super::tool_execution_journal::ToolTerminalReceipt,
+        observed: &super::native_change_evidence::NativeChangeObservation,
+    ) {
+        let source = terminal.sequence();
+        if source.0 == 0
+            || !self.in_scope(terminal.turn())
+            || self.last_receipt != Some(source)
+            || self.native_source.is_some_and(|old| source <= old)
+        {
+            return;
+        }
+        let Some(count) = observed.confirmed_by(terminal) else {
+            return;
+        };
+        if let Some(next) = self.native_changes.checked_add(count) {
+            self.native_changes = next;
+            self.native_source = Some(source);
+        } else {
+            self.overflow = true;
         }
     }
     pub(super) fn configured_check(
@@ -102,6 +128,7 @@ impl HostFinalEvidenceOwner {
         if turn.0 < first.0
             || self.last_receipt.is_some_and(|seq| seq >= done_source)
             || self.check.is_some_and(|(_, seq)| seq >= done_source)
+            || self.native_source.is_some_and(|seq| seq >= done_source)
         {
             return None;
         }
@@ -120,6 +147,21 @@ impl HostFinalEvidenceOwner {
             source_seq: done_source,
             observed_tool_completions: self.tools,
             observed_tool_failures: self.failures,
+            observed_native_file_changes: if self.overflow {
+                0
+            } else {
+                self.native_changes
+            },
+            native_change_source_seq: if self.overflow {
+                None
+            } else {
+                self.native_source
+            },
+            work_state: if !self.overflow && self.native_changes > 0 {
+                HostFinalWorkStateV1::ChangedUnverified
+            } else {
+                HostFinalWorkStateV1::Unverified
+            },
             configured_check,
             configured_check_source_seq: self.check.map(|(_, source)| source),
             effects_known: known,

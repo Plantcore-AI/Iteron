@@ -32,6 +32,7 @@ impl FinalEvidenceReader {
             || fact.source_seq.0 == 0
             || fact.first_turn.0 > fact.final_turn.0
             || fact.observed_tool_failures > fact.observed_tool_completions
+            || !fact.native_change_evidence_valid()
             || fact
                 .configured_check_source_seq
                 .is_some_and(|seq| seq.0 == 0 || seq >= fact.source_seq)
@@ -89,6 +90,9 @@ mod tests {
             source_seq: Seq(8),
             observed_tool_completions: 0,
             observed_tool_failures: 0,
+            observed_native_file_changes: 0,
+            native_change_source_seq: None,
+            work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
             configured_check: HostConfiguredCheckV1::NotObserved,
             configured_check_source_seq: None,
             effects_known: true,
@@ -97,6 +101,57 @@ mod tests {
             workspace_diff_inspected: false,
             test_suite_identity_verified: false,
             correction: None,
+        }
+    }
+    #[test]
+    fn additive_native_change_fields_keep_old_absent_bytes_and_reject_false_positive_shapes() {
+        use iteron_protocol::final_evidence::HostFinalWorkStateV1;
+        let original = fact();
+        let wire = serde_json::to_value(&original).unwrap();
+        for key in [
+            "observed_native_file_changes",
+            "native_change_source_seq",
+            "work_state",
+        ] {
+            assert!(wire.get(key).is_none());
+        }
+        assert_eq!(
+            serde_json::from_value::<HostFinalEvidenceV1>(wire).unwrap(),
+            original
+        );
+        let mut owner = FinalEvidenceReader::default();
+        owner.bind(
+            SessionId("thread".into()),
+            TenantId::default(),
+            RunId("run".into()),
+            None,
+        );
+        let mut native = original;
+        native.observed_tool_completions = 1;
+        native.write_capable_effect_admitted = true;
+        native.observed_native_file_changes = 2;
+        native.native_change_source_seq = Some(Seq(7));
+        native.work_state = HostFinalWorkStateV1::ChangedUnverified;
+        assert!(owner.observe(&native));
+        for kind in [
+            "zero",
+            "no_source",
+            "future_source",
+            "state",
+            "all_failed",
+            "no_write",
+        ] {
+            let mut forged = native.clone();
+            forged.source_seq = Seq(9);
+            match kind {
+                "zero" => forged.observed_native_file_changes = 0,
+                "no_source" => forged.native_change_source_seq = None,
+                "future_source" => forged.native_change_source_seq = Some(Seq(9)),
+                "state" => forged.work_state = HostFinalWorkStateV1::Unverified,
+                "all_failed" => forged.observed_tool_failures = 1,
+                _ => forged.write_capable_effect_admitted = false,
+            }
+            assert!(!owner.observe(&forged), "{kind}");
         }
     }
     fn read(reader: &FinalEvidenceReader) -> Value {

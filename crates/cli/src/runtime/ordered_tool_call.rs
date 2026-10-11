@@ -126,6 +126,8 @@ impl OrderedToolCall<'_> {
             .publish_execution(&call, &execution)
             .err();
         let refusal = execution.refusal_reason();
+        let native_change =
+            super::native_change_evidence::NativeChangeObservation::capture(&execution);
         let images = std::mem::take(&mut execution.captured_images);
         let mut managed =
             tool_output_spill::manage_execution(self.scope.spill.as_deref(), execution.execution);
@@ -142,7 +144,10 @@ impl OrderedToolCall<'_> {
         let (execution, mut lease) = tool_output_spill::into_execution_parts(managed);
         let (result, image_projection) = match execution {
             ToolExecution::Definite(result) => {
-                let projection = if refusal.is_some() || (!result.is_error && !images.is_empty()) {
+                let projection = if native_change.is_some()
+                    || refusal.is_some()
+                    || (!result.is_error && !images.is_empty())
+                {
                     let receipt = self.journal.known_result_receipt(
                         ticket,
                         &call.name,
@@ -150,6 +155,9 @@ impl OrderedToolCall<'_> {
                         0,
                         &self.scope.events,
                     )?;
+                    if let Some(change) = &native_change {
+                        self.journal.observe_native_change(&receipt, change);
+                    }
                     if let Some(reason) = refusal {
                         super::refusal_provenance::publish_tool_refusal(
                             &self.scope.events,

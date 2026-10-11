@@ -260,6 +260,19 @@ impl EffectJournalOwner {
         }
     }
 
+    /// Joins actual native commit evidence to the same successful writer terminal. Neither a
+    /// tool name, write admission nor external/model text can supply this sealed observation.
+    pub(super) fn observe_native_change(
+        &mut self,
+        rollout: &Rollout,
+        terminal: &super::tool_execution_journal::ToolTerminalReceipt,
+        observed: &super::native_change_evidence::NativeChangeObservation,
+    ) {
+        if terminal.tenant() == rollout.tenant() && terminal.run() == rollout.run_id() {
+            self.final_evidence.native_change(terminal, observed);
+        }
+    }
+
     pub(super) fn observe_configured_check(
         &mut self,
         turn: TurnId,

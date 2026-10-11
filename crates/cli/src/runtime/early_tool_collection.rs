@@ -108,6 +108,7 @@ impl EarlyToolCollection<'_> {
                     publication_error,
                     captured_images,
                     refusal,
+                    native_change,
                 })) => {
                     if let Some(hook) = hook {
                         self.observe_hook(hook, false);
@@ -145,7 +146,10 @@ impl EarlyToolCollection<'_> {
                         );
                         unknown = unknown.saturating_add(1);
                     } else {
-                        if refusal.is_some() || (!captured_images.is_empty() && !result.is_error) {
+                        if native_change.is_some()
+                            || refusal.is_some()
+                            || (!captured_images.is_empty() && !result.is_error)
+                        {
                             let receipt = self.journal.known_result_receipt(
                                 ticket,
                                 &call.name,
@@ -153,6 +157,9 @@ impl EarlyToolCollection<'_> {
                                 overlap_ms.min(result.latency_ms),
                                 &self.scope.events,
                             )?;
+                            if let Some(change) = &native_change {
+                                self.journal.observe_native_change(&receipt, change);
+                            }
                             if let Some(reason) = refusal {
                                 super::refusal_provenance::publish_tool_refusal(
                                     &self.scope.events,
