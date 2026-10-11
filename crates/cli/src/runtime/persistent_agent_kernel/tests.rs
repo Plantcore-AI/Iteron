@@ -421,22 +421,31 @@ fn setup_with_financial_and_memory(
     }
     let settled = Arc::new(AtomicUsize::new(0));
     let mut runtime = KernelPersistentRuntime::new(context);
+    let fixture_control = Arc::new(std::sync::OnceLock::<Weak<dyn AgentControlPort>>::new());
     if block_tool {
         let settled = settled.clone();
         let provider = provider.clone();
+        let fixture_control = fixture_control.clone();
         runtime.fixture = Some(Arc::new(move |child| {
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            child.set_interrupt(stop.clone());
+            let owner = child
+                .transcript_state
+                .live_owner(&child.rollout)
+                .unwrap_or(AgentIdV1(1));
             let settled = settled.clone();
             let provider = provider.clone();
+            let fixture_control = fixture_control.clone();
             child.registry.register_external(ToolSpec {
                 name: "controlled_wait".into(), description: "bounded cancellation fixture".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}), purity: Purity::Effecting, capability: Capability::ReadOnly,
             }, move |call, _| {
-                let stop = stop.clone(); let settled = settled.clone(); let provider = provider.clone();
+                let control = fixture_control.get().and_then(Weak::upgrade).expect("actual fixture control port remains live");
+                let settled = settled.clone(); let provider = provider.clone();
                 Box::pin(async move {
                     provider.tool_started.fetch_add(1, Ordering::SeqCst);
                     for _ in 0..1_000 {
-                        if stop.load(Ordering::Acquire) { break }
+                        // Observe the real durable epoch stop. The constructor's old caller
+                        // flag would be replaced by the runtime's fresh inherited epoch signal.
+                        if matches!(control.inspect(AgentActor::Agent(owner), owner).unwrap().state,
+                            AgentStateV1::Interrupting { .. } | AgentStateV1::Closing { .. } | AgentStateV1::RecoveryRequired { .. }) { break }
                         tokio::time::sleep(Duration::from_millis(2)).await;
                     }
                     settled.fetch_add(1, Ordering::SeqCst);
@@ -496,6 +505,7 @@ fn setup_with_financial_and_memory(
     .unwrap();
     let port: Arc<dyn AgentControlPort> = Arc::new(host.clone());
     runtime.bind(&port).unwrap();
+    assert!(fixture_control.set(Arc::downgrade(&port)).is_ok());
     // Keep the authenticated host port alive; the runtime itself retains only a Weak reference.
     (host, runtime, settled, port)
 }
