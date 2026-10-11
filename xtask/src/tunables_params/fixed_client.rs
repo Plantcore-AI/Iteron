@@ -27,6 +27,33 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // Shared callback retention, source-shaped JSON and live refusal rows are fixed host
+        // envelopes. The existing MCP queue capacity keeps its independent lowering helper.
+        (
+            "crates/cli/src/app_server/mcp_input.rs",
+            "MAX_CLOSED_INPUTS" | "MAX_PROMPT_BYTES" | "MAX_INPUT_WAIT",
+        )
+        | (
+            "crates/cli/src/app_server/mcp_input/request_bounds.rs",
+            "MAX_SCHEMA_NODES" | "MAX_SCHEMA_DEPTH",
+        )
+        | (
+            "crates/cli/src/app_server/refusal_projection.rs",
+            "MAX_REFUSALS" | "MAX_SUBJECT_BYTES",
+        )
+        | ("crates/cli/src/tui/headless/side.rs", "MAX_ANSWER_BYTES") => {
+            Some(InvariantReason::HardBudgetEffectLedger)
+        }
+        (
+            "crates/protocol/src/client_mcp_input.rs",
+            "MAX_MCP_INPUT_RESPONSE_BYTES"
+            | "MAX_MCP_INPUT_RESPONSE_NODES"
+            | "MAX_MCP_INPUT_RESPONSE_DEPTH"
+            | "MAX_MCP_INPUT_REQUEST_FIELDS",
+        )
+        | ("crates/protocol/src/client_interaction.rs", "MAX_SIDE_QUESTION_BYTES") => {
+            Some(InvariantReason::WireCompatibility)
+        }
         // New attached clients retain only bounded transport/presentation buffers. UI polling
         // cadence and text page size remain actual runtime helpers and are deliberately absent.
         (

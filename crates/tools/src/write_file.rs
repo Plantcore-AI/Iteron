@@ -870,18 +870,6 @@ fn reject_dangling_target_symlink(root: &Path, requested_path: &str) -> Result<(
     Ok(())
 }
 
-pub(crate) async fn atomic_replace_with_boundary(
-    target: &Path,
-    content: &[u8],
-    confined_root: Option<&Path>,
-) -> io::Result<()> {
-    StagedWrite::prepare_with_boundary(target, content, confined_root)
-        .await?
-        .commit()
-        .await
-        .map_err(|failure| failure.error)
-}
-
 async fn allocate_temporary(parent: &Path) -> io::Result<(PathBuf, tokio::fs::File)> {
     let max_temp_attempts =
         iteron_tunables::param_usize("tools.write_file.max_temp_attempts", MAX_TEMP_ATTEMPTS);

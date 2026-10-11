@@ -7,7 +7,9 @@ use crate::{
 };
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use regex::{Regex, RegexBuilder};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use walkdir::WalkDir;
 
 const MAX_GREP_PATTERN_BYTES: usize = 4 * 1024;

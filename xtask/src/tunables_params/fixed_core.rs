@@ -16,6 +16,11 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // Whole-call DP work and pattern bytes refuse before exponential or unbounded glob
+        // matching. The caller's actual traversal/output policy remains independently applied.
+        ("crates/tools/src/fs_tools.rs", "MAX_GLOB_PATTERN_BYTES" | "MAX_GLOB_MATCH_STEPS") => {
+            Some(InvariantReason::Security)
+        }
         // Whole executable hashes use a finite retained native reader population. Timeout cannot
         // release a worker still inside native I/O or mint a successful content binding.
         (
