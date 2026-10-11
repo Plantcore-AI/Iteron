@@ -36,7 +36,7 @@ pub(super) fn queue(
         transcript_effect::ControlKind::ActivityCenter,
     );
 }
-fn parse(
+pub(super) fn parse(
     argument: &str,
     thread_id: iteron_protocol::SessionId,
     run_id: iteron_protocol::RunId,

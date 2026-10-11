@@ -72,7 +72,7 @@ fn budget(arguments: &[&str]) -> Result<AgentBudgetV1, &'static str> {
     Ok(budget)
 }
 
-fn parse(app: &App, argument: &str) -> Result<ClientAgentControlV1, &'static str> {
+pub(super) fn parse(app: &App, argument: &str) -> Result<ClientAgentControlV1, &'static str> {
     if argument.len() > iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES + 512 {
         return Err("agent command exceeds its text bound");
     }

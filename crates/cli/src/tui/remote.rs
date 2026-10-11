@@ -80,6 +80,9 @@ enum Kind {
         revision: u64,
     },
     Control,
+    ScopedControl {
+        run: iteron_protocol::RunId,
+    },
     Approval {
         prompt: SubmissionId,
     },
@@ -313,7 +316,7 @@ impl View {
             return Ok(false);
         }
         if text == "/help" {
-            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity /agents /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
+            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity [attach|stop TYPE ID] /agents [COMMAND] /status /permissions /config /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
             app.editor.clear();
             return Ok(false);
         }
@@ -322,9 +325,30 @@ impl View {
             let scope = self.scope();
             let control = match verb {
                 "/activity" => {
-                    json!({"type":"activity_center_v1","command":{"action":"list","thread_id":scope["thread_id"],"run_id":scope["run_id"]}})
+                    let command = super::activity_center::parse(
+                        arg,
+                        self.service.scope.thread_id.clone(),
+                        self.service.current_run_id.clone(),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    json!({"type":"activity_center_v1","command":command})
                 }
-                "/agents" => json!({"type":"agents_v1","command":{"type":"list"}}),
+                "/agents" => {
+                    let command = super::persistent_agents::parse(
+                        app,
+                        if arg.is_empty() { "list" } else { arg },
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    command.validate().map_err(anyhow::Error::msg)?;
+                    json!({"type":"agents_v1","command":command})
+                }
+                "/status" | "/diagnostics" => json!({"type":"operator_status"}),
+                "/permissions" if arg.is_empty() => {
+                    json!({"type":"inventory_v1","query":{"kind":"permissions"}})
+                }
+                "/config" if arg.is_empty() => {
+                    json!({"type":"inventory_v1","query":{"kind":"effective_config"}})
+                }
                 "/refusals" => {
                     self.queue(json!({"type":"refusals_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::Refusals{run:self.service.current_run_id.clone()})?;
                     app.editor.clear();
@@ -386,7 +410,18 @@ impl View {
                     json!({"type":"mcp_inputs_v1","command":{"thread_id":scope["thread_id"],"run_id":scope["run_id"],"command":{"action":"respond","request_id":id,"answer":answer}}})
                 }
                 "/side" => {
-                    json!({"type":"side_v1","command":{"thread_id":scope["thread_id"],"run_id":scope["run_id"],"command":{"action":"ask","text":arg}}})
+                    use iteron_protocol::client_interaction::{SideActionV1, SideCommandV1};
+                    let command = SideCommandV1 {
+                        thread_id: self.service.scope.thread_id.clone(),
+                        run_id: self.service.current_run_id.clone(),
+                        command: match super::control_submission::side_request_for(arg) {
+                            crate::app_server::SideRequest::Status => SideActionV1::Status {},
+                            crate::app_server::SideRequest::Close => SideActionV1::Close {},
+                            crate::app_server::SideRequest::Ask(text) => SideActionV1::Ask { text },
+                        },
+                    };
+                    command.validate().map_err(anyhow::Error::msg)?;
+                    json!({"type":"side_v1","command":command})
                 }
                 "/new" => {
                     json!({"type":"session_navigate_v1","command":{"action":"new","thread_id":scope["thread_id"],"run_id":scope["run_id"]}})
@@ -443,7 +478,23 @@ impl View {
                 }
                 _ => bail!("unknown attached-client command; use /help"),
             };
-            self.queue(control, Kind::Control)?;
+            let kind = if matches!(
+                verb,
+                "/activity"
+                    | "/agents"
+                    | "/side"
+                    | "/status"
+                    | "/diagnostics"
+                    | "/permissions"
+                    | "/config"
+            ) {
+                Kind::ScopedControl {
+                    run: self.service.current_run_id.clone(),
+                }
+            } else {
+                Kind::Control
+            };
+            self.queue(control, kind)?;
             app.editor.clear();
             return Ok(false);
         }
@@ -938,6 +989,11 @@ impl View {
                     app.status = "service stop requested · cleanup not yet observed".into();
                 }
             }
+            Kind::ScopedControl { run } => {
+                if run == self.service.current_run_id {
+                    show_reply(app, &reply);
+                }
+            }
             Kind::Control => {
                 if reply["type"] == "session_navigated_v1" {
                     let navigation: iteron_protocol::session_navigation::SessionNavigationReplyV1 =
@@ -1204,6 +1260,88 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attached_owner_controls_keep_actual_arguments_and_scope_in_the_public_activity_contract() {
+        let mut app = App::new();
+        let mut view = view();
+        for (text, verb, target) in [
+            (
+                "/activity attach process proc-native-1",
+                "inspect",
+                "proc-native-1",
+            ),
+            (
+                "/activity stop process proc-native-1",
+                "stop",
+                "proc-native-1",
+            ),
+        ] {
+            app.editor.clear();
+            app.editor.insert_str(text);
+            assert!(!view.submit(&mut app).unwrap());
+            let (wire, kind) = view.queued.pop_front().unwrap();
+            assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
+            assert_eq!(wire["command"]["action"], verb);
+            assert_eq!(wire["command"]["target"]["job_id"], target);
+            assert_eq!(wire["command"]["thread_id"], "thread");
+            assert_eq!(wire["command"]["run_id"], "run");
+            let parsed: iteron_protocol::activity_control::ActivityControlV1 =
+                serde_json::from_value(wire["command"].clone()).unwrap();
+            assert_eq!(parsed.is_read_only(), verb == "inspect");
+        }
+        for (text, action) in [("/side status", "status"), ("/side close", "close")] {
+            app.editor.clear();
+            app.editor.insert_str(text);
+            view.submit(&mut app).unwrap();
+            let (wire, _) = view.queued.pop_front().unwrap();
+            assert_eq!(wire["command"]["command"]["action"], action);
+            assert!(wire["command"]["command"]["text"].is_null());
+        }
+        app.editor.insert_str("/agents interrupt 7");
+        assert!(
+            view.submit(&mut app).is_err(),
+            "no observed epoch cannot dispatch an interrupt"
+        );
+        assert!(view.queued.is_empty());
+        assert_eq!(app.editor.text(), "/agents interrupt 7");
+        app.editor.clear();
+        app.editor
+            .insert_str("/agents followup 7 continue this task");
+        view.submit(&mut app).unwrap();
+        let (wire, _) = view.queued.pop_front().unwrap();
+        let command: iteron_protocol::client_agent_control::ClientAgentControlV1 =
+            serde_json::from_value(wire["command"].clone()).unwrap();
+        assert!(
+            matches!(command,iteron_protocol::client_agent_control::ClientAgentControlV1::Command {
+            command:iteron_protocol::agent_control::AgentCommandV1::FollowupTask { agent_id, .. }, ..
+        } if agent_id.0 == 7)
+        );
+    }
+    #[test]
+    fn closed_or_foreign_run_control_reply_never_relabels_a_new_selected_run() {
+        let mut app = App::new();
+        let mut view = view();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::ScopedControl {
+                run: iteron_protocol::RunId("old".into()),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"activity_center_v1","data":{"activities":[]}}),
+        )
+        .unwrap();
+        assert!(app.history.blocks().is_empty());
+        assert!(view.queued.is_empty());
+        app.editor.insert_str("/status");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(wire["type"], "operator_status");
+        assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
+    }
     fn view() -> View {
         View {
             service: ResidentServiceViewV1 {

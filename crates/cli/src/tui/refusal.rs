@@ -1,6 +1,8 @@
 //! Authority labels come from the closed host reason, never from error prose.
 use super::{App, block, kv};
-use iteron_protocol::refusal::{HostRefusalV1, RefusalOriginV1};
+use iteron_protocol::refusal::{
+    HostRefusalV1, RefusalEffectStateV1, RefusalOriginV1, RefusalReasonV1,
+};
 use serde::Deserialize as _;
 pub(super) fn origin_label(origin: RefusalOriginV1) -> &'static str {
     match origin {
@@ -30,6 +32,8 @@ pub(super) fn show(app: &mut App, refusal: &HostRefusalV1) {
                 iteron_protocol::refusal::RefusalEffectStateV1::Unavailable => "unavailable",
             },
         ),
+        kv("retry", retry_guidance(refusal.effects)),
+        kv("next step", next_step(refusal)),
     ];
     if let Some(source) = &refusal.source {
         rows.push(kv(
@@ -42,6 +46,67 @@ pub(super) fn show(app: &mut App, refusal: &HostRefusalV1) {
         ));
     }
     app.panel("!", "Operation refused", rows);
+}
+fn retry_guidance(effects: RefusalEffectStateV1) -> &'static str {
+    match effects {
+        RefusalEffectStateV1::NotDispatched => "new request after fixing the cause",
+        RefusalEffectStateV1::Settled => "inspect the result before repeating",
+        RefusalEffectStateV1::Unknown => "do not repeat while effects remain unconfirmed",
+        RefusalEffectStateV1::Unavailable => "retry safety unavailable; inspect the actual owner",
+    }
+}
+fn next_step(refusal: &HostRefusalV1) -> &'static str {
+    if matches!(
+        refusal.effects,
+        RefusalEffectStateV1::Unknown | RefusalEffectStateV1::Unavailable
+    ) {
+        return "Use /status and /activity to inspect actual work before another attempt.";
+    }
+    match refusal.reason {
+        RefusalReasonV1::PermissionDenied
+        | RefusalReasonV1::CapabilityCeiling
+        | RefusalReasonV1::UntrustedExternalEffect
+        | RefusalReasonV1::InvalidPermissionPolicy
+        | RefusalReasonV1::AdministratorDenied => {
+            "Use /status to inspect the effective policy; choose a permitted operation."
+        }
+        RefusalReasonV1::OperatorDenied
+        | RefusalReasonV1::ApprovalUnavailable
+        | RefusalReasonV1::ApprovalCancelled => {
+            "Continue with a permitted alternative or send a revised request."
+        }
+        RefusalReasonV1::ApprovalProjectionIncomplete => {
+            "Reduce the operation so its command, target and scope can be shown completely."
+        }
+        RefusalReasonV1::SandboxUnavailable | RefusalReasonV1::SandboxProfileRefused => {
+            "Check the configured sandbox and backend before sending a new request."
+        }
+        RefusalReasonV1::ExtensionDenied | RefusalReasonV1::ExtensionUnavailable => {
+            "Inspect extension configuration or choose another available tool."
+        }
+        RefusalReasonV1::BudgetLimit | RefusalReasonV1::DeadlineLimit => {
+            "Use /status to inspect the limit; reduce the task or set a new budget."
+        }
+        RefusalReasonV1::ObservationLimit | RefusalReasonV1::ResourceUnavailable => {
+            "Use /activity to inspect retained tasks and available owner capacity."
+        }
+        RefusalReasonV1::PricingUnavailable => {
+            "Use /models to inspect an available route with valid pricing evidence."
+        }
+        RefusalReasonV1::ModelUnavailable | RefusalReasonV1::ModelContextLimit => {
+            "Use /models to select an available route or reduce the request."
+        }
+        RefusalReasonV1::ProviderRefusal => "Revise the request before asking the provider again.",
+        RefusalReasonV1::DurableRecordUnavailable => {
+            "Preserve the session and inspect its record health before new work."
+        }
+        RefusalReasonV1::OperatorInterrupted => "Continue with a new request when ready.",
+        RefusalReasonV1::DuplicateFailedAction => {
+            "Change the failed operation or inspect its prior result before another attempt."
+        }
+        RefusalReasonV1::InvalidRequest => "Correct the request shape or use /help.",
+        RefusalReasonV1::Unknown => "Use /status and /activity to inspect the actual owner.",
+    }
 }
 pub(super) fn remote(
     app: &mut App,
@@ -106,6 +171,8 @@ pub(super) fn remote(
                 iteron_protocol::refusal::RefusalEffectStateV1::Unavailable => "unavailable",
             }
         )));
+        display.push(kv("retry", retry_guidance(fact.effects)));
+        display.push(kv("next step", next_step(&fact)));
     }
     display.push(block::PanelRow::Note(
         "Live host causes only; historical prose is not reclassified.".into(),
@@ -116,6 +183,26 @@ pub(super) fn remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_effects_keep_retry_guidance_uncertain_even_with_a_known_policy_cause() {
+        let mut app = App::new();
+        let mut refusal = HostRefusalV1::unscoped(RefusalReasonV1::PermissionDenied);
+        refusal.effects = RefusalEffectStateV1::Unknown;
+        show(&mut app, &refusal);
+        let unknown = app.history.blocks().last().unwrap().to_text();
+        assert!(unknown.contains("host permission policy"));
+        assert!(unknown.contains("unconfirmed"));
+        assert!(unknown.contains("do not repeat"));
+        assert!(unknown.contains("/activity"));
+        assert!(!unknown.contains("new request after fixing"));
+        assert!(!app.run.running());
+        refusal.effects = RefusalEffectStateV1::NotDispatched;
+        show(&mut app, &refusal);
+        let known = app.history.blocks().last().unwrap().to_text();
+        assert!(known.contains("not dispatched"));
+        assert!(known.contains("new request after fixing"));
+        assert!(known.contains("choose a permitted operation"));
+    }
     #[test]
     fn labels_keep_user_admin_and_sandbox_distinct() {
         assert_ne!(
