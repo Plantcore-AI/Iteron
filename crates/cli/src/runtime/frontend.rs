@@ -796,8 +796,28 @@ impl Agent {
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
         if self.transcript_state.working().is_none() {
-            if let Some(control) = self.persistent_agents.clone()
-                && let Some(owner) = self.transcript_state.live_owner(&self.rollout)
+            let live_owner = self.transcript_state.live_owner(&self.rollout);
+            let live_control = match (&self.persistent_agents, &self.persistent_mailbox) {
+                (Some(control), _) => Some(control.clone()),
+                // Resident Agents intentionally retain no strong host field. Their actual
+                // admitted mailbox still supplies the existing owner for this exact epoch.
+                (None, Some(mailbox)) => {
+                    if live_owner.is_none() {
+                        return Err(KernelError::AgentControl(
+                            iteron_agents::ControllerError::RecoveryRequired,
+                        ));
+                    }
+                    Some(
+                        mailbox
+                            .child_controller()
+                            .map_err(KernelError::AgentControl)?
+                            .0,
+                    )
+                }
+                (None, None) => None,
+            };
+            if let Some(control) = live_control
+                && let Some(owner) = live_owner
             {
                 self.require_installed_cohort()?;
                 if let Some(mailbox) = &self.persistent_mailbox {

@@ -630,6 +630,30 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
     let child = spawn(&host, "first remembered context");
     until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
+    let resident = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&child)
+        .unwrap()
+        .clone();
+    let (money, card) = {
+        let mut actual = resident.lock().await;
+        assert!(
+            actual.persistent_agents.is_none(),
+            "the resident retains no strong host cycle"
+        );
+        assert_eq!(
+            actual.transcript_state.live_owner(&actual.rollout),
+            Some(child)
+        );
+        let money = actual.usd_budget.clone().unwrap();
+        let card = actual.provider_selection.card().cloned().unwrap();
+        // Exercise lost process-local working state through the real retained mailbox/record.
+        // A live followup must not reconstruct or refill its already-owned financial context.
+        actual.transcript_state.replace_working(None);
+        (money, card)
+    };
     host.command(
         AgentActor::Operator,
         "followup",
@@ -645,6 +669,15 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
     })
     .await;
     assert_eq!(runtime.residents.lock().unwrap().len(), 1);
+    {
+        let actual = resident.lock().await;
+        assert!(Arc::ptr_eq(actual.usd_budget.as_ref().unwrap(), &money));
+        assert_eq!(actual.provider_selection.card(), Some(&card));
+        assert!(Arc::ptr_eq(
+            runtime.residents.lock().unwrap().get(&child).unwrap(),
+            &resident
+        ));
+    }
     let texts = provider.texts.lock().unwrap();
     assert!(texts[1].contains("first remembered context"));
     assert!(texts[1].contains("continue same identity"));
