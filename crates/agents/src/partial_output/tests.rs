@@ -134,8 +134,10 @@ fn actual_controller_restart_marks_partial_unknown_and_new_epoch_rejects_old_sou
     outputs
         .append(&view, epoch, task, &source, "ephemeral output")
         .unwrap();
-    let store = Store(Some(controller.snapshot().clone()));
-    let restored = AgentController::open(store, controller.config().clone()).unwrap();
+    let snapshot = controller.snapshot().clone();
+    let config = snapshot.config().clone();
+    let store = Store(Some(snapshot));
+    let restored = AgentController::open(store, config).unwrap();
     let mut recovered = restored
         .inspect(AgentActor::Operator, view.agent_id)
         .unwrap();
@@ -187,12 +189,13 @@ fn durable_snapshot_cannot_forge_an_ephemeral_observed_result() {
         .append(&view, epoch, task, &source, "forged persisted partial")
         .unwrap();
     outputs.decorate(&mut view);
+    let config = controller.snapshot().config().clone();
     let mut value = serde_json::to_value(controller.snapshot()).unwrap();
     value["agents"][view.agent_id.0.to_string()]["view"]["partial_output"] =
         serde_json::to_value(view.partial_output).unwrap();
     let snapshot = serde_json::from_value(value).unwrap();
     assert!(matches!(
-        AgentController::open(Store(Some(snapshot)), controller.config().clone()),
+        AgentController::open(Store(Some(snapshot)), config),
         Err(ControllerError::Invalid(_))
     ));
 }
