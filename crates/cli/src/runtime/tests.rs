@@ -9881,9 +9881,10 @@ ant-api03-SuperSecretModelToken12345"
         record_direct_fixture_selection(&mut agent);
         agent.fail_next_durable_append = Some(DurableAppendFault::SubagentFinished);
 
-        assert_eq!(
-            agent.run("investigate only").await.unwrap(),
-            Outcome::HarnessError
+        let result = agent.run("investigate only").await;
+        assert!(
+            matches!(&result, Err(KernelError::ContextResolution(reason)) if reason.contains("[storage_io]")),
+            "{result:?}"
         );
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
         assert!(!events.iter().any(|event| matches!(
@@ -19972,6 +19973,39 @@ ant-api03-SuperSecretModelToken12345"
             agent.ledger.cost_state(),
             CostState::Unknown { .. }
         ));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let unknown = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::EffectUnknown { id, tool, .. } if tool == "subagent" => {
+                    Some((id, event.seq))
+                }
+                _ => None,
+            })
+            .expect("actual unknown child effect");
+        assert!(events.iter().any(|event| matches!(&event.kind,
+            EventKind::ChildAccountingPendingV1 { effect_id } if effect_id == unknown.0
+                && event.seq < unknown.1)));
+        assert!(!events.iter().any(|event| matches!(&event.kind,
+            EventKind::ChildAccountingResolvedV1 { effect_id } if effect_id == unknown.0)));
+        let mut replay = iteron_obs::PricingReplay::default();
+        let mut restored = Ledger::new();
+        for event in &events {
+            replay
+                .observe(
+                    event,
+                    agent.rollout.tenant(),
+                    agent.rollout.run_id(),
+                    &mut restored,
+                )
+                .unwrap();
+        }
+        assert!(matches!(restored.cost_state(), CostState::Unknown { .. }));
+        assert_eq!(
+            restored.provider_attempts, 0,
+            "unconfirmed child metrics are never fabricated"
+        );
         assert!(agent.usd_budget_exhausted());
         let second = agent
             .spawn_subagent("inspect another area", 1)

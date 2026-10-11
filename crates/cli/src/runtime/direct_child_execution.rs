@@ -161,6 +161,7 @@ impl DirectChildExecution {
             let processes = child.settle_persistent_owned_processes().await;
             let policy = child.finalize_policy_run().is_ok();
             if !processes || !policy || !child.parent_effects_known() {
+                journal.retain_unknown_child_accounting(turn, ticket.effect_id())?;
                 journal.settle(
                     ticket,
                     effects::Settlement::Unknown(

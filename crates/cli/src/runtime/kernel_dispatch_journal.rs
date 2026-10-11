@@ -41,6 +41,25 @@ impl KernelDispatchJournal<'_> {
     ) -> Result<(), &'static str> {
         self.ledger.begin_child_accounting(effect)
     }
+    pub(super) fn retain_unknown_child_accounting(
+        &mut self,
+        turn: TurnId,
+        effect: &iteron_protocol::EffectId,
+    ) -> Result<(), KernelError> {
+        // Publish the exact unresolved attribution before the outer unknown terminal. A crash
+        // at either following step must never restore a known-zero aggregate for this child.
+        self.append(
+            turn,
+            EventKind::ChildAccountingPendingV1 {
+                effect_id: effect.clone(),
+            },
+        )?;
+        let admitted = self.begin_child_accounting(effect);
+        if let Some(money) = &self.money {
+            money.mark_unknown();
+        }
+        admitted.map_err(|reason| KernelError::ContextResolution(reason.into()))
+    }
     pub(super) fn resolve_child_accounting(
         &mut self,
         effect: &iteron_protocol::EffectId,
