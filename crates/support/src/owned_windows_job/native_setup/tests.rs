@@ -211,3 +211,46 @@ async fn native_sandbox_workspace_capability_mismatch_retires_only_its_created_s
     assert!(workspace.0.join("workspace").is_dir());
     assert!(workspace.0.join("scratch").is_dir());
 }
+
+#[tokio::test]
+async fn native_sandbox_scratch_retirement_unlinks_reparse_objects_without_touching_targets() {
+    let workspace = Workspace::new();
+    let scratch = workspace.0.join("created-scratch-with-links");
+    let outside = workspace.0.join("outside-target");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), b"outside directory canary").unwrap();
+    let outside_file = workspace.0.join("outside-file.txt");
+    std::fs::write(&outside_file, b"outside file canary").unwrap();
+    let launch = workspace
+        .sandbox(&scratch, None)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("the actual native factory must provision its own scratch: {error}")
+        });
+    let prepared = launch.prepared.as_ref().unwrap();
+    let job = prepared.job.clone();
+    let observation = prepared.retirement.as_ref().unwrap().observation();
+    // Create the links only after permission installation. The retirement census must inspect
+    // the link objects and revoke their fresh SID; scratch disposal must then unlink them.
+    std::os::windows::fs::symlink_dir(&outside, scratch.join("outside-directory-link")).unwrap();
+    std::os::windows::fs::symlink_file(&outside_file, scratch.join("outside-file-link")).unwrap();
+    std::fs::write(scratch.join("ordinary.txt"), b"own disposable output").unwrap();
+    assert_eq!(job.active_processes().unwrap(), 0);
+    drop(launch);
+    assert!(
+        observation.observe(Duration::from_secs(5)).await,
+        "a child-created reparse leaf must not leave the exact scratch owner unknown"
+    );
+    assert_eq!(job.active_processes().unwrap(), 0);
+    assert!(!scratch.try_exists().unwrap());
+    assert!(outside.is_dir());
+    assert_eq!(
+        std::fs::read(outside.join("keep.txt")).unwrap(),
+        b"outside directory canary"
+    );
+    assert_eq!(
+        std::fs::read(&outside_file).unwrap(),
+        b"outside file canary"
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+}

@@ -168,8 +168,11 @@ fn delete_children(directory: &File, remaining: &mut usize, depth: usize) -> io:
             FILE_OPEN,
         )?
         .ok_or_else(unavailable)?;
-        let _ = stamp(&child, is_directory)?;
-        if is_directory {
+        let (_, reparse) = inspect(&child, is_directory)?;
+        // The single-component open is relative to the retained parent and explicitly opens
+        // the reparse object itself. Delete that exact link; its target is never enumerated.
+        // The scratch root still uses stamp(), which rejects a substituted reparse root.
+        if is_directory && !reparse {
             delete_children(&child, remaining, depth + 1)?;
         }
         mark_delete(&child)?;
@@ -257,18 +260,27 @@ fn open(
     Ok(Some(unsafe { File::from_raw_handle(raw) }))
 }
 fn stamp(file: &File, directory: bool) -> io::Result<IdentityStamp> {
+    let (stamp, reparse) = inspect(file, directory)?;
+    if reparse {
+        return Err(unavailable());
+    }
+    Ok(stamp)
+}
+fn inspect(file: &File, directory: bool) -> io::Result<(IdentityStamp, bool)> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
         || unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
-        || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
     {
         return Err(unavailable());
     }
-    Ok(IdentityStamp(
-        info.dwVolumeSerialNumber,
-        info.nFileIndexHigh,
-        info.nFileIndexLow,
+    Ok((
+        IdentityStamp(
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ),
+        info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
     ))
 }
 fn mark_delete(file: &File) -> io::Result<()> {
