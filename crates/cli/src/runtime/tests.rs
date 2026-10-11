@@ -2824,7 +2824,7 @@ mod gate_integration_tests {
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("core-gate-{tag}-{pid}-{n:x}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        dir.canonicalize().unwrap()
     }
 
     /// Give direct `Agent::new` integration fixtures the same atomic genesis prefix as the CLI.

@@ -229,7 +229,7 @@ mod tests {
             thread_id: SessionId("session-run".into()),
             run_id: RunId("run".into()),
         };
-        let snapshot = reader.read(query);
+        let snapshot = reader.read(query.clone());
         let rows = snapshot["observations"].as_array().unwrap();
         assert_eq!(rows.len(), 64);
         assert_eq!(snapshot["omitted"], 1);
@@ -237,8 +237,17 @@ mod tests {
         assert_eq!(rows[63]["observation_sequence"], 65);
         assert_eq!(rows[0]["refusal"]["effects"], "unavailable");
         assert!(rows[0]["refusal"]["source"].is_null());
-        assert!(!reader.observe(64, &value));
+        assert!(
+            !reader.observe(1, &value),
+            "the evicted observation is unavailable"
+        );
+        assert!(reader.observe(64, &value));
         assert!(reader.observe(65, &value));
+        assert_eq!(
+            reader.read(query),
+            snapshot,
+            "retained duplicates do not append rows"
+        );
     }
 
     #[test]

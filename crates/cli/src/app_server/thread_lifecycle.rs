@@ -372,7 +372,7 @@ mod tests {
             ));
             std::fs::create_dir_all(path.join("workspace")).unwrap();
             std::fs::create_dir_all(path.join("other")).unwrap();
-            Self(path)
+            Self(path.canonicalize().unwrap())
         }
 
         fn scope(&self) -> HistoryScope {
