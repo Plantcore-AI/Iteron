@@ -610,6 +610,7 @@ impl View {
                 if snapshot.run_id != self.service.current_run_id {
                     self.service.current_run_id = snapshot.run_id.clone();
                     self.models = None;
+                    app.persistent_agent_views.clear();
                     self.queued.clear();
                     self.accepted = None;
                     self.expected_submission = None;
@@ -1007,6 +1008,7 @@ impl View {
                     }
                     self.service.current_run_id = navigation.run_id.clone();
                     self.models = None;
+                    app.persistent_agent_views.clear();
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
