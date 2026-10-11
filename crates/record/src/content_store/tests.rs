@@ -155,10 +155,27 @@ fn retained_artifact_waits_for_store_lease_and_preserves_actual_source_lineage()
     let result = store.put_derived(Seq(2), b"actual retained artifact", &sources);
     release.join().unwrap();
     let handle = result.expect("a transient record writer must not abort retained publication");
+    // Hydration also races the actual background publisher. A different thread releases its
+    // exclusive lease, so this blocking read never relies on its own caller to unblock it.
+    let lock = lock_store(&layout).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(lock);
+    });
+    let retained = store.read_at(Seq(2), &handle);
+    release.join().unwrap();
     assert_eq!(
-        store.read_at(Seq(2), &handle).unwrap(),
+        retained.expect("a transient publisher must not abort retained hydration"),
         b"actual retained artifact"
     );
+    // A lease which never becomes available still refuses after the same finite acquisition
+    // window. It cannot return cached bytes or relabel contention as corrupt/missing content.
+    let lock = lock_store(&layout).unwrap();
+    assert!(matches!(
+        store.read_at(Seq(2), &handle),
+        Err(ContentStoreError::Busy)
+    ));
+    drop(lock);
     assert_eq!(store.sources_at(Seq(2), &handle).unwrap(), sources);
     assert!(matches!(
         store.read_at(Seq(3), &handle),

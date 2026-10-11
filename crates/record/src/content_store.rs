@@ -189,7 +189,7 @@ fn put_private_content_at_surface_with_sources(
     ensure_layout(&layout)?;
     // A retained artifact shares this tenant store with record publication. Wait only for
     // the existing bounded acquisition window, before any blob or reference mutation.
-    let _lock = lock_store_for_record(&layout)?;
+    let _lock = lock_store_for_record(&layout, lock_store)?;
     if sources.len() > model::MAX_CONTENT_LINEAGE_EDGES {
         return Err(ContentStoreError::ReferenceBound {
             max: model::MAX_CONTENT_LINEAGE_EDGES,
@@ -268,7 +268,10 @@ fn read_private_content_at_reference(
 ) -> Result<Vec<u8>, ContentStoreError> {
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _store_lock = lock_store_shared(&layout)?;
+    // A retained read shares this store with the background session publisher. Wait only
+    // through the existing bounded acquisition window; every reference, source and tombstone
+    // check still occurs under the actual shared lease after acquisition.
+    let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     read_private_content_at_reference_locked(&layout, owner, seq, surface, handle)
 }
 
@@ -682,7 +685,7 @@ pub(crate) fn externalize_event_payload(
     // authoritative rollout. Their short critical sections may overlap an event append, but a
     // transient lock collision is not a broken audit trail. Wait only at lock acquisition, before
     // this append can mutate content or reference state, and keep the wait strictly bounded.
-    let _lock = lock_store_for_record(&layout)?;
+    let _lock = lock_store_for_record(&layout, lock_store)?;
     for source in &checkpoint_sources {
         references::verify_source_owner_locked(&layout, source)?;
         ensure_available_locked(&layout, &source.digest)?;
@@ -759,12 +762,15 @@ pub(crate) fn externalize_event_payload(
     Ok(())
 }
 
-fn lock_store_for_record(layout: &Layout) -> Result<StoreLock, ContentStoreError> {
+fn lock_store_for_record(
+    layout: &Layout,
+    acquire: fn(&Layout) -> Result<StoreLock, ContentStoreError>,
+) -> Result<StoreLock, ContentStoreError> {
     for attempt in 0..iteron_tunables::param_integer(
         "record.content_store.record_lock_retry_attempts",
         RECORD_LOCK_RETRY_ATTEMPTS,
     ) {
-        match lock_store(layout) {
+        match acquire(layout) {
             Err(ContentStoreError::Busy)
                 if attempt + 1
                     < iteron_tunables::param_integer(
