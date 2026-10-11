@@ -3391,6 +3391,14 @@
         {
           "kind": "tree",
           "path": "crates/cli/src/runtime/model_context_projection"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/native_change_evidence.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/native_change_evidence_tests.rs"
         }
       ],
       "contracts": [
