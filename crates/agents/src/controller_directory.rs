@@ -68,12 +68,13 @@ fn pin_with_barrier(
         let parent = pins.last().ok_or(ControllerStoreError::Unavailable)?;
         let mut child = open_child(parent, &name);
         #[cfg(target_os = "macos")]
-        if child.is_err() && pins.len() == 1 {
-            if let Some((private, target)) = protected_system_alias(parent, &name)? {
-                pins.push(private);
-                pins.push(target);
-                continue;
-            }
+        if child.is_err()
+            && pins.len() == 1
+            && let Some((private, target)) = protected_system_alias(parent, &name)?
+        {
+            pins.push(private);
+            pins.push(target);
+            continue;
         }
         if child
             .as_ref()
