@@ -62,6 +62,10 @@ fn attach_requires_the_service_identity_while_serve_options_remain_optional() {
     assert!(!rendered.contains("iteron attach <ENDPOINT> [--service-id <SERVICE_ID>]"));
     // Existing default-valued and boolean named options retain their optional syntax.
     assert!(rendered.contains("iteron serve [--listen <LISTEN>] [--client-approvals]"));
+    // Typed integer and enum defaults also remain optional; their Rust expressions are not
+    // advertised as literal CLI values.
+    assert!(rendered.contains("`iteron record receipts [--limit <LIMIT>]`"));
+    assert!(rendered.contains("`iteron mcp list [--format <FORMAT>]`"));
 }
 
 #[test]

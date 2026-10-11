@@ -420,6 +420,7 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
         arity: arity(&field.ty),
         doc: doc_comment(&field.attrs),
     };
+    let mut typed_default = false;
     for attr in &field.attrs {
         if !attr.path().is_ident("arg") {
             continue;
@@ -447,6 +448,15 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
                 arg.default_value = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 return Ok(());
             }
+            if meta.path.is_ident("default_value_t") {
+                // A typed default also makes a named argument optional. Its Rust expression
+                // is not the rendered CLI default string, so retain only that admission fact.
+                typed_default = true;
+                if let Ok(value) = meta.value() {
+                    let _: syn::Expr = value.parse()?;
+                }
+                return Ok(());
+            }
             // Any other clap knob (`value_enum`, `action`, …) does not change the rendered
             // contract; consume its value if it has one so parsing continues.
             if let Ok(value) = meta.value() {
@@ -456,7 +466,7 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
         })
         .with_context(|| format!("cannot read the clap attributes of `{field_name}`"))?;
     }
-    arg.required = is_required(&field.ty, arg.default_value.as_ref());
+    arg.required = !typed_default && is_required(&field.ty, arg.default_value.as_ref());
     Ok(arg)
 }
 
