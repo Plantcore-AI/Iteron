@@ -32,7 +32,7 @@ pub(super) fn main_runtime(
         .build_persistent_child(&call, &root, None, None)
         .unwrap();
     if let Some(fixture) = &runtime.fixture {
-        fixture(&mut main);
+        fixture(&mut main, root.agent_id);
     }
     main.persistent_agents = Some(control);
     main

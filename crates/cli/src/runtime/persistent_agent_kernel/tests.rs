@@ -426,11 +426,7 @@ fn setup_with_financial_and_memory(
         let settled = settled.clone();
         let provider = provider.clone();
         let fixture_control = fixture_control.clone();
-        runtime.fixture = Some(Arc::new(move |child| {
-            let owner = child
-                .transcript_state
-                .live_owner(&child.rollout)
-                .unwrap_or(AgentIdV1(1));
+        runtime.fixture = Some(Arc::new(move |child, owner| {
             let settled = settled.clone();
             let provider = provider.clone();
             let fixture_control = fixture_control.clone();
@@ -459,7 +455,7 @@ fn setup_with_financial_and_memory(
             !block_tool,
             "memory fixture owns the one constructor callback"
         );
-        runtime.fixture = Some(Arc::new(move |child| {
+        runtime.fixture = Some(Arc::new(move |child, _owner| {
             // Explicit host-owned isolated namespace; ordinary ChildMemoryPolicy::Isolated
             // does not install parent memory or broaden the child's authority.
             child.memory_workspace = Some(memory_workspace.clone());
@@ -468,14 +464,14 @@ fn setup_with_financial_and_memory(
     }
     let previous_fixture = runtime.fixture.take();
     let source_observer = provider.clone();
-    runtime.fixture = Some(Arc::new(move |child| {
+    runtime.fixture = Some(Arc::new(move |child, owner| {
         source_observer.child_sources.lock().unwrap().push((
             child.rollout.tenant().clone(),
             child.rollout.run_id().clone(),
             child.rollout.path().to_path_buf(),
         ));
         if let Some(previous) = &previous_fixture {
-            previous(child);
+            previous(child, owner);
         }
     }));
     // Explicit compatibility for this older provider-free Main fixture only. Production never

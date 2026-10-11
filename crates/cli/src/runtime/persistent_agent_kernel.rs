@@ -28,7 +28,7 @@ use std::time::Duration;
 
 type Resident = Arc<tokio::sync::Mutex<Agent>>;
 #[cfg(test)]
-type ResidentFixture = Arc<dyn Fn(&mut Agent) + Send + Sync>;
+type ResidentFixture = Arc<dyn Fn(&mut Agent, AgentIdV1) + Send + Sync>;
 mod budget;
 mod profiles;
 mod recovery;
@@ -165,7 +165,7 @@ impl KernelPersistentRuntime {
         child.persistent_agents = None; // Child tools retain only a Weak host port; avoid an owner cycle.
         #[cfg(test)]
         if let Some(fixture) = &self.fixture {
-            fixture(&mut child);
+            fixture(&mut child, view.agent_id);
         }
         let resident = Arc::new(tokio::sync::Mutex::new(child));
         residents.insert(view.agent_id, resident.clone());
