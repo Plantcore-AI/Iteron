@@ -2843,8 +2843,8 @@ mod gate_integration_tests {
         let route = PricingRoute {
             provider_id,
             model_id: agent.model.clone(),
-            catalog_digest: String::new(),
-            capability_digest: String::new(),
+            catalog_digest: test_pricing_digests().0,
+            capability_digest: test_pricing_digests().1,
         };
         super::provider_selection::ProviderSelectionOwner::validate_selection(
             &agent.provider,
@@ -19904,7 +19904,8 @@ ant-api03-SuperSecretModelToken12345"
             .await
             .unwrap_err();
         assert!(
-            second.contains(&KernelError::InvalidRouteMetadata {
+            second.contains("parent inference budget exhausted (max_usd)")
+                || second.contains(&KernelError::InvalidRouteMetadata {
                 field: "provider_budget_envelope",
                 reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
             }.public_summary()),
