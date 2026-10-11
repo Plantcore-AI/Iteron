@@ -89,6 +89,44 @@ pub(crate) fn installed_fixture() -> (PathBuf, RuntimePlugins) {
     (root, runtime)
 }
 
+#[test]
+fn verified_effective_inventory_keeps_captured_scope_caps_and_hook_identity_without_rescanning() {
+    let (root, mut runtime) = installed_fixture();
+    let identity = runtime.inventory_snapshot().remove(0);
+    assert_eq!(identity.source, "signature_verified_plugin_store");
+    assert_eq!(identity.version, "1.0.0");
+    assert_eq!(identity.scope, iteron_marketplace::PluginScope::User);
+    assert_eq!(identity.manifest_requested_capabilities, ceiling());
+    let hook = identity
+        .bound_surfaces
+        .iter()
+        .find(|binding| binding.surface == iteron_marketplace::Surface::Hook)
+        .unwrap();
+    assert_eq!(hook.composed_capabilities, ceiling());
+    assert_eq!(
+        hook.handler_digest_sha256.as_deref(),
+        Some(hex::encode(Sha256::digest(b"true")).as_str())
+    );
+    let owner = runtime.management_port().unwrap().unwrap();
+    let before = owner.snapshot();
+    fs::rename(root.join("store"), root.join("store-detached")).unwrap();
+    let after = owner.snapshot();
+    assert_eq!(
+        before, after,
+        "inspection must read installed facts rather than reopen package files"
+    );
+    assert_eq!(after["current_generation"]["items"][0]["scope"], "user");
+    assert!(
+        after["current_generation"]["items"][0]["context_cost"]["charged_prompt_tokens"].is_null()
+    );
+    assert!(
+        !serde_json::to_string(&after)
+            .unwrap()
+            .contains("\"action\"")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn real_signed_disable_is_current_monotone_even_after_enable_and_new_bootstrap_is_distinct() {
     let root = temporary();

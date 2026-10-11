@@ -51,17 +51,22 @@ impl Agent {
                 "operation_requirements_checked_at_dispatch":true})
         }).collect::<Vec<_>>();
         let identity = self.hooks.catalog_identity();
-        let hooks = self
-            .hooks
-            .inventory_events()
-            .into_iter()
-            .map(|(event, handlers)| json!({"event":event,"handlers":handlers}))
-            .collect::<Vec<_>>();
+        let hooks = self.hooks.inventory_snapshot();
         let catalog = self.agent_catalog_snapshot();
         let agents = catalog.defs().iter().take(MAX_RUNTIME_ENTRIES).map(|agent| json!({"name":safe(&agent.name),"trust":agent.trust,"model":agent.model.as_deref().map(safe)})).collect::<Vec<_>>();
-        let skills = iteron_ctx::skills::captured_metadata_for(self.context_home_dir.as_deref(),&self.workspace,&self.dependency_skill_dirs)
-            .map(|catalog| catalog.defs().iter().take(MAX_RUNTIME_ENTRIES).map(|skill| json!({"name":safe(&skill.name),"trust":skill.trust,"tier":match skill.tier {
-                iteron_ctx::skills::SkillTier::User=>"user",iteron_ctx::skills::SkillTier::Project=>"project",iteron_ctx::skills::SkillTier::Dependency=>"dependency"}})).collect::<Vec<_>>());
+        let skills = iteron_ctx::skills::captured_metadata_for(
+            self.context_home_dir.as_deref(),
+            &self.workspace,
+            &self.dependency_skill_dirs,
+        )
+        .map(|catalog| {
+            catalog
+                .defs()
+                .iter()
+                .take(MAX_RUNTIME_ENTRIES)
+                .map(skill_inventory)
+                .collect::<Vec<_>>()
+        });
         let (checkpoint, effective) = match self.tunables_checkpoint() {
             Ok(iteron_record::TunablesCheckpoint::V2(snapshot)) => (
                 json!({"version":2,"snapshot_digest_sha256":snapshot.snapshot_digest_sha256,"effective_digest_sha256":snapshot.effective_digest_sha256,
@@ -163,4 +168,21 @@ impl RuntimeClientInventory {
         }
         Ok(value)
     }
+}
+
+fn skill_inventory(skill: &iteron_ctx::skills::SkillDef) -> Value {
+    let (mut source, version) = skill.captured_source_identity();
+    if let Some(source) = source.as_mut() {
+        source.relative_path = safe(&source.relative_path);
+    }
+    json!({"name":safe(&skill.name),"trust":skill.trust,
+        "tier":match skill.tier {iteron_ctx::skills::SkillTier::User=>"user",iteron_ctx::skills::SkillTier::Project=>"project",iteron_ctx::skills::SkillTier::Dependency=>"dependency"},
+        "source_status":if source.is_some(){"captured"}else{"unavailable"},"source":source,"version":version,
+        "activation_paths":skill.metadata.paths.iter().map(|path|safe(path)).collect::<Vec<_>>(),
+        "model_discovery_disabled":skill.metadata.disable_model_invocation,
+        "declared_tool_narrowing":skill.metadata.tools.as_ref().map(|tools|tools.iter().map(|name|safe(name)).collect::<Vec<_>>()),
+        "authority":"instruction guidance; tool declaration only narrows caller authority",
+        "context_cost":{"description_bytes":skill.description.len(),"captured_body_fragment_bytes":skill.body.len(),"charged_prompt_tokens":null,"cost_status":"not_attributed_per_skill","selection":"metadata index filtered by active paths; body loads on demand"},
+        "failure_policy":"unsafe, malformed and untrusted sources rejected by the context catalog; no executable callback",
+        "snapshot_semantics":"actual captured catalog; metadata/source prefix may not include full lazy body"})
 }

@@ -144,8 +144,13 @@ impl RuntimePlugins {
         let installed =
             agent.install_ordinary_extensions(bindings, directory, self.dispatch_policy())?;
         for binding in installed {
-            self.inventory
-                .bound(&binding.plugin, binding.surface, &binding.key);
+            self.inventory.bound(
+                &binding.plugin,
+                binding.surface,
+                &binding.key,
+                binding.capabilities,
+                None,
+            );
         }
         Ok(())
     }

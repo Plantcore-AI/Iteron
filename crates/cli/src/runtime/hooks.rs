@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use self::journal::HookEffectJournal;
 
+mod inventory;
 pub(crate) mod journal;
 
 const HOOK_CAPTURE_HEAD_BYTES: usize = 32 * 1024;
@@ -138,6 +139,7 @@ struct HooksFile {
 #[derive(Debug, Clone)]
 pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
+    handler_sources: BTreeMap<(String, usize), &'static str>,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
     plantcore_workspace_posture: Option<&'static str>,
@@ -159,6 +161,7 @@ impl Default for Hooks {
     fn default() -> Self {
         Self {
             by_event: BTreeMap::new(),
+            handler_sources: BTreeMap::new(),
             timeout_secs: iteron_tunables::param_integer(
                 "cli.runtime.hooks.default_hook_timeout_secs",
                 DEFAULT_HOOK_TIMEOUT_SECS,
@@ -531,8 +534,17 @@ impl Hooks {
     /// Build from the immutable operator config snapshot already parsed by the composition root.
     /// This is the production path: hooks must not reopen and reparse `config.json` independently.
     pub(crate) fn from_user_config(commands: Option<&BTreeMap<String, Vec<String>>>) -> Hooks {
+        let by_event = bounded_hook_map(commands.cloned().unwrap_or_default());
+        let handler_sources = by_event
+            .iter()
+            .flat_map(|(event, commands)| {
+                (0..commands.len())
+                    .map(move |index| ((event.clone(), index), "trusted_user_config"))
+            })
+            .collect();
         Hooks {
-            by_event: bounded_hook_map(commands.cloned().unwrap_or_default()),
+            by_event,
+            handler_sources,
             timeout_secs: iteron_tunables::param_integer(
                 "cli.runtime.hooks.default_hook_timeout_secs",
                 DEFAULT_HOOK_TIMEOUT_SECS,
@@ -597,6 +609,10 @@ impl Hooks {
         {
             return Err("hook chain exceeds 128 commands");
         }
+        self.handler_sources.insert(
+            (event.to_owned(), commands.len()),
+            "signature_verified_plugin_manifest",
+        );
         commands.push(command);
         Ok(())
     }
@@ -646,14 +662,6 @@ impl Hooks {
             entry_count: self.command_count(),
             canonical_bytes,
         }
-    }
-
-    /// Exact installed event counts; command bodies and environment names stay private.
-    pub(crate) fn inventory_events(&self) -> Vec<(String, usize)> {
-        self.by_event
-            .iter()
-            .map(|(event, commands)| (event.clone(), commands.len()))
-            .collect()
     }
 
     fn command_count(&self) -> usize {
@@ -1918,6 +1926,7 @@ mod tests {
                     "sleep 0.1; exit 0".to_owned(),
                 ],
             )]),
+            handler_sources: BTreeMap::new(),
             timeout_secs: 2,
             sensitive_env_names: Vec::new(),
             plantcore_workspace_posture: None,

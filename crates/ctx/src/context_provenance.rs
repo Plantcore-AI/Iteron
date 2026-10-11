@@ -393,6 +393,15 @@ impl MaterialSource {
         self.unavailable = Some(ContextMaterialUnavailableV1::RetentionBound);
         self
     }
+    /// Captured source identity only; no bytes, path reopening or discovery.
+    pub(crate) fn inventory_identity(
+        &self,
+    ) -> (
+        Option<ContextMaterialPathV1>,
+        Option<ContextMaterialVersionV1>,
+    ) {
+        (self.path.clone(), self.version.clone())
+    }
     pub(crate) fn retained_bytes(&self) -> usize {
         self.bytes.as_ref().map_or(0, |s| s.len())
     }

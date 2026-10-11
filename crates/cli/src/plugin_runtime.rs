@@ -217,7 +217,7 @@ impl RuntimePlugins {
                 .filter(|slot| slot.surface == Surface::Implementation)
             {
                 if let Some(binding) = binding_for(&composition.wiring, slot) {
-                    runtime.record_binding(&binding.plugin, slot.surface, &slot.key);
+                    runtime.record_binding(binding);
                 }
             }
         }
@@ -232,8 +232,13 @@ impl RuntimePlugins {
         Ok(runtime)
     }
 
-    fn record_binding(&mut self, plugin: &str, surface: Surface, key: &str) {
-        self.inventory.bound(plugin, surface, key);
+    fn record_binding(&mut self, binding: &Binding) {
+        self.inventory.bound_composed(binding);
+        let (plugin, surface, key) = (
+            binding.plugin.as_str(),
+            binding.slot.surface,
+            binding.slot.key.as_str(),
+        );
         if !matches!(surface, Surface::Hook | Surface::LanguageServer) {
             std::sync::Arc::get_mut(
                 self.dispatch_mask
@@ -356,7 +361,7 @@ impl RuntimePlugins {
                     .entry(event.to_owned())
                     .or_default()
                     .push(binding.detail.clone());
-                self.record_binding(&binding.plugin, Surface::Hook, event);
+                self.record_binding(binding);
                 std::sync::Arc::get_mut(
                     self.dispatch_mask
                         .as_mut()
@@ -388,7 +393,7 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 directory,
             });
-            self.record_binding(&binding.plugin, Surface::Skill, &slot.key);
+            self.record_binding(binding);
         } else {
             self.note(format!(
                 "plugin {} skill {:?} refused: skills/{}/SKILL.md is missing",
@@ -415,7 +420,7 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 path,
             });
-            self.record_binding(&binding.plugin, Surface::Agent, &slot.key);
+            self.record_binding(binding);
         } else {
             self.note(format!(
                 "plugin {} agent {:?} refused: agents/{}.md is missing",
@@ -440,7 +445,7 @@ impl RuntimePlugins {
                         VerifiedMcpPluginOrigin::new(plugin),
                     );
                     self.mcp_servers.push(server);
-                    self.record_binding(&binding.plugin, Surface::McpServer, &slot.key);
+                    self.record_binding(binding);
                 } else {
                     self.note(format!(
                         "plugin {} MCP {:?} refused: {} capability not admitted",
@@ -485,7 +490,7 @@ impl RuntimePlugins {
                     language: slot.key.clone(),
                     command,
                 });
-                self.record_binding(&binding.plugin, Surface::LanguageServer, &slot.key);
+                self.record_binding(binding);
                 let command_identity = self
                     .lsp_routes
                     .last()

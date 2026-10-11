@@ -69,7 +69,7 @@ impl PluginManagementOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let captured=self.captured.iter().skip(offset).take(limit).map(|identity|json!({
-            "plugin_id":identity.plugin_id,"version":identity.version,"manifest_digest_sha256":identity.manifest_digest_sha256,"digest_kind":identity.digest_kind,
+            "plugin_id":identity.plugin_id,"version":identity.version,"manifest_digest_sha256":identity.manifest_digest_sha256,"digest_kind":identity.digest_kind,"source":identity.source,"scope":identity.scope,"operator_precedence":identity.operator_precedence,"manifest_requested_capabilities":identity.manifest_requested_capabilities,"context_cost":identity.context_cost,"failure_policy":identity.failure_policy,
             "bound_surfaces":identity.bound_surfaces.iter().take(16).collect::<Vec<_>>(),"omitted_bound_surfaces":identity.bound_surfaces.len().saturating_sub(16),
             "future_dispatch_revoked":self.mask.is_revoked(&identity.plugin_id)})).collect::<Vec<_>>();
         let prepared=self.receipts.iter().skip(offset).take(limit).map(|(id,receipt)|json!({"receipt_id":id,"plugin_id":receipt.plugin(),"version":receipt.artifact().version,"package_digest_sha256":receipt.artifact().digest,"digest_kind":"verified_signed_package_tree_v1","publisher_key_id":receipt.artifact().key_id})).collect::<Vec<_>>();
@@ -115,7 +115,7 @@ impl PluginManagementOwner {
         }
         Ok(
             json!({"plugin_id":plugin_id,"configuration":configuration,"configuration_generation":state.configuration["generation"],
-            "current_generation":identity.map(|identity|json!({"version":identity.version,"manifest_digest_sha256":identity.manifest_digest_sha256,"digest_kind":identity.digest_kind,
+            "current_generation":identity.map(|identity|json!({"version":identity.version,"manifest_digest_sha256":identity.manifest_digest_sha256,"digest_kind":identity.digest_kind,"source":identity.source,"scope":identity.scope,"operator_precedence":identity.operator_precedence,"manifest_requested_capabilities":identity.manifest_requested_capabilities,"context_cost":identity.context_cost,"failure_policy":identity.failure_policy,
                 "bound_surfaces":{"items":identity.bound_surfaces.iter().skip(offset).take(limit).collect::<Vec<_>>(),"total":identity.bound_surfaces.len(),"has_more":offset.saturating_add(limit)<identity.bound_surfaces.len()},
                 "future_dispatch_revoked":self.mask.is_revoked(plugin_id)})),"page":{"offset":offset,"limit":limit},"next_bootstrap_pending":state.pending}),
         )

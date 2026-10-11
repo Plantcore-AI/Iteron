@@ -81,6 +81,17 @@ pub struct SkillDef {
 }
 
 impl SkillDef {
+    /// Read the source identity captured by the actual context catalog. Version can be a bounded
+    /// prefix commitment; it is never relabeled as a complete file or package semantic version.
+    pub fn captured_source_identity(
+        &self,
+    ) -> (
+        Option<crate::context_provenance::ContextMaterialPathV1>,
+        Option<crate::context_provenance::ContextMaterialVersionV1>,
+    ) {
+        self.material.inventory_identity()
+    }
+
     /// The body framed for injection when the model loads it (hints, not overrides — and marked
     /// UNTRUSTED when it came from below the user tier).
     pub fn framed(&self) -> String {
