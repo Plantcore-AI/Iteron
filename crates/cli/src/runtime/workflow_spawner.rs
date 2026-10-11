@@ -1988,11 +1988,8 @@ pub(super) mod tests {
         root: &Path,
         context: &mut KernelSpawnerContext,
     ) {
-        pin_context_with_materialization(
-            root,
-            context,
-            Some(context.context_materialization_policy.memory),
-        );
+        let memory = context.context_materialization_policy.memory;
+        pin_context_with_materialization(root, context, Some(memory));
     }
 
     fn pin_context_with_materialization(
