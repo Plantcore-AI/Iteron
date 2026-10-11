@@ -420,6 +420,7 @@ fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_
     );
 }
 
+#[path = "artifact_journey/client_approval_journey.rs"]
 mod client_approval_journey;
 #[cfg(unix)]
 #[path = "native_diff_journey.rs"]
