@@ -3447,6 +3447,7 @@ async fn native_session_factory_new_resume_fork_share_public_ids_and_confirm_act
 #[tokio::test]
 async fn actual_service_scope_and_sq_receipt_precede_shutdown_signal() {
     use crate::resident_service::ResidentService;
+    use iteron_protocol::TenantId;
     use iteron_protocol::resident_service::{ResidentServiceCommandV1, ResidentServiceViewV1};
     use std::net::SocketAddr;
     use std::path::Path;
