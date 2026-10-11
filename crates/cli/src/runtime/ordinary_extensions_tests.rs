@@ -540,7 +540,7 @@ async fn native_provider_export_uses_signed_route_and_refuses_unproved_input_bef
     );
     assert!(!replay.iter().any(|event| matches!(
         event.kind,
-        EventKind::EffectIntent { .. } | EventKind::TurnStart { .. }
+        EventKind::EffectIntent { .. } | EventKind::TurnStart
     )));
     drop(owner);
     std::fs::remove_file(credential).unwrap();

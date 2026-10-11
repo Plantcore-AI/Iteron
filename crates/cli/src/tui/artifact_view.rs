@@ -189,10 +189,10 @@ pub(super) fn bounded_descriptor(
             return Err("artifact descriptor string exceeds its bound");
         }
     }
-    if !object
+    if object
         .get("bytes")
         .and_then(Value::as_u64)
-        .is_some_and(|bytes| bytes <= MAX_ARTIFACT_BYTES as u64)
+        .is_none_or(|bytes| bytes > MAX_ARTIFACT_BYTES as u64)
         || object
             .get("source_event_seq")
             .and_then(Value::as_u64)

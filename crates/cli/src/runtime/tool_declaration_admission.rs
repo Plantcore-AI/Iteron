@@ -256,7 +256,7 @@ impl ToolDeclarationAdmission<'_> {
         }
         if !approved {
             let reason = self.permission_refusal(call, &admission, incomplete);
-            let refusal = approval_refusal.unwrap_or_else(|| {
+            let refusal = approval_refusal.unwrap_or({
                 if admission.ceiling_blocks {
                     RefusalReasonV1::CapabilityCeiling
                 } else if admission.taint_blocks {

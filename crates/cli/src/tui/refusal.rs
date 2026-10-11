@@ -140,7 +140,7 @@ pub(super) fn remote(
         previous = Some(sequence);
         let raw = &row["refusal"];
         if ["tool", "tool_use_id"].into_iter().any(|key| {
-            !raw[key].is_null() && !raw[key].as_str().is_some_and(|text| text.len() <= 2048)
+            !raw[key].is_null() && raw[key].as_str().is_none_or(|text| text.len() > 2048)
         }) {
             return;
         }

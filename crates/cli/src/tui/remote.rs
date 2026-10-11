@@ -654,10 +654,9 @@ impl View {
                 if let Some(turn) = &snapshot.turn
                     && turn.state == TurnStateV1::Running
                     && !app.run.running()
+                    && let Some(id) = turn.submission_id
                 {
-                    if let Some(id) = turn.submission_id {
-                        app.run.submission_accepted(id, Instant::now());
-                    }
+                    app.run.submission_accepted(id, Instant::now());
                 }
                 app.session_name = format!(
                     "Attached · {} · {}",

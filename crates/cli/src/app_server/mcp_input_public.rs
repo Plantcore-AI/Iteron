@@ -61,7 +61,8 @@ pub(super) async fn execute(reader: ContractReader, command: McpInputCommandV1) 
     if !is_current(&reader, &command, &binding.owner) {
         return refused("scope_changed");
     }
-    let response = match command.command {
+    // The real admission lease remains held through callback handoff and reply construction.
+    match command.command {
         McpInputActionV1::Read {} | McpInputActionV1::Wait { .. } => {
             unreachable!("observations handled before effect admission")
         }
@@ -99,9 +100,7 @@ pub(super) async fn execute(reader: ContractReader, command: McpInputCommandV1) 
                 Err(_) => refused("response_refused"),
             }
         }
-    };
-    // The real admission lease remains held through callback handoff and reply construction.
-    response
+    }
 }
 fn is_current(reader: &ContractReader, command: &McpInputCommandV1, owner: &PendingInputs) -> bool {
     reader.mcp_input_binding().is_some_and(|(scope, current)| {

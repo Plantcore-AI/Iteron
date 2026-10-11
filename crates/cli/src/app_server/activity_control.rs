@@ -246,14 +246,14 @@ async fn execute(
             Ok(json!({"activities":activities,"omitted":omitted,"dropped_verifier_tasks":verifier["dropped_tasks"],"owners":{"processes":processes.is_some(),"persistent_agents":agents.is_some(),"mcp":mcp.is_some(),"workflows":true,"verifier":true},"recovery":"persistent controller and verified verifier effects retain state; process/MCP/session workflow entries describe only these captured live owners"}))
         }
         ActivityControlV1::Inspect{target,stdout_cursor,stderr_cursor,..}=>match target {
-            ActivityTargetV1::Verifier{task_id}=>binding.verifier.inspect(&binding.run,&task_id).map_err(|error| ActivityFailure::from(error)),
+            ActivityTargetV1::Verifier{task_id}=>binding.verifier.inspect(&binding.run,&task_id).map_err(ActivityFailure::from),
             ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.poll(&job_id,stdout_cursor,stderr_cursor,0).await.map(|value|scrub(&value)).map_err(ActivityFailure::process),
             ActivityTargetV1::PersistentAgent{agent_id,..}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.inspect(AgentActor::Operator,agent_id).map(|view|json!({"source":"durable_agent_controller","view": ({let mut value=scrub(&serde_json::to_value(&view).unwrap_or(Value::Null));value["partial_output"]=serde_json::to_value(&view.partial_output).unwrap_or(Value::Null);value})})).map_err(|_|"agent inspection refused".into()),
             ActivityTargetV1::Workflow{run_id}=>workflows.inventory().into_iter().find(|run|run.run_id==run_id).map(|run|json!({"run_id":run.run_id,"name":iteron_record::redact::scrub(&run.name),"state":format!("{:?}",run.status).to_lowercase(),"running_agents":run.running_agents,"finished_agents":run.finished_agents,"source":"actual_session_workflow_supervisor"})).ok_or("workflow not retained".into()),
             ActivityTargetV1::Mcp{name}=>mcp.ok_or("MCP owner unavailable")?.health().into_iter().find(|server|server.name==name).map(|server|scrub(&serde_json::to_value(server).unwrap_or(Value::Null))).ok_or("MCP server not retained".into()),
         },
         ActivityControlV1::Stop{target,request_id,..}=>match target {
-            ActivityTargetV1::Verifier{task_id}=>binding.verifier.cancel(&binding.run,&task_id).map_err(|error| ActivityFailure::from(error)),
+            ActivityTargetV1::Verifier{task_id}=>binding.verifier.cancel(&binding.run,&task_id).map_err(ActivityFailure::from),
             ActivityTargetV1::Process{job_id}=>processes.ok_or("process owner unavailable")?.stop(&job_id).await.map(|value|scrub(&value)).map_err(ActivityFailure::process),
             ActivityTargetV1::PersistentAgent{agent_id,epoch}=>binding.agents.as_ref().ok_or("agent owner unavailable")?.command(AgentActor::Operator,&request_id,AgentCommandV1::Interrupt{agent_id,epoch:epoch.ok_or("missing observed agent epoch")?}).map(|receipt|json!({"receipt":receipt,"stop_requested":true,"terminal_observed":false})).map_err(|_|"agent interruption refused".into()),
             ActivityTargetV1::Workflow{run_id}=>workflows.cancel_for_operator(&run_id).map(|run|json!({"run_id":run.run_id,"stop_requested":true,"terminal_observed":false})).map_err(ActivityFailure::from),
