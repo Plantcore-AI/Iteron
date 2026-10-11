@@ -222,6 +222,36 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
             .unwrap();
         writeln!(file, "{token}").unwrap();
     }
+    // An actual idle host control changes the runtime before any frontend is attached.
+    // Reading the cached installed overview must not start a provider request.
+    send(
+        &mut socket,
+        control(
+            10,
+            PROTOCOL_VERSION,
+            json!({"type":"set_effort","effort":"high"}),
+        ),
+    );
+    assert_eq!(reply(&mut reader, 10)["type"], "state");
+    send(
+        &mut socket,
+        control(
+            11,
+            PROTOCOL_VERSION,
+            json!({"type":"inventory_v1","query":{"kind":"overview","limit":1}}),
+        ),
+    );
+    let settings = reply(&mut reader, 11);
+    assert_eq!(settings["type"], "client_inventory_v1");
+    assert_eq!(settings["provenance"], "installed_runtime_boundary");
+    assert_eq!(settings["records"][0]["run_id"], run);
+    assert_eq!(settings["records"][0]["model_id"], "headless-model");
+    assert_eq!(settings["records"][0]["effort"], "high");
+    assert_eq!(
+        settings["records"][0]["workspace"],
+        scratch.repo().canonicalize().unwrap().display().to_string()
+    );
+    assert!(provider.request_seen.try_recv().is_err());
     let mut first = Ui::start(
         &scratch,
         endpoint,
@@ -229,6 +259,8 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         &token_file,
     );
     first.visible("Attached");
+    first.visible("headless-model");
+    first.visible("high");
     first.write(b"keep the actual backend turn running\r");
     provider.request_seen.recv_timeout(timeout()).unwrap();
     first.detach(&token);
@@ -244,6 +276,8 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         &token_file,
     );
     second.visible("Attached");
+    second.visible("headless-model");
+    second.visible("high");
     provider.release.send(()).unwrap();
     second.visible("parity reply");
     second.visible("completed");

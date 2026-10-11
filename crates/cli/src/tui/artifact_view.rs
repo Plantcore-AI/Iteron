@@ -476,15 +476,19 @@ impl Viewer {
         }
     }
 }
+fn text_page_bytes() -> usize {
+    iteron_tunables::param_usize("cli.tui.artifact_view.text_page_bytes", TEXT_PAGE_BYTES)
+        .clamp(1024, MAX_ARTIFACT_DOWNLOAD_CHUNK_BYTES)
+}
 fn page_end(text: &str, start: usize) -> usize {
-    let mut end = start.saturating_add(TEXT_PAGE_BYTES).min(text.len());
+    let mut end = start.saturating_add(text_page_bytes()).min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     end
 }
 fn previous_page(text: &str, end: usize) -> usize {
-    let mut start = end.saturating_sub(TEXT_PAGE_BYTES);
+    let mut start = end.saturating_sub(text_page_bytes());
     while !text.is_char_boundary(start) {
         start += 1;
     }

@@ -134,6 +134,14 @@ Responses declare provenance, availability, total and next offset. Missing skill
 the context owner captures it, legacy V1 value reconstruction, and missing bootstrap evidence
 remain explicitly unavailable. Reads do not discover mutable configuration, skill or package files.
 
+The overview also reports the actual installed run, selected model, requested effort, permission
+mode, budget ceilings and scrubbed workspace display at the host's last idle/turn boundary.
+The explicit attached TUI reads this cached overview before its first frame and after observed
+run/model or terminal transitions; `/settings` reads it on demand. Old-run settings are discarded
+on rebind. This metadata read initializes no provider, skill, plugin or workspace scan. Capacity
+is reported separately from usage and verified pricing; the live `/activity` owner reports
+physical task state.
+
 Provider/model records come from the immutable bootstrap catalog and declare stale/unavailable
 evidence and actual captured capability limits. Plugin identity is the verified parsed manifest's
 serde JSON SHA-256 (`parsed_manifest_serde_json_sha256_v1`), with version and surfaces actually

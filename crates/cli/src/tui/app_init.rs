@@ -56,6 +56,7 @@ impl App {
             mode: PermissionMode::default(),
             effort: Effort::default(),
             model: String::new(),
+            remote_settings_pending: false,
             route: RouteView::unresolved(),
             telemetry: super::session_telemetry::SessionTelemetry::default(),
             permission_prompt: super::permission_prompt::PermissionPromptOwner::default(),

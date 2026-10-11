@@ -14,6 +14,7 @@
 mod driver;
 pub(crate) mod remote;
 mod remote_sessions;
+mod remote_settings;
 mod remote_transport;
 pub(crate) use driver::{RunConfig, run};
 mod frame_render;
@@ -661,6 +662,8 @@ struct App {
     mode: PermissionMode,
     effort: Effort,
     model: String,
+    /// Attached host settings are unknown until a same-run boundary observation arrives.
+    remote_settings_pending: bool,
     /// THE resolved route: provider, model, api_root, adapter, credential source, catalog
     /// provenance and the run's effective limits. Every display reads this and derives nothing of
     /// its own, so what is on screen is the request that goes out (I-26).

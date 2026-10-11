@@ -87,6 +87,10 @@ enum Kind {
         prompt: SubmissionId,
     },
     Models,
+    Settings {
+        run: iteron_protocol::RunId,
+        show: bool,
+    },
     FinalEvidence {
         run: iteron_protocol::RunId,
     },
@@ -151,6 +155,7 @@ struct View {
         u64,
     )>,
     final_needed: bool,
+    settings_needed: bool,
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
     expected_submission: Option<SubmissionId>,
@@ -184,6 +189,15 @@ impl View {
     }
     fn final_request(&mut self) -> Result<()> {
         self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone()})
+    }
+    fn settings_request(&mut self, show: bool) -> Result<()> {
+        self.queue(
+            json!({"type":"inventory_v1","query":{"kind":"overview","limit":1}}),
+            Kind::Settings {
+                run: self.service.current_run_id.clone(),
+                show,
+            },
+        )
     }
     fn sessions_request(
         &mut self,
@@ -316,7 +330,7 @@ impl View {
             return Ok(false);
         }
         if text == "/help" {
-            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity [attach|stop TYPE ID] /agents [COMMAND] /status /permissions /config /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
+            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity [attach|stop TYPE ID] /agents [COMMAND] /status /settings /permissions /config /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
             app.editor.clear();
             return Ok(false);
         }
@@ -343,6 +357,11 @@ impl View {
                     json!({"type":"agents_v1","command":command})
                 }
                 "/status" | "/diagnostics" => json!({"type":"operator_status"}),
+                "/settings" => {
+                    self.settings_request(true)?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
                 "/permissions" if arg.is_empty() => {
                     json!({"type":"inventory_v1","query":{"kind":"permissions"}})
                 }
@@ -611,12 +630,14 @@ impl View {
                     self.service.current_run_id = snapshot.run_id.clone();
                     self.models = None;
                     app.persistent_agent_views.clear();
+                    super::remote_settings::Settings::invalidate(app);
                     self.queued.clear();
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
                     self.last_terminal = None;
                     self.final_needed = false;
+                    self.settings_needed = true;
                     app.clear_mcp_inputs();
                     self.sessions.clear(app);
                     app.artifact_viewer.close();
@@ -694,6 +715,7 @@ impl View {
                         if self.last_terminal.as_ref() != Some(&identity) {
                             self.last_terminal = Some(identity);
                             self.final_needed = true;
+                            self.settings_needed = true;
                         }
                         app.finish_text_boundary();
                         if let Some(text) = app.product.take_terminal() {
@@ -984,6 +1006,15 @@ impl View {
                 show_reply(app, &reply);
                 self.models = Some(reply);
             }
+            Kind::Settings { run, show } => {
+                if run == self.service.current_run_id {
+                    match super::remote_settings::Settings::capture(&reply, &run) {
+                        Ok(settings) => settings.apply(app, show),
+                        Err(reason) => app.note(block::NoticeLevel::Warn, reason),
+                    }
+                    self.settings_needed = false;
+                }
+            }
             Kind::Stop => {
                 show_reply(app, &reply);
                 if reply["type"] == "resident_service_stop_v1" {
@@ -996,6 +1027,9 @@ impl View {
                 }
             }
             Kind::Control => {
+                if reply["type"] == "state" {
+                    self.settings_needed = true;
+                }
                 if reply["type"] == "session_navigated_v1" {
                     let navigation: iteron_protocol::session_navigation::SessionNavigationReplyV1 =
                         serde_json::from_value(reply["navigation"].clone())
@@ -1009,11 +1043,13 @@ impl View {
                     self.service.current_run_id = navigation.run_id.clone();
                     self.models = None;
                     app.persistent_agent_views.clear();
+                    super::remote_settings::Settings::invalidate(app);
                     self.accepted = None;
                     self.expected_submission = None;
                     self.artifact = None;
                     self.last_terminal = None;
                     self.final_needed = false;
+                    self.settings_needed = true;
                     app.clear_mcp_inputs();
                     self.sessions.clear(app);
                     app.artifact_viewer.close();
@@ -1068,6 +1104,34 @@ fn show_reply(app: &mut App, reply: &Value) {
     }
 }
 
+/// Cached host metadata only; no provider, plugin or filesystem initialization is requested.
+async fn initial_settings(
+    transport: &mut Transport,
+    run: &iteron_protocol::RunId,
+) -> Result<super::remote_settings::Settings> {
+    let id = transport
+        .control(json!({"type":"inventory_v1","query":{"kind":"overview","limit":1}}))
+        .await?;
+    tokio::time::timeout(REPLY_DEADLINE, async {
+        for _ in 0..4096 {
+            let frame = transport
+                .next()
+                .await?
+                .context("service closed during settings observation")?;
+            if frame["type"] == "control_reply" && frame["request_id"] == id {
+                return super::remote_settings::Settings::capture(&frame["reply"], run)
+                    .map_err(anyhow::Error::msg);
+            }
+            if frame["type"] == "error" {
+                bail!("service refused settings observation");
+            }
+        }
+        bail!("settings observation exceeded the finite frame budget")
+    })
+    .await
+    .context("installed service settings observation timed out")?
+}
+
 pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Result<()> {
     use std::io::IsTerminal as _;
     if !std::io::stdout().is_terminal() {
@@ -1114,9 +1178,11 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
     {
         bail!("listener identity, endpoint or lifecycle does not match the selected service");
     }
+    let initial_settings = initial_settings(&mut transport, &service.current_run_id).await?;
     let environment = theme::capabilities::Environment::capture();
     let detected = theme::Theme::detect_with(environment, None);
     let mut app = App::new_with_detected_theme(detected);
+    initial_settings.apply(&mut app, false);
     app.telemetry.observe_remote_cost(None);
     app.status = "attached · /detach leaves backend work running".into();
     app.keymap_status = "attached client".into();
@@ -1167,13 +1233,17 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         poll_inputs: false,
         last_terminal: None,
         final_needed: false,
+        settings_needed: false,
         last_live_seq: 0,
         accepted: None,
         expected_submission: None,
         artifact: None,
     };
     view.snapshot_request()?;
-    let mut tick = tokio::time::interval(POLL_PERIOD);
+    let mut tick = tokio::time::interval(
+        iteron_tunables::param_duration("cli.tui.remote.poll_period", POLL_PERIOD)
+            .clamp(Duration::from_millis(5), Duration::from_secs(5)),
+    );
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if view.pending.is_none()
@@ -1249,7 +1319,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
             },
             _=tick.tick()=>{
                 if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -1344,6 +1414,35 @@ mod tests {
         assert_eq!(wire["type"], "operator_status");
         assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
     }
+    #[test]
+    fn settings_request_keeps_current_run_and_late_reply_cannot_apply_to_new_run() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("/settings");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(wire["type"], "inventory_v1");
+        assert_eq!(wire["query"]["kind"], "overview");
+        assert!(matches!(kind, Kind::Settings { run, show:true } if run.0 == "run"));
+        app.model = "new-selected-model".into();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Settings {
+                run: iteron_protocol::RunId("previous".into()),
+                show: true,
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"client_inventory_v1","records":[]}),
+        )
+        .unwrap();
+        assert_eq!(app.model, "new-selected-model");
+        assert!(app.history.blocks().is_empty());
+        assert!(view.queued.is_empty());
+    }
     fn view() -> View {
         View {
             service: ResidentServiceViewV1 {
@@ -1370,6 +1469,7 @@ mod tests {
             poll_inputs: false,
             last_terminal: None,
             final_needed: false,
+            settings_needed: false,
             last_live_seq: 0,
             accepted: None,
             expected_submission: None,

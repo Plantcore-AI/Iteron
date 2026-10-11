@@ -98,6 +98,9 @@ impl Agent {
         ];
         let overview = vec![
             json!({"provider_id":iteron_provider::Provider::provider_instance_id(self.provider.as_ref()),"model_id":safe(&self.model),
+            "run_id":self.rollout.run_id(),"effort":self.effort(),"permission_mode":self.permission_mode(),
+            "bypass_permissions":self.bypass_permissions,"approval_channel_available":self.interactive_approvals,
+            "budget":self.budget,"workspace":safe(&self.workspace.display().to_string()),
             "model_context_window_tokens":self.model_context_window,"model_max_output_tokens":self.model_max_output_tokens,
             "tool_registry_revision":specs.revision(),"tool_count":specs.specs().len(),"tools_truncated":specs.specs().len()>MAX_RUNTIME_ENTRIES,
             "hook_digest_sha256":identity.digest_sha256,"hook_handlers":identity.entry_count,

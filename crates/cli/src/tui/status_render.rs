@@ -166,7 +166,7 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
             Accent::Usage,
         ));
     }
-    if app.mode != PermissionMode::Default {
+    if !app.remote_settings_pending && app.mode != PermissionMode::Default {
         groups.push(Group::single(app.mode.label(), Accent::Mode));
     }
     let pending = app
@@ -187,6 +187,10 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
     // Ultracode is a harness MODE (internal fan-out orchestration), not just a thinking level, so
     // it announces itself once, the way the permission mode does. The adjacent effort segment
     // reports only the adapter's reasoning level/application.
+    if app.remote_settings_pending {
+        groups.push(Group::single("settings pending", Accent::Metadata));
+        return groups;
+    }
     if app.effort == Effort::Ultracode {
         groups.push(Group::single("✦ ultracode", Accent::Mode));
     }
