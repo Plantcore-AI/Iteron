@@ -4,7 +4,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[tokio::test]
-async fn actual_sealed_create_and_identical_replacement_distinguish_changed_bytes() {
+async fn actual_sealed_create_and_identical_write_refusal_distinguish_changed_bytes() {
     let workspace = crate::runtime::test_tempdir::tempdir().unwrap();
     let registry = iteron_tools::Registry::coding_agent_for_tests(workspace.path()).unwrap();
     let created = registry
@@ -25,8 +25,15 @@ async fn actual_sealed_create_and_identical_replacement_distinguish_changed_byte
         id: "native-identical-replacement".into(), name: "write_file".into(),
         input: json!({"path":"created.txt","content":"","expected_sha256":hex::encode(Sha256::digest(b""))}),
     }).await;
-    assert!(matches!(&identical.execution, ToolExecution::Definite(result) if !result.is_error));
-    assert!(identical.native_mutation.is_some());
+    assert!(
+        matches!(&identical.execution, ToolExecution::Definite(result)
+        if result.is_error && result.content.contains("would not change target bytes"))
+    );
+    assert_eq!(
+        std::fs::read(workspace.path().join("created.txt")).unwrap(),
+        b""
+    );
+    assert!(identical.native_mutation.is_none());
     assert!(NativeChangeObservation::capture(&identical).is_none());
 }
 
