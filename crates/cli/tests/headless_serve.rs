@@ -66,6 +66,7 @@ struct CoreProcess {
 
 struct Scratch {
     root: PathBuf,
+    signed_pricing: bool,
 }
 
 impl Scratch {
@@ -73,7 +74,10 @@ impl Scratch {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("core-headless-serve-{}-{id}", std::process::id()));
-        let scratch = Self { root };
+        let scratch = Self {
+            root,
+            signed_pricing: false,
+        };
         fs::create_dir_all(scratch.repo()).unwrap();
         fs::create_dir_all(scratch.home().join(".iteron")).unwrap();
         fs::create_dir_all(scratch.runs()).unwrap();
@@ -387,6 +391,9 @@ fn core_command_with_launch(
                 command.env(name, value);
             }
         }
+    }
+    if scratch.signed_pricing {
+        priced_route::install_key(&mut command);
     }
     command
 }
@@ -740,7 +747,8 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
     }
 
     let provider = PausedProvider::spawn_two_requests();
-    let scratch = Scratch::new(&provider.api_root);
+    let mut scratch = Scratch::new(&provider.api_root);
+    priced_route::configure(&mut scratch);
     let (child, token, address) = spawn_core(&scratch);
     let mut connection = connect(address);
     send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
@@ -754,6 +762,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
     provider.release.send(()).unwrap();
     let terminal = receive_result_within_timeout(&mut reader);
     assert_eq!(terminal["result"]["outcome"], "done");
+    assert_eq!(terminal["result"]["cost_status"], "known", "{terminal}");
     send(
         &mut connection,
         control(201, PROTOCOL_VERSION, json!({"type":"turn_budget","set":4})),
@@ -766,7 +775,8 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
             PROTOCOL_VERSION,
             json!({"type":"agents_v1","command":{
                 "type":"enable","capabilities":["read_only"],
-                "budget":{"turns":1,"tokens":20000,"cost_microusd":1000000,"wall_ms":1000},
+                // Fund the conservative physical input bound, not eventual reported usage.
+                "budget":{"turns":1,"tokens":2000000,"cost_microusd":1000000,"wall_ms":1000},
                 "max_agents":4,"max_pending_per_agent":8,"parallel":2,
             }}),
         ),
@@ -1695,6 +1705,9 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
 
 #[path = "headless_serve/artifact_journey.rs"]
 mod artifact_journey;
+
+#[path = "headless_serve/priced_route.rs"]
+mod priced_route;
 
 #[cfg(unix)]
 #[path = "headless_serve/operator_shell_journey.rs"]
