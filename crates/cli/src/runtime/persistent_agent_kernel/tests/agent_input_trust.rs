@@ -1,8 +1,8 @@
 //! Real resident epochs, sealed live SQ steer and cold journal reopen. Agent-authored data must
 //! lower governing trust independently of the permission bypass and never become operator text.
 use super::{
-    AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Workspace, setup,
-    spawn, until,
+    AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Workspace,
+    resident_observation, setup, spawn, until, until_observed,
 };
 use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::agent_control::{AgentIdV1, AgentMessageStateV1};
@@ -37,10 +37,13 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         },
     )
     .unwrap();
-    until(|| {
-        provider.requests.load(Ordering::SeqCst) == 2
-            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            provider.requests.load(Ordering::SeqCst) == 2
+                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
     let resident = runtime
         .residents
@@ -91,10 +94,13 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         },
     )
     .unwrap();
-    until(|| {
-        provider.requests.load(Ordering::SeqCst) == 3
-            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            provider.requests.load(Ordering::SeqCst) == 3
+                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
     let reopened = runtime
         .residents
@@ -125,12 +131,15 @@ async fn agent_steer_crosses_live_child_inbox_with_source_intent_before_its_mess
         .unwrap()
         .message_id
         .unwrap();
-    until(|| {
-        matches!(
-            host.message(AgentActor::Operator, steer).unwrap().state,
-            AgentMessageStateV1::Consumed { .. }
-        ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            matches!(
+                host.message(AgentActor::Operator, steer).unwrap().state,
+                AgentMessageStateV1::Consumed { .. }
+            ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
     let resident = runtime
         .residents

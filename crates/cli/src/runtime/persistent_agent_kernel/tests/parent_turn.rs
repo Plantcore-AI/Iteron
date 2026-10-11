@@ -1,8 +1,8 @@
 //! Real Main runtime and retained child journeys through the same host/controller.
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, AgentIdV1, AgentStateV1, Arc, Block,
-    KernelPersistentRuntime, Ordering, ProviderFixture, Store, Workspace, setup, setup_with_store,
-    spawn, until,
+    KernelPersistentRuntime, Ordering, ProviderFixture, Store, Workspace, resident_observation,
+    setup, setup_with_store, spawn, until, until_observed,
 };
 use crate::runtime::Agent;
 use iteron_protocol::{EventKind, Outcome};
@@ -139,12 +139,15 @@ async fn actual_main_and_child_exchange_consumed_inputs_without_a_second_root_re
         },
     )
     .unwrap();
-    until(|| {
-        matches!(
-            host.message(AgentActor::Operator, to_child).unwrap().state,
-            iteron_protocol::agent_control::AgentMessageStateV1::Consumed { .. }
-        ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            matches!(
+                host.message(AgentActor::Operator, to_child).unwrap().state,
+                iteron_protocol::agent_control::AgentMessageStateV1::Consumed { .. }
+            ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
     assert!(
         provider
@@ -200,7 +203,11 @@ async fn actual_root_interrupt_stops_the_current_agent_tool_before_epoch_settlem
         let result = main.run("block-tool").await;
         (main, result)
     });
-    until(|| provider.tool_started.load(Ordering::SeqCst) == 1).await;
+    until_observed(
+        || provider.tool_started.load(Ordering::SeqCst) == 1,
+        || resident_observation(&host, AgentIdV1(1), &provider),
+    )
+    .await;
     let epoch = host
         .inspect(AgentActor::Operator, AgentIdV1(1))
         .unwrap()

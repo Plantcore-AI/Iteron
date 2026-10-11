@@ -524,17 +524,41 @@ fn spawn(host: &PersistentAgentHost<Store>, task: &str) -> AgentIdV1 {
 }
 
 async fn until(predicate: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    until_observed(predicate, String::new).await;
+}
+
+async fn until_observed(predicate: impl Fn() -> bool, observation: impl Fn() -> String) {
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
         for _ in 0..2_500 {
             if predicate() {
-                return;
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        panic!("runtime did not settle within its bounded deadline");
+        false
     })
-    .await
-    .unwrap();
+    .await;
+    assert!(
+        matches!(result, Ok(true)),
+        "runtime did not settle within its bounded deadline: {}",
+        observation()
+    );
+}
+
+fn resident_observation(
+    host: &PersistentAgentHost<Store>,
+    id: AgentIdV1,
+    provider: &ProviderFixture,
+) -> String {
+    // Only called when the existing five-second predicate fails. Keep actual durable refusal
+    // and physical fixture counters together; no guessed cause or successful settlement.
+    format!(
+        "agent={:?}; physical_requests={}; prepared_requests={}; tool_starts={}",
+        host.inspect(AgentActor::Operator, id),
+        provider.requests.load(Ordering::SeqCst),
+        provider.prepared.load(Ordering::SeqCst),
+        provider.tool_started.load(Ordering::SeqCst)
+    )
 }
 
 #[tokio::test]
@@ -663,10 +687,13 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
         },
     )
     .unwrap();
-    until(|| {
-        provider.requests.load(Ordering::SeqCst) == 2
-            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            provider.requests.load(Ordering::SeqCst) == 2
+                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
     assert_eq!(runtime.residents.lock().unwrap().len(), 1);
     {
@@ -705,7 +732,11 @@ async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
         },
     )
     .unwrap();
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_observed(
+        || host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle,
+        || resident_observation(&host, child, &provider),
+    )
+    .await;
     assert_eq!(settled.load(Ordering::SeqCst), 1);
     host.command(
         AgentActor::Operator,
@@ -716,10 +747,13 @@ async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
         },
     )
     .unwrap();
-    until(|| {
-        provider.requests.load(Ordering::SeqCst) >= 2
-            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-    })
+    until_observed(
+        || {
+            provider.requests.load(Ordering::SeqCst) >= 2
+                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        },
+        || resident_observation(&host, child, &provider),
+    )
     .await;
 }
 
