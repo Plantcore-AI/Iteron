@@ -1720,6 +1720,7 @@ mod gate_integration_tests {
     struct ChildToolAfterSignal {
         calls: AtomicUsize,
         started: tokio::sync::Notify,
+        completed_stop: std::sync::Mutex<Option<std::sync::Arc<AtomicBool>>>,
     }
 
     #[async_trait::async_trait]
@@ -1742,6 +1743,12 @@ mod gate_integration_tests {
                     input: serde_json::json!({"path":"safe.txt"}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
+                // Raise the already-owned operator signal only in the ready terminal poll.
+                // The physical provider result settles before the next safe point observes it;
+                // cancelling the pending 40 ms call would correctly leave an unknown effect.
+                if let Some(stop) = self.completed_stop.lock().unwrap().as_ref() {
+                    stop.store(true, Ordering::SeqCst);
+                }
                 Ok(TurnResult {
                     blocks: vec![Block::ToolUse(tool)],
                     stop_reason: StopReason::ToolUse,
@@ -10133,23 +10140,22 @@ ant-api03-SuperSecretModelToken12345"
             interrupt.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
-            interrupt_parent.spawn_subagent("read then stop at the safe point", 0),
+            interrupt_parent.spawn_subagent("cancel the pending physical request", 0),
             raise_interrupt
         );
-        assert!(result.unwrap_err().contains("interrupted at a safe point"));
+        let error = result.unwrap_err();
+        assert!(error.contains("unknown outcome"), "{error}");
         assert_eq!(interrupt_provider.calls.load(Ordering::SeqCst), 1);
         let interrupt_events = iteron_record::replay(interrupt_parent.rollout.path()).unwrap();
+        // This operator signal arrives while the transport future is still pending. The child
+        // must retire it, but cannot claim a completed physical request or a known child terminal.
         assert!(interrupt_events.iter().any(|event| matches!(
-            &event.kind,
-            EventKind::SubagentFinishedV2 {
-                outcome: iteron_protocol::WorkflowChildOutcome::Interrupted,
-                ..
-            }
+            &event.kind, EventKind::EffectUnknown { tool, .. } if tool == "subagent"
         )));
         assert!(
             interrupt_events
                 .iter()
-                .all(|event| { !matches!(&event.kind, EventKind::EffectUnknown { .. }) })
+                .all(|event| !matches!(&event.kind, EventKind::SubagentFinishedV2 { .. }))
         );
         drop(interrupt_parent);
         let _ = std::fs::remove_dir_all(&interrupt_ws);
@@ -10238,16 +10244,17 @@ ant-api03-SuperSecretModelToken12345"
             "unexpected pre-dispatch failure: {deadline_error}"
         );
         assert!(
-            iteron_record::replay(deadline_parent.rollout.path())
-                .unwrap()
+            deadline_error.contains("unknown outcome"),
+            "{deadline_error}"
+        );
+        let deadline_events = iteron_record::replay(deadline_parent.rollout.path()).unwrap();
+        assert!(deadline_events.iter().any(|event| matches!(
+            &event.kind, EventKind::EffectUnknown { tool, .. } if tool == "subagent"
+        )));
+        assert!(
+            deadline_events
                 .iter()
-                .any(|event| matches!(
-                    &event.kind,
-                    EventKind::SubagentFinishedV2 {
-                        outcome: iteron_protocol::WorkflowChildOutcome::Failed,
-                        ..
-                    }
-                ))
+                .all(|event| !matches!(&event.kind, EventKind::SubagentFinishedV2 { .. }))
         );
         drop(deadline_parent);
         let _ = std::fs::remove_dir_all(&deadline_ws);
@@ -10284,15 +10291,11 @@ ant-api03-SuperSecretModelToken12345"
         record_test_genesis(&mut parent, &ws);
         record_direct_fixture_selection(&mut parent);
         let drain = parent.control.drain().clone();
-        let request_drain = async {
-            await_signal(&provider.started, "the provider's first turn").await;
-            drain.store(true, Ordering::SeqCst);
-        };
-        let (result, ()) = tokio::join!(
-            parent.spawn_subagent("read then drain at the safe point", 0),
-            request_drain
-        );
-        let error = result.unwrap_err();
+        *provider.completed_stop.lock().unwrap() = Some(drain);
+        let error = parent
+            .spawn_subagent("read then drain at the safe point", 0)
+            .await
+            .unwrap_err();
         assert!(error.contains("drained after a checkpoint"), "{error}");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
