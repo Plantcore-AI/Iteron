@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use tokio::task::JoinHandle;
 
 const MAX_SESSION_ROWS: usize = 512;
+pub(super) const REMOTE_SESSION_TITLE: &str = "Service sessions · resume here";
 
 pub(super) struct PickerUpdate {
     pub(super) event: PickerEvent,
@@ -78,6 +79,91 @@ impl PickerOwner {
     pub(super) fn close(&mut self) -> Option<theme::Theme> {
         self.cancel_page();
         self.picker.take().and_then(|picker| picker.saved_theme)
+    }
+    pub(super) fn open_remote_sessions(&mut self) {
+        let mut loading = PickItem::flat(
+            "Loading service sessions…",
+            "reading the selected host's saved conversations",
+            false,
+            PickAction::Info,
+        );
+        loading.enabled = false;
+        self.open(Picker {
+            title: REMOTE_SESSION_TITLE.into(),
+            items: vec![loading],
+            sel: 0,
+            query: String::new(),
+            saved_theme: None,
+        });
+    }
+    pub(super) fn has_remote_sessions(&self) -> bool {
+        self.picker
+            .as_ref()
+            .is_some_and(|picker| picker.title == REMOTE_SESSION_TITLE)
+    }
+    pub(super) fn apply_remote_session_rows(
+        &mut self,
+        mut rows: Vec<PickItem>,
+        append: bool,
+    ) -> bool {
+        let Some(picker) = self
+            .picker
+            .as_mut()
+            .filter(|picker| picker.title == REMOTE_SESSION_TITLE)
+        else {
+            return false;
+        };
+        if append {
+            rows.retain(|row| {
+                let PickAction::AdoptRun(run) = &row.action else {
+                    return false;
+                };
+                !picker.items.iter().any(
+                    |existing| matches!(&existing.action, PickAction::AdoptRun(id) if id == run),
+                )
+            });
+            picker.items.extend(rows);
+            if picker.items.len() > MAX_SESSION_ROWS {
+                let remove = picker.items.len() - MAX_SESSION_ROWS;
+                picker.items.drain(..remove);
+                picker.sel = picker.sel.saturating_sub(remove);
+                self.omitted_rows = self.omitted_rows.saturating_add(remove as u64);
+            }
+        } else {
+            if rows.is_empty() {
+                let mut empty = PickItem::flat(
+                    "No sessions recorded yet",
+                    "start a prompt to create one",
+                    false,
+                    PickAction::Info,
+                );
+                empty.enabled = false;
+                rows.push(empty);
+            }
+            picker.sel = initial_picker_selection(&rows);
+            picker.items = rows;
+            self.omitted_rows = 0;
+        }
+        let visible = picker.visible_indices();
+        picker.normalize_selection(&visible);
+        true
+    }
+    pub(super) fn apply_remote_session_activity(
+        &mut self,
+        observation: Option<&super::session_activity::Observation>,
+        run: &str,
+        base: Option<&str>,
+    ) {
+        if let Some(picker) = self
+            .picker
+            .as_mut()
+            .filter(|picker| picker.title == REMOTE_SESSION_TITLE)
+        {
+            match observation {
+                Some(observation) => observation.apply(&mut picker.items, run, base),
+                None => super::session_activity::unavailable(&mut picker.items, run, base),
+            }
+        }
     }
     pub(super) fn open_sessions(
         &mut self,

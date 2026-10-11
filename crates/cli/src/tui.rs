@@ -13,6 +13,7 @@
 
 mod driver;
 pub(crate) mod remote;
+mod remote_sessions;
 mod remote_transport;
 pub(crate) use driver::{RunConfig, run};
 mod frame_render;

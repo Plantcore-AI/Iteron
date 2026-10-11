@@ -247,6 +247,12 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     provider.release.send(()).unwrap();
     second.visible("parity reply");
     second.visible("completed");
+    second.write(b"/sessions\r");
+    second.visible("Service sessions");
+    second.visible(&format!("run {run}"));
+    second.write(b"\x1b");
+    second.visible("Attached");
+    assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
     second.detach(&token);
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
     let current = read_service(&mut socket, &mut reader, 3);

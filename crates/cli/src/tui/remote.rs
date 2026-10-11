@@ -89,6 +89,20 @@ enum Kind {
     },
     Sessions {
         run: iteron_protocol::RunId,
+        generation: u64,
+        append: bool,
+    },
+    SessionsRepair {
+        run: iteron_protocol::RunId,
+        generation: u64,
+    },
+    SessionsActivity {
+        run: iteron_protocol::RunId,
+        generation: u64,
+    },
+    SessionsChanges {
+        run: iteron_protocol::RunId,
+        generation: u64,
     },
     Refusals {
         run: iteron_protocol::RunId,
@@ -124,6 +138,7 @@ struct View {
     pending: Option<Request>,
     queued: std::collections::VecDeque<(Value, Kind)>,
     models: Option<Value>,
+    sessions: super::remote_sessions::Sessions,
     product_cursor: u64,
     poll_events: bool,
     poll_inputs: bool,
@@ -166,6 +181,58 @@ impl View {
     }
     fn final_request(&mut self) -> Result<()> {
         self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone()})
+    }
+    fn sessions_request(
+        &mut self,
+        cursor: Option<String>,
+        generation: u64,
+        append: bool,
+    ) -> Result<()> {
+        self.queue(
+            json!({"type":"thread_lifecycle_v1","command":{"type":"list","cursor":cursor,"limit":super::session_picker::session_picker_page_size()}}),
+            Kind::Sessions { run: self.service.current_run_id.clone(), generation, append },
+        )
+    }
+    fn sessions_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+            return Ok(true);
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.sessions.clear(app);
+            return self.interrupt().map(|()| false);
+        }
+        if let Some(update) = app.pickers.key(key.code, key.modifiers) {
+            match update.event {
+                super::picker::PickerEvent::Accept(super::picker::PickAction::AdoptRun(run)) => {
+                    self.sessions.clear(app);
+                    self.queue(
+                        json!({"type":"session_navigate_v1","command":{"action":"resume","thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"target_run_id":run}}),
+                        Kind::Control,
+                    )?;
+                }
+                super::picker::PickerEvent::Cancel => self.sessions.clear(app),
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+    fn sessions_poll(&mut self, app: &App) -> Result<bool> {
+        if self.pending.is_some() || !self.queued.is_empty() {
+            return Ok(false);
+        }
+        if let Some(cursor) = self.sessions.next_page(app) {
+            self.sessions_request(Some(cursor), self.sessions.generation(), true)?;
+            return Ok(true);
+        }
+        if self.sessions.activity_due(app) && self.snapshot.is_some() {
+            self.queue(
+                json!({"type":"activity_center_v1","command":{"action":"list","thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),
+                Kind::SessionsActivity { run: self.service.current_run_id.clone(), generation: self.sessions.generation() },
+            )?;
+            self.sessions.activity_started();
+            return Ok(true);
+        }
+        Ok(false)
     }
     fn mcp_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -269,7 +336,17 @@ impl View {
                     return Ok(false);
                 }
                 "/sessions" => {
-                    self.queue(json!({"type":"thread_lifecycle_v1","command":{"type":"list","cursor":if arg.is_empty(){Value::Null}else{json!(arg)},"limit":25}}),Kind::Sessions{run:self.service.current_run_id.clone()})?;
+                    if arg.len() > 1024 || arg.chars().any(char::is_control) {
+                        bail!("session cursor exceeds its host bound");
+                    }
+                    let generation = self
+                        .sessions
+                        .begin(app, self.service.current_run_id.clone());
+                    self.sessions_request(
+                        (!arg.is_empty()).then(|| arg.to_owned()),
+                        generation,
+                        false,
+                    )?;
                     app.editor.clear();
                     return Ok(false);
                 }
@@ -489,6 +566,7 @@ impl View {
                     self.last_terminal = None;
                     self.final_needed = false;
                     app.clear_mcp_inputs();
+                    self.sessions.clear(app);
                     app.artifact_viewer.close();
                     app.telemetry.observe_remote_cost(None);
                     app.history.clear();
@@ -624,33 +702,94 @@ impl View {
                 }
                 self.final_needed = false;
             }
-            Kind::Sessions { run } => {
-                if run != self.service.current_run_id {
+            Kind::Sessions {
+                run,
+                generation,
+                append,
+            } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
                     return Ok(());
                 }
-                let items = match super::session_picker::host_session_picker_items(&reply, &run.0) {
-                    Ok(items) => items,
-                    Err(_) => {
-                        app.note(block::NoticeLevel::Warn,"session records are unavailable; the service and current draft remain attached");
-                        return Ok(());
+                match self.sessions.page(app, &reply, append) {
+                    Ok(super::remote_sessions::Page::Applied) => {}
+                    Ok(super::remote_sessions::Page::Restart) => {
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "session index changed; reading the newest page",
+                        );
+                        self.sessions_request(None, generation, false)?;
                     }
-                };
-                let mut rows = items
-                    .into_iter()
-                    .map(|item| block::PanelRow::Note(format!("{} · {}", item.label, item.hint)))
-                    .collect::<Vec<_>>();
-                rows.push(block::PanelRow::Note("/resume RUN uses the shared host adoption port · /activity shows this bound service's live owners".into()));
-                if reply["has_more"] == true {
-                    if let Some(cursor) = reply["next_cursor"]
-                        .as_str()
-                        .filter(|cursor| cursor.len() <= 1024)
-                    {
-                        rows.push(block::PanelRow::Note(format!(
-                            "next page: /sessions {cursor}"
-                        )));
+                    Ok(super::remote_sessions::Page::Repair) => {
+                        self.queue(
+                            json!({"type":"thread_lifecycle_v1","command":{"type":"reindex","thread_id":self.service.scope.thread_id,"run_id":run}}),
+                            Kind::SessionsRepair { run, generation },
+                        )?;
+                    }
+                    Err(reason) => {
+                        self.sessions.clear(app);
+                        app.note(block::NoticeLevel::Warn, reason);
                     }
                 }
-                app.panel("≡", "service sessions", rows);
+            }
+            Kind::SessionsRepair { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                if reply["type"] != "thread_reindexed_v1" {
+                    self.sessions.clear(app);
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "service session index repair unconfirmed; reopen to retry",
+                    );
+                } else {
+                    if reply["unavailable"].as_u64().is_some_and(|count| count > 0) {
+                        app.note(
+                            block::NoticeLevel::Warn,
+                            "some retained sessions were unavailable to the host index repair",
+                        );
+                    }
+                    self.sessions_request(None, generation, false)?;
+                }
+            }
+            Kind::SessionsActivity { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                let Some(snapshot) = self
+                    .snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.run_id == run)
+                else {
+                    self.sessions.activity_finished();
+                    return Ok(());
+                };
+                self.sessions.activity(app, &reply, snapshot);
+                self.queue(
+                    json!({"type":"artifacts_v1","command":{"type":"list","thread_id":self.service.scope.thread_id}}),
+                    Kind::SessionsChanges { run, generation },
+                )?;
+            }
+            Kind::SessionsChanges { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                if let Some(snapshot) = self
+                    .snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.run_id == run)
+                {
+                    self.sessions.changes(app, &reply, snapshot);
+                } else {
+                    self.sessions.activity_finished();
+                }
             }
             Kind::Refusals { run } => {
                 if run == self.service.current_run_id {
@@ -677,6 +816,7 @@ impl View {
                         app.note(block::NoticeLevel::Warn, reason);
                     } else if !was_waiting && app.mcp_form.is_waiting() {
                         app.status = "MCP server is waiting for your input".into();
+                        self.sessions.clear(app);
                         app.artifact_viewer.close();
                     } else if was_waiting && !app.mcp_form.is_waiting() {
                         app.status = "input callback closed · tool completion not inferred".into();
@@ -817,6 +957,7 @@ impl View {
                     self.last_terminal = None;
                     self.final_needed = false;
                     app.clear_mcp_inputs();
+                    self.sessions.clear(app);
                     app.artifact_viewer.close();
                     app.history.bind_selected_run(&navigation.run_id);
                     app.run.select_verified_run();
@@ -962,6 +1103,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         pending: None,
         queued: std::collections::VecDeque::new(),
         models: None,
+        sessions: Default::default(),
         product_cursor: 0,
         poll_events: false,
         poll_inputs: false,
@@ -987,6 +1129,9 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
             });
         }
         app.artifact_viewer.poll(&view.service.current_run_id);
+        if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
+            view.sessions.clear(&mut app);
+        }
         terminal.draw(|frame| draw(frame, &mut app))?;
         tokio::select! {
             _=termination_rx.recv()=>break,
@@ -1016,7 +1161,12 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                             match view.mcp_key(&mut app,key) {Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())};
                             continue;
                         }
+                        if app.pickers.has_remote_sessions() && app.permission_prompt.read().is_none() {
+                            match view.sessions_key(&mut app,key) {Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())};
+                            continue;
+                        }
                         if app.permission_prompt.read().is_some() {
+                            view.sessions.clear(&mut app);
                             if let Err(error) = view.approval_key(&mut app, key.code) { app.note(block::NoticeLevel::Warn, error.to_string()); }
                             continue;
                         }
@@ -1034,13 +1184,14 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                         }}
                     },
                     Event::Paste(text) if app.mcp_form.is_waiting()=>super::mcp_input::handle_paste(&mut app,&text),
+                    Event::Paste(text) if app.pickers.has_remote_sessions()=>{app.pickers.paste(&text);},
                     Event::Paste(text)=>{if app.editor.text().len().saturating_add(text.len())<=MAX_DRAFT_BYTES{app.editor.insert_str(&crate::editor::sanitize_foreign_text(&text));}else{app.note(block::NoticeLevel::Warn,"paste exceeds the bounded remote draft; retained current text");}},
                     _=>{},
                 }
             },
             _=tick.tick()=>{
                 if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.poll_inputs{view.inputs_request()?;}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -1073,6 +1224,7 @@ mod tests {
             pending: None,
             queued: Default::default(),
             models: None,
+            sessions: Default::default(),
             product_cursor: 0,
             poll_events: false,
             poll_inputs: false,

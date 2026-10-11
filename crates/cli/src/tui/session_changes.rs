@@ -20,7 +20,11 @@ pub(super) struct Summary {
     evicted_objects: u64,
 }
 impl Summary {
-    fn capture(value: &Value, thread: &SessionId, run: &RunId) -> Result<Self, &'static str> {
+    pub(super) fn capture(
+        value: &Value,
+        thread: &SessionId,
+        run: &RunId,
+    ) -> Result<Self, &'static str> {
         if value["type"] != "artifacts_v1"
             || value["contract_version"] != CLIENT_ARTIFACT_VERSION
             || value["thread_id"] != thread.0
