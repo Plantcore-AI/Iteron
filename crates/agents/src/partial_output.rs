@@ -72,14 +72,13 @@ impl AgentPartialOutputOwner {
             if prior.task_message_id != Some(task) {
                 return Err(ControllerError::StaleEpoch);
             }
-            if let Some(old) = &prior.source {
-                if old.tenant != source.tenant
+            if let Some(old) = &prior.source
+                && (old.tenant != source.tenant
                     || old.run_id != source.run_id
                     || source.provider_intent_seq < old.provider_intent_seq
-                    || (source.provider_intent_seq == old.provider_intent_seq && old != source)
-                {
-                    return Err(ControllerError::StaleEpoch);
-                }
+                    || (source.provider_intent_seq == old.provider_intent_seq && old != source))
+            {
+                return Err(ControllerError::StaleEpoch);
             }
         }
         // A new physical attempt owns a fresh prefix. Retried output is not concatenated into a
