@@ -3,6 +3,9 @@
 
 pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str> {
     match (relative, name) {
+        ("crates/sandbox/src/pty_size.rs", "MAX_WINDOW_DIMENSION") => {
+            Some("crates/sandbox/src/pty.rs")
+        }
         // The pipe and PTY factories now share the exact original Windows frozen-launch input
         // envelope. Preserve those declared identities while the real owner moves.
         (

@@ -17,7 +17,6 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
             "PIPE_BUFFER_BYTES" | "PIPE_CONNECT_LIMIT",
         )
         | ("crates/support/src/owned_windows_job/native_setup.rs", "MAX_SETUP_WAIT")
-        | ("crates/sandbox/src/pty_size.rs", "MAX_WINDOW_DIMENSION")
         | ("crates/sandbox/src/windows_launch_plan.rs", "MAX_PREPARATIONS" | "PREPARATION_WAIT")
         | ("crates/tools/src/lsp/capability_windows.rs", "MAX_SOURCE_READS") => {
             Some(InvariantReason::HardBudgetEffectLedger)
