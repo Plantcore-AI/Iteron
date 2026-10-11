@@ -27,6 +27,43 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // New attached clients retain only bounded transport/presentation buffers. UI polling
+        // cadence and text page size remain actual runtime helpers and are deliberately absent.
+        (
+            "crates/cli/src/tui/remote.rs",
+            "MAX_DRAFT_BYTES" | "MAX_PENDING_COMMANDS" | "REPLY_DEADLINE",
+        )
+        | (
+            "crates/cli/src/tui/remote_transport.rs",
+            "MAX_FRAME_BYTES" | "MAX_LOGICAL_BYTES" | "MAX_COMMAND_BYTES" | "IO_DEADLINE"
+            | "ASSEMBLY_DEADLINE",
+        )
+        | (
+            "crates/cli/src/tui/product_tools.rs",
+            "MAX_TOOLS" | "MAX_TOOL_BYTES" | "MAX_PENDING_BYTES",
+        )
+        | (
+            "crates/cli/src/tui/artifact_view.rs",
+            "MAX_ARTIFACT_BYTES"
+            | "MAX_ARTIFACT_DESCRIPTORS"
+            | "MAX_IMAGE_PIXELS"
+            | "MAX_IMAGE_DIMENSION"
+            | "MAX_DECODE_BYTES"
+            | "READ_DEADLINE",
+        )
+        | (
+            "crates/cli/src/runtime/model_context_projection.rs",
+            "MAX_JSON_NODES" | "MAX_JSON_DEPTH",
+        ) => Some(InvariantReason::Security),
+        ("crates/cli/src/tui/session_changes.rs", "READ_CAPACITY") => {
+            Some(InvariantReason::RuntimeStateNotAValue)
+        }
+        ("crates/cli/src/tui/picker_owner.rs", "REMOTE_SESSION_TITLE") => {
+            Some(InvariantReason::Identity)
+        }
+        ("crates/protocol/src/resident_service.rs", "RESIDENT_SERVICE_VERSION") => {
+            Some(InvariantReason::WireCompatibility)
+        }
         // Admission and projection ceilings bound physically retained work/bytes. Neither an
         // observer nor a learned policy may enlarge the verified owner envelope.
         ("crates/cli/src/app_server/agent_control.rs", "MAX_PENDING_CONTROLS")

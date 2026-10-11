@@ -325,6 +325,10 @@
         {
           "kind": "tree",
           "path": "xtask"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/windows-native-cohort.py"
         }
       ],
       "contracts": [
@@ -842,6 +846,10 @@
         {
           "kind": "tree",
           "path": "crates/provider/src/catalog"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/data_policy.rs"
         }
       ],
       "contracts": [
@@ -1264,6 +1272,14 @@
         {
           "kind": "file",
           "path": "crates/agents/src/controller_directory_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/partial_output.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents/src/partial_output"
         }
       ],
       "contracts": [
@@ -1574,6 +1590,14 @@
         {
           "kind": "tree",
           "path": "crates/tools/src/contained_source"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/repository_ignore.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/write_file"
         }
       ],
       "contracts": [
@@ -3331,6 +3355,42 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/ordinary_extensions_tests/paid_native.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/resident_service.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/agent_partial_stream.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/final_evidence.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/final_evidence_runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/final_evidence_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/model_context_projection.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/partial_output.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/refusal_provenance.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/model_context_projection"
         }
       ],
       "contracts": [

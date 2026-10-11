@@ -21,6 +21,7 @@ pub(crate) use cfg::has_cfg_test;
 
 mod fixed_client;
 mod fixed_core;
+mod fixed_native;
 mod fixed_runtime;
 mod source_wiring;
 mod stable_source;
@@ -813,6 +814,7 @@ pub(crate) fn explicit_invariant_reason(
 ) -> Option<InvariantReason> {
     fixed_client::reason(relative, name, owner)
         .or_else(|| fixed_core::reason(relative, name, owner))
+        .or_else(|| fixed_native::reason(relative, name, owner))
         .or_else(|| fixed_runtime::reason(relative, name, owner))
 }
 

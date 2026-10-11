@@ -3,6 +3,12 @@
 
 pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str> {
     match (relative, name) {
+        // The pipe and PTY factories now share the exact original Windows frozen-launch input
+        // envelope. Preserve those declared identities while the real owner moves.
+        (
+            "crates/sandbox/src/windows_launch_plan.rs",
+            "MAX_ENVIRONMENT_ENTRIES" | "MAX_ENVIRONMENT_BYTES" | "MAX_SHELL_PATH_ENTRIES",
+        ) => Some("crates/sandbox/src/persistent_pty_windows.rs"),
         ("crates/cli/src/block/diff.rs", "HUNK_DEFAULT_START_LINE") => {
             Some("crates/cli/src/block.rs")
         }
