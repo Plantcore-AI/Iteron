@@ -89,7 +89,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 
 | Command | Meaning |
 | --- | --- |
-| `iteron attach <ENDPOINT> [--service-id <SERVICE_ID>]` | Reattach a TUI to an independent loopback `serve` process. Token is read only from stdin. |
+| `iteron attach <ENDPOINT> --service-id <SERVICE_ID>` | Reattach a TUI to an independent loopback `serve` process. Token is read only from stdin. |
 | `iteron reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
 | `iteron prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
 | `iteron serve [--listen <LISTEN>] [--client-approvals] [PLANTCORE] [RECORDING_PROVIDER_CA_FILE] [RECORDING_INJECT_HARNESS_ERROR] [RECORDING_APP_SERVER_FAULT]` | Run a local-only versioned App Server for headless clients. |
@@ -107,9 +107,9 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron config set <KEY> <VALUE>` | Persist one setting atomically at mode 0600. |
 | `iteron config explain [--effective] [--family <FAMILY>] [--format <FORMAT>]` | Explain the exact immutable settings that would govern this run. |
 | `iteron record <SUBCOMMAND>` | Execute, inspect, or resume receipt-backed record erasure operations. |
-| `iteron record delete <RUN_ID> [--operation-id <ID>]` | Delete one inactive session and all private-content references owned only by it. |
-| `iteron record revoke <DIGEST> [--operation-id <ID>]` | Crypto-shred one content digest and invalidate every derivative handle. |
-| `iteron record prune [--older-than-days <DAYS>] [--keep-last <N>] [--operation-id <ID>]` | Apply a durable, resumable retention operation. |
+| `iteron record delete <RUN_ID> --operation-id <ID>` | Delete one inactive session and all private-content references owned only by it. |
+| `iteron record revoke <DIGEST> --operation-id <ID>` | Crypto-shred one content digest and invalidate every derivative handle. |
+| `iteron record prune [--older-than-days <DAYS>] [--keep-last <N>] --operation-id <ID>` | Apply a durable, resumable retention operation. |
 | `iteron record receipt <OPERATION_ID>` | Print one content-free erasure receipt. |
 | `iteron record receipts [--limit <LIMIT>]` | List the bounded receipt inventory, including incomplete operations. |
 | `iteron record resume <OPERATION_ID>` | Resume an incomplete operation from its durable receipt request. |
