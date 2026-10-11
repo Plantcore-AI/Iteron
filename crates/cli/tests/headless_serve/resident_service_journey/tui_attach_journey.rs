@@ -220,7 +220,9 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
             .mode(0o600)
             .open(&token_file)
             .unwrap();
-        writeln!(file, "{token}").unwrap();
+        // The actual attach reader consumes exactly 64 lowercase hex bytes to EOF. A newline
+        // makes this 65-byte input invalid before any service handshake or terminal frame.
+        file.write_all(token.as_bytes()).unwrap();
     }
     // An actual idle host control changes the runtime before any frontend is attached.
     // Reading the cached installed overview must not start a provider request.
