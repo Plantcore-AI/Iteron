@@ -1130,6 +1130,10 @@ pub(crate) fn attach_workflow_telemetry(
 pub(super) const MAX_DELEGATION_DEPTH: u8 = 1;
 
 #[cfg(test)]
+#[path = "workflow_spawner/fixture_memory_budget.rs"]
+mod fixture_memory_budget;
+
+#[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use iteron_protocol::{Capability, EventKind};
