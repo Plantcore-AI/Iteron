@@ -24,7 +24,8 @@ the `use_skill` tool.
 Use `/skills` to inspect discovery. Same-name sources keep the declared source
 precedence and emit a captured conflict diagnostic; a project skill cannot
 silently replace an operator skill. Effective Skills inventory includes a paged
-diagnostic sidecar with source-path digests, without exposing native paths.
+diagnostic sidecar whose source field is a path digest. Reasons are bounded,
+credential-scrubbed captured text and may contain operator path information.
 
 ## Lifecycle hooks
 
