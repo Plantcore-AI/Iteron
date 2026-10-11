@@ -60,8 +60,7 @@ impl Agent {
         .prepare(mode, turn, file)?;
         // This exact host epoch was active during successful intake. A later pre-working
         // refusal may stage the same held transcript without reconstructing this controller.
-        if self.persistent_agents.is_some()
-            && let Some(mailbox) = &self.persistent_mailbox
+        if let Some(mailbox) = &self.persistent_mailbox
             && let Ok((_, owner)) = mailbox.child_controller()
         {
             self.transcript_state
