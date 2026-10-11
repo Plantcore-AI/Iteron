@@ -23,7 +23,7 @@ impl Journal {
         #[cfg(unix)]
         {
             let directory = pin(path, true)?;
-            let lease = open_at(&directory, c"records-v1.lock", libc::O_RDWR | libc::O_CREAT)?;
+            let lease = open_writer_lease(&directory)?;
             lease.try_lock().map_err(|error| match error {
                 std::fs::TryLockError::WouldBlock => {
                     io::Error::new(io::ErrorKind::WouldBlock, "memory writer lease is busy")
@@ -224,6 +224,27 @@ fn read_at(directory: &File) -> io::Result<Option<Vec<u8>>> {
         return Err(super::invalid());
     }
     Ok(Some(bytes))
+}
+
+#[cfg(unix)]
+fn open_writer_lease(directory: &File) -> io::Result<File> {
+    #[cfg(target_os = "macos")]
+    const ATTEMPTS: usize = 8;
+    #[cfg(not(target_os = "macos"))]
+    const ATTEMPTS: usize = 1;
+
+    for attempt in 0..ATTEMPTS {
+        match open_at(directory, c"records-v1.lock", libc::O_RDWR | libc::O_CREAT) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt + 1 < ATTEMPTS => {
+                // Concurrent macOS coordination-file opens can fail before any lease is acquired.
+                // Retry only this creation under the retained directory, with seven 1 ms backoffs.
+                // Every successful descriptor still passes the same private-file checks below.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the bounded lease-open loop always returns its final result")
 }
 
 #[cfg(unix)]
