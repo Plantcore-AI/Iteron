@@ -1379,6 +1379,7 @@ pub(super) mod tests {
         hooks: &Hooks,
         provider_id: &str,
         model_id: &str,
+        memory: Option<iteron_ctx::MemBudget>,
     ) -> iteron_tunables::ResolvedTunableSet {
         use iteron_tunables::{ConstraintValue, ResolutionValue};
 
@@ -1965,6 +1966,10 @@ pub(super) mod tests {
             }
         }
 
+        if let Some(memory) = memory {
+            super::fixture_memory_budget::install(&mut input, memory);
+        }
+
         let resolved = iteron_tunables::resolve(input)
             .expect("production-compatible integration fixture must resolve atomically");
         iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
@@ -1972,12 +1977,32 @@ pub(super) mod tests {
     }
 
     pub(in crate::runtime) fn pin_context(root: &Path, context: &mut KernelSpawnerContext) {
+        pin_context_with_materialization(root, context, None);
+    }
+
+    pub(in crate::runtime) fn pin_context_with_memory(
+        root: &Path,
+        context: &mut KernelSpawnerContext,
+    ) {
+        pin_context_with_materialization(
+            root,
+            context,
+            Some(context.context_materialization_policy.memory),
+        );
+    }
+
+    fn pin_context_with_materialization(
+        root: &Path,
+        context: &mut KernelSpawnerContext,
+        memory: Option<iteron_ctx::MemBudget>,
+    ) {
         let resolved = production_compatible_resolved_fixture(
             root,
             context.agent_catalog.as_ref(),
             &context.hooks,
             &context.provider_id,
             &context.model,
+            memory,
         );
         context.pin_resolved_tunables(&resolved).unwrap();
         let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(

@@ -414,7 +414,11 @@ fn setup_with_financial_and_memory(
     if priced {
         context.install_pricing_authority(Some(pricing)).unwrap();
     }
-    super::super::workflow_spawner::tests::pin_context(&root.0, &mut context);
+    if memory_workspace.is_some() {
+        super::super::workflow_spawner::tests::pin_context_with_memory(&root.0, &mut context);
+    } else {
+        super::super::workflow_spawner::tests::pin_context(&root.0, &mut context);
+    }
     let settled = Arc::new(AtomicUsize::new(0));
     let mut runtime = KernelPersistentRuntime::new(context);
     if block_tool {
