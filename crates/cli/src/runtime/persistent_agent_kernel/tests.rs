@@ -287,7 +287,7 @@ impl Workspace {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(root.join("repo")).unwrap();
-        Self(root)
+        Self(root.canonicalize().unwrap())
     }
 }
 impl Drop for Workspace {
@@ -785,7 +785,7 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
             workflow_id: "resident-workflow".into(),
             node_id: node,
             attempt: 1,
-            input_digest: format!("sha256:{}", "d".repeat(64)),
+            input_digest: "d".repeat(64),
             assigned_agent: child.0,
             task: task.into(),
             budget: iteron_workflow::task_dag::TaskBudget {

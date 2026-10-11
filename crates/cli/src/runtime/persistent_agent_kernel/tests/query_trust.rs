@@ -34,7 +34,7 @@ async fn real_registered_queries_keep_summary_and_sibling_body_untrusted_but_ack
         .message_id
         .unwrap();
     let mut registry = iteron_tools::Registry::read_only(workspace.0.join("repo")).unwrap();
-    register_agent_tools(&mut registry, port, AgentIdV1(1)).unwrap();
+    register_agent_tools(&mut registry, port.clone(), AgentIdV1(1)).unwrap();
     for (name, input, needle) in [
         (
             "agent_inspect",
