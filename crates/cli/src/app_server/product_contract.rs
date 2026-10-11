@@ -566,6 +566,7 @@ impl ContractReader {
             }
             projection.maintenance = None;
             projection.maintenance_gaps = 0;
+            projection.artifact_scope = None;
             projection.artifacts.bind_thread(&thread_id);
             projection
                 .publications
@@ -730,23 +731,24 @@ impl ContractReader {
         command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
     ) -> serde_json::Value {
         // Never hold the event projection lock across disk hydration or content-graph validation.
-        let (resident, scope, thread) = self.with_mut(|projection| {
+        let (resident, scope, identity) = self.with_mut(|projection| {
             (
                 projection.artifacts.read(command.clone()),
                 projection.artifact_scope.clone(),
                 projection
                     .snapshot
                     .as_ref()
-                    .map(|snapshot| snapshot.thread_id.clone()),
+                    .map(|snapshot| (snapshot.thread_id.clone(), snapshot.run_id.clone())),
             )
         });
-        let Some(thread) = thread else {
+        let Some((thread, run)) = identity else {
             return resident;
         };
         if command.thread_id() != &thread {
             return resident;
         }
         let durable = scope.and_then(|scope| scope.read(&thread, command.clone()).ok());
+        let retained_catalog_available = durable.is_some();
         match command {
             iteron_protocol::client_artifact::ClientArtifactCommandV1::Read { .. } => durable
                 .unwrap_or_else(|| {
@@ -775,6 +777,11 @@ impl ContractReader {
                     }
                 }
                 reply["resident_artifact_ids"] = serde_json::json!(resident_ids);
+                // These identify the captured owner used for this read, not a later selection.
+                // An empty fallback cannot establish that the retained manifest has no entries.
+                reply["thread_id"] = serde_json::json!(thread);
+                reply["run_id"] = serde_json::json!(run);
+                reply["retained_catalog_available"] = serde_json::json!(retained_catalog_available);
                 reply["retention"] = serde_json::json!("per_artifact_provenance");
                 reply["provenance"] =
                     serde_json::json!("retained_owner_manifest_or_resident_public_event");
@@ -1522,6 +1529,31 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_run_rebinding_drops_old_retained_artifact_scope_before_installing_the_new_owner() {
+        let reader = ContractReader::default();
+        let thread = SessionId("session-r".into());
+        let run = RunId("r".into());
+        reader.bind_identity(thread.clone(), run.clone());
+        reader.with_mut(|projection| {
+            projection.artifact_scope = Some(crate::artifacts::ArtifactReadScope::capture(
+                std::path::PathBuf::new(),
+                iteron_protocol::TenantId("tenant".into()),
+                run.clone(),
+                std::path::PathBuf::new(),
+            ));
+        });
+        reader.bind_identity(thread.clone(), run);
+        assert!(reader.with_mut(|projection| projection.artifact_scope.is_some()));
+        reader.bind_identity(thread.clone(), RunId("next-run".into()));
+        assert!(reader.with_mut(|projection| projection.artifact_scope.is_none()));
+        let reply = reader.artifacts_v1(
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { thread_id: thread },
+        );
+        assert_eq!(reply["run_id"], "next-run");
+        assert_eq!(reply["retained_catalog_available"], false);
+    }
 
     fn terminal_event(outcome: Outcome, error: Option<&str>) -> ServerEvent {
         ServerEvent::RunEnded {

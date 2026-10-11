@@ -104,6 +104,7 @@ mod product_tools;
 mod provider_catalog_client;
 mod session_activity;
 mod session_adoption;
+mod session_changes;
 mod session_inspection;
 #[cfg(test)]
 mod session_management;

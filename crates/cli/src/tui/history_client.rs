@@ -94,7 +94,21 @@ impl HistoryClient {
         };
         match response {
             ControlReply::ActivityCenter(value) => {
-                super::session_activity::Observation::capture(&value, &scope).map_err(str::to_owned)
+                let mut observation = super::session_activity::Observation::capture(&value, &scope)
+                    .map_err(str::to_owned)?;
+                observation.changes(
+                    super::session_changes::observe(
+                        self.client.clone(),
+                        self.thread.clone(),
+                        self.run.clone(),
+                    )
+                    .await
+                    .ok(),
+                );
+                if !self.is_current() {
+                    return Err("selected run changed during retained change observation".into());
+                }
+                Ok(observation)
             }
             _ => Err("live activity owner unavailable".into()),
         }

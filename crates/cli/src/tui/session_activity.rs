@@ -14,6 +14,7 @@ pub(super) struct Observation {
     resident_tasks: usize,
     unknown: usize,
     omitted: usize,
+    changes: Option<super::session_changes::Summary>,
 }
 impl Observation {
     pub(super) fn capture(
@@ -43,6 +44,7 @@ impl Observation {
                 .as_u64()
                 .and_then(|count| usize::try_from(count).ok())
                 .ok_or("live omission count unavailable")?,
+            changes: None,
         };
         for row in rows {
             let kind = row["target"]["kind"]
@@ -108,9 +110,12 @@ impl Observation {
         }
         Ok(observation)
     }
+    pub(super) fn changes(&mut self, changes: Option<super::session_changes::Summary>) {
+        self.changes = changes;
+    }
     fn label(&self) -> String {
         format!(
-            "live parent {} · run tasks {} · resident session tasks {} · unresolved states {} · omitted {}",
+            "live parent {} · run tasks {} · resident session tasks {} · unresolved states {} · omitted {} · {}",
             if self.parent_running {
                 "running"
             } else {
@@ -119,7 +124,11 @@ impl Observation {
             self.run_tasks,
             self.resident_tasks,
             self.unknown,
-            self.omitted
+            self.omitted,
+            self.changes.map_or_else(
+                || "retained changes unavailable".into(),
+                |changes| changes.label()
+            )
         )
     }
     pub(super) fn apply(&self, items: &mut [PickItem], run: &str, base: Option<&str>) {

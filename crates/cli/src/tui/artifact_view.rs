@@ -168,7 +168,9 @@ impl Transfer {
         })
     }
 }
-fn bounded_descriptor(value: &Value) -> Result<ClientArtifactDescriptorV1, &'static str> {
+pub(super) fn bounded_descriptor(
+    value: &Value,
+) -> Result<ClientArtifactDescriptorV1, &'static str> {
     let object = value
         .as_object()
         .filter(|object| object.len() == 7)

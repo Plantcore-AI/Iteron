@@ -240,6 +240,9 @@ fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_
     assert_eq!(terminal["result"]["outcome"], "done", "{terminal}");
     provider.finish();
     let listing = artifact_list(&mut connection, &mut reader, &thread_id, 301);
+    assert_eq!(listing["thread_id"], thread_id);
+    assert_eq!(listing["run_id"], terminal["result"]["run_id"]);
+    assert_eq!(listing["retained_catalog_available"], true);
     let descriptor = listing["artifacts"]
         .as_array()
         .unwrap()
