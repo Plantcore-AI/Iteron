@@ -42,6 +42,7 @@ mod recording_provider;
 #[path = "recording_provider_disabled.rs"]
 mod recording_provider;
 mod render;
+mod resident_service;
 mod session_transcript;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
 // payload contract #44 will put on a socket, landed first so the transport does not get to
