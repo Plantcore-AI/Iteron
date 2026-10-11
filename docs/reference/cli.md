@@ -89,9 +89,10 @@ This page is generated from the argument parser, so every shipped flag and subco
 
 | Command | Meaning |
 | --- | --- |
+| `iteron attach <ENDPOINT> [--service-id <SERVICE_ID>]` | Reattach a TUI to an independent loopback `serve` process. Token is read only from stdin. |
 | `iteron reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
 | `iteron prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
-| `iteron serve [--listen <LISTEN>] [PLANTCORE] [RECORDING_PROVIDER_CA_FILE] [RECORDING_INJECT_HARNESS_ERROR] [RECORDING_APP_SERVER_FAULT]` | Run a local-only versioned App Server for headless clients. |
+| `iteron serve [--listen <LISTEN>] [--client-approvals] [PLANTCORE] [RECORDING_PROVIDER_CA_FILE] [RECORDING_INJECT_HARNESS_ERROR] [RECORDING_APP_SERVER_FAULT]` | Run a local-only versioned App Server for headless clients. |
 | `iteron workflow <SUBCOMMAND>` | Run a bounded JavaScript workflow end-to-end, streaming progress to stdout. |
 | `iteron workflow run <SCRIPT> [--args <ARGS>]` | Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()). |
 | `iteron workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |

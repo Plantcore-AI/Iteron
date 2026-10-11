@@ -80,6 +80,7 @@
 /scripts/plantcore_recording_evidence.py @fr0m-scratch
 /scripts/test_cross_harness_qualification.py @fr0m-scratch
 /scripts/test_plantcore_recording_driver.py @fr0m-scratch
+/scripts/windows-native-cohort.py @fr0m-scratch
 /xtask/Cargo.toml @fr0m-scratch
 /crates/agents/tests/** @fr0m-scratch
 /crates/cli/tests/** @fr0m-scratch
@@ -110,6 +111,7 @@
 /docs/project/releases.md @fr0m-scratch
 /docs/reference/platforms.md @fr0m-scratch
 /crates/agents/src/controller/** @fr0m-scratch
+/crates/agents/src/partial_output/** @fr0m-scratch
 /crates/cli/src/app_server/** @fr0m-scratch
 /crates/cli/src/artifacts/** @fr0m-scratch
 /crates/cli/src/block/** @fr0m-scratch
@@ -140,6 +142,7 @@
 /crates/tools/src/desktop/** @fr0m-scratch
 /crates/tools/src/lsp/** @fr0m-scratch
 /crates/tools/src/process/** @fr0m-scratch
+/crates/tools/src/write_file/** @fr0m-scratch
 /crates/workflow/src/live_scheduler/** @fr0m-scratch
 /crates/agents/src/catalog.rs @fr0m-scratch
 /crates/agents/src/controller.rs @fr0m-scratch
@@ -152,6 +155,7 @@
 /crates/agents/src/def.rs @fr0m-scratch
 /crates/agents/src/lib.rs @fr0m-scratch
 /crates/agents/src/mailbox.rs @fr0m-scratch
+/crates/agents/src/partial_output.rs @fr0m-scratch
 /crates/agents/src/planner.rs @fr0m-scratch
 /crates/agents/src/policy.rs @fr0m-scratch
 /crates/agents/src/policy_tests.rs @fr0m-scratch
@@ -198,6 +202,7 @@
 /crates/cli/src/recording_provider.rs @fr0m-scratch
 /crates/cli/src/recording_provider_disabled.rs @fr0m-scratch
 /crates/cli/src/render.rs @fr0m-scratch
+/crates/cli/src/resident_service.rs @fr0m-scratch
 /crates/cli/src/route.rs @fr0m-scratch
 /crates/cli/src/runtime.rs @fr0m-scratch
 /crates/cli/src/semantic_text.rs @fr0m-scratch
@@ -269,6 +274,7 @@
 /crates/provider/src/anthropic.rs @fr0m-scratch
 /crates/provider/src/catalog.rs @fr0m-scratch
 /crates/provider/src/controls.rs @fr0m-scratch
+/crates/provider/src/data_policy.rs @fr0m-scratch
 /crates/provider/src/governor.rs @fr0m-scratch
 /crates/provider/src/governor_policy.rs @fr0m-scratch
 /crates/provider/src/governor_snapshot.rs @fr0m-scratch
@@ -338,6 +344,7 @@
 /crates/tools/src/ordinary_recipe.rs @fr0m-scratch
 /crates/tools/src/plantcore.rs @fr0m-scratch
 /crates/tools/src/repair_evidence.rs @fr0m-scratch
+/crates/tools/src/repository_ignore.rs @fr0m-scratch
 /crates/tools/src/schema.rs @fr0m-scratch
 /crates/tools/src/schema_error.rs @fr0m-scratch
 /crates/tools/src/schema_tests.rs @fr0m-scratch
@@ -357,6 +364,7 @@
 /crates/tools/tests/operation_admission.rs @fr0m-scratch
 /crates/tools/tests/tool_exposure_profile.rs @fr0m-scratch
 /crates/cli/src/runtime/hooks/** @fr0m-scratch
+/crates/cli/src/runtime/model_context_projection/** @fr0m-scratch
 /crates/cli/src/runtime/persistent_native_generations/** @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence_recorder/** @fr0m-scratch
 /crates/cli/src/runtime/telemetry/** @fr0m-scratch
@@ -390,6 +398,7 @@
 /crates/cli/src/providers/discovery_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_config.rs @fr0m-scratch
 /crates/cli/src/runtime/agent_loop.rs @fr0m-scratch
+/crates/cli/src/runtime/agent_partial_stream.rs @fr0m-scratch
 /crates/cli/src/runtime/approval_wait.rs @fr0m-scratch
 /crates/cli/src/runtime/artifact_publication.rs @fr0m-scratch
 /crates/cli/src/runtime/bounded_verify.rs @fr0m-scratch
@@ -453,6 +462,9 @@
 /crates/cli/src/runtime/extension_control.rs @fr0m-scratch
 /crates/cli/src/runtime/failed_action_cache.rs @fr0m-scratch
 /crates/cli/src/runtime/file_submission.rs @fr0m-scratch
+/crates/cli/src/runtime/final_evidence.rs @fr0m-scratch
+/crates/cli/src/runtime/final_evidence_runtime.rs @fr0m-scratch
+/crates/cli/src/runtime/final_evidence_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/force_cancel.rs @fr0m-scratch
 /crates/cli/src/runtime/frontend.rs @fr0m-scratch
 /crates/cli/src/runtime/frontend_events.rs @fr0m-scratch
@@ -486,8 +498,11 @@
 /crates/cli/src/runtime/mcp_control.rs @fr0m-scratch
 /crates/cli/src/runtime/memory_activation.rs @fr0m-scratch
 /crates/cli/src/runtime/memory_request_exposure.rs @fr0m-scratch
+/crates/cli/src/runtime/model_context_projection.rs @fr0m-scratch
 /crates/cli/src/runtime/model_response.rs @fr0m-scratch
 /crates/cli/src/runtime/model_response_tests.rs @fr0m-scratch
+/crates/cli/src/runtime/native_change_evidence.rs @fr0m-scratch
+/crates/cli/src/runtime/native_change_evidence_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/operation_admission.rs @fr0m-scratch
 /crates/cli/src/runtime/operation_admission_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/operator_status.rs @fr0m-scratch
@@ -568,6 +583,7 @@
 /crates/cli/src/runtime/provider_usage_journal_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_usage_reservation.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_usage_reservation_tests.rs @fr0m-scratch
+/crates/cli/src/runtime/refusal_provenance.rs @fr0m-scratch
 /crates/cli/src/runtime/request_accounting.rs @fr0m-scratch
 /crates/cli/src/runtime/request_admission.rs @fr0m-scratch
 /crates/cli/src/runtime/request_admission_assembly.rs @fr0m-scratch
@@ -696,6 +712,7 @@
 /crates/cli/src/runtime/persistent_agents/input_admission.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/input_admission_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/parent_turn.rs @fr0m-scratch
+/crates/cli/src/runtime/persistent_agents/partial_output.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/prepared_mailbox_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/provider_budget.rs @fr0m-scratch
