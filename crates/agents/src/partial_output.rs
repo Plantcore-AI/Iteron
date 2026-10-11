@@ -47,7 +47,6 @@ impl AgentPartialOutputOwner {
             return Err(ControllerError::StaleEpoch);
         }
         if task.0 == 0
-            || source.turn.0 == 0
             || source.provider_intent_seq == 0
             || [&source.tenant.0, &source.run_id.0, &source.effect_id.0]
                 .into_iter()

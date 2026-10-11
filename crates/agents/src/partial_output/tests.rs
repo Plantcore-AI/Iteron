@@ -74,9 +74,9 @@ fn running() -> (
     let source = AgentOutputSourceV1 {
         tenant: TenantId("tenant".into()),
         run_id: RunId("child-run".into()),
-        turn: TurnId(1),
+        turn: TurnId(0),
         provider_intent_seq: 5,
-        effect_id: EffectId("turn-1-provider-1".into()),
+        effect_id: EffectId("turn-0-provider-1".into()),
     };
     (controller, view, epoch, receipt.message_id.unwrap(), source)
 }
