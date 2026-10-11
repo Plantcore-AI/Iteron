@@ -26,7 +26,11 @@ impl Provider for Answer {
 }
 fn agent(workspace: &std::path::Path, run: &RunId) -> Agent {
     let rollout = Rollout::open(&workspace.join(".iteron/runs"), run, TenantId::default()).unwrap();
-    let checkpoint = rollout.tunables_checkpoint().unwrap();
+    let checkpoint = if rollout.is_empty() {
+        None
+    } else {
+        rollout.tunables_checkpoint().unwrap()
+    };
     let registry = iteron_tools::Registry::coding_agent_for_tests(workspace).unwrap();
     let mut agent = match checkpoint {
         Some(checkpoint) => Agent::new_with_tunables_checkpoint(

@@ -369,9 +369,10 @@ async fn actual_native_plan_material_resolves_exact_wal_publication_and_observat
     // A real new user-message receipt changes rendered review state without changing the frozen
     // plan publication. The request material must name both receipts independently.
     owner.admit_submission("also keep compatibility").unwrap();
-    let observation = owner.task_plan_snapshot()["observed_submission_seq"].clone();
     assert_eq!(owner.task_plan_snapshot()["needs_review"], true);
     assert_eq!(owner.run("").await.unwrap(), Outcome::Done);
+    // run also durably admits its actual (empty) user submission before preparing this request.
+    let observation = owner.task_plan_snapshot()["observed_submission_seq"].clone();
     let system = native_system(&provider, 0);
     assert!(system.contains("Newly admitted input changed the context"));
     let record = owner.rollout.path().to_owned();

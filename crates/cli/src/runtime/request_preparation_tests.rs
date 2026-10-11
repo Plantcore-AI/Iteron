@@ -129,7 +129,12 @@ fn actual_projection_replaces_cached_secret_history_before_context_estimation_an
         &owner.request().messages,
         owner.request().tools.as_ref(),
     );
-    assert_eq!(owner.baseline(), actual.total_tokens);
+    // The native request retains the prepared schema envelope, including its empty JSON array.
+    // The uncached path walks the same projected history but accounts raw individual tools.
+    assert_eq!(
+        owner.baseline(),
+        actual.total_tokens - actual.tool_tokens + owner.request().tools.estimated_tokens()
+    );
     // The independently retained message count did not change, so old incremental estimates
     // would remain stale without the real projection invalidation above.
     owner.bind_route_budget(Some(1_000_000), 64).unwrap();
