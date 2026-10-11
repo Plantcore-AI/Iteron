@@ -125,6 +125,7 @@ nav:
       - Tunable-family registry: reference/tunables.md
       - Codex defaults comparison: reference/codex-defaults-profile.md
       - Language-server tools: reference/language-server-tools.md
+      - File editing: reference/file-editing.md
       - Output formats: reference/output-formats.md
       - Agent definitions: reference/agent-definitions.md
       - External harness: reference/external-harness.md

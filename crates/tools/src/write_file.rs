@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod preimage;
+pub(crate) use preimage::WritePreimage;
+
 pub(crate) const MAX_FILE_TRANSACTION_BYTES: usize = 4 * 1024 * 1024;
 const MAX_WRITE_BYTES: usize = MAX_FILE_TRANSACTION_BYTES;
 const MAX_PATH_BYTES: usize = 4_096;
@@ -573,7 +576,10 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             description: "Create or replace one UTF-8 text file in the workspace by default. Missing \
                           parent directories are created. The same-directory replacement is \
                           fsynced, atomic, bounded to 4 MiB, and refused if the destination changes \
-                          while staging. Use this instead of bash for new source/config files. \
+                          while staging. Existing files require expected_sha256 from read_file \
+                          with include_sha256=true; preserve user changes when deliberately \
+                          replacing the whole file. Use edit/apply_patch for targeted changes. \
+                          Use this instead of bash for new source/config files. \
                           Paths and content containing bidi or zero-width controls are refused."
                 .into(),
             input_schema: serde_json::json!({
@@ -586,6 +592,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     "content": {
                         "type": "string",
                         "description": "complete UTF-8 file content, up to 4 MiB"
+                    },
+                    "expected_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "Required for an existing file: SHA-256 of all original raw bytes from read_file(include_sha256=true). Omit only to create a missing file. A mismatch leaves the file unchanged."
                     }
                 },
                 "required": ["path", "content"]
@@ -615,7 +626,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 else {
                     return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into())).into();
                 };
-                match write_workspace_file_captured_with_scope(&root, path, content, false, None, |_| {}).await {
+                let preimage = match WritePreimage::from_input(&call.input) {
+                    Ok(preimage) => preimage,
+                    Err(error) => return crate::ToolExecution::Definite(err_result(id, error)).into(),
+                };
+                match write_workspace_file_captured_with_scope(&root, path, content, false, None, preimage, |_| {}).await {
                     Ok(file) => crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("wrote {path} ({} bytes)", content.len())), vec![file]),
                     Err(error) => crate::ToolExecution::Definite(err_result(id, error)).into(),
                 }
@@ -663,9 +678,17 @@ pub(crate) async fn write_workspace_file_with_scope<F>(
 where
     F: FnOnce(&Path),
 {
-    write_workspace_file_captured_with_scope(root, path, content, confined, scope, before_commit)
-        .await
-        .map(|_| ())
+    write_workspace_file_captured_with_scope(
+        root,
+        path,
+        content,
+        confined,
+        scope,
+        WritePreimage::CurrentSnapshot,
+        before_commit,
+    )
+    .await
+    .map(|_| ())
 }
 
 pub(crate) async fn write_workspace_file_captured_with_scope<F>(
@@ -674,6 +697,7 @@ pub(crate) async fn write_workspace_file_captured_with_scope<F>(
     content: &str,
     confined: bool,
     scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    preimage: WritePreimage,
     before_commit: F,
 ) -> Result<crate::NativeFileChange, String>
 where
@@ -702,6 +726,7 @@ where
                     "write_file refused: content would not change target bytes: {path}"
                 ));
             }
+            preimage.validate(&captured.state, path)?;
             let staged = StagedWrite::prepare_confined(&initial_target, content.as_bytes(), target)
                 .await
                 .map_err(|error| format!("stage {path}: {error}"))?;
@@ -754,6 +779,7 @@ where
             "write_file refused: content would not change target bytes: {path}"
         ));
     }
+    preimage.validate(&captured.state, path)?;
     let before = matches!(captured.state, TargetSnapshot::Existing(_)).then_some(captured.bytes);
     let expected = captured.state;
     let staged =

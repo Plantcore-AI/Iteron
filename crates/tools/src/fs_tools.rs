@@ -6,6 +6,7 @@ use crate::{
     ObservationToolPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root,
 };
 use iteron_protocol::{Capability, Purity, ToolSpec};
+use sha2::{Digest as _, Sha256};
 use std::{
     cmp::Reverse,
     path::{Component, Path, PathBuf},
@@ -484,7 +485,8 @@ fn positive_integer(input: &serde_json::Value, field: &str) -> Result<Option<u64
 async fn read_numbered_file(
     path: &Path,
     window: ReadWindow,
-    policy: crate::ReadFilePolicy,
+    mut policy: crate::ReadFilePolicy,
+    include_sha256: bool,
 ) -> std::io::Result<String> {
     let file = tokio::fs::File::open(path).await?;
     let metadata = file.metadata().await?;
@@ -518,6 +520,29 @@ async fn read_numbered_file(
             return Ok("(binary or non-UTF-8 file, not shown)".into());
         }
     };
+
+    // The witness and rendered window come from these same bounded raw bytes (including BOM
+    // and original newline encoding). It grants no filesystem authority; the writer must still
+    // compare against its own retained snapshot and identity immediately before replacement.
+    let witness = include_sha256.then(|| format!("raw_sha256: {:x}\n", Sha256::digest(&bytes)));
+    if let Some(witness) = &witness {
+        policy.output_max_bytes = policy
+            .output_max_bytes
+            .checked_sub(witness.len())
+            .ok_or_else(|| {
+                std::io::Error::other("read_file output budget cannot fit its SHA-256 witness")
+            })?;
+        if policy.output_max_bytes
+            <= iteron_tunables::param_integer(
+                "tools.fs_tools.truncation_marker_reserve_bytes",
+                TRUNCATION_MARKER_RESERVE_BYTES,
+            )
+        {
+            return Err(std::io::Error::other(
+                "read_file output budget cannot fit content and its SHA-256 witness",
+            ));
+        }
+    }
 
     let mut absolute_line = 0_u64;
     let mut emitted = 0_u64;
@@ -596,17 +621,22 @@ async fn read_numbered_file(
         debug_assert!(output.len() <= policy.output_max_bytes);
     }
 
-    if output.is_empty() {
+    let output = if output.is_empty() {
         if absolute_line == 0 {
-            Ok("(empty file)".into())
+            "(empty file)".into()
         } else {
-            Ok(format!(
-                "(no lines in requested range; file has {absolute_line} lines)"
-            ))
+            format!("(no lines in requested range; file has {absolute_line} lines)")
         }
     } else {
-        Ok(output)
-    }
+        output
+    };
+    Ok(match witness {
+        Some(mut witness) => {
+            witness.push_str(&output);
+            witness
+        }
+        None => output,
+    })
 }
 
 /// Append a truncation marker without letting the marker itself violate the pinned byte ceiling.
@@ -646,7 +676,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                  (default 1); `limit` is the optional number of lines. Output is capped at \
                  {} bytes by the canonical default; the effective source/output ceilings are \
                  pinned in the run checkpoint. Binary, unsupported-encoding, and oversized files \
-                 are not injected. Truncation reports the next offset to read.",
+                 are not injected. Truncation reports the next offset to read. \
+                 Set include_sha256=true to obtain the SHA-256 of the full observed raw file \
+                 bytes for a deliberate write_file replacement; the rendered window may still \
+                 be partial, so preserve changes outside it.",
                 ObservationToolPolicy::default().read_file.output_max_bytes,
             ),
             input_schema: serde_json::json!({
@@ -665,6 +698,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         "type":"integer",
                         "minimum":1,
                         "description":"optional maximum number of lines to return; the pinned runtime output-byte cap still applies"
+                    },
+                    "include_sha256":{
+                        "type":"boolean",
+                        "description":"include the SHA-256 of the full bounded raw file bytes, including BOM/newlines, for write_file expected_sha256; false by default"
                     }
                 },
                 "required":["path"]
@@ -689,9 +726,14 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     Ok(window) => window,
                     Err(error) => return err_result(id, error),
                 };
+                let include_sha256 = match call.input.get("include_sha256") {
+                    None => false,
+                    Some(serde_json::Value::Bool(value)) => *value,
+                    Some(_) => return err_result(id, "read_file: include_sha256 must be a boolean".into()),
+                };
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
-                    Ok(p) => match read_numbered_file(&p, window, policy.read_file).await {
+                    Ok(p) => match read_numbered_file(&p, window, policy.read_file, include_sha256).await {
                         Ok(content) => {
                             focus.observe(p, &content);
                             ok_result(id, content)

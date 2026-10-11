@@ -2,6 +2,7 @@ use super::NativeReceiptWire;
 use crate::{CapturedToolExecution, McpEffectAttribution, Registry, ToolExecution, capturedfut};
 use iteron_protocol::{Capability, Purity, ToolSpec, ToolUse};
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -62,8 +63,12 @@ async fn actual_write_receipts_distinguish_creation_from_whole_file_replacement(
         ),
         ("create", "new.txt", None, "new bytes\n"),
     ] {
+        let mut input = json!({"path":path,"content":text});
+        if let Some(before) = expected_before {
+            input["expected_sha256"] = json!(format!("{:x}", Sha256::digest(before)));
+        }
         let captured = registry
-            .run_effect_captured(call(id, "write_file", json!({"path":path,"content":text})))
+            .run_effect_captured(call(id, "write_file", input))
             .await;
         definite_success(&captured);
         let receipt = captured.native_mutation.unwrap();
@@ -83,6 +88,183 @@ async fn actual_write_receipts_distinguish_creation_from_whole_file_replacement(
         let wire: NativeReceiptWire = serde_json::from_slice(&serialized).unwrap();
         assert!(wire.seal("another-call", "write_file").is_err());
     }
+}
+
+#[tokio::test]
+async fn actual_existing_dirty_file_requires_a_preimage_and_preserves_all_bytes() {
+    let root = TestRoot::new();
+    let original = b"user header\nuser dirty body\nuser footer\n";
+    std::fs::write(root.0.join("dirty.txt"), original).unwrap();
+    let registry = registry(&root, false);
+    for (id, extra, expected_kind) in [
+        ("no-preimage", json!({}), "preimage_required"),
+        (
+            "old-preimage",
+            json!({"expected_sha256":format!("{:x}",Sha256::digest(b"old clean body\n"))}),
+            "preimage_changed",
+        ),
+    ] {
+        let mut input = json!({"path":"dirty.txt","content":"blind whole replacement\n"});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = registry
+            .run_effect_captured(call(id, "write_file", input))
+            .await;
+        let ToolExecution::Definite(ref failed) = result.execution else {
+            panic!("{result:?}")
+        };
+        assert!(failed.is_error);
+        assert_eq!(failed.tool_use_id, id);
+        let refusal: serde_json::Value = serde_json::from_str(&failed.content).unwrap();
+        assert_eq!(refusal["kind"], expected_kind);
+        assert!(result.native_mutation.is_none());
+        assert_eq!(std::fs::read(root.0.join("dirty.txt")).unwrap(), original);
+        assert_eq!(
+            std::fs::read_dir(&root.0).unwrap().count(),
+            1,
+            "no staged replacement remains"
+        );
+    }
+}
+
+#[tokio::test]
+async fn actual_read_witness_binds_raw_bom_crlf_bytes_and_explicit_replacement() {
+    let root = TestRoot::new();
+    let original = b"\xef\xbb\xbfuser header\r\nuser dirty body\r\nuser footer";
+    std::fs::write(root.0.join("dirty.txt"), original).unwrap();
+    let registry = registry(&root, false);
+    let mut policy = crate::ObservationToolPolicy::default();
+    policy.read_file.output_max_bytes = 512;
+    registry.install_observation_tool_policy(policy).unwrap();
+    let default = registry
+        .run(call("plain-read", "read_file", json!({"path":"dirty.txt"})))
+        .await;
+    assert!(!default.is_error, "{}", default.content);
+    assert!(!default.content.contains("raw_sha256:"));
+    let read = registry
+        .run(call(
+            "witness",
+            "read_file",
+            json!({"path":"dirty.txt","include_sha256":true,"limit":1}),
+        ))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    let digest = format!("{:x}", Sha256::digest(original));
+    assert!(
+        read.content
+            .starts_with(&format!("raw_sha256: {digest}\n     1\tuser header"))
+    );
+    assert!(read.content.contains("truncated before line 2"));
+    assert!(read.content.len() <= 512);
+    // Caller explicitly supplies the full plain UTF-8 replacement; the hash still binds the original BOM bytes.
+    let replacement = "user header\r\nuser dirty body preserved and updated\r\nuser footer";
+    let result = registry
+        .run_effect_captured(call(
+            "deliberate",
+            "write_file",
+            json!({"path":"dirty.txt","content":replacement,"expected_sha256":digest}),
+        ))
+        .await;
+    definite_success(&result);
+    let receipt = result.native_mutation.unwrap();
+    assert_eq!(receipt.files()[0].before(), Some(original.as_slice()));
+    assert_eq!(receipt.files()[0].after(), replacement.as_bytes());
+    assert_eq!(
+        std::fs::read(root.0.join("dirty.txt")).unwrap(),
+        replacement.as_bytes()
+    );
+}
+
+#[tokio::test]
+async fn actual_human_edit_after_read_refuses_stale_whole_replacement() {
+    let root = TestRoot::new();
+    std::fs::write(root.0.join("race.txt"), b"before\n").unwrap();
+    let registry = registry(&root, false);
+    registry
+        .install_observation_tool_policy(crate::ObservationToolPolicy::default())
+        .unwrap();
+    let read = registry
+        .run(call(
+            "before-read",
+            "read_file",
+            json!({"path":"race.txt","include_sha256":true}),
+        ))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    let digest = read
+        .content
+        .lines()
+        .next()
+        .unwrap()
+        .strip_prefix("raw_sha256: ")
+        .unwrap();
+    std::fs::write(root.0.join("race.txt"), b"human!\n").unwrap();
+    let result = registry
+        .run_effect_captured(call(
+            "stale-write",
+            "write_file",
+            json!({"path":"race.txt","content":"agent replacement\n","expected_sha256":digest}),
+        ))
+        .await;
+    assert!(
+        matches!(&result.execution,ToolExecution::Definite(result)if result.is_error&&result.content.contains("preimage_changed"))
+    );
+    assert!(result.native_mutation.is_none());
+    assert_eq!(std::fs::read(root.0.join("race.txt")).unwrap(), b"human!\n");
+}
+
+#[tokio::test]
+async fn actual_existing_preimage_cannot_authorize_a_missing_file() {
+    let root = TestRoot::new();
+    let registry = registry(&root, false);
+    let result=registry.run_effect_captured(call("expected-existing","write_file",json!({"path":"absent.txt","content":"replacement","expected_sha256":format!("{:x}",Sha256::digest(b"before"))}))).await;
+    assert!(
+        matches!(&result.execution,ToolExecution::Definite(result)if result.is_error&&result.content.contains("preimage_changed"))
+    );
+    assert!(result.native_mutation.is_none());
+    assert!(!root.0.join("absent.txt").exists());
+    let created = registry
+        .run_effect_captured(call(
+            "create-only",
+            "write_file",
+            json!({"path":"absent.txt","content":"new"}),
+        ))
+        .await;
+    definite_success(&created);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn actual_confined_helper_enforces_the_same_caller_preimage() {
+    let root = TestRoot::new();
+    let original = b"user dirty\n";
+    std::fs::write(root.0.join("dirty.txt"), original).unwrap();
+    let registry = registry(&root, true);
+    let refused = registry
+        .run_effect_captured(call(
+            "confined-blind",
+            "write_file",
+            json!({"path":"dirty.txt","content":"overwrite\n"}),
+        ))
+        .await;
+    assert!(
+        matches!(&refused.execution,ToolExecution::Definite(result)if result.is_error&&result.content.contains("preimage_required")),
+        "{refused:?}"
+    );
+    assert!(refused.native_mutation.is_none());
+    assert_eq!(std::fs::read(root.0.join("dirty.txt")).unwrap(), original);
+    let accepted=registry.run_effect_captured(call("confined-bound","write_file",json!({"path":"dirty.txt","content":"user dirty preserved\n","expected_sha256":format!("{:x}",Sha256::digest(original))}))).await;
+    definite_success(&accepted);
+    assert_eq!(
+        accepted.native_mutation.unwrap().files()[0].before(),
+        Some(original.as_slice())
+    );
+    assert_eq!(
+        std::fs::read(root.0.join("dirty.txt")).unwrap(),
+        b"user dirty preserved\n"
+    );
 }
 
 #[tokio::test]
@@ -159,6 +341,7 @@ async fn actual_guard_refuses_a_racing_writer_without_returning_committed_bytes(
         "would overwrite\n",
         false,
         None,
+        crate::write_file::WritePreimage::CurrentSnapshot,
         |target| std::fs::write(target, "concurrent writer\n").unwrap(),
     )
     .await;

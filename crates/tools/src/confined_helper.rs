@@ -614,12 +614,17 @@ async fn run_request(
             let Some(content) = call.input.get("content").and_then(|value| value.as_str()) else {
                 return err_result(id, "write_file: missing string field `content`".into()).into();
             };
+            let preimage = match crate::write_file::WritePreimage::from_input(&call.input) {
+                Ok(preimage) => preimage,
+                Err(error) => return err_result(id, error).into(),
+            };
             match crate::write_file::write_workspace_file_captured_with_scope(
                 root,
                 path,
                 content,
                 true,
                 scope,
+                preimage,
                 |_| {},
             )
             .await
