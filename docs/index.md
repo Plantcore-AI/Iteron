@@ -1,6 +1,6 @@
 <div class="iteron-hero">
   <img class="iteron-hero__logo" src="assets/brand/iteron-logo.png" alt="Iteron">
-  <div class="iteron-hero__eyebrow">OPEN SOURCE · RUST · PRE-ALPHA · v0.0.20</div>
+  <div class="iteron-hero__eyebrow">OPEN SOURCE · RUST · PRE-ALPHA</div>
   <h1>Harness checkpoints for domain-specific agents.</h1>
   <p>Iteron is an open-source substrate for building, evaluating, and governing
   the harness around each model × task pair. Terminal coding is the first
@@ -13,10 +13,11 @@
 </div>
 
 !!! warning "Pre-alpha software"
-    The ordinary permission gate and macOS/Linux execution sandbox are enabled
-    by default. File-write confinement still has an unresolved symlink race;
+    Fresh ordinary sessions default to broad host authority. Use `--confine`,
+    `--ask-permissions`, or `--mode plan` to narrow it. File-write confinement
+    has not completed adversarial concurrent-filesystem validation;
     do not use this pre-alpha build unattended on sensitive repositories.
-    Windows has no code-execution sandbox.
+    Source includes a Windows LPAC backend; its native acceptance is pending.
 
 ## What works today
 
@@ -72,8 +73,9 @@ cd /path/to/repository
 iteron
 ```
 
-Release v0.0.20 also publishes a Windows x86-64 binary and PowerShell installer;
-Windows remains unconfined for code execution. Follow [Installation and
+Release v0.0.26 publishes a Windows x86-64 binary and PowerShell installer.
+The source Windows backend is an implementation candidate, not evidence that
+this published release passed its new native isolation suite. Follow [Installation and
 verification](getting-started/installation.md), then review [permissions and
 sandbox limitations](using/permissions-and-sandbox.md) before using an important
 repository.

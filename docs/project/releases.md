@@ -45,8 +45,9 @@ The current distribution matrix is:
 - `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`;
 - `x86_64-pc-windows-msvc`.
 The Windows archive is a distribution target, not a claim of full product
-support: Windows has no code-execution sandbox, and the interactive TUI remains
-unsupported there.
+support. Source includes a Windows LPAC implementation whose native acceptance
+is pending; the interactive TUI remains unclaimed there. A published historical
+archive does not establish acceptance of later source.
 
 An accepted release contains the targets named by its release notes and, for the
 complete supported matrix:

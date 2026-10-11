@@ -114,7 +114,7 @@ approval gates, an explicit deny for refusal, or `--mode plan` for read-only.
 
 ## Sandbox contract
 
-On macOS/Linux, `--confine`, a gated session, or `--mode plan` requests
+On implemented platforms, `--confine`, a gated session, or `--mode plan` requests
 confinement. Fresh ordinary bypass does **not** confine executed code. The
 requested boundary is intended to:
 
@@ -123,9 +123,13 @@ requested boundary is intended to:
 - ambient HOME credential paths denied;
 - macOS uses the system Seatbelt interface;
 - Linux requires a usable bubblewrap/user-namespace boundary and fails closed if
-  it cannot establish one.
+  it cannot establish one;
+- Windows source uses an LPAC token, retained object permissions, and the actual
+  Job/pipe/ConPTY owner; native runtime and isolation acceptance is pending.
 
-Windows has no equivalent code-execution sandbox. The built-in file-edit tools
+Required Windows confinement never retries a failed launch with host authority.
+The explicit unconfined choice uses Job custody without claiming isolation.
+The built-in file-edit tools
 have a separate workspace write guard when confined or gated, while read-only tools
 may inspect outside paths where the authority ceiling permits it. A shell
 sandbox alone does not prove file writes are contained.

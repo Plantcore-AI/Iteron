@@ -1,10 +1,11 @@
 # Supported platforms
 
 Iteron is developed and tested primarily on macOS and Linux. Those remain the
-only platforms where the whole product is supported. Release v0.0.20 ships
+only platforms where the whole product is supported. Release v0.0.26 ships
 macOS arm64, Linux arm64, Linux x86-64, and Windows x86-64 assets. Windows
-remains a non-required CI surface, has no code-execution sandbox, and does not
-have a supported interactive TUI.
+remains a non-required CI surface. Source includes a Windows LPAC backend with
+Job, pipe, and ConPTY ownership; actual native acceptance and interactive TUI
+support remain pending.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
@@ -12,11 +13,11 @@ have a supported interactive TUI.
 | macOS x86-64 | source/internal CI only | supported from source | system Seatbelt interface |
 | Linux x86-64 on `dgx` | release target and CI | supported | usable bubblewrap/user-namespace boundary required |
 | Linux arm64 on `dgx` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
-| Windows x86-64 | v0.0.20 release asset; non-required CI | not claimed | **none — no backend** |
+| Windows x86-64 | v0.0.26 release asset; non-required CI | not claimed | LPAC implementation; native acceptance pending |
 
 ## Windows
 
-Windows can be installed from the v0.0.20 release or built from source, has a
+Windows can be installed from the v0.0.26 release or built from source, has a
 non-required CI lane, and is packaged as `x86_64-pc-windows-msvc` with a
 version-bound `install.ps1`. The release artifact does not imply full runtime
 support.
@@ -24,20 +25,31 @@ support.
 What exists:
 
 - `.github/workflows/windows.yml` compiles the workspace for
-  `x86_64-pc-windows-msvc` and runs the native ConPTY oracle.
-- `v0.0.20` publishes `install.ps1` and an
+  `x86_64-pc-windows-msvc`. Explicit manual runs additionally compile default
+  and script test cohorts once each and execute exact native Job, ConPTY, pipe,
+  LPAC, process, LSP, and journal cases from those retained compiler artifacts.
+  Listings, substantive case counts, source/binary digests, and real cleanup
+  are required; an unavailable or empty suite fails.
+- Source required-confinement execution uses an LPAC token and retained exact
+  object permissions, with network capabilities only when the host grants egress.
+  The actual suspended process token is checked before its initial resume.
+  One Job and its native transport retain cleanup custody until physical terminal
+  observations; a Job alone does not establish filesystem or network isolation.
+- `v0.0.26` publishes `install.ps1` and an
   `x86_64-pc-windows-msvc` archive with manifest, checksum, SBOM, and provenance
   material. Workflow releases render and verify the installer before publication.
 
-What does not exist, and is not implied by any of the above:
+What remains unverified, and is not implied by any of the above:
 
-- **No code-execution sandbox.** `crates/sandbox` returns `Unsupported` for
-  every non-macOS, non-Linux target. The current source default therefore
-  refuses confined commands on Windows; an explicit dangerous bypass would
-  run them with host authority. This is why Windows is not a supported runtime.
+- **Native isolation acceptance.** The source adapter and authored oracles
+  have not established same-candidate Git Bash/PowerShell runtime availability,
+  file/network/environment denial, or complete process/LSP/terminal cleanup.
+  A failed confined launch refuses; it never retries with an unrestricted token.
+  The host's explicit unconfined choice retains host authority.
 - **No interactive TUI claim.** The ConPTY oracle proves the pseudoconsole path
   compiles and runs; it is not a statement that the TUI is supported.
-- Lifecycle paths in places still assume a POSIX shell.
+- Commands use Git for Windows Bash from the host's frozen absolute PATH.
+  Source does not grant ambient HOME/PATH directories as runtime read trees.
 
 Two operational notes, so nobody reads more into the CI lane than it says. The
 Windows lane is **not a required context** in the branch ruleset, and it is

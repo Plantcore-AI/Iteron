@@ -33,8 +33,9 @@
 > Iteron is unsuitable for unattended use on sensitive or untrusted repositories:
 > the built-in file-write boundary has an unresolved symlink race. Use
 > `--ask-permissions`, an explicit gated `--mode`, or `--confine` to tighten the
-> posture; `--mode plan` is read-only. Windows has no code-execution sandbox, so
-> confined execution refuses commands there.
+> posture; `--mode plan` is read-only. Source now includes Windows LPAC isolation
+> with retained Job, pipe, and ConPTY owners. Its native runtime and isolation
+> acceptance is pending; a Windows archive does not establish that acceptance.
 
 Iteron is an open-source substrate for building, evaluating, and governing
 **harness checkpoints for domain-specific AI agents**. It provides modular Rust runtime
@@ -42,7 +43,8 @@ contracts for context, tools, policies, permissions, evidence, and the checkpoin
 lifecycle. A terminal coding agent is the first reference implementation, with
 interactive work, bounded automation, provider routing, durable sessions,
 verification, and machine-readable output. The workspace and latest public
-release are **v0.0.20**.
+release are separate: this workspace targets **v0.0.27**, while the latest
+published release is **v0.0.26**.
 
 ## Install
 
@@ -58,7 +60,7 @@ Windows PowerShell:
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 ```
 
-The v0.0.20 release publishes macOS arm64, Linux arm64, Linux x86-64, and
+The v0.0.26 release publishes macOS arm64, Linux arm64, Linux x86-64, and
 Windows x86-64 binaries. The installer verifies the selected archive and
 installs for the current user without elevation. Windows distribution does not
 change the sandbox boundary described above. See the [installation and

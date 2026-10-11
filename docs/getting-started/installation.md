@@ -109,9 +109,10 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
 downloaded release asset with `--help` to inspect the complete interface.
 
-Do not use Windows for untrusted code execution: it has no code-execution
-sandbox, and the current source default refuses confined commands. An explicit
-dangerous bypass would run with host authority. Historical release behavior
+Windows source includes an LPAC backend whose native isolation acceptance is
+pending. Fresh ordinary sessions use host authority unless confinement or a
+gate is requested. A failed confined Windows launch refuses without an
+unconfined retry. Historical release behavior
 may differ; inspect the installed binary's `--help`. See
 [supported platforms](../reference/platforms.md#windows).
 
@@ -122,16 +123,17 @@ may differ; inspect the installed binary's `--help`. See
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
-| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2025` or configured self-hosted runner | published in v0.0.20 |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2025` or configured self-hosted runner | published in v0.0.26 |
 
-The v0.0.20 release publishes all four targets above. Release notes remain
+The v0.0.26 release publishes all four targets above. Release notes remain
 authoritative for the archives a particular tag actually contains. A Windows
-archive proves distribution and native validation; it does not add the missing
-code-execution sandbox or make Windows a fully supported runtime.
+archive proves distribution of those bytes; its exact release receipts establish
+which native checks ran. It does not prove a later source backend or full runtime
+support.
 
 ## Linux prerequisite for confined code execution
 
-The current source default confines code execution on Linux. Code execution
+Requested Linux confinement for code execution
 (`bash`, builds, and tests) uses bubblewrap and fails **closed** if a
 usable `bwrap` boundary cannot be established. Install the `bubblewrap` package;
 on Ubuntu 24.04, also grant it an AppArmor profile for unprivileged user

@@ -51,9 +51,14 @@ user-namespace profile once, so the live network-denial test executes rather
 than skips. macOS PR CI is paused; native macOS evidence belongs to the protected
 release workflow when that workflow is explicitly invoked.
 
-Windows is unsupported and its former advisory cross-compilation runner is
-paused. There is no native runtime, ConPTY, sandbox, installer, or release
-evidence for Windows.
+Windows has a non-required native runner and published distribution artifacts.
+The source LPAC backend, retained pipes/ConPTY, and registered process/LSP
+surfaces remain pending native acceptance. An explicit `windows.yml` manual run
+uses `scripts/windows-native-cohort.py`: one compiler-artifact cohort for each
+default/script profile, then direct execution of exact nonempty native case sets.
+Helpers are excluded from substantive counts. Source/binary digests, finite
+outer deadlines, bounded logs, and observed leader/Job/stream cleanup are required.
+Receipts cover those named cases, not full Windows product or TUI support.
 
 Do not treat a local macOS or DGX Linux pass as native Windows evidence, or any
 one operating-system pass as evidence for another.

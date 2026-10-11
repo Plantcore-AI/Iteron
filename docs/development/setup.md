@@ -4,8 +4,9 @@
 
 The supported Iteron source and release targets are macOS and Linux. Install Git,
 a Rust toolchain at version 1.90 or newer, and the compiler/linker required by
-the target. Windows is not supported and its advisory cross-compilation CI is
-currently paused. The repository does not use a JavaScript build for the product
+the target. Windows has a non-required native CI lane and a source LPAC backend;
+its native runtime acceptance and interactive support remain pending. The
+repository does not use a JavaScript build for the product
 runtime.
 
 ```sh
@@ -30,8 +31,12 @@ macOS uses the system `sandbox-exec`/Seatbelt boundary and needs no extra packag
 
 The advisory Windows lane runs
 `cargo check --workspace --locked --target x86_64-pc-windows-msvc`. It is
-non-blocking, does not package a release, and is not support evidence. There is
-no Windows code-execution sandbox backend.
+non-required and is not full support evidence. Explicit manual runs additionally
+execute the selected source's exact native default/script cohorts. The source
+backend verifies the actual LPAC token before resuming, retains native Job and
+pipe/ConPTY custody, and refuses failed confinement without an unconfined retry.
+Native execution requires MSVC, Git for Windows Bash, PowerShell, and Python 3.12;
+the actual Git Bash/PowerShell runtimes must pass the selected candidate's oracles.
 
 ## Fork and clone
 

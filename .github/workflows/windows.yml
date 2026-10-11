@@ -11,13 +11,15 @@ name: windows
 # ruleset's required contexts. It deliberately does NOT use `continue-on-error` — #196 recorded
 # what that costs, an unstarted runner reporting green. A failure here reports as a failure.
 #
-# A green run means the workspace compiles for `x86_64-pc-windows-msvc`. It does **not** yet mean
-# the native ConPTY oracle passes: that step runs and reports, but does not gate, for the reasons
-# recorded above it. Saying so here matters more than the wording is worth — a green check that
-# quietly covers less than its comment claims is how a lane stops being evidence.
+# Ordinary PR/push runs check the workspace on the selected native Windows runner. The explicit
+# workflow_dispatch additionally compiles default/script test cohorts once each and executes exact
+# required native sets: retained Job/ConPTY/pipes, sealed LPAC setup/factory, environment/filesystem/
+# network denial, registered process/LSP and private journal/restart cases. Missing or cfg-empty
+# sets, unknown cleanup and failed native cases fail the job. Artifact receipts bind source and
+# compiler bytes; they do not certify the whole product or make the TUI a supported Windows SLA.
 #
-# It is not a support claim either. `docs/reference/platforms.md` remains the authority on what
-# Windows is and is not, and there is still no Windows sandbox backend.
+# Source contains a Windows LPAC backend. Native availability and support remain subject to the
+# exact selected candidate's real oracles; docs/reference/platforms.md records that distinction.
 
 on:
   push:
@@ -61,7 +63,7 @@ jobs:
     if: vars.WINDOWS_RUNNER_LABELS != ''
     runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER_LABELS || '["windows-latest"]') }}
     # A cold MSVC build of this workspace is slow, and the self-hosted box is 4 vCPU.
-    timeout-minutes: 60
+    timeout-minutes: 180
     defaults:
       run:
         # Windows PowerShell 5.1 ships with Windows Server; `pwsh` is not guaranteed on a machine
@@ -250,10 +252,11 @@ jobs:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
       - name: check the workspace for Windows
+        if: github.event_name != 'workflow_dispatch'
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
       - name: exact native owned-process proof on the selected branch
         if: github.event_name == 'workflow_dispatch'
-        timeout-minutes: 25
+        timeout-minutes: 150
         env:
           CARGO_BUILD_JOBS: 4
           RUST_TEST_THREADS: 1
@@ -386,103 +389,17 @@ jobs:
           Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_MODE -ErrorAction SilentlyContinue
           Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_ROOT -ErrorAction SilentlyContinue
 
-          function Invoke-NativeCases([string]$package, [string[]]$targetArgs, [string]$filter,
-                                      [string[]]$expected, [string]$helper = '') {
-            $arguments = @('test', '--locked', '-p', $package) + $targetArgs +
-              @('--target', 'x86_64-pc-windows-msvc', $filter)
-            $listing = @(& cargo @arguments -- --list --color never)
-            if ($LASTEXITCODE -ne 0) { throw "$package native case listing failed" }
-            if ($listing.Count -gt 4096) { throw "$package native listing exceeds its bound" }
-            $actual = @($listing | Where-Object { $_ -match '^\S+: test$' } |
-              ForEach-Object { $_ -replace ': test$', '' } | Sort-Object)
-            $required = @($expected | Sort-Object)
-            if ($actual.Count -eq 0 -or $actual.Count -ne $required.Count -or
-                (@(Compare-Object $required $actual)).Count -ne 0) {
-              throw "$package native case set is missing or changed; cfg-empty/helper-only is not proof"
-            }
-            $runArgs = @('--test-threads=1', '--include-ignored', '--color', 'never')
-            $physicalCount = $required.Count
-            if ($helper) { $runArgs += @('--skip', $helper); $physicalCount-- }
-            & cargo @arguments -- @runArgs | Tee-Object -Variable observed
-            if ($LASTEXITCODE -ne 0) { throw "$package actual native execution failed" }
-            $summaries = @($observed | Where-Object {
-              $_ -match '^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured;'
-            })
-            if ($summaries.Count -ne 1 -or
-                $summaries[0] -notmatch "^test result: ok\. $physicalCount passed; 0 failed; 0 ignored; 0 measured;") {
-              throw "$package did not execute the exact substantive native case count"
-            }
-          }
-          $support = 'owned_windows_job::tests::'
-          $helper = "${support}owned_windows_job_child_fixture"
-          Invoke-NativeCases 'iteron-support' @('--lib') 'owned_windows_job_' @(
-            "${support}owned_windows_job_assigns_before_exact_primary_resume_and_observes_actual_exit",
-            "${support}owned_windows_job_pre_resume_refusal_reaps_without_running_user_code",
-            "${support}owned_windows_job_stdio_refusal_preserves_suspended_custody_until_real_reap",
-            "${support}owned_windows_job_noninitial_resume_count_refuses_and_cleans_the_exact_tree",
-            "${support}owned_windows_job_redirected_descendant_requires_actual_job_zero_after_leader_exit",
-            "${support}owned_windows_job_future_drop_terminates_retained_members_with_real_job_observation",
-            "${support}owned_windows_job_native_host_exit_uses_kill_on_close_without_rust_destructors",
-            "${support}owned_windows_job_string_projection_retains_actual_unassigned_suspended_process_cleanup",
-            "${support}owned_windows_job_string_projection_closes_actual_assigned_tree_after_error_drop",
-            $helper
-          ) $helper
-          $sandbox = 'windows_job_tests::'
-          Invoke-NativeCases 'iteron-sandbox' @('--lib') 'owned_windows_job_collector_' @(
-            "${sandbox}owned_windows_job_collector_preserves_failed_status_with_known_real_tree_cleanup",
-            "${sandbox}owned_windows_job_collector_ordinary_observer_does_not_fabricate_cleanup_proof",
-            "${sandbox}owned_windows_job_collector_actual_configured_shell_releases_known_writer_cleanup"
-          )
-          $shell = 'client_effects::shell::windows_tests::'
-          Invoke-NativeCases 'iteron-cli' @('--bin', 'iteron') 'owned_windows_job_operator_shell_' @(
-            "${shell}owned_windows_job_operator_shell_actual_failed_command_is_completed_and_cleanup_known",
-            "${shell}owned_windows_job_operator_shell_redirected_background_is_stopped_before_lease_release",
-            "${shell}owned_windows_job_operator_shell_cancel_retains_unknown_effects_after_actual_tree_reap"
-          )
-      - name: native private journal fault and restart oracles
-        timeout-minutes: 10
-        run: |
-          cargo test --locked -p iteron-support --test windows_state --target x86_64-pc-windows-msvc -- --test-threads=1
+          # One default/script compiler-artifact cohort each, followed by direct frozen native
+          # binary listing/execution. The driver owns a private Job before initial resume, retains
+          # bounded logs and immutable copies, and requires waited leader + Job0 + stream closure.
+          $python = Resolve-NativeApplication 'python.exe'
+          & $python scripts/windows-native-cohort.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked -p iteron-workflow --test live_scheduler_file --target x86_64-pc-windows-msvc -- --test-threads=1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # The compile above can finish suspiciously fast against a warm persistent `target/`. This
-      # links and runs a real binary through the native pseudoconsole, so the lane cannot pass
-      # without having genuinely built something.
-      #
-      # This step earned its place the first time it ran. Every case failed with an empty captured
-      # terminal, and the process tree showed the `conhost --headless` hosts alive with no client
-      # process under any of them: `iteron.exe` was dying before it could emit a byte. Run by hand,
-      # `iteron.exe -V` printed `thread 'main' has overflowed its stack` and exited 0xC00000FD. The
-      # compile gate above cannot see that — a binary that links is not a binary that starts.
-      #
-      # Bounded deliberately. Four cores is this entire machine, and it also hosts the
-      # plantcore-desktop runner, whose checkout went from 1m43s to over 30 minutes while four
-      # abandoned pseudoconsoles held a core each. `--test-threads=1` keeps one failure from
-      # taking the host down with it, and the step timeout keeps a hang from eating the job budget.
-      - name: native ConPTY oracle
-        timeout-minutes: 15
-        run: >-
-          cargo test --locked -p iteron-cli --test windows_conpty
-          --target x86_64-pc-windows-msvc -- --test-threads=1
-
-      # A step timeout kills the cargo process, not the pseudoconsoles it left behind. Those
-      # survive as orphans holding a core each, and the runner then reports itself busy while the
-      # next job sits queued behind processes belonging to a job that already ended -- observed
-      # twice on this host, each time needing a manual kill to recover.
-      #
-      # This is deliberately narrow. It matches only the binaries this job starts, so a console
-      # belonging to the desktop runner on the same machine is left alone.
-      - name: release the pseudoconsoles this job leaked
-        if: always()
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $orphans = Get-CimInstance Win32_Process |
-            Where-Object {
-              $_.Name -eq 'iteron.exe' -or $_.Name -like 'windows_conpty-*.exe'
-            }
-          foreach ($orphan in $orphans) {
-            Write-Output "terminating leaked $($orphan.Name) ($($orphan.ProcessId))"
-            & taskkill /T /F /PID $orphan.ProcessId 2>&1 | Out-Null
-          }
-          if (-not $orphans) { Write-Output 'no leaked pseudoconsole clients' }
+      - name: retain exact native Windows source and compiler receipts
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-native-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iteron-native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 14
