@@ -547,7 +547,7 @@ async fn installed_main_staging_requires_a_live_witness_and_refuses_unconfirmed_
         input: serde_json::json!({"path":"pending.txt"}),
     };
     let _ticket = main
-        .open_tool_call_effect(turn, &call, iteron_protocol::Capability::ReadOnly)
+        .open_tool_call_effect(turn, 0, &call, iteron_protocol::Capability::ReadOnly)
         .unwrap();
     main.effect_journal.adopt_journal();
     assert!(matches!(

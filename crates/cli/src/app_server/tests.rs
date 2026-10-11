@@ -3443,3 +3443,81 @@ async fn native_session_factory_new_resume_fork_share_public_ids_and_confirm_act
         .unwrap();
     std::fs::remove_dir_all(workspace).unwrap();
 }
+
+#[tokio::test]
+async fn actual_service_scope_and_sq_receipt_precede_shutdown_signal() {
+    use crate::resident_service::ResidentService;
+    use iteron_protocol::resident_service::{ResidentServiceCommandV1, ResidentServiceViewV1};
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (handle, mut ends) = wire().unwrap();
+    let thread = SessionId("resident-thread".into());
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), iteron_protocol::RunId("run".into()));
+    let drain = Arc::new(AtomicBool::new(false));
+    let service = ResidentService::bind(
+        thread,
+        TenantId::default(),
+        Path::new("/workspace"),
+        SocketAddr::from(([127, 0, 0, 1], 34567)),
+        drain.clone(),
+    )
+    .unwrap();
+    let mut stopped = service.subscribe_stop();
+    let read = service.command(&handle.client, ResidentServiceCommandV1::Read {});
+    let view: ResidentServiceViewV1 =
+        serde_json::from_value(read.value["service"].clone()).unwrap();
+    let mut forged = view.scope.clone();
+    forged.workspace_sha256 = "0".repeat(64);
+    assert_eq!(
+        service
+            .command(
+                &handle.client,
+                ResidentServiceCommandV1::Stop { scope: forged }
+            )
+            .value["reason_code"],
+        "scope_mismatch"
+    );
+    assert!(!*stopped.borrow());
+    assert!(!drain.load(Ordering::Acquire));
+    assert!(ends.submissions.try_recv().is_err());
+    assert!(ends.priority_submissions.try_recv().is_err());
+    let reply = service.command(
+        &handle.client,
+        ResidentServiceCommandV1::Stop {
+            scope: view.scope.clone(),
+        },
+    );
+    assert_eq!(reply.value["status"], "requested");
+    assert_eq!(reply.value["shutdown_completed"], false);
+    assert!(!stopped.has_changed().unwrap());
+    let (queued_id, queued_op) = ends
+        .priority_submissions
+        .try_recv()
+        .expect("actual drain owns the priority SQ entry")
+        .into_envelope()
+        .into_current_identified()
+        .unwrap();
+    assert_eq!(
+        reply.value["submission_id"],
+        serde_json::to_value(queued_id).unwrap()
+    );
+    assert!(matches!(queued_op, Op::Drain));
+    drop(reply);
+    stopped.changed().await.unwrap();
+    assert!(*stopped.borrow());
+    assert!(drain.load(Ordering::Acquire));
+    assert_eq!(
+        service
+            .command(
+                &handle.client,
+                ResidentServiceCommandV1::Stop { scope: view.scope }
+            )
+            .value["status"],
+        "already_requested"
+    );
+    assert!(ends.submissions.try_recv().is_err());
+    assert!(ends.priority_submissions.try_recv().is_err());
+}

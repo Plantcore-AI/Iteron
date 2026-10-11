@@ -103,7 +103,7 @@ pub(super) fn remote(
     if fact.tenant != *tenant
         || fact.run_id != *run
         || fact.source_seq.0 == 0
-        || fact.first_turn > fact.final_turn
+        || fact.first_turn.0 > fact.final_turn.0
         || fact.observed_tool_failures > fact.observed_tool_completions
         || !fact.native_change_evidence_valid()
         || fact.workspace_diff_inspected

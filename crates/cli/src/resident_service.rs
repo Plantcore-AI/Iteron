@@ -99,7 +99,7 @@ impl ResidentService {
                         json!({"type":"resident_service_stop_v1","service_id":self.scope.service_id,"status":"already_requested","shutdown_completed":false}),
                     );
                 }
-                let submission = match client.submit(Op::Drain) {
+                let submission = match client.submit_identified(Op::Drain) {
                     Ok(id) => id,
                     Err(SubmitError::Busy) => return PreparedServiceReply::refused("busy"),
                     Err(_) => return PreparedServiceReply::refused("unavailable"),
@@ -134,75 +134,5 @@ impl Drop for PreparedServiceReply {
         if let Some(stop) = self.stop.take() {
             stop.send_replace(true);
         }
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn actual_service_scope_and_sq_receipt_precede_shutdown_signal() {
-        let (handle, mut ends) = crate::app_server::queue_wiring::wire().unwrap();
-        let thread = SessionId("resident-thread".into());
-        ends.events
-            .bind_lifecycle_identity(thread.clone(), iteron_protocol::RunId("run".into()));
-        let drain = Arc::new(AtomicBool::new(false));
-        let service = ResidentService::bind(
-            thread,
-            TenantId::default(),
-            Path::new("/workspace"),
-            SocketAddr::from(([127, 0, 0, 1], 34567)),
-            drain.clone(),
-        )
-        .unwrap();
-        let mut stopped = service.subscribe_stop();
-        let read = service.command(&handle.client, ResidentServiceCommandV1::Read {});
-        let view: ResidentServiceViewV1 =
-            serde_json::from_value(read.value["service"].clone()).unwrap();
-        let mut forged = view.scope.clone();
-        forged.workspace_sha256 = "0".repeat(64);
-        assert_eq!(
-            service
-                .command(
-                    &handle.client,
-                    ResidentServiceCommandV1::Stop { scope: forged }
-                )
-                .value["reason_code"],
-            "scope_mismatch"
-        );
-        assert!(!*stopped.borrow());
-        assert!(!drain.load(Ordering::Acquire));
-        assert!(ends.submissions.try_recv().is_err());
-        let reply = service.command(
-            &handle.client,
-            ResidentServiceCommandV1::Stop {
-                scope: view.scope.clone(),
-            },
-        );
-        assert_eq!(reply.value["status"], "requested");
-        assert_eq!(reply.value["shutdown_completed"], false);
-        assert!(!stopped.has_changed().unwrap());
-        drop(reply);
-        stopped.changed().await.unwrap();
-        assert!(*stopped.borrow());
-        assert!(drain.load(Ordering::Acquire));
-        assert!(matches!(
-            ends.submissions
-                .recv()
-                .await
-                .unwrap()
-                .into_current()
-                .unwrap(),
-            Op::Drain
-        ));
-        assert_eq!(
-            service
-                .command(
-                    &handle.client,
-                    ResidentServiceCommandV1::Stop { scope: view.scope }
-                )
-                .value["status"],
-            "already_requested"
-        );
-        assert!(ends.submissions.try_recv().is_err());
     }
 }

@@ -627,7 +627,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             .map_err(|_| ControllerError::Invalid("agent host requires a running executor"))?;
         let (changed, _) = watch::channel(controller.revision());
         let partial_outputs =
-            iteron_agents::AgentPartialOutputOwner::new(controller.config().max_agents);
+            iteron_agents::AgentPartialOutputOwner::new(controller.snapshot().config().max_agents);
         Ok(Self {
             shared: Arc::new(Shared {
                 controller: Mutex::new(controller),

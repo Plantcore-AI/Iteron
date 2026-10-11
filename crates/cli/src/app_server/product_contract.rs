@@ -13,6 +13,7 @@ use iteron_protocol::product_contract::{
     TerminalEvidenceV1, ThreadSnapshotV1, TurnSnapshotV1, TurnStateV1,
 };
 use iteron_protocol::{Outcome, RunId, SessionId, SubmissionId};
+use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

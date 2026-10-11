@@ -2341,7 +2341,7 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     // remain the first task's captured bytes. A second ContextInjection is not a second world read.
     assert_eq!(injections.len(), 2);
     assert_eq!(injections[0].0, first_injections[0].turn);
-    assert!(injections[1].0 > injections[0].0);
+    assert!(injections[1].0.0 > injections[0].0.0);
     assert_eq!(injections[1].1, injections[0].1);
     assert_eq!(injections[1].2, injections[0].2);
     assert_eq!(injections[1].3, injections[0].3);
@@ -2510,7 +2510,7 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
         "each new operator task records its memory decision"
     );
     assert_eq!(injections[0].0, first_injections[0].turn);
-    assert!(injections[1].0 > injections[0].0);
+    assert!(injections[1].0.0 > injections[0].0.0);
     assert_eq!(
         injections[0].1, injections[1].1,
         "the exact frontend source stays frozen"
