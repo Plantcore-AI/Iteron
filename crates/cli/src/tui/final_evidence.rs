@@ -174,6 +174,12 @@ mod tests {
     #[test]
     fn attached_final_fact_requires_actual_reader_scope_and_cannot_invent_suite_success() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let thread = iteron_protocol::SessionId("thread".into());
         let run = RunId("run".into());
         let tenant = TenantId::default();
@@ -207,20 +213,33 @@ mod tests {
                 _ => forged["evidence"]["test_suite_identity_verified"] = serde_json::json!(true),
             };
             remote(&mut app, &forged, &thread, &tenant, &run);
-            assert!(app.history.blocks().is_empty());
+            assert_eq!(
+                app.history
+                    .blocks()
+                    .iter()
+                    .map(|block| block.to_text())
+                    .collect::<Vec<_>>(),
+                initial_history
+            );
         }
         remote(&mut app, &value, &thread, &tenant, &run);
-        assert_eq!(app.history.blocks().len(), 1);
-        let text = app.history.blocks()[0].to_text();
+        assert_eq!(app.history.blocks().len(), initial_history.len() + 1);
+        let text = app.history.blocks().last().unwrap().to_text();
         assert!(text.contains("unverified"));
         assert!(!text.contains("suite passed"));
         assert!(!app.run.running());
         remote(&mut app, &value, &thread, &tenant, &run);
-        assert_eq!(app.history.blocks().len(), 1);
+        assert_eq!(app.history.blocks().len(), initial_history.len() + 1);
     }
     #[test]
     fn changed_native_receipts_render_positive_work_without_suite_or_current_workspace_claims() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let thread = iteron_protocol::SessionId("thread".into());
         let run = RunId("native-run".into());
         let tenant = TenantId::default();
@@ -257,7 +276,14 @@ mod tests {
                 _ => serde_json::json!(0),
             };
             remote(&mut app, &forged, &thread, &tenant, &run);
-            assert!(app.history.blocks().is_empty());
+            assert_eq!(
+                app.history
+                    .blocks()
+                    .iter()
+                    .map(|block| block.to_text())
+                    .collect::<Vec<_>>(),
+                initial_history
+            );
         }
         remote(&mut app, &value, &thread, &tenant, &run);
         let semantic = app.history.blocks().last().unwrap().to_text();

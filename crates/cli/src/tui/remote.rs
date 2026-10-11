@@ -1391,6 +1391,12 @@ mod tests {
     #[test]
     fn closed_or_foreign_run_control_reply_never_relabels_a_new_selected_run() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let mut view = view();
         view.pending = Some(Request {
             id: 1,
@@ -1405,7 +1411,14 @@ mod tests {
             json!({"type":"activity_center_v1","data":{"activities":[]}}),
         )
         .unwrap();
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         assert!(view.queued.is_empty());
         app.editor.insert_str("/status");
         view.submit(&mut app).unwrap();
@@ -1416,6 +1429,12 @@ mod tests {
     #[test]
     fn settings_request_keeps_current_run_and_late_reply_cannot_apply_to_new_run() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let mut view = view();
         app.editor.insert_str("/settings");
         view.submit(&mut app).unwrap();
@@ -1439,7 +1458,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.model, "new-selected-model");
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         assert!(view.queued.is_empty());
     }
     fn view() -> View {
@@ -1800,6 +1826,12 @@ mod tests {
     #[test]
     fn attached_modal_callback_ack_is_scoped_and_detach_never_rejects_the_pending_request() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let mut view = view();
         let snapshot = json!({"version":1,"thread_id":view.service.scope.thread_id,"run_id":view.service.current_run_id,"revision":1,"pending":[{"request_id":6,"server_display":"alpha","tool_display":"profile","fields":[{"field_index":0,"prompt":"Enter name","schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}],"prompt_complete":true}],"closed":[],"omitted_closed":0});
         view.pending = Some(Request {
@@ -1831,7 +1863,14 @@ mod tests {
         .unwrap();
         assert!(app.mcp_form.is_waiting());
         assert!(app.editor.text().is_empty());
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         assert!(
             view.mcp_key(
                 &mut app,

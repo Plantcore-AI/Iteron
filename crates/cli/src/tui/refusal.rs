@@ -218,6 +218,12 @@ mod tests {
     #[test]
     fn attached_read_never_labels_foreign_record_or_opaque_prose_as_a_host_refusal() {
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         let thread = iteron_protocol::SessionId("thread".into());
         let run = iteron_protocol::RunId("run".into());
         let tenant = iteron_protocol::TenantId::default();
@@ -231,15 +237,32 @@ mod tests {
         foreign["observations"][0]["refusal"]["source"] =
             serde_json::json!({"tenant":tenant,"run_id":"other","turn":0,"sequence":9});
         remote(&mut app, &foreign, &thread, &tenant, &run);
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         let mut oversized = value.clone();
         oversized["observations"][0]["refusal"]["tool"] = serde_json::json!("x".repeat(2049));
         remote(&mut app, &oversized, &thread, &tenant, &run);
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         remote(&mut app, &value, &thread, &tenant, &run);
-        assert_eq!(app.history.blocks().len(), 1);
+        assert_eq!(app.history.blocks().len(), initial_history.len() + 1);
         assert!(
-            app.history.blocks()[0]
+            app.history
+                .blocks()
+                .last()
+                .unwrap()
                 .to_text()
                 .contains("host permission policy")
         );

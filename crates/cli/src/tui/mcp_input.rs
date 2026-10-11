@@ -664,6 +664,12 @@ mod tests {
     fn remote_form_uses_exact_owner_snapshot_and_retains_response_until_matching_handoff() {
         let mut snapshot = remote_snapshot();
         let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
         app.mcp_form
             .observe_remote(&snapshot, &snapshot.thread_id, &snapshot.run_id)
             .unwrap();
@@ -678,7 +684,14 @@ mod tests {
         };
         assert_eq!(values[0].field_index, 0);
         assert_eq!(values[0].content["name"], "private-form-value");
-        assert!(app.history.blocks().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
         assert!(app.editor.text().is_empty());
         app.mcp_form.remote_handoff(999);
         assert!(app.mcp_form.is_waiting());
