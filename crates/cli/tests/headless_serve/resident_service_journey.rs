@@ -193,4 +193,5 @@ fn disconnected_client_leaves_paid_turn_live_and_new_client_reuses_the_same_serv
 }
 
 #[cfg(unix)]
+#[path = "resident_service_journey/tui_attach_journey.rs"]
 mod tui_attach_journey;
