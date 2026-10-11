@@ -161,12 +161,13 @@ fn restart_scope_mismatch_and_missing_snapshot_never_create_new_genesis() {
 #[test]
 fn target_pin_prevents_namespace_retarget_and_unknown_marker_survives_release() {
     let directory = tempfile::tempdir().unwrap();
-    let parent = directory.path().join("cache");
+    let base = directory.path().canonicalize().unwrap();
+    let parent = base.join("cache");
     std::fs::create_dir(&parent).unwrap();
     let target = parent.join("token-calibration-v1.json");
     let mut lease = cache::CacheLease::open(&target, MaintenanceKindV1::TokenCalibration).unwrap();
     assert!(cache::CacheLease::open(&target, MaintenanceKindV1::TokenCalibration).is_err());
-    let moved = directory.path().join("pinned-original");
+    let moved = base.join("pinned-original");
     std::fs::rename(&parent, &moved).unwrap();
     std::fs::create_dir(&parent).unwrap();
     std::fs::write(&target, b"unrelated replacement").unwrap();

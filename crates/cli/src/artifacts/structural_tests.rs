@@ -24,11 +24,16 @@ async fn commit(
     // Real ordinary executor and commit guard. Process confinement is covered by the physical
     // CLI journey; this unit fixture must not self-execute the libtest binary as a helper.
     registry.set_confine_execution(false);
+    let mut input = json!({"path":path,"content":after});
+    if let Some(before) = before {
+        // Deliberately replace only the exact original bytes installed by this fixture.
+        input["expected_sha256"] = json!(hex::encode(Sha256::digest(before)));
+    }
     let captured = registry
         .run_effect_captured(ToolUse {
             id: id.into(),
             name: "write_file".into(),
-            input: json!({"path":path,"content":after}),
+            input,
         })
         .await;
     assert!(
