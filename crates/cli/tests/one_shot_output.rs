@@ -2048,6 +2048,20 @@ fn stream_json_one_shot_process_contract_matches_golden() {
         .and_then(|record| record.get_mut("context"))
         .expect("the stream golden contains one turn context");
     turn_context["model_context_window"] = json!(FIXTURE_CONTEXT_WINDOW_TOKENS);
+    // Retain the immutable v8 wire fixture and require this run's additive host observation:
+    // this synthetic success performs no configured check, so it cannot report suite success.
+    let idle = expected
+        .iter()
+        .position(|record| record["type"] == "phase" && record["phase"] == "idle")
+        .expect("the stream golden returns to idle after the completed turn");
+    expected.insert(
+        idle,
+        json!({
+            "type": "notice",
+            "schema_version": 8,
+            "message": "No configured check was observed; test-suite success is unverified.",
+        }),
+    );
     assert_eq!(
         actual, expected,
         "the truthful operator-declared window is part of the process contract"

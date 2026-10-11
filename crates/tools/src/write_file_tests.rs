@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Memo, Registry};
 use iteron_protocol::{Capability, Purity, ToolUse};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -299,13 +300,16 @@ async fn d3_01_g1_scaffolds_and_replaces_without_bash() {
         "pub fn answer() -> u8 { 42 }\n"
     );
 
-    let replaced = registry
-        .run(write_call(
-            "replace",
-            "src/generated/mod.rs",
-            "pub fn answer() -> u8 { 43 }\n",
-        ))
-        .await;
+    let mut replacement = write_call(
+        "replace",
+        "src/generated/mod.rs",
+        "pub fn answer() -> u8 { 43 }\n",
+    );
+    replacement.input["expected_sha256"] = serde_json::json!(format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(&canonical_file).unwrap())
+    ));
+    let replaced = registry.run(replacement).await;
     assert!(!replaced.is_error, "{}", replaced.content);
     assert_eq!(
         std::fs::read_to_string(&canonical_file).unwrap(),
