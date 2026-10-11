@@ -33,7 +33,7 @@ impl Hooks {
                 "ordering":"handlers run concurrently; outcomes apply in configured order",
                 "cancellation":"bounded process cleanup; public terminal requires owner outcome, not observer loss",
                 "recovery":"unmatched durable intents remain unknown; this inventory does not authorize command replay",
-                "context_cost":{"model_prompt_bytes":0,"model_requests":0,"helper_input":"bounded live hook input; not model prompt","charged_prompt_tokens":null,"cost_status":"not_attributed_per_handler"},
+                "context_cost":{"model_prompt_bytes":null,"model_requests":null,"helper_input":"bounded live hook input","charged_prompt_tokens":null,"cost_status":"not_attributed_per_handler","observation_scope":"hook driver does not account arbitrary command external requests or later augmentation prompt bytes"},
                 "stop_finalization_budget_ms":(event==HookEvent::Stop.key()).then(||u64::try_from(super::stop_hook_terminal_budget().as_millis()).unwrap_or(u64::MAX))})
         }).collect()
     }
