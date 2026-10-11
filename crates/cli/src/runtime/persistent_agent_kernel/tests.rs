@@ -651,7 +651,7 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
         let card = actual.provider_selection.card().cloned().unwrap();
         // Exercise lost process-local working state through the real retained mailbox/record.
         // A live followup must not reconstruct or refill its already-owned financial context.
-        actual.transcript_state.replace_working(None);
+        assert!(actual.transcript_state.take_working().is_some());
         (money, card)
     };
     host.command(
