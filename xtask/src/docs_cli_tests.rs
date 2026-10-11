@@ -54,6 +54,17 @@ fn every_shipped_flag_and_subcommand_appears() {
 }
 
 #[test]
+fn attach_requires_the_service_identity_while_serve_options_remain_optional() {
+    let rendered = render(&repository_root()).unwrap();
+    // The installed attach parser requires its scoped service identity. Advertising it as
+    // optional sends a documented command straight to a real clap admission error.
+    assert!(rendered.contains("`iteron attach <ENDPOINT> --service-id <SERVICE_ID>`"));
+    assert!(!rendered.contains("iteron attach <ENDPOINT> [--service-id <SERVICE_ID>]"));
+    // Existing default-valued and boolean named options retain their optional syntax.
+    assert!(rendered.contains("iteron serve [--listen <LISTEN>] [--client-approvals]"));
+}
+
+#[test]
 fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
     let root = repository_root();
     let source = std::fs::read_to_string(root.join(CLI_SOURCE)).unwrap();

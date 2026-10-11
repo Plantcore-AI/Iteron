@@ -123,10 +123,15 @@ impl Arg {
             };
         }
         let long = self.long.clone().unwrap_or_else(|| self.field.clone());
-        if self.arity == Arity::Flag {
-            format!("[--{long}]")
+        let fragment = if self.arity == Arity::Flag {
+            format!("--{long}")
         } else {
-            format!("[--{long} <{}>]", self.placeholder())
+            format!("--{long} <{}>", self.placeholder())
+        };
+        if self.required {
+            fragment
+        } else {
+            format!("[{fragment}]")
         }
     }
 
