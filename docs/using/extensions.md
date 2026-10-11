@@ -21,7 +21,10 @@ the `use_skill` tool.
   stripped.
 - suspicious bidirectional or invisible Unicode is rejected.
 
-Use `/skills` to inspect discovery.
+Use `/skills` to inspect discovery. Same-name sources keep the declared source
+precedence and emit a captured conflict diagnostic; a project skill cannot
+silently replace an operator skill. Effective Skills inventory includes a paged
+diagnostic sidecar with source-path digests, without exposing native paths.
 
 ## Lifecycle hooks
 

@@ -440,7 +440,32 @@ impl SkillCatalog {
     fn sort_and_dedup(&mut self) {
         // Stable sort preserves source precedence for duplicate names.
         self.defs.sort_by(|a, b| a.name.cmp(&b.name));
-        self.defs.dedup_by(|a, b| a.name == b.name);
+        let candidates = std::mem::take(&mut self.defs);
+        let mut omitted = 0usize;
+        for candidate in candidates {
+            if self
+                .defs
+                .last()
+                .is_some_and(|winner| winner.name == candidate.name)
+            {
+                if self.errors.len() < MAX_SKILL_DIRS {
+                    self.errors.push(SkillError {
+                        source: candidate.source_path.display().to_string(),
+                        reason: format!("skill `{}` shadowed by an earlier declared source; source precedence is unchanged", candidate.name),
+                    });
+                } else {
+                    omitted = omitted.saturating_add(1);
+                }
+            } else {
+                self.defs.push(candidate);
+            }
+        }
+        if omitted > 0 {
+            self.errors.push(SkillError {
+                source: "skill_catalog".into(),
+                reason: format!("{omitted} further same-name source conflicts omitted at the catalog diagnostic bound"),
+            });
+        }
     }
 
     fn apply_codex_config(&mut self, operator_home: &Path) {
@@ -1305,6 +1330,35 @@ mod tests {
             "an empty declaration is a refusal, not a silent grant of everything"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn actual_same_name_user_project_conflict_keeps_precedence_and_reports_the_loser() {
+        let root = tmp("visible-conflict");
+        let home = root.join("home");
+        let repo = root.join("repo");
+        let user = write_skill_in(&home, ".iteron/skills", "shared");
+        let project = write_skill_in(&repo, ".iteron/skills", "shared");
+        let catalog =
+            SkillCatalog::discover_metadata_for_operator_with_dependencies(Some(&home), &repo, &[]);
+        let winner = catalog.get("shared").unwrap();
+        assert_eq!(winner.trust, Trust::Trusted);
+        assert_eq!(winner.source_path, user);
+        assert_eq!(catalog.defs().len(), 1);
+        assert!(
+            catalog
+                .errors()
+                .iter()
+                .any(|error| error.source == project.display().to_string()
+                    && error.reason.contains("shadowed"))
+        );
+        let identity = winner.captured_source_identity();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            winner.captured_source_identity(),
+            identity,
+            "read-only identity inspection cannot reopen source files"
+        );
     }
 
     #[test]

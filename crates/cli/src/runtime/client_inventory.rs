@@ -18,6 +18,7 @@ pub(crate) struct RuntimeClientInventory {
     hooks: Vec<Value>,
     agents: Vec<Value>,
     skills: Option<Vec<Value>>,
+    skill_diagnostics: Vec<Value>,
     effective: Option<Vec<Value>>,
     checkpoint: Value,
     permissions: Vec<Value>,
@@ -54,12 +55,12 @@ impl Agent {
         let hooks = self.hooks.inventory_snapshot();
         let catalog = self.agent_catalog_snapshot();
         let agents = catalog.defs().iter().take(MAX_RUNTIME_ENTRIES).map(|agent| json!({"name":safe(&agent.name),"trust":agent.trust,"model":agent.model.as_deref().map(safe)})).collect::<Vec<_>>();
-        let skills = iteron_ctx::skills::captured_metadata_for(
+        let skill_catalog = iteron_ctx::skills::captured_metadata_for(
             self.context_home_dir.as_deref(),
             &self.workspace,
             &self.dependency_skill_dirs,
-        )
-        .map(|catalog| {
+        );
+        let skills = skill_catalog.as_ref().map(|catalog| {
             catalog
                 .defs()
                 .iter()
@@ -67,6 +68,10 @@ impl Agent {
                 .map(skill_inventory)
                 .collect::<Vec<_>>()
         });
+        let skill_diagnostics = skill_catalog.as_ref().map(|catalog|catalog.errors().iter().take(MAX_RUNTIME_ENTRIES).map(|error|{
+            let reason=safe(&error.reason);
+            json!({"source_path_digest_sha256":hex::encode(Sha256::digest(error.source.as_bytes())),"reason":reason.chars().take(256).collect::<String>(),"reason_truncated":reason.chars().count()>256})
+        }).collect::<Vec<_>>()).unwrap_or_default();
         let (checkpoint, effective) = match self.tunables_checkpoint() {
             Ok(iteron_record::TunablesCheckpoint::V2(snapshot)) => (
                 json!({"version":2,"snapshot_digest_sha256":snapshot.snapshot_digest_sha256,"effective_digest_sha256":snapshot.effective_digest_sha256,
@@ -107,6 +112,7 @@ impl Agent {
             hooks,
             agents,
             skills,
+            skill_diagnostics,
             effective,
             checkpoint,
             permissions,
@@ -163,6 +169,15 @@ impl RuntimeClientInventory {
                     .as_deref(),
             )
         };
+        if matches!(query.kind, ClientInventoryKindV1::Skills) {
+            value["diagnostics"] = page(
+                &query,
+                &self.skill_diagnostics,
+                "captured_context_catalog_diagnostics",
+                self.skills.is_some(),
+                None,
+            );
+        }
         if matches!(query.kind, ClientInventoryKindV1::EffectiveConfig) {
             value["checkpoint"] = self.checkpoint.clone();
         }

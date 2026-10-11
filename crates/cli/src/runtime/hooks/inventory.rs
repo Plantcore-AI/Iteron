@@ -81,4 +81,26 @@ mod tests {
                 .any(|row| row["context_cost"]["charged_prompt_tokens"].is_null())
         );
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_canonical_gate_failed_exit_denies_while_observer_cannot_block() {
+        let gate = "tool.call_proposed";
+        let observer = "tool.call_completed";
+        let hooks = Hooks::from_user_config(Some(&BTreeMap::from([
+            (
+                gate.into(),
+                vec!["exit 7".into(), "echo later-denial >&2; exit 2".into()],
+            ),
+            (observer.into(), vec!["exit 7".into()]),
+        ])));
+        let report = hooks.run_lifecycle(gate, "{}").await.unwrap();
+        assert_eq!((report.completed, report.failed), (2, 1));
+        assert!(
+            matches!(report.decision, super::super::HookDecision::Deny(ref reason) if reason.contains("failed without an allow decision") && !reason.contains("later-denial"))
+        );
+        assert!(matches!(
+            hooks.run_lifecycle(observer, "{}").await.unwrap().decision,
+            super::super::HookDecision::Allow
+        ));
+    }
 }

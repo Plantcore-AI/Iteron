@@ -1082,6 +1082,13 @@ impl Hooks {
                     report.completed = report.completed.saturating_add(1);
                     if output.code != 0 {
                         report.failed = report.failed.saturating_add(1);
+                        if spec.hook_capability == iteron_protocol::HookCapability::Gate
+                            && matches!(report.decision, HookDecision::Allow)
+                        {
+                            report.decision = HookDecision::Deny(format!(
+                                "{event_id} gate hook failed without an allow decision"
+                            ));
+                        }
                     } else if spec.hook_capability == iteron_protocol::HookCapability::Augment
                         && !output.stdout.trim().is_empty()
                     {
