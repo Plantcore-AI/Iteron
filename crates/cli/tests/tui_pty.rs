@@ -1409,8 +1409,10 @@ fn tunables_registry_search_and_detail_are_terminal_real() {
     pty.wait_until(
         "nonblocking FIFO refusal leaves the event loop responsive",
         |pty| {
-            pty.screen_text()
-                .contains("tunables simulation refused: request could not be loaded safely")
+            let screen = pty.screen_text();
+            screen.contains(
+                "tunables simulation refused (source unavailable): request could not be loaded safely",
+            ) && !screen.contains("tunables simulation pending")
         },
     );
 

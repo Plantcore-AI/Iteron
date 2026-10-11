@@ -401,6 +401,23 @@ pub(super) fn schedule_slash_export(
     }
 }
 
+fn settle_pending_control(app: &mut App, control: &transcript_effect::ControlCompletion) {
+    let label = control.kind.label();
+    if app.status == format!("{label} pending…") {
+        // The actual completion ends this presentation's pending state. A later turn or
+        // command may already own the footer, so only replace this exact pending label.
+        let state = match &control.reply {
+            None => "reply unavailable",
+            Some(
+                app_server::ControlReply::Refused(_)
+                | app_server::ControlReply::RefusedWithOrigin { .. },
+            ) => "refused",
+            _ => "settled",
+        };
+        app.status = format!("{label} {state}");
+    }
+}
+
 pub(super) fn apply_transcript_effect_event(
     app: &mut App,
     session: &mut Session,
@@ -447,6 +464,7 @@ pub(super) fn apply_transcript_effect_event(
         return;
     }
     if let Some(control) = event.control {
+        settle_pending_control(app, &control);
         match (control.kind, control.reply) {
             (transcript_effect::ControlKind::Lab, Some(app_server::ControlReply::Lab(receipt))) => {
                 experiment_lab::render(app, session, *receipt)
@@ -850,4 +868,33 @@ pub(super) fn clear_conversation(app: &mut App) {
     app.assistant.reset();
     app.geometry.clear();
     app.push(dim(), "transcript cleared");
+}
+
+#[cfg(test)]
+mod control_completion_tests {
+    use super::*;
+
+    #[test]
+    fn actual_control_completion_ends_pending_without_overwriting_later_footer() {
+        let mut app = App::new();
+        app.status = "tunables simulation pending…".into();
+        let mut completion = transcript_effect::ControlCompletion {
+            kind: transcript_effect::ControlKind::TunablesSimulation,
+            reply: Some(app_server::ControlReply::Refused(
+                crate::client_effects::workspace_read::SAFE_READ_REFUSAL.into(),
+            )),
+            cancellation_requested: false,
+        };
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "tunables simulation refused");
+
+        app.status = "tunables simulation pending…".into();
+        completion.reply = None;
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "tunables simulation reply unavailable");
+
+        app.status = "a later runtime turn is active".into();
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "a later runtime turn is active");
+    }
 }
