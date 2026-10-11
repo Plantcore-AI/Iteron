@@ -100,7 +100,8 @@ fn agent_with_environment(
         Registry::read_only(workspace).unwrap(),
         rollout,
         "fixture-model".into(),
-        format!("effective system\napi_key={CANARY}"),
+        // Separate the deliberate secret token from the independently admitted context bytes.
+        format!("effective system\napi_key={CANARY}\n"),
         Budget::default(),
     );
     agent.workspace = workspace.to_owned();
