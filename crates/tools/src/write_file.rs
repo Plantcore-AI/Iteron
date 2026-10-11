@@ -595,8 +595,9 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     },
                     "expected_sha256": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{64}$",
-                        "description": "Required for an existing file: SHA-256 of all original raw bytes from read_file(include_sha256=true). Omit only to create a missing file. A mismatch leaves the file unchanged."
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "description": "Required for an existing file: 64-character lowercase SHA-256 of all original raw bytes from read_file(include_sha256=true). Omit only to create a missing file. A mismatch leaves the file unchanged."
                     }
                 },
                 "required": ["path", "content"]
