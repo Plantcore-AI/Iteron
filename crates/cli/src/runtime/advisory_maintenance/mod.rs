@@ -180,6 +180,41 @@ impl MaintenanceOwner {
     pub(super) fn scope(&self) -> &str {
         &self.scope
     }
+    /// Fixture-only IO rendezvous. The stopped fixture retains one original owner and supplies
+    /// this one clone. Every accepted pool item retains another strong Arc until actual native
+    /// IO, target removal and Running::finish have all returned; deadline observers hold Weak.
+    /// This is not an ordinary answer barrier or a general runtime shutdown API.
+    #[cfg(test)]
+    pub(super) async fn finish_fixture_io(
+        self: Arc<Self>,
+        timeout: Duration,
+    ) -> Result<(), MaintenanceReadError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match Arc::strong_count(&self) {
+                2 => break,
+                0 | 1 => return Err(MaintenanceReadError::ReconciliationNeeded),
+                _ => {}
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(MaintenanceReadError::ReconciliationNeeded);
+            }
+            tokio::time::sleep(remaining.min(Duration::from_millis(5))).await;
+        }
+        let observation = self.observe(0, MAX_READ_JOBS)?;
+        if observation.omitted_jobs != 0
+            || observation.jobs.iter().any(|job| {
+                !matches!(
+                    job.state,
+                    MaintenanceStateV1::Completed | MaintenanceStateV1::Failed
+                )
+            })
+        {
+            return Err(MaintenanceReadError::ReconciliationNeeded);
+        }
+        Ok(())
+    }
     pub(super) fn initialize(self: &Arc<Self>) -> bool {
         pool::enqueue(
             self.clone(),

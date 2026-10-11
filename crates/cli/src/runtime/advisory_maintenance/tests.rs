@@ -241,6 +241,74 @@ struct BlockRunning {
     entered: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
 }
+#[tokio::test]
+async fn fixture_close_waits_for_the_actual_queued_native_writer_and_refuses_unknown() {
+    let directory = tempfile::tempdir().unwrap();
+    let known = owner(directory.path());
+    let Writer { store, snapshot } = known.open_writer().unwrap();
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    *known.writer.lock().unwrap() = Some(Writer {
+        snapshot,
+        store: Box::new(BlockRunning {
+            inner: store,
+            entered,
+            release: blocked,
+        }),
+    });
+    let target = target_path(directory.path());
+    assert!(known.enqueue(
+        MaintenanceKindV1::TokenCalibration,
+        1,
+        b"actual queued cache bytes",
+        &target,
+    ));
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        known
+            .clone()
+            .finish_fixture_io(Duration::from_millis(20))
+            .await,
+        Err(MaintenanceReadError::ReconciliationNeeded)
+    ));
+    assert!(!target.exists());
+    release.send(()).unwrap();
+    known
+        .clone()
+        .finish_fixture_io(Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"actual queued cache bytes"
+    );
+    assert_eq!(
+        known.observe(0, 64).unwrap().jobs[0].state,
+        MaintenanceStateV1::Completed
+    );
+    drop(known);
+    // A physically returned worker is insufficient when its durable terminal barrier is unknown.
+    let unknown_dir = tempfile::tempdir().unwrap();
+    let unknown = owner(unknown_dir.path());
+    let Writer { store, snapshot } = unknown.open_writer().unwrap();
+    *unknown.writer.lock().unwrap() = Some(Writer {
+        snapshot,
+        store: Box::new(RefuseTerminal { inner: store }),
+    });
+    assert!(unknown.enqueue(
+        MaintenanceKindV1::TokenCalibration,
+        1,
+        b"unknown terminal",
+        &target_path(unknown_dir.path())
+    ));
+    assert!(matches!(
+        unknown
+            .clone()
+            .finish_fixture_io(Duration::from_secs(2))
+            .await,
+        Err(MaintenanceReadError::ReconciliationNeeded)
+    ));
+}
 impl MaintenanceJournal for BlockRunning {
     fn load(&mut self) -> Result<Option<Snapshot>, MaintenanceReadError> {
         self.inner.load()

@@ -570,6 +570,7 @@ async fn real_recovery_publishes_seed_before_the_main_request_and_retains_it_on_
     assert!(agent.compaction_state.compacted());
     let run = agent.rollout.run_id().clone();
     let store = agent.rollout.path().parent().unwrap().to_path_buf();
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     let reopened = Rollout::open_existing(&store, &run, TenantId::default()).unwrap();
     let rows = iteron_record::replay(reopened.path()).unwrap();

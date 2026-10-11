@@ -265,6 +265,7 @@ async fn explicit_read_deny_cannot_bypass_operation_gate_through_pure_overlap() 
             .any(|event| matches!(&event.kind, EventKind::ToolReady {tool,..}
         if tool.id == "denied-pure"))
     );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     std::fs::remove_dir_all(workspace).unwrap();
 }

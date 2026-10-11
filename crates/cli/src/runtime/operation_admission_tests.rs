@@ -120,6 +120,7 @@ async fn a_blanket_shell_allow_cannot_start_opaque_operations_in_any_execution_p
         assert!(!events.iter().any(|event| matches!(&event.kind,
             EventKind::EffectIntent { tool_use_id, .. } if tool_use_id.starts_with("opaque-")
         )));
+        agent.finish_advisory_maintenance_for_test().await.unwrap();
         drop(agent);
         std::fs::remove_dir_all(workspace).unwrap();
     }
@@ -153,6 +154,7 @@ async fn a_blanket_file_write_allow_does_not_authorize_instruction_mutation() {
     assert!(!events.iter().any(|event| matches!(&event.kind,
         EventKind::EffectIntent { tool_use_id, .. } if tool_use_id == "trust-write"
     )));
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     std::fs::remove_dir_all(workspace).unwrap();
 }

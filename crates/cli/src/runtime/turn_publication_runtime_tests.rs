@@ -155,9 +155,14 @@ async fn actual_end_turn_joins_message_and_existing_done_receipts_then_reopens()
         1,
         "finalization must not add another terminal append"
     );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     let reopened = reopen_reader(&workspace, &run);
     assert_eq!(reopened.recovered_turn_publications_v1().unwrap(), facts);
+    reopened
+        .finish_advisory_maintenance_for_test()
+        .await
+        .unwrap();
     drop(reopened);
     std::fs::remove_dir_all(workspace).unwrap();
 }

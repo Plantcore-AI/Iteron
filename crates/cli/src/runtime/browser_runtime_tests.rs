@@ -352,6 +352,7 @@ async fn actual_browser_and_computer_require_named_external_permission_and_hard_
                     "{name} {case}"
                 );
             }
+            agent.finish_advisory_maintenance_for_test().await.unwrap();
             drop(agent);
             std::fs::remove_dir_all(workspace).unwrap();
         }
@@ -429,6 +430,7 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
                 EventKind::ToolImageObservedV1 { observation }
                     if observation.tool_use_id == "pixels-actual")));
             drop(observed);
+            agent.finish_advisory_maintenance_for_test().await.unwrap();
             drop(agent);
             std::fs::remove_dir_all(workspace).unwrap();
             continue;
@@ -519,6 +521,7 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
             }
         }
         drop(observed);
+        agent.finish_advisory_maintenance_for_test().await.unwrap();
         drop(agent);
         std::fs::remove_dir_all(workspace).unwrap();
     }

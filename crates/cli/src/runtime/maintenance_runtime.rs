@@ -7,6 +7,24 @@ use super::{
 use std::sync::Arc;
 
 impl Agent {
+    /// The fixture has stopped producing work and still owns this Agent through the rendezvous.
+    /// Inspect only its already-installed owner; never initialize a new journal during cleanup.
+    #[cfg(test)]
+    pub(super) async fn finish_advisory_maintenance_for_test(
+        &self,
+    ) -> Result<(), super::advisory_maintenance::MaintenanceReadError> {
+        let owner = self
+            .advisory_maintenance
+            .lock()
+            .map_err(|_| super::advisory_maintenance::MaintenanceReadError::ReconciliationNeeded)?
+            .clone();
+        if let Some(owner) = owner {
+            owner
+                .finish_fixture_io(std::time::Duration::from_secs(30))
+                .await?;
+        }
+        Ok(())
+    }
     pub(crate) fn advisory_maintenance_port(&self) -> Option<Arc<dyn AdvisoryMaintenanceReadPort>> {
         self.advisory_maintenance_owner()
             .map(|owner| owner as Arc<dyn AdvisoryMaintenanceReadPort>)
