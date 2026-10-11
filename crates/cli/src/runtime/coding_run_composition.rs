@@ -372,7 +372,10 @@ impl Agent {
                 CodingRunWork::ToolPump => {
                     let session =
                         self.tool_execution_session(turn, run.messages(), run.projection()?);
-                    if let Err(error) = run.pump_tools(session).await {
+                    // Native dispatch owns a large async phase, including the optional child
+                    // and workflow paths. Keep its state behind one pin while this coordinator
+                    // retains the same borrowed authority, phase order and cancellation scope.
+                    if let Err(error) = Box::pin(run.pump_tools(session)).await {
                         if matches!(&error, KernelError::UnknownEffects { .. })
                             && let Some(outcome) =
                                 self.collect_and_finish_requested_control(turn).await?
@@ -390,9 +393,14 @@ impl Agent {
                         call.kind,
                         run.projection()?,
                     );
-                    let result = match execution
-                        .run(turn, call.index, &call.call, call.capability, output)
-                        .await
+                    let result = match Box::pin(execution.run(
+                        turn,
+                        call.index,
+                        &call.call,
+                        call.capability,
+                        output,
+                    ))
+                    .await
                     {
                         Ok(result) => result,
                         Err(error) => {
@@ -416,7 +424,7 @@ impl Agent {
                     } else {
                         None
                     };
-                    if run.settle_tools(images, &events, remaining).await? {
+                    if Box::pin(run.settle_tools(images, &events, remaining)).await? {
                         self.advertised_tool_specs_cache = None;
                     }
                 }

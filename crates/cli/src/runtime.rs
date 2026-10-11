@@ -1526,14 +1526,16 @@ impl Agent {
         self.run_assistant_text.clear();
         self.last_assistant_source = None;
         let parent_turn = self.begin_parent_runtime_bridge(task)?;
-        let mut outcome = self
-            .run_with_images_mode_inner(
-                task,
-                input_images,
-                allow_orchestration,
-                input_file_evidence,
-            )
-            .await;
+        // Keep the invocation state machine out of every frontend and parent poll frame. Direct
+        // investigation polls a real child while this parent is suspended; both retain their
+        // own large driver state, but only a pinned pointer belongs in these outer wrappers.
+        let mut outcome = Box::pin(self.run_with_images_mode_inner(
+            task,
+            input_images,
+            allow_orchestration,
+            input_file_evidence,
+        ))
+        .await;
         outcome = invocation_cleanup::InvocationCleanup {
             tool: self.tool_output_spill.as_deref(),
             mcp: self.mcp_runtime.as_ref(),
@@ -1603,7 +1605,7 @@ impl Agent {
     ///    without a recursive obligation through the parent writer, while `Agent::run` itself also
     ///    stays `Send` for top-level callers.
     async fn run_leaf(&mut self, task: &str) -> Result<Outcome, KernelError> {
-        let mut outcome = self.run_leaf_inner(task).await;
+        let mut outcome = Box::pin(self.run_leaf_inner(task)).await;
         if let Err(cleanup_error) = self
             .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::RunEnd)
             .await
