@@ -1,5 +1,5 @@
 //! Actual native TLS dispatch and signed charging through an ordinary SDK provider export.
-use super::{agent_with_budget, binding};
+use super::{agent_with_budget_and_tunables, binding};
 use crate::config::{ProviderConfig, ProviderCredential};
 use crate::plugin_runtime::ordinary::OrdinaryDescriptor;
 use crate::providers::{ModelSelection, ProviderDirectory};
@@ -11,6 +11,7 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{Budget, Capability, EventKind, PricingRoute, RunId, Usage};
 use iteron_provider::catalog::HttpTransport;
 use iteron_provider::{ProviderError, ProviderTransportTimeoutPolicy};
+use iteron_tunables::ResolutionValue;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -34,17 +35,67 @@ impl HttpTransport for LoopbackNativeTransport {
         policy: ProviderTransportTimeoutPolicy,
     ) -> Result<reqwest::Client, ProviderError> {
         let policy = policy.validate()?;
-        reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(policy.connect_tls)
             .timeout(policy.request_total)
-            .pool_max_idle_per_host(0)
             .resolve("api.openai.com", self.address)
-            .add_root_certificate(self.certificate.clone())
+            .add_root_certificate(self.certificate.clone());
+        if policy.connection_reuse {
+            builder = builder
+                .pool_idle_timeout(policy.pool_idle)
+                .tcp_keepalive((!policy.tcp_keepalive.is_zero()).then_some(policy.tcp_keepalive));
+        } else {
+            builder = builder.pool_max_idle_per_host(0).tcp_keepalive(None);
+        }
+        builder
             .build()
             .map_err(|_| ProviderError::Configuration("fixture TLS client unavailable".into()))
     }
+}
+
+fn transport_tunables(
+    policy: ProviderTransportTimeoutPolicy,
+) -> [(&'static str, ResolutionValue); 4] {
+    let integer = |value| ResolutionValue::Integer {
+        value: i64::try_from(value).unwrap(),
+    };
+    [
+        (
+            "provider_connect_tls_timeout",
+            integer(policy.connect_tls.as_secs()),
+        ),
+        (
+            "provider_request_total_deadline",
+            integer(u64::try_from(policy.request_total.as_millis()).unwrap()),
+        ),
+        (
+            "stream_idle_watchdog",
+            integer(u64::try_from(policy.stream_idle.as_millis()).unwrap()),
+        ),
+        (
+            "http_pool_keepalive_idle_policy",
+            ResolutionValue::Object {
+                fields: BTreeMap::from([
+                    (
+                        "pool_idle_seconds".into(),
+                        integer(policy.pool_idle.as_secs()),
+                    ),
+                    (
+                        "tcp_keepalive_seconds".into(),
+                        integer(policy.tcp_keepalive.as_secs()),
+                    ),
+                    (
+                        "connection_reuse".into(),
+                        ResolutionValue::Boolean {
+                            value: policy.connection_reuse,
+                        },
+                    ),
+                ]),
+            },
+        ),
+    ]
 }
 
 async fn native_request(listener: &TcpListener, acceptor: TlsAcceptor) -> Value {
@@ -151,6 +202,9 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
         provider_id: "sdk-paid-native".into(),
         model_id: "gpt-5.6".into(),
     };
+    // The host-injected client is fixed to its actual construction policy. The ordinary
+    // schema fixture samples pool settings; it cannot attest a different physical client.
+    let transport_policy = iteron_provider::provider_transport_timeout_policy();
     let native = directory
         .build_with_transport(&selection, &transport)
         .unwrap();
@@ -160,7 +214,7 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
         iteron_provider::ProviderUsageBoundSemantics::PartitionedInput
     );
     let run = RunId("sdk-paid-native".into());
-    let mut owner = agent_with_budget(
+    let mut owner = agent_with_budget_and_tunables(
         &root,
         &run,
         native.clone(),
@@ -168,6 +222,7 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
             max_usd: Some(20.0),
             ..Budget::default()
         },
+        transport_tunables(transport_policy),
     );
     owner.model = selection.model_id.clone();
     owner
@@ -243,6 +298,7 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
     .unwrap()
     .core;
     let governor = effective.provider_governor;
+    assert_eq!(governor.controls.transport, transport_policy);
     owner.set_provider_controls(governor.controls).unwrap();
     owner
         .install_provider_governor(

@@ -65,6 +65,15 @@ fn agent_with_budget(
     provider: Arc<dyn Provider>,
     budget: Budget,
 ) -> Agent {
+    agent_with_budget_and_tunables(workspace, run, provider, budget, [])
+}
+fn agent_with_budget_and_tunables(
+    workspace: &std::path::Path,
+    run: &RunId,
+    provider: Arc<dyn Provider>,
+    budget: Budget,
+    edits: impl IntoIterator<Item = (&'static str, iteron_tunables::ResolutionValue)>,
+) -> Agent {
     let rollout = Rollout::open(&workspace.join(".iteron/runs"), run, TenantId::default()).unwrap();
     let mut agent = Agent::new(
         provider,
@@ -75,7 +84,7 @@ fn agent_with_budget(
         budget,
     );
     agent.workspace = workspace.to_owned();
-    gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    gate_integration_tests::pin_test_tunables_with_edits(&mut agent, edits);
     agent
 }
 fn binding(
