@@ -268,6 +268,7 @@ async fn physical_manifest_sources_and_scrubbed_bytes_survive_actual_writer_reop
     assert_eq!(prepared.len(), 2);
     let actual = provider.requests.lock().unwrap();
     for bytes in &*actual {
+        assert!(!std::str::from_utf8(bytes).unwrap().contains(CANARY));
         let digest = format!("sha256:{:x}", Sha256::digest(bytes));
         assert!(
             prepared

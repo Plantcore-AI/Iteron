@@ -340,6 +340,8 @@ pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErr
         | KernelError::EnvironmentContextTooLarge { .. }
         | KernelError::EnvironmentContextAlreadyResolved
         | KernelError::ContextResolution(_)
+        | KernelError::SensitiveModelContext
+        | KernelError::ModelContextProjectionLimit
         | KernelError::ContextAlreadyResolved => PolicyHarnessErrorCode::ContextError,
         KernelError::AgentCatalogAlreadyResolved => PolicyHarnessErrorCode::AgentCatalogError,
         KernelError::TunablesAlreadyResolved | KernelError::TunablesNotResolved => {

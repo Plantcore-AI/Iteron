@@ -100,16 +100,27 @@ pub(super) struct RequestPreparation<'a> {
     phase: PreparationPhase,
     recovery: Option<Recovery>,
     candidate: Option<Candidate>,
+    projection_refusal: Option<super::model_context_projection::ProjectionRefusal>,
 }
 
 impl<'a> RequestPreparation<'a> {
     pub(super) fn new(
-        request: RequestContent<'a>,
+        mut request: RequestContent<'a>,
         requested_output: u32,
         window: Option<u64>,
         accounting: RequestAccounting,
         estimator: &mut RequestEstimator,
     ) -> Self {
+        let projection = super::model_context_projection::content(
+            &mut request.system,
+            &mut request.messages,
+            &request.tools,
+        );
+        if !matches!(projection, Ok(false)) {
+            // A projection can rewrite already cached history without changing its length.
+            estimator.invalidate_transcript();
+        }
+        let projection_refusal = projection.err();
         let raw = estimator.estimate_with_tool_tokens(
             &request.system,
             &request.messages,
@@ -127,6 +138,7 @@ impl<'a> RequestPreparation<'a> {
             phase: PreparationPhase::Projected,
             recovery: None,
             candidate: None,
+            projection_refusal,
         }
     }
     pub(super) fn request(&self) -> &RequestContent<'a> {
@@ -174,7 +186,7 @@ impl<'a> RequestPreparation<'a> {
         compacted_in_run: bool,
         guard: &mut ContextBudgetRecoveryGuard,
     ) -> Option<LifecyclePayload> {
-        if self.phase != PreparationPhase::Projected {
+        if self.phase != PreparationPhase::Projected || self.projection_refusal.is_some() {
             return None;
         }
         let estimate = self.estimate();
@@ -278,8 +290,10 @@ impl<'a> RequestPreparation<'a> {
             ));
         }
         self.phase = PreparationPhase::Assessed;
-        let rebuilt =
+        let mut rebuilt =
             CompactionPolicy::rebuild(self.plan().expect("owned plan"), summary.to_owned());
+        super::model_context_projection::messages(&mut rebuilt)
+            .map_err(|refusal| refusal.error())?;
         let raw = estimator.estimate_uncached(
             &self.request.system,
             &rebuilt,
@@ -390,6 +404,9 @@ impl<'a> RequestPreparation<'a> {
         )
     }
     pub(super) fn validate(&mut self) -> Result<(), KernelError> {
+        if let Some(refusal) = self.projection_refusal {
+            return Err(refusal.error());
+        }
         if !matches!(
             self.phase,
             PreparationPhase::Projected | PreparationPhase::RecoverySettled

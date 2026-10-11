@@ -1,8 +1,8 @@
 //! Secret redaction on the record path (ADR-008 §1, enterprise/compliance). Tool output can
 //! contain a hardcoded key or a token; the durable, long-retained audit log must not become a
 //! secret store. So known-secret *shapes* are masked in tool results **before they enter the
-//! record**. The live model context keeps the real content (the agent needs it to work); only
-//! the recorded copy is scrubbed.
+//! record**. This module does not mutate the caller's live content. The runtime separately
+//! projects model-visible text before request accounting and physical admission.
 //!
 //! This is shape-based, not a guarantee: it catches the common credential formats, not every
 //! possible secret. It is a real compliance reduction, not a solution — stated honestly. The

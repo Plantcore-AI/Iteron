@@ -87,7 +87,7 @@ impl MemoryActivation {
         let supersession = self.superseded_id.as_deref().map_or(String::new(), |id| {
             format!("This reference replaces the earlier reference `{id}`.\n")
         });
-        let text = if self.deleted {
+        let mut text = if self.deleted {
             format!(
                 "[Iteron memory reference]\nReference `{}` revision {} was deleted. Earlier recorded bytes remain history, not a current memory fact or instruction.",
                 record.id, record.revision
@@ -103,6 +103,9 @@ impl MemoryActivation {
                 record.body
             )
         };
+        // Keep the retained source body commitment exact; message identity binds the actual
+        // clean safe-point projection seen by the native request instead of the raw source.
+        super::model_context_projection::text(&mut text);
         if text.len() > max_bytes {
             return Err("memory reference exceeds safe-point input bound");
         }
@@ -155,6 +158,38 @@ pub(super) fn replay_reference_trust(
 mod tests {
     use super::MemoryActivation;
     use iteron_ctx::MemoryStore;
+    #[test]
+    fn secret_memory_source_keeps_its_body_commitment_but_binds_the_clean_safe_point_message() {
+        use sha2::{Digest, Sha256};
+        let root = workspace("secret-projection");
+        let store = MemoryStore::at(&root);
+        let source = "api_key=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
+        let id = store.add(source).unwrap();
+        let activation =
+            MemoryActivation::capture(&root, &id, source, None, iteron_protocol::TurnId(1))
+                .unwrap();
+        let resolved = activation.resolve(&root, 16 * 1024).unwrap();
+        assert!(
+            !resolved
+                .text
+                .contains("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789")
+        );
+        assert!(resolved.text.contains("[REDACTED:"));
+        assert_eq!(
+            resolved.evidence.body_sha256,
+            format!("{:x}", Sha256::digest(source.as_bytes()))
+        );
+        assert_eq!(
+            resolved.evidence.message_sha256,
+            format!("{:x}", Sha256::digest(resolved.text.as_bytes()))
+        );
+        assert_eq!(
+            resolved.body_digest,
+            <[u8; 32]>::from(Sha256::digest(source.as_bytes()))
+        );
+        assert!(activation.resolve(&root, resolved.text.len() - 1).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     fn workspace(tag: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "iteron-memory-activation-{tag}-{}-{}",

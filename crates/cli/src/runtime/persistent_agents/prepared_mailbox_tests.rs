@@ -65,11 +65,13 @@ pub(in crate::runtime::persistent_agents) fn mailbox() -> (LiveAgentMailbox, Arc
 pub(in crate::runtime::persistent_agents) fn mailbox_with_sender(
     sender: Option<AgentIdV1>,
 ) -> (LiveAgentMailbox, Arc<Port>) {
+    mailbox_with_text(sender, "native input canary 中文")
+}
+fn mailbox_with_text(sender: Option<AgentIdV1>, text: &str) -> (LiveAgentMailbox, Arc<Port>) {
     let epoch = AgentEpochV1 {
         incarnation: 3,
         turn: 4,
     };
-    let text = "native input canary 中文";
     let port = Arc::new(Port {
         input: AgentMailboxMessage {
             id: AgentMessageIdV1(19),
@@ -96,6 +98,37 @@ pub(in crate::runtime::persistent_agents) fn mailbox_with_sender(
         },
         port,
     )
+}
+
+#[test]
+fn scrubbed_mailbox_projection_binds_clean_native_bytes_and_keeps_original_source_digest() {
+    let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
+    let (mailbox, port) = mailbox_with_text(Some(AgentIdV1(8)), secret);
+    let envelope = mailbox
+        .render_initial(std::slice::from_ref(&port.input))
+        .unwrap();
+    assert!(!envelope.contains(secret));
+    assert!(envelope.contains("[REDACTED:"));
+    assert_eq!(port.input.text.as_deref(), Some(secret));
+    let source = mailbox
+        .source_admission(std::slice::from_ref(&port.input), &envelope)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        source.sources[0].content_sha256,
+        format!("{:x}", Sha256::digest(secret.as_bytes()))
+    );
+    assert_eq!(
+        source.projection_sha256,
+        format!("{:x}", Sha256::digest(envelope.as_bytes()))
+    );
+    mailbox.confirm_source_admission(&source).unwrap();
+    let request = request(vec![Message::user_text(envelope.clone())]);
+    let body = serde_json::json!({"messages":[{"role":"user","content":envelope}]});
+    let proof = prove(&mailbox, AdapterKind::OpenAiCompatibleChat, &request, &body).unwrap();
+    assert_eq!(port.commits.load(Ordering::SeqCst), 0);
+    mailbox.confirm_prepared(proof).unwrap();
+    assert_eq!(port.commits.load(Ordering::SeqCst), 1);
 }
 fn request(messages: Vec<Message>) -> TurnRequest {
     TurnRequest {

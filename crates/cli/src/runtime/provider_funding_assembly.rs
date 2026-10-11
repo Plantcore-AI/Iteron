@@ -13,6 +13,10 @@ impl Agent {
         turn: TurnId,
         mut request: TurnRequest,
     ) -> Result<(PhysicalProviderRequest, ProviderDispatchAdmission), KernelError> {
+        // Auxiliary compaction/coverage/decomposition enters here without RequestPreparation.
+        // Project before signing a quote, reserving money, or minting a physical dispatch intent.
+        super::model_context_projection::request(&mut request)
+            .map_err(|refusal| refusal.error())?;
         self.ensure_record_healthy()?;
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.synchronize_usd_budget()?;
@@ -38,8 +42,10 @@ impl Agent {
     pub(super) fn quote_candidate_provider_request(
         &self,
         candidate: &GovernedProviderRoute,
-        request: TurnRequest,
+        mut request: TurnRequest,
     ) -> Result<PhysicalProviderRequest, KernelError> {
+        super::model_context_projection::request(&mut request)
+            .map_err(|refusal| refusal.error())?;
         let now = self.pricing_now();
         let financial = self.provider_financial_source().candidate(
             &self.provider_selection,

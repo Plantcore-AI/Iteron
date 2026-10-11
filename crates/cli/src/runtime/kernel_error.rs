@@ -181,6 +181,10 @@ pub enum KernelError {
     EnvironmentContextAlreadyResolved,
     #[error("context resolution failed: {0}")]
     ContextResolution(String),
+    #[error("model context contains a secret-bearing structural field")]
+    SensitiveModelContext,
+    #[error("model context exceeds its bounded projection capacity")]
+    ModelContextProjectionLimit,
     #[error("context strategy inputs are already resolved for this run")]
     ContextAlreadyResolved,
     #[error("agent catalog is already pinned for this run")]
@@ -341,6 +345,12 @@ impl KernelError {
             }
             Self::ContextResolution(_) => {
                 "context selection or materialization failed closed".into()
+            }
+            Self::SensitiveModelContext => {
+                "model request was not dispatched: remove credentials from tool names, argument keys or advertised schemas".into()
+            }
+            Self::ModelContextProjectionLimit => {
+                "model request was not dispatched: historic arguments or advertised schemas exceed the bounded text projection capacity".into()
             }
             Self::ContextAlreadyResolved => {
                 "context strategy inputs are already fixed for this run".into()

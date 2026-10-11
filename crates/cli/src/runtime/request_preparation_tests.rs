@@ -104,6 +104,66 @@ fn config() -> RequestConfiguration {
 }
 
 #[test]
+fn actual_projection_replaces_cached_secret_history_before_context_estimation_and_admission() {
+    let (directory, mut agent, mut history) = fixture();
+    let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
+    history[1].content = vec![Block::Text {
+        text: format!("historical api_key={secret}"),
+    }];
+    let tools: iteron_provider::PreparedToolSchemas = Vec::new().into();
+    let _ = agent.context_estimator.estimate_with_tool_tokens(
+        "system",
+        &history,
+        tools.len(),
+        tools.estimated_tokens(),
+        tools.cache_identity(),
+    );
+    let mut owner = preparation(&mut agent, &mut history);
+    assert!(
+        !serde_json::to_string(&owner.request().messages)
+            .unwrap()
+            .contains(secret)
+    );
+    let actual = agent.context_estimator.estimate_uncached(
+        &owner.request().system,
+        &owner.request().messages,
+        owner.request().tools.as_ref(),
+    );
+    assert_eq!(owner.baseline(), actual.total_tokens);
+    // The independently retained message count did not change, so old incremental estimates
+    // would remain stale without the real projection invalidation above.
+    owner.bind_route_budget(Some(1_000_000), 64).unwrap();
+    assert!(owner.validate().is_ok());
+    drop(owner);
+    drop(agent);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_refused_structural_projection_cannot_open_recovery_or_admit_a_native_request() {
+    let (directory, mut agent, mut history) = fixture();
+    history[1].content = vec![Block::ToolUse(iteron_protocol::ToolUse {
+        id: "actual-history-call".into(),
+        name: "shell".into(),
+        input: serde_json::json!({"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789":"not renamed"}),
+    })];
+    let before = agent.rollout.next_sequence();
+    let mut owner = preparation(&mut agent, &mut history);
+    let mut guard = ContextBudgetRecoveryGuard::default();
+    assert!(
+        owner
+            .recovery_request(&agent.compaction, false, &mut guard)
+            .is_none()
+    );
+    assert!(owner.validate().is_err());
+    assert!(owner.project_request(config()).is_err());
+    drop(owner);
+    assert_eq!(agent.rollout.next_sequence(), before);
+    drop(agent);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn actual_model_phase_writer_refusal_cannot_rearm_context_or_provider_admission() {
     let (directory, mut agent, mut messages) = fixture();
     agent.context_budget_policy.transcript_tokens = 1_000_000;

@@ -436,6 +436,8 @@ impl LiveAgentMailbox {
         let sender = input
             .sender
             .map_or_else(|| "operator".into(), |sender| format!("agent:{}", sender.0));
+        let mut projected = text.to_owned();
+        super::model_context_projection::text(&mut projected);
         let envelope = format!(
             "[agent input id={} from={} to={} incarnation={} turn={} digest={}]\n{}\n[/agent input id={}]",
             input.id.0,
@@ -444,7 +446,7 @@ impl LiveAgentMailbox {
             self.epoch.incarnation,
             self.epoch.turn,
             input.content_sha256,
-            text,
+            projected,
             input.id.0
         );
         let mut witnesses = self

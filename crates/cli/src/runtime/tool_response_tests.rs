@@ -149,7 +149,7 @@ fn model_scrubbing_does_not_rewrite_a_retained_private_spill() {
 }
 
 #[tokio::test]
-async fn native_read_file_credentials_are_absent_from_the_actual_following_http_request() {
+async fn native_context_and_read_file_credentials_are_absent_from_actual_http_requests() {
     use crate::runtime::gate_integration_tests::{record_test_genesis, temp_ws};
     use crate::runtime::{Agent, Outcome};
     use iteron_protocol::{Budget, EventKind, RunId, TenantId};
@@ -166,7 +166,7 @@ async fn native_read_file_credentials_are_absent_from_the_actual_following_http_
     let root = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for step in 0..2 {
+        for step in 0..3 {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut head = Vec::new();
             let mut byte = [0; 1];
@@ -191,7 +191,7 @@ async fn native_read_file_credentials_are_absent_from_the_actual_following_http_
             requests.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
             let (delta, finish) = if step == 0 {
                 (
-                    serde_json::json!({"tool_calls":[{"index":0,"id":"actual-read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"source.txt\"}"}}]}),
+                    serde_json::json!({"content":format!("portable assistant history api_key={secret}"),"tool_calls":[{"index":0,"id":"actual-read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"source.txt\"}"}}]}),
                     "tool_calls",
                 )
             } else {
@@ -227,10 +227,16 @@ async fn native_read_file_credentials_are_absent_from_the_actual_following_http_
         iteron_tools::Registry::read_only(&workspace).unwrap(),
         rollout,
         "fixture-model".into(),
-        "read the requested source once".into(),
+        format!("read the requested source once\napi_key={secret}"),
         Budget::default(),
     );
     agent.workspace = workspace.clone();
+    agent
+        .set_environment_context(
+            format!("captured instruction/environment\napi_key={secret}"),
+            iteron_protocol::Trust::Trusted,
+        )
+        .unwrap();
     record_test_genesis(&mut agent, &workspace);
     agent
         .record_operator_model_selection(
@@ -243,18 +249,44 @@ async fn native_read_file_credentials_are_absent_from_the_actual_following_http_
         .unwrap();
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
-        Box::pin(agent.run("read source.txt")),
+        Box::pin(agent.run(&format!("read source.txt\napi_key={secret}"))),
     )
     .await;
     if outcome.is_err() {
         server.abort();
     }
     assert_eq!(outcome.unwrap().unwrap(), Outcome::Done);
+    // Explicit auxiliary compaction bypasses the ordinary preparation owner but must still
+    // cross the same clean request boundary before paid admission and native serialization.
+    let summary = agent
+        .summarize(
+            &[iteron_protocol::Message::user_text(format!(
+                "auxiliary source api_key={secret}"
+            ))],
+            Some(&format!("focus api_key={secret}")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary, "completed source read");
     let requests = tokio::time::timeout(Duration::from_secs(3), server)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert!(!serde_json::to_string(request).unwrap().contains(secret));
+        let system = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "system")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        if system.contains("read the requested source once") {
+            assert!(system.contains("[REDACTED:"));
+        }
+    }
     let visible = requests[1]["messages"]
         .as_array()
         .unwrap()
@@ -278,7 +310,7 @@ async fn native_read_file_credentials_are_absent_from_the_actual_following_http_
     let events = iteron_record::replay(&path).unwrap();
     assert_eq!(
         events.iter().filter(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider")).count(),
-        2
+        3
     );
     assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ToolDone { result, .. } if result.tool_use_id == "actual-read" && !result.is_error && result.content.contains("[REDACTED:"))));
     std::fs::remove_dir_all(workspace).unwrap();

@@ -103,6 +103,8 @@ impl KernelError {
             }
             Self::ProviderRunNoticeLimit | Self::IdentityExhausted(_) => Reason::ObservationLimit,
             Self::InvalidPermissionPolicy(_) => Reason::InvalidPermissionPolicy,
+            Self::SensitiveModelContext => Reason::PermissionDenied,
+            Self::ModelContextProjectionLimit => Reason::ObservationLimit,
             _ => Reason::Unknown,
         }
     }
