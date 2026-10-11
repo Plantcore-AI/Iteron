@@ -257,6 +257,24 @@ impl SharedUsdBudget {
             || self.spent_microusd.load(Ordering::Acquire) >= ceiling
     }
 
+    /// The caller must authenticate its all-zero tariff separately. A known zero wallet can
+    /// fund that request, but cannot reopen an unknown or spent positive ancestor. The ancestry
+    /// is bounded to 64 owners at construction.
+    pub(super) fn can_fund_verified_zero_cost(&self) -> bool {
+        let ceiling = self.ceiling_microusd();
+        let spent = self.spent_microusd.load(Ordering::Acquire);
+        !self.unknown.load(Ordering::Acquire)
+            && if ceiling == 0 {
+                spent == 0
+            } else {
+                spent < ceiling
+            }
+            && self
+                .parent
+                .as_ref()
+                .is_none_or(|parent| parent.can_fund_verified_zero_cost())
+    }
+
     fn try_acquire_provider_dispatch(&self, reservation_microusd: u64) -> Result<(), &'static str> {
         if self
             .provider_dispatch_in_flight
@@ -524,6 +542,30 @@ mod child_chain_tests {
             projection_digest: format!("digest-{run}"),
             amount_microusd: amount,
         }
+    }
+    #[test]
+    fn known_zero_child_cannot_reopen_spent_or_unknown_ancestry() {
+        let parent = Arc::new(SharedUsdBudget::from_microusd(20));
+        let zero = SharedUsdBudget::child(0, parent.clone()).unwrap();
+        assert!(zero.exhausted());
+        assert!(zero.can_fund_verified_zero_cost());
+        let guard = ProviderAttemptGuard::new(Some(&parent), 1, Some(20)).unwrap();
+        parent
+            .commit_provider_route_charge(charge("actual-spent-parent", 20))
+            .unwrap();
+        guard.complete();
+        assert!(!zero.can_fund_verified_zero_cost());
+
+        let parent = Arc::new(SharedUsdBudget::from_microusd(0));
+        let zero = SharedUsdBudget::child(0, parent.clone()).unwrap();
+        assert!(zero.can_fund_verified_zero_cost());
+        parent.mark_unknown();
+        assert!(!zero.can_fund_verified_zero_cost());
+
+        let parent = Arc::new(SharedUsdBudget::from_microusd(20));
+        let zero = SharedUsdBudget::child(0, parent.clone()).unwrap();
+        parent.mark_unknown();
+        assert!(!zero.can_fund_verified_zero_cost());
     }
     #[test]
     fn separate_child_caps_do_not_tighten_parent_and_charge_once() {

@@ -26,9 +26,43 @@ impl Agent {
     }
 
     pub(super) fn usd_budget_exhausted(&self) -> bool {
-        self.usd_budget
-            .as_ref()
-            .is_some_and(|budget| budget.exhausted())
+        self.usd_budget.as_ref().is_some_and(|budget| {
+            budget.exhausted()
+                && !(budget.ceiling_microusd() == 0
+                    && budget.can_fund_verified_zero_cost()
+                    && self.has_verified_zero_price())
+        })
+    }
+
+    fn has_verified_zero_price(&self) -> bool {
+        let (Some(selected), Some(card), Some(port)) = (
+            self.provider_selection.selected(),
+            self.provider_selection.card(),
+            self.provider_selection.pricing_port(),
+        ) else {
+            return false;
+        };
+        let now = self.pricing_now();
+        let rates = card.rate_card.rates;
+        // A zero monetary wallet can fund only an authenticated, currently bound free route.
+        // Unknown ancestry, a stale/foreign card, and every nonzero tariff remain exhausted.
+        selected.route == card.rate_card.route
+            && self
+                .provider_selection
+                .validate_live(&self.provider, &self.model)
+                .is_ok()
+            && now >= card.rate_card.issued_at_unix_secs
+            && now < card.rate_card.expires_at_unix_secs
+            && port.verify_rate_card(card).is_ok()
+            && [
+                rates.input_microusd_per_million,
+                rates.output_microusd_per_million,
+                rates.cache_creation_microusd_per_million,
+                rates.cache_read_microusd_per_million,
+                rates.thinking_microusd_per_million,
+            ]
+            .into_iter()
+            .all(|rate| rate == 0)
     }
 
     pub(super) fn token_budget_exhausted(&self) -> bool {

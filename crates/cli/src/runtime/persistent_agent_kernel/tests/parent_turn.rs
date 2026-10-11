@@ -317,6 +317,11 @@ async fn actual_engine_profile_preserves_effort_parent_and_native_cost_attributi
     main.run("bind actual Main physical provider scope")
         .await
         .unwrap();
+    main.kernel_controller_scope(
+        iteron_protocol::TurnId(1),
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+    )
+    .unwrap();
     let parent = AgentEngineParentSource {
         tenant: main.rollout.tenant().0.clone(),
         run: main.rollout.run_id().0.clone(),
