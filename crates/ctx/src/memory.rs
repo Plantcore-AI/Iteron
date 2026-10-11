@@ -1635,7 +1635,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Direct record-owner reads require a physical ancestry. Resolve the platform's
+        // temporary-directory alias before tests create any store or deliberate symlink.
+        dir.canonicalize().unwrap()
     }
 
     // ----- The seed MemoryStore still behaves (existing callers: kernel, TUI) -----
