@@ -62,6 +62,7 @@ struct CoreProcess {
     child: Child,
     listening: Receiver<Result<SocketAddr, String>>,
     stderr: Option<thread::JoinHandle<Vec<u8>>>,
+    startup_stage: &'static str,
 }
 
 struct Scratch {
@@ -423,6 +424,17 @@ fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CorePro
 }
 
 fn spawn_core_command_with_token_input(mut command: Command, token_input: &[u8]) -> CoreProcess {
+    // Retain only the launch class; run IDs, arguments and authentication stay private.
+    let startup_stage = if command.get_args().any(|argument| {
+        argument == "--resume"
+            || argument
+                .to_str()
+                .is_some_and(|value| value.starts_with("--resume="))
+    }) {
+        "cold_resume"
+    } else {
+        "fresh"
+    };
     let mut child = command
         .stdin(Stdio::piped())
         .spawn()
@@ -468,6 +480,7 @@ fn spawn_core_command_with_token_input(mut command: Command, token_input: &[u8])
         child,
         listening,
         stderr: Some(stderr),
+        startup_stage,
     }
 }
 
@@ -506,11 +519,21 @@ fn terminate_after_readiness_failure(process: &mut CoreProcess) -> String {
     let _ = process.child.kill();
     let status = process.child.wait();
     let stderr = take_stderr(process);
-    // Report finite static classes, never captured error text, arguments or bearer tokens.
+    // Preserve the product's public startup error through the existing secret scrubber. Keep
+    // arbitrary stderr/arguments out of the failure, and bound then escape the scrubbed text.
     let bounded = &stderr[..stderr.len().min(64 * 1024)];
     let text = String::from_utf8_lossy(bounded);
+    let public_error = text
+        .lines()
+        .find_map(|line| line.strip_prefix("error: "))
+        .map(iteron_record::redact::scrub)
+        .unwrap_or_else(|| "unobserved".into())
+        .chars()
+        .take(768)
+        .collect::<String>();
     format!(
-        "exit={status:?}, stderr_bytes={}, harness_error={}, stack_overflow={}",
+        "stage={}, exit={status:?}, stderr_bytes={}, harness_error={}, stack_overflow={}, public_error={public_error:?}",
+        process.startup_stage,
         stderr.len(),
         text.lines().any(|line| line.starts_with("error: ")),
         text.contains("stack overflow")
