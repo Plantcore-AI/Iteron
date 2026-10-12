@@ -294,7 +294,18 @@ fn agent(
         .context_budget_policy
         .validate_for_window(120_000)
         .unwrap();
-    super::gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    // The schema sampler's four-token boundary value is not this vision route's allocation.
+    // Pin the same finite image share already included in the validated context partition.
+    let multimodal_tokens = i64::try_from(agent.context_budget_policy.multimodal_tokens).unwrap();
+    super::gate_integration_tests::pin_test_tunables_with_edits(
+        &mut agent,
+        [(
+            "multimodal_token_budget",
+            iteron_tunables::ResolutionValue::Integer {
+                value: multimodal_tokens,
+            },
+        )],
+    );
     agent.workspace = workspace.to_path_buf();
     agent.permission_mode = PermissionMode::Yolo;
     (agent, provider)
