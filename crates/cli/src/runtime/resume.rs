@@ -34,6 +34,7 @@ struct StagedAdoptedResume {
     observed_trust: Trust,
     turn_publications: turn_publication::TurnPublicationOwner,
     verification_tasks: std::sync::Arc<bounded_verify::VerificationTaskRegistry>,
+    policy_evidence: policy_evidence_recorder::PolicyEvidenceRecorder,
 }
 
 impl Agent {
@@ -374,6 +375,7 @@ impl Agent {
         effective_content: &crate::runtime_tunables::effective_content::EffectiveContentIdentities,
         effective_core: &crate::runtime_tunables::effective_core::EffectiveCoreSettings,
         compiled_policy_bundle: &crate::bundle_adapter::CompiledPolicyBundle,
+        tunables_digest_sha256: &str,
     ) -> Result<StagedAdoptedResume, KernelError> {
         effective_core
             .budget
@@ -638,6 +640,18 @@ impl Agent {
         }))
         .unwrap_or(Trust::Trusted);
 
+        // A recorder belongs to the held physical writer, not the resident process or inherited
+        // transcript. Validate the target's own segments and immutable policy identities before
+        // swapping writers; retaining the previous recorder would append foreign run evidence.
+        let timed_events = iteron_record::replay_timed(rollout.path())?;
+        let policy_evidence = policy_evidence_recorder::PolicyEvidenceRecorder::restore_or_begin(
+            rollout.run_id(),
+            tunables_digest_sha256.to_owned(),
+            compiled_policy_bundle.policy_runtime_bindings().to_vec(),
+            &timed_events,
+        )
+        .map_err(|error| KernelError::PolicyEvidence(error.to_string()))?;
+
         // Exercise the last fallible point of the staging transaction. This is deliberately after
         // replay, pricing receipt verification, policy projection, and bounded allocations but
         // before the resident writer or any resident per-run owner changes.
@@ -689,6 +703,7 @@ impl Agent {
             ledger: restored,
             observed_trust,
             verification_tasks,
+            policy_evidence,
             turn_publications: turn_publication::TurnPublicationOwner::from_verified_scoped(
                 &scoped_events,
                 rollout.tenant(),
@@ -956,6 +971,7 @@ impl Agent {
             &effective_content,
             &effective_core,
             compiled_policy_bundle.as_ref(),
+            tunables_pin.resolution_digest_sha256(),
         )?;
         let message_count = staged.messages.len();
 
@@ -967,6 +983,7 @@ impl Agent {
         self.cohort_installation = staged.cohort_installation;
         self.cohort_replay_checked = true;
         self.verification_tasks = staged.verification_tasks;
+        self.policy_evidence = Some(staged.policy_evidence);
         self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
