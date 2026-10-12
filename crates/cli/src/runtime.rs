@@ -32,6 +32,8 @@ mod browser_runtime_tests;
 mod early_tool_collection;
 mod early_tool_executor;
 mod effect_descriptor;
+#[cfg(all(test, unix))]
+mod public_agent_tcp_tests;
 use effect_descriptor::EFFECT_REASON_MAX_BYTES;
 mod effect_journal_owner;
 mod extension_control;

@@ -490,6 +490,21 @@ pub(crate) async fn serve(
     // before `bind` makes an absent, malformed, or overlong capability fail without exposing a
     // listening socket, and `take` bounds a parent that violates the close contract.
     let auth_token = auth::read_from_stdin().await?;
+    let listener = TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("bind headless App Server at {listen}"))?;
+    serve_authenticated(attached, listener, auth_token, plantcore, recording_fault).await
+}
+
+// The launch path admits stdin authentication before binding. Embedding the same transport in a
+// source fixture must not duplicate its connection handler, event pump or shutdown owner.
+async fn serve_authenticated(
+    attached: Attached,
+    listener: TcpListener,
+    auth_token: BearerToken,
+    plantcore: bool,
+    recording_fault: Option<crate::app_server::RecordingAppServerFault>,
+) -> Result<()> {
     let Attached {
         handle,
         task: server_task,
@@ -501,9 +516,6 @@ pub(crate) async fn serve(
         ..
     } = attached;
     let session_id = facts.session_id.0.clone();
-    let listener = TcpListener::bind(listen)
-        .await
-        .with_context(|| format!("bind headless App Server at {listen}"))?;
     let bound = listener.local_addr().context("read bound listen address")?;
     let service = crate::resident_service::ResidentService::bind(
         facts.session_id.clone(),
@@ -709,6 +721,17 @@ pub(crate) async fn serve(
         bail!("headless event pump stopped before transport shutdown");
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn serve_test_listener(
+    attached: Attached,
+    listener: TcpListener,
+    token: &str,
+) -> Result<()> {
+    validate_listen(listener.local_addr()?, false)?;
+    let auth_token: BearerToken = serde_json::from_value(json!(token))?;
+    serve_authenticated(attached, listener, auth_token, false, None).await
 }
 
 async fn send_rollout<W: AsyncWrite + Unpin>(
