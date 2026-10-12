@@ -115,6 +115,72 @@ fn authoritative_record_waits_for_a_transient_derivative_store_writer() {
 }
 
 #[test]
+fn graph_readers_wait_for_incomplete_derivative_publication() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("graph-reader-publication".into());
+    let source = put_private_content(
+        &dir,
+        &tenant,
+        &run,
+        Seq(1),
+        PrivateContentClass::Transcript,
+        PrivateContentRetention::Session,
+        b"actual record source",
+        0,
+    )
+    .unwrap();
+    let store = PrivateContentDerivativeStore::open_registered(
+        &dir,
+        tenant.clone(),
+        run.clone(),
+        PrivateContentNamespace::ToolArtifact,
+        PrivateContentClass::ToolOutput,
+        PrivateContentRetention::Session,
+        1024,
+    )
+    .unwrap();
+    let expected = vec![PrivateContentSource {
+        owner: run.clone(),
+        digest: source.digest,
+    }];
+    let artifact = store
+        .put_derived(Seq(2), b"actual derivative", &expected)
+        .unwrap();
+    let layout = Layout::new(&dir, &tenant);
+    let writer = lock_store(&layout).unwrap();
+    // atomic_replace_private writes a scratch member in the edge directory before rename.
+    // An in-progress member is not a committed reference and must never reach graph readers.
+    let scratch = layout
+        .run_reference_dir(&run)
+        .join(".core-session-cache-pending.tmp");
+    std::fs::write(&scratch, b"{").unwrap();
+    // Each synchronous read exhausts only the existing finite store acquisition window.
+    // A missing lease would instead parse the writer-owned scratch member as a reference.
+    let guarded = guard_private_content_for_run(&dir, &tenant, &run);
+    let inventoried = private_content_sources_for_run(&dir, &tenant, &run);
+    // Complete publication before asserting; no failure can strand the held writer.
+    std::fs::remove_file(scratch).unwrap();
+    drop(writer);
+    assert!(matches!(guarded, Err(ContentStoreError::Busy)));
+    assert!(matches!(inventoried, Err(ContentStoreError::Busy)));
+    assert_eq!(
+        guard_private_content_for_run(&dir, &tenant, &run).unwrap(),
+        1
+    );
+    assert_eq!(
+        private_content_sources_for_run(&dir, &tenant, &run).unwrap(),
+        expected
+    );
+    assert_eq!(
+        store.read_at(Seq(2), &artifact).unwrap(),
+        b"actual derivative"
+    );
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn retained_artifact_waits_for_store_lease_and_preserves_actual_source_lineage() {
     let dir = test_dir();
     let tenant = TenantId::default();

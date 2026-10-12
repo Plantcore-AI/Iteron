@@ -4,10 +4,13 @@ use super::model::{
     MAX_CONTENT_REFERENCES, MAX_REFERENCE_EDGE_BYTES, ReferenceEdge, STORE_VERSION,
 };
 use super::storage::{
-    Layout, crate_sync_dir, ensure_layout, load_bytes, lock_owner_shared, lock_store, read_limited,
-    remove_if_present,
+    Layout, crate_sync_dir, ensure_layout, load_bytes, lock_owner_shared, lock_store,
+    lock_store_shared, read_limited, remove_if_present,
 };
-use super::{ContentReferenceSurface, ContentStoreError, PrivateContentSource, lineage};
+use super::{
+    ContentReferenceSurface, ContentStoreError, PrivateContentSource, lineage,
+    lock_store_for_record,
+};
 use iteron_protocol::{ErasureContentDigest, RunId, Seq, TenantId};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -88,6 +91,9 @@ pub fn guard_private_content_for_run(
         return Ok(0);
     }
     ensure_layout(&layout)?;
+    // Mutable derivatives publish and prune these same edges under the exclusive store lease.
+    // Keep the bounded graph scan stable, including atomic scratch files and lineage reads.
+    let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     let _owner_lock = lock_owner_shared(&layout, run)?;
     let run_dir = layout.run_reference_dir(run);
     let entries = match std::fs::read_dir(&run_dir) {
@@ -168,6 +174,9 @@ pub fn private_content_sources_for_run(
     crate::validate_run_id(run).map_err(|_| ContentStoreError::Corrupt)?;
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
+    // Mutable derivatives publish and prune these same edges under the exclusive store lease.
+    // Keep the bounded graph scan stable, including atomic scratch files and lineage reads.
+    let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     let _owner_lock = lock_owner_shared(&layout, run)?;
     let run_dir = layout.run_reference_dir(run);
     let entries = match std::fs::read_dir(&run_dir) {
