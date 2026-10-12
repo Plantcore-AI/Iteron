@@ -895,7 +895,9 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
     );
     let live = reply(&mut reader, 204);
     assert_eq!(live["reply"]["type"], "agents_v1");
-    assert_eq!(live["reply"]["agents"][0]["queued_messages"], 1);
+    // Main admits its existing mailbox before dispatching the physical request. The
+    // provider's observed request is therefore a barrier for consuming this earlier message.
+    assert_eq!(live["reply"]["agents"][0]["queued_messages"], 0);
 
     let mut observer = connect(address);
     let mut greeting = hello(
@@ -916,7 +918,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         ),
     );
     let message = reply(&mut observed, 205);
-    assert_eq!(message["reply"]["message"]["state"]["type"], "accepted");
+    assert_eq!(message["reply"]["message"]["state"]["type"], "consumed");
     send(
         &mut observer,
         control(
