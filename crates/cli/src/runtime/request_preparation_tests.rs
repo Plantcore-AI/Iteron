@@ -106,6 +106,9 @@ fn config() -> RequestConfiguration {
 #[test]
 fn actual_projection_replaces_cached_secret_history_before_context_estimation_and_admission() {
     let (directory, mut agent, mut history) = fixture();
+    // This fixture observes projection and cache invalidation, without entering recovery. Its
+    // retained large history must fit the explicit bounded transcript allowance for admission.
+    agent.context_budget_policy.transcript_tokens = 1_000_000;
     let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
     history[1].content = vec![Block::Text {
         text: format!("historical api_key={secret}"),
@@ -135,10 +138,19 @@ fn actual_projection_replaces_cached_secret_history_before_context_estimation_an
         owner.baseline(),
         actual.total_tokens - actual.tool_tokens + owner.request().tools.estimated_tokens()
     );
+    assert!(
+        owner
+            .inspection()
+            .component_tokens(iteron_ctx::ContextBudgetClass::Transcript)
+            > 2_000,
+        "the shared recovery fixture's original allowance cannot admit this retained history"
+    );
     // The independently retained message count did not change, so old incremental estimates
     // would remain stale without the real projection invalidation above.
     owner.bind_route_budget(Some(1_000_000), 64).unwrap();
-    assert!(owner.validate().is_ok());
+    owner
+        .validate()
+        .expect("projected retained history fits the bounded fixture allowance");
     drop(owner);
     drop(agent);
     std::fs::remove_dir_all(directory).unwrap();

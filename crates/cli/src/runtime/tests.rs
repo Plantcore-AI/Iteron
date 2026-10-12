@@ -18576,6 +18576,9 @@ ant-api03-SuperSecretModelToken12345"
                     ..Budget::default()
                 },
             );
+            // Artifact manifests bind the actual writer workspace. Keep the first producer and
+            // cold host on this same physical fixture, rather than the constructor's `.` default.
+            original.workspace = ws.clone();
             record_test_genesis(&mut original, &ws);
             original
                 .record_model_selection(
