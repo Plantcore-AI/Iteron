@@ -41,11 +41,7 @@ fn observe(
 #[test]
 fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
     let provider = ToolProvider::spawn();
-    let mut scratch = Scratch::new(&provider.api_root);
-    // This native writer fixture supplies physical ancestors to both HOME cache writes and
-    // the rollout journal. macOS's /var temporary-directory alias is deliberately refused
-    // by the production descriptor walk rather than treated as a writable cache ancestor.
-    scratch.root = scratch.root.canonicalize().unwrap();
+    let scratch = Scratch::new(&provider.api_root);
     fs::write(scratch.repo().join("large-output.txt"), "small actual file").unwrap();
     let (child, token, address) = launch(&scratch, &scratch.repo(), 2, &[]);
     let mut connection = connect(address);
@@ -83,6 +79,10 @@ fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
             Instant::now() < deadline,
             "maintenance/answer journey timed out"
         );
+        reader
+            .get_mut()
+            .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+            .unwrap();
         let frame = receive(&mut reader);
         if frame["type"] == "advisory_maintenance_v1" {
             let event: MaintenanceEventV1 = serde_json::from_value(frame["event"].clone()).unwrap();

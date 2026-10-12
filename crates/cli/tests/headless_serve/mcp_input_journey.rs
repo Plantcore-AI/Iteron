@@ -187,6 +187,9 @@ fn actual_remote_mcp_form_can_be_answered_after_client_loss_without_value_retent
     let config_path = scratch.home().join(".iteron/config.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
     config["schema_version"] = json!(2);
+    // The admitted callback survives client loss, two reconnects and authenticated controls.
+    // This finite operator journey has a distinct ceiling from an ordinary one-shot reply.
+    config["max_wall_secs"] = json!(30);
     config["mcp_servers"] =
         json!([{"name":"forms","transport":"http","url":format!("http://{mcp_address}/mcp")}]);
     fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();

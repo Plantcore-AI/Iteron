@@ -74,13 +74,16 @@ impl Scratch {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("core-headless-serve-{}-{id}", std::process::id()));
-        let scratch = Self {
+        let mut scratch = Self {
             root,
             signed_pricing: false,
         };
         fs::create_dir_all(scratch.repo()).unwrap();
         fs::create_dir_all(scratch.home().join(".iteron")).unwrap();
         fs::create_dir_all(scratch.runs()).unwrap();
+        // Native writers and reopened sessions require physical ancestors. On macOS the
+        // temporary root can arrive through /var, which aliases /private/var.
+        scratch.root = scratch.root.canonicalize().unwrap();
         let config = json!({
             "provider": PROVIDER_ID,
             "model": MODEL_ID,
@@ -474,18 +477,27 @@ fn wait_for_listening(process: &mut CoreProcess) -> SocketAddr {
             );
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            terminate_after_readiness_failure(process);
+            let diagnostic = terminate_after_readiness_failure(process);
             panic!(
-                "headless stderr closed while waiting for app_server listening log with bound address"
+                "headless stderr closed while waiting for app_server listening log with bound address: {diagnostic}"
             );
         }
     }
 }
 
-fn terminate_after_readiness_failure(process: &mut CoreProcess) {
+fn terminate_after_readiness_failure(process: &mut CoreProcess) -> String {
     let _ = process.child.kill();
-    let _ = process.child.wait();
-    let _ = take_stderr(process);
+    let status = process.child.wait();
+    let stderr = take_stderr(process);
+    // Report finite static classes, never captured error text, arguments or bearer tokens.
+    let bounded = &stderr[..stderr.len().min(64 * 1024)];
+    let text = String::from_utf8_lossy(bounded);
+    format!(
+        "exit={status:?}, stderr_bytes={}, harness_error={}, stack_overflow={}",
+        stderr.len(),
+        text.lines().any(|line| line.starts_with("error: ")),
+        text.contains("stack overflow")
+    )
 }
 
 fn connect(address: SocketAddr) -> TcpStream {
@@ -527,6 +539,41 @@ fn receive_result_within_timeout(reader: &mut BufReader<TcpStream>) -> Value {
             return frame;
         }
     }
+}
+
+fn failed_request_terminal(reader: &mut BufReader<TcpStream>) -> (&'static str, Option<i64>) {
+    let deadline = Instant::now() + quiet_timeout();
+    let mut observed_bytes = 0usize;
+    for _ in 0..256 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+        let mut line = String::new();
+        if !matches!(reader.read_line(&mut line), Ok(count) if count > 0) {
+            break;
+        }
+        observed_bytes = observed_bytes.saturating_add(line.len());
+        if observed_bytes > 1024 * 1024 {
+            break;
+        }
+        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+            break;
+        };
+        if frame["type"] == "result" {
+            let outcome = match frame["result"]["outcome"].as_str() {
+                Some("done") => "done",
+                Some("budget_exhausted") => "budget_exhausted",
+                Some("interrupted") => "interrupted",
+                Some("stuck") => "stuck",
+                Some("harness_error") => "harness_error",
+                _ => "other_result",
+            };
+            return (outcome, frame["result"]["exit_code"].as_i64());
+        }
+    }
+    ("not_observed", None)
 }
 
 #[cfg(unix)]
@@ -749,6 +796,12 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
 
     let provider = PausedProvider::spawn_two_requests();
     let mut scratch = Scratch::new(&provider.api_root);
+    // The root's finite 10-second allocation starts after an actual priced parent turn and
+    // scoped controls. The parent journey must still have room to admit that allocation.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     priced_route::configure(&mut scratch);
     let (child, token, address) = spawn_core(&scratch);
     let mut connection = connect(address);
@@ -777,7 +830,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
             json!({"type":"agents_v1","command":{
                 "type":"enable","capabilities":["read_only"],
                 // Fund the conservative physical input bound, not eventual reported usage.
-                "budget":{"turns":1,"tokens":2000000,"cost_microusd":1000000,"wall_ms":1000},
+                "budget":{"turns":1,"tokens":2000000,"cost_microusd":1000000,"wall_ms":10000},
                 "max_agents":4,"max_pending_per_agent":8,"parallel":2,
             }}),
         ),
@@ -807,7 +860,12 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         &mut connection,
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"continue the parent while observing its controller"}}),
     );
-    provider.request_seen.recv_timeout(timeout()).unwrap();
+    if let Err(error) = provider.request_seen.recv_timeout(timeout()) {
+        // The actual terminal enum distinguishes a refused/exhausted turn from absent IO.
+        // Never print arbitrary frames or assistant content from this diagnostic path.
+        let terminal = failed_request_terminal(&mut reader);
+        panic!("second physical provider request not observed: {error:?}; terminal={terminal:?}");
+    }
     send(
         &mut connection,
         control(

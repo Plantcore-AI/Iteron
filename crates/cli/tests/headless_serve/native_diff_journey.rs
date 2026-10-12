@@ -99,6 +99,12 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
     ];
     let provider = ToolProvider::spawn_for_calls(calls, true);
     let scratch = Scratch::new(&provider.api_root);
+    // Four physical transactions retain complete snapshots, including two 300 KiB files.
+    // Give this artifact journey its own finite wall ceiling, matching its terminal wait.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     for (path, text) in [
         ("whole.txt", write_before.as_str()),
         ("edit.txt", edit_before),
@@ -127,7 +133,19 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,
         "op":{"op":"user_input","text":"Apply the specified complete file replacement, unique edit, two-file patch and creation."}}),
     );
-    let terminal = receive_result_within_timeout(&mut reader);
+    let deadline = Instant::now() + timeout().saturating_mul(3);
+    let terminal = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "native diff transactions did not settle"
+        );
+        reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+        let frame = receive(&mut reader);
+        if frame["type"] == "result" {
+            break frame;
+        }
+    };
     assert_eq!(terminal["result"]["outcome"], "done", "{terminal}");
     provider.finish();
     assert_eq!(
