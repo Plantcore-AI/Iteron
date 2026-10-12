@@ -1,7 +1,7 @@
 //! Actual Main/provider/controller/file WAL journeys across a cold fork and native reopen.
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, AgentIdV1, AgentStateV1, Arc, Ordering,
-    ProviderFixture, Workspace, until,
+    ProviderFixture, Workspace, until_resident_observed,
 };
 use crate::runtime::{Agent, KernelError, gate_integration_tests};
 use iteron_agents::AgentControllerConfig;
@@ -168,7 +168,10 @@ async fn cold_fork_reopens_same_controller_and_original_child_journal_without_re
     main.enable_persistent_agents(config(), 2).unwrap();
     let control = main.persistent_agents.clone().unwrap();
     let id = child(&control);
-    until(|| control.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(control.as_ref(), id, &provider, || {
+        control.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     assert_eq!(main.run("original Main task").await.unwrap(), Outcome::Done);
     let before = control.inspect(AgentActor::Operator, AgentIdV1(1)).unwrap();
     let child_before = control.inspect(AgentActor::Operator, id).unwrap();
@@ -226,7 +229,7 @@ async fn cold_fork_reopens_same_controller_and_original_child_journal_without_re
             },
         )
         .unwrap();
-    until(|| {
+    until_resident_observed(control.as_ref(), id, &provider, || {
         control.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle
             && control
                 .inspect(AgentActor::Operator, id)

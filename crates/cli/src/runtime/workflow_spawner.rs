@@ -895,6 +895,11 @@ impl KernelSpawner {
             sub.install_shared_provider_governor(child_provider_governor(cx)?)
                 .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         }
+        // Verified cold replay needs the already-held pricing authority when it validates the
+        // recorded projections. Installing it after replay cannot repair an unpriced ledger.
+        if let Some(port) = &cx.pricing_port {
+            sub.set_pricing_port(port.clone());
+        }
 
         // Fresh children configure policy before genesis. Existing child journals restore their
         // recorded policy through set_resume below; configuring a new initial policy after any
@@ -991,9 +996,6 @@ impl KernelSpawner {
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
         //     positive USD ceiling must be enforced. ---
-        if let Some(port) = &cx.pricing_port {
-            sub.set_pricing_port(port.clone());
-        }
         sub.record_model_selection(
             routed.identity.provider_id,
             routed.identity.model_id,

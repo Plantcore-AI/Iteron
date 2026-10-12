@@ -2,7 +2,7 @@
 use super::parent_turn::main_runtime;
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, Arc, ProviderFixture, Store, Workspace, budget,
-    resident_observation, setup, setup_with_store, until, until_observed,
+    setup, setup_with_store, until, until_resident_observed,
 };
 use crate::runtime::persistent_agents::AgentEngineRequest;
 use crate::runtime::persistent_native_generations::NativeGenerations;
@@ -91,10 +91,9 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
         )
         .unwrap()
         .agent_id;
-    until_observed(
-        || host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle,
-        || resident_observation(&host, first, &old),
-    )
+    until_resident_observed(&host, first, &old, || {
+        host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     let old_execution = committed_native_execution(&committed, first);
     let new_route = PricingRoute {
@@ -120,10 +119,9 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
         )
         .unwrap()
         .agent_id;
-    until_observed(
-        || host.inspect(AgentActor::Operator, second).unwrap().state == AgentStateV1::Idle,
-        || resident_observation(&host, second, &new),
-    )
+    until_resident_observed(&host, second, &new, || {
+        host.inspect(AgentActor::Operator, second).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     let new_execution = committed_native_execution(&committed, second);
     assert_ne!(old_execution.native_context, new_execution.native_context);
@@ -155,10 +153,9 @@ async fn actual_model_switch_mints_new_spawn_binding_and_old_resident_retains_tr
         },
     )
     .unwrap();
-    until_observed(
-        || host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle,
-        || resident_observation(&host, first, &old),
-    )
+    until_resident_observed(&host, first, &old, || {
+        host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     assert_eq!(old_child.lock().await.model, old_route.model_id);
     // The real exact WAL reference reconstructs an earlier context only through a held native

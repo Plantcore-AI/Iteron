@@ -552,8 +552,16 @@ async fn until(predicate: impl Fn() -> bool) {
 }
 
 async fn until_observed(predicate: impl Fn() -> bool, observation: impl Fn() -> String) {
-    let result = tokio::time::timeout(Duration::from_secs(5), async {
-        for _ in 0..2_500 {
+    until_observed_for(Duration::from_secs(5), predicate, observation).await;
+}
+
+async fn until_observed_for(
+    timeout: Duration,
+    predicate: impl Fn() -> bool,
+    observation: impl Fn() -> String,
+) {
+    let result = tokio::time::timeout(timeout, async {
+        for _ in 0..timeout.as_millis().div_ceil(2) {
             if predicate() {
                 return true;
             }
@@ -569,12 +577,30 @@ async fn until_observed(predicate: impl Fn() -> bool, observation: impl Fn() -> 
     );
 }
 
+async fn until_resident_observed(
+    control: &dyn AgentControlPort,
+    id: AgentIdV1,
+    provider: &ProviderFixture,
+    predicate: impl Fn() -> bool,
+) {
+    let view = control.inspect(AgentActor::Operator, id).unwrap();
+    // The native debug fixture can still be running at five seconds within its admitted wall
+    // budget. Observe the unchanged remaining lifetime plus finite terminal persistence time;
+    // this allowance cannot refill or extend the actual resident/controller deadline.
+    let remaining = view.budget.wall_ms.saturating_sub(view.usage.wall_ms);
+    let timeout = Duration::from_millis(remaining.min(30_000) + 5_000);
+    until_observed_for(timeout, predicate, || {
+        resident_observation(control, id, provider)
+    })
+    .await;
+}
+
 fn resident_observation(
-    host: &PersistentAgentHost<Store>,
+    host: &dyn AgentControlPort,
     id: AgentIdV1,
     provider: &ProviderFixture,
 ) -> String {
-    // Only called when the existing five-second predicate fails. Keep actual durable refusal
+    // Only called when a bounded predicate fails. Keep actual durable refusal
     // and physical fixture counters together; no guessed cause or successful settlement.
     format!(
         "agent={:?}; physical_requests={}; prepared_requests={}; tool_starts={}",

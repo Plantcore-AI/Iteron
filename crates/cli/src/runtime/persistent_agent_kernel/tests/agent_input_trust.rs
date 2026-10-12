@@ -2,7 +2,7 @@
 //! lower governing trust independently of the permission bypass and never become operator text.
 use super::{
     AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Workspace,
-    resident_observation, setup, spawn, until, until_observed,
+    resident_observation, setup, spawn, until, until_observed, until_resident_observed,
 };
 use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::agent_control::{AgentIdV1, AgentMessageStateV1};
@@ -15,7 +15,10 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
     let provider = Arc::new(ProviderFixture::default());
     let (host, runtime, _, _keepalive) = setup(&workspace, provider.clone(), false);
     let child = spawn(&host, "operator task");
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     let from_agent = host
         .command(
             AgentActor::Agent(AgentIdV1(1)),
@@ -37,13 +40,10 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         },
     )
     .unwrap();
-    until_observed(
-        || {
-            provider.requests.load(Ordering::SeqCst) == 2
-                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        provider.requests.load(Ordering::SeqCst) == 2
+            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     let resident = runtime
         .residents
@@ -104,13 +104,10 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         },
     )
     .unwrap();
-    until_observed(
-        || {
-            provider.requests.load(Ordering::SeqCst) == 3
-                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        provider.requests.load(Ordering::SeqCst) == 3
+            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     let reopened = runtime
         .residents

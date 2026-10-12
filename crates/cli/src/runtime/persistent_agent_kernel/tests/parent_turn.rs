@@ -2,7 +2,7 @@
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, AgentIdV1, AgentStateV1, Arc, Block,
     KernelPersistentRuntime, Ordering, ProviderFixture, Store, Workspace, resident_observation,
-    setup, setup_with_store, spawn, until, until_observed,
+    setup, setup_with_store, spawn, until, until_observed, until_resident_observed,
 };
 use crate::runtime::Agent;
 use iteron_protocol::{EventKind, Outcome};
@@ -56,7 +56,10 @@ async fn actual_main_and_child_exchange_consumed_inputs_without_a_second_root_re
     let (host, runtime, _, control) = setup(&workspace, provider.clone(), false);
     let mut main = main_runtime(&runtime, control);
     let child = spawn(&host, "child first task");
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     let from_child = host
         .command(
             AgentActor::Agent(child),
@@ -139,15 +142,12 @@ async fn actual_main_and_child_exchange_consumed_inputs_without_a_second_root_re
         },
     )
     .unwrap();
-    until_observed(
-        || {
-            matches!(
-                host.message(AgentActor::Operator, to_child).unwrap().state,
-                iteron_protocol::agent_control::AgentMessageStateV1::Consumed { .. }
-            ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        matches!(
+            host.message(AgentActor::Operator, to_child).unwrap().state,
+            iteron_protocol::agent_control::AgentMessageStateV1::Consumed { .. }
+        ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     assert!(
         provider
