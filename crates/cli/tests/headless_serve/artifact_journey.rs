@@ -65,12 +65,17 @@ struct ToolProvider {
 
 impl ToolProvider {
     fn spawn() -> Self {
-        Self::spawn_for_calls(
+        Self::spawn_with_wait(timeout())
+    }
+
+    fn spawn_with_wait(wait: Duration) -> Self {
+        Self::spawn_for_calls_with_wait(
             vec![json!({
                 "index":0,"id":"artifact-large-read","type":"function",
                 "function":{"name":"read_file","arguments":json!({"path":"large-output.txt"}).to_string()}
             })],
             true,
+            wait,
         )
     }
 
@@ -200,8 +205,15 @@ fn artifact_read(
 
 #[test]
 fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_cli_erasure() {
-    let provider = ToolProvider::spawn();
+    let wait = timeout().saturating_mul(3);
+    let provider = ToolProvider::spawn_with_wait(wait);
     let scratch = Scratch::new(&provider.api_root);
+    // Complete retained bytes and journal fsync span two physical provider requests.
+    // Keep provider admission, runtime and terminal observation on one finite window.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
     let mut lines = (0..280)
         .map(|index| {
@@ -249,7 +261,19 @@ fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,
         "op":{"op":"user_input","text":"read the complete large-output.txt native window"}}),
     );
-    let terminal = receive_result_within_timeout(&mut reader);
+    let deadline = Instant::now() + wait;
+    let terminal = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "complete native output did not reach a terminal result"
+        );
+        reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+        let frame = receive(&mut reader);
+        if frame["type"] == "result" {
+            break frame;
+        }
+    };
     assert_eq!(terminal["result"]["outcome"], "done", "{terminal}");
     provider.finish();
     let listing = artifact_list(&mut connection, &mut reader, &thread_id, 301);

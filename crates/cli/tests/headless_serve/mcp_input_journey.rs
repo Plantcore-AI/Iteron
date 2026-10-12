@@ -19,6 +19,9 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // Darwin inherits O_NONBLOCK from the polled listener. These fixture
+                // requests use blocking HTTP reads with a separate absolute deadline.
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(io_timeout())).unwrap();
                 stream.set_write_timeout(Some(io_timeout())).unwrap();
                 return stream;
@@ -34,12 +37,20 @@ fn accept(listener: &TcpListener) -> TcpStream {
 fn request(stream: &mut TcpStream) -> Value {
     let mut data = Vec::new();
     let mut chunk = [0_u8; 4096];
-    let deadline = Instant::now() + timeout();
+    let started = Instant::now();
+    let deadline = started + timeout();
     loop {
         stream
             .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
             .unwrap();
-        let read = stream.read(&mut chunk).unwrap();
+        let read = stream.read(&mut chunk).unwrap_or_else(|error| {
+            panic!(
+                "fixture HTTP request read failed: kind={:?}, elapsed={:?}, received_bytes={}",
+                error.kind(),
+                started.elapsed(),
+                data.len()
+            )
+        });
         assert!(read > 0);
         data.extend_from_slice(&chunk[..read]);
         assert!(data.len() <= 1024 * 1024);
