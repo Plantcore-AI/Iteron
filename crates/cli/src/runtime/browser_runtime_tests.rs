@@ -431,6 +431,9 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
         agent.bypass_permissions = true;
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         agent.ui_tx = Some(tx);
+        // Public artifact retention requires the real session's genesis workspace metadata.
+        // The physical tool result alone cannot supply that authority for image projection.
+        super::gate_integration_tests::record_test_genesis(&mut agent, &workspace);
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(30),

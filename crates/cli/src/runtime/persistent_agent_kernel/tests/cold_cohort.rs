@@ -115,6 +115,9 @@ pub(super) fn make_main(
             route.capability_digest,
         )
         .unwrap();
+    // A fresh selected-route epoch clears the prior card, including on cold reopen. Bind the
+    // fixture's signed zero-rate evidence before its finite USD owner admits a physical call.
+    assert!(agent.bind_selected_rate_card().unwrap());
     agent
 }
 fn child(control: &Arc<dyn AgentControlPort>) -> AgentIdV1 {
