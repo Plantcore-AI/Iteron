@@ -41,7 +41,11 @@ fn observe(
 #[test]
 fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
     let provider = ToolProvider::spawn();
-    let scratch = Scratch::new(&provider.api_root);
+    let mut scratch = Scratch::new(&provider.api_root);
+    // This native writer fixture supplies physical ancestors to both HOME cache writes and
+    // the rollout journal. macOS's /var temporary-directory alias is deliberately refused
+    // by the production descriptor walk rather than treated as a writable cache ancestor.
+    scratch.root = scratch.root.canonicalize().unwrap();
     fs::write(scratch.repo().join("large-output.txt"), "small actual file").unwrap();
     let (child, token, address) = launch(&scratch, &scratch.repo(), 2, &[]);
     let mut connection = connect(address);
@@ -92,10 +96,11 @@ fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
         }
     }
     let mut request = 803;
+    let mut last_observed = Value::Null;
     let actual = loop {
         assert!(
             Instant::now() < deadline,
-            "real optional journal jobs did not settle"
+            "real optional journal jobs did not settle: {last_observed}"
         );
         let reply = observe(
             &mut connection,
@@ -127,6 +132,7 @@ fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
                 break event;
             }
         }
+        last_observed = reply;
         thread::sleep(Duration::from_millis(20));
     };
     assert!(
