@@ -226,6 +226,7 @@ async fn terminal_refusal_preserves_stop_and_committed_terminal_preserves_inheri
             .iter()
             .any(|event| matches!(event.kind, EventKind::Done { .. }))
     );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 
@@ -244,6 +245,7 @@ async fn terminal_refusal_preserves_stop_and_committed_terminal_preserves_inheri
             .iter()
             .any(|event| matches!(&event.kind,EventKind::Done {outcome} if outcome=="Interrupted"))
     );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -901,7 +901,7 @@ async fn finite_zero_cost_requires_verified_zero_price_before_provider_io() {
 async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turns_settle() {
     let root = Workspace::new();
     let provider = Arc::new(ProviderFixture::default());
-    let (host, runtime, _, _keepalive) = setup(&root, provider, true);
+    let (host, runtime, _, _keepalive) = setup(&root, provider.clone(), true);
     let child = spawn(&host, "seed lifetime context");
     until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
     let resident = runtime
@@ -913,6 +913,16 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
         .clone();
     let original = resident.lock().await.budget.clone();
     for (node, task, turns) in [(1, "one request node", 1), (2, "block-tool", 2)] {
+        let view = host.inspect(AgentActor::Operator, child).unwrap();
+        let node_wall_ms = view
+            .budget
+            .wall_ms
+            .saturating_sub(view.usage.wall_ms)
+            .min(5_000);
+        assert!(
+            node_wall_ms > 0,
+            "resident fixture exhausted its lifetime: {view:?}"
+        );
         let scheduled = iteron_workflow::live_scheduler::ScheduledTaskV1 {
             workflow_id: "resident-workflow".into(),
             node_id: node,
@@ -924,18 +934,22 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
                 max_turns: turns,
                 max_tokens: 500_000,
                 max_cost_microusd: 50_000,
-                max_wall_ms: 5_000,
+                max_wall_ms: node_wall_ms,
             },
             deadline_unix_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64
-                + 5_000,
+                + node_wall_ms,
         };
         host.workflow_port()
             .dispatch(scheduled.clone())
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("node {node} refused: {error:?}; resident={view:?}"));
+        if node == 2 {
+            until(|| provider.tool_started.load(Ordering::SeqCst) == 1).await;
+            provider.tool_release.notify_one();
+        }
         until(|| host.workflow_completion(&scheduled).unwrap().is_some()).await;
         let completion = host.workflow_completion(&scheduled).unwrap().unwrap();
         assert!(completion.effects_known);
