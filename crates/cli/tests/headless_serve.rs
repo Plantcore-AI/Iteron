@@ -551,7 +551,9 @@ fn failed_request_terminal(reader: &mut BufReader<TcpStream>) -> (&'static str, 
         }
         reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
         let mut line = String::new();
-        if !matches!(reader.read_line(&mut line), Ok(count) if count > 0) {
+        let remaining_bytes = 1024 * 1024 - observed_bytes;
+        if !matches!((&mut *reader).take((remaining_bytes + 1) as u64).read_line(&mut line), Ok(count) if count > 0)
+        {
             break;
         }
         observed_bytes = observed_bytes.saturating_add(line.len());
