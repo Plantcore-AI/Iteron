@@ -503,6 +503,7 @@ fn send(stream: &mut TcpStream, value: Value) {
     stream.flush().unwrap();
 }
 
+#[track_caller]
 fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     let mut line = String::new();
     reader.read_line(&mut line).expect("read server frame");
