@@ -190,6 +190,10 @@ impl PausedProvider {
         Self::spawn_bounded(chunks, respond, 1)
     }
 
+    fn spawn_two_requests() -> Self {
+        Self::spawn_bounded(1, true, 2)
+    }
+
     fn spawn_bounded(chunks: usize, respond: bool, requests: usize) -> Self {
         assert!((1..=2).contains(&requests));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
