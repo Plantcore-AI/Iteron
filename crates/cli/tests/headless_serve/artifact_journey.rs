@@ -37,7 +37,13 @@ fn accept_before_deadline(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + timeout();
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                // Darwin inherits the listener's O_NONBLOCK on accepted sockets. The fixture
+                // owns ordinary blocking HTTP I/O, with finite read/write deadlines below.
+                stream.set_nonblocking(false).unwrap();
+                stream.set_write_timeout(Some(timeout())).unwrap();
+                return stream;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     Instant::now() < deadline,
