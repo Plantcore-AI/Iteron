@@ -1624,6 +1624,12 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     // test-only capacity override.
     let provider = PausedProvider::spawn_with_chunks(320);
     let scratch = Scratch::new(&provider.api_root);
+    // This one admitted synthetic turn must have the same finite 30-second wall ceiling as the
+    // existing aggregate flood observation. Ordinary control fixtures retain their 10-second cap.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     let (child, token, address) = spawn_core(&scratch);
 
     let mut client = connect(address);
@@ -1696,6 +1702,27 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert_eq!(durable["protocol_version"], PROTOCOL_VERSION);
     assert!(durable["rollout_seq"].as_u64().is_some());
     assert!(durable["event"].is_object());
+    let terminal = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "the bounded replay flood did not publish its actual successful terminal"
+        );
+        fallback_reader
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .unwrap();
+        let frame = receive(&mut fallback_reader);
+        if frame["type"] == "result" {
+            break frame;
+        }
+    };
+    assert_eq!(terminal["result"]["outcome"], "done", "{terminal}");
+    assert_eq!(terminal["result"]["exit_code"], 0);
+    assert_eq!(
+        terminal["result"]["assistant_text"],
+        "bounded replay flood complete"
+    );
     provider.finish();
 
     let stderr = stop(child);
