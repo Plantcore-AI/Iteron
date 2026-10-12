@@ -97,12 +97,19 @@ pub(crate) fn admit(
             .into_iter()
             .map(|scoped| scoped.event)
             .collect::<Vec<_>>();
+        // A fork-expanded stream has a legitimate seq-1 checkpoint in every physical run.
+        // Admit the selected run's checkpoint under its retained writer lock; ancestors still
+        // participate in the verified transcript and route reconstruction above and below.
         resumed_tunables_checkpoint = Some(
-            iteron_record::tunables_checkpoint_from_events(&recorded)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot resume {resume}: rollout has no immutable tunables checkpoint"
-                )
-            })?,
+            locked_resume
+                .as_ref()
+                .expect("resume admission retains the selected rollout writer")
+                .tunables_checkpoint()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot resume {resume}: rollout has no immutable tunables checkpoint"
+                    )
+                })?,
         );
         let recorded_agent_definition_tag = recorded.iter().find_map(|event| match &event.kind {
             iteron_protocol::EventKind::RunStart {

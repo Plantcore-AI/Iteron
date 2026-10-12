@@ -350,6 +350,8 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
         iteron_record::Rollout::open_existing(&scratch.runs(), &forked.run_id, TenantId::default())
             .unwrap();
     drop(reopened);
+    // Cold startup must admit the selected physical checkpoint while preserving the verified
+    // parent transcript; the fork-expanded stream legitimately contains both genesis prefixes.
     let (mut restarted, token, address) = launch(
         &scratch,
         &scratch.repo(),
