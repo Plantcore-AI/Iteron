@@ -12445,9 +12445,9 @@ ant-api03-SuperSecretModelToken12345"
             "tool-free-answer-phase",
             std::sync::Arc::new(ScriptedDone),
         );
-        let first_turn = agent.current_turn_id();
+        let first_sequence = agent.rollout.next_sequence();
         let predispatch = agent.terminal_diagnostic_snapshot(
-            first_turn,
+            first_sequence,
             &Err(KernelError::UnknownEffects { count: 1 }),
         );
         assert_eq!(
@@ -12465,7 +12465,7 @@ ant-api03-SuperSecretModelToken12345"
                 .unwrap(),
             Outcome::Done
         );
-        let settled = agent.terminal_diagnostic_snapshot(first_turn, &Ok(Outcome::Done));
+        let settled = agent.terminal_diagnostic_snapshot(first_sequence, &Ok(Outcome::Done));
         assert_eq!(settled.failure_code, None);
         assert_eq!(
             settled.effect_state,
@@ -12473,10 +12473,18 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(
             agent
-                .terminal_diagnostic_snapshot(first_turn, &Ok(Outcome::HarnessError))
+                .terminal_diagnostic_snapshot(first_sequence, &Ok(Outcome::HarnessError))
                 .failure_code,
             Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure)
         );
+        // A new Product Turn refused before its kernel turn advances cannot inherit the
+        // previous turn's settled provider intent or its physical accounting evidence.
+        let refused = agent.terminal_diagnostic_snapshot(
+            agent.rollout.next_sequence(),
+            &Err(KernelError::InvalidRoute("physical bound unavailable")),
+        );
+        assert_eq!(refused.failure_code, Some(iteron_protocol::PolicyHarnessErrorCode::RouteError));
+        assert_eq!(refused.effect_state, iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched);
         let phases = iteron_record::replay(agent.rollout.path())
             .unwrap()
             .into_iter()
@@ -21178,13 +21186,13 @@ ant-api03-SuperSecretModelToken12345"
         live.workspace = ws.clone();
         live.permission_mode = PermissionMode::AcceptEdits;
         record_test_genesis(&mut live, &ws);
-        let first_turn = live.current_turn_id();
+        let first_sequence = live.rollout.next_sequence();
         let uncertain = live.run("exercise uncertain effect").await;
         assert!(matches!(
             uncertain,
             Err(KernelError::UnknownEffects { count: 1 })
         ));
-        let terminal = live.terminal_diagnostic_snapshot(first_turn, &uncertain);
+        let terminal = live.terminal_diagnostic_snapshot(first_sequence, &uncertain);
         assert_eq!(
             terminal.failure_code,
             Some(iteron_protocol::PolicyHarnessErrorCode::EffectUnknown)

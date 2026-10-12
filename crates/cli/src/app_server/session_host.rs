@@ -598,6 +598,7 @@ impl AppServer {
                 .transition(SessionLifecycleState::Running)
                 .expect("only an idle session admits a turn");
             let live_turn_id = agent.current_turn_id();
+            let first_effect_sequence = agent.rollout.next_sequence();
             events.begin_contract_turn(agent.rollout.run_id().clone(), turn_submission_id);
             agent.set_active_product_turn_id(Some(
                 iteron_protocol::product_contract::ProductTurnId(events.next_product_turn),
@@ -806,7 +807,7 @@ impl AppServer {
             .await;
             forward_runtime_notifications(&mut snapshot, &mut pending_runtime);
             let terminal_evidence =
-                Some(agent.terminal_diagnostic_snapshot(live_turn_id, &completion));
+                Some(agent.terminal_diagnostic_snapshot(first_effect_sequence, &completion));
             let (outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
