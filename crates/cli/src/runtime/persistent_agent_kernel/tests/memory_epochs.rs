@@ -1,7 +1,7 @@
 //! Actual resident Agent, durable controller epoch and current isolated-memory prefix.
 use super::{
     AgentActor, AgentCommandV1, AgentStateV1, Arc, Ordering, ProviderFixture, Store, Workspace,
-    setup_with_financial_and_memory, spawn, until,
+    setup_with_financial_and_memory, spawn, until_resident_observed,
 };
 use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_ctx::{
@@ -27,7 +27,10 @@ async fn current_memory_after_next_epoch(delete: bool) {
         Some(memory_workspace.clone()),
     );
     let child = spawn(&host, "look up quartz_resident_memory calibration");
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     assert!(provider.systems.lock().unwrap()[0].contains(body));
     let first_view = host.inspect(AgentActor::Operator, child).unwrap();
     let resident = runtime
@@ -65,7 +68,7 @@ async fn current_memory_after_next_epoch(delete: bool) {
         },
     )
     .unwrap();
-    until(|| {
+    until_resident_observed(&host, child, &provider, || {
         provider.requests.load(Ordering::SeqCst) == 2
             && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
     })

@@ -2,7 +2,7 @@
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, AgentIdV1, AgentStateV1, Arc, Block,
     KernelPersistentRuntime, Ordering, ProviderFixture, Store, Workspace, resident_observation,
-    setup, setup_with_store, spawn, until, until_observed, until_resident_observed,
+    setup, setup_with_store, spawn, until_observed, until_resident_observed,
 };
 use crate::runtime::Agent;
 use iteron_protocol::{EventKind, Outcome};
@@ -379,7 +379,7 @@ async fn actual_engine_profile_preserves_effort_parent_and_native_cost_attributi
             },
         )
         .unwrap();
-    until(|| {
+    until_resident_observed(&host, admitted.claim.assigned_agent, &provider, || {
         host.engine_child_completion(&admitted.claim)
             .unwrap()
             .is_some()

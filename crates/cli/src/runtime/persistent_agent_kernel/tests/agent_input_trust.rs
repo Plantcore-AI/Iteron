@@ -173,15 +173,12 @@ async fn agent_steer_crosses_live_child_inbox_with_source_intent_before_its_mess
     )
     .await;
     provider.tool_release.notify_one();
-    until_observed(
-        || {
-            matches!(
-                host.message(AgentActor::Operator, steer).unwrap().state,
-                AgentMessageStateV1::Consumed { .. }
-            ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        matches!(
+            host.message(AgentActor::Operator, steer).unwrap().state,
+            AgentMessageStateV1::Consumed { .. }
+        ) && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     let resident = runtime
         .residents

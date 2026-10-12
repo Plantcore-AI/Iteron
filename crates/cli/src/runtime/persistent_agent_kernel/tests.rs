@@ -702,7 +702,10 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
     let provider = Arc::new(ProviderFixture::default());
     let (host, runtime, _, _keepalive) = setup(&root, provider.clone(), false);
     let child = spawn(&host, "first remembered context");
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
     let resident = runtime
         .residents
@@ -750,13 +753,10 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
         },
     )
     .unwrap();
-    until_observed(
-        || {
-            provider.requests.load(Ordering::SeqCst) == 2
-                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        provider.requests.load(Ordering::SeqCst) == 2
+            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
     assert_eq!(runtime.residents.lock().unwrap().len(), 1);
     {
@@ -830,13 +830,10 @@ async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
         },
     )
     .unwrap();
-    until_observed(
-        || {
-            provider.requests.load(Ordering::SeqCst) >= 2
-                && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
-        },
-        || resident_observation(&host, child, &provider),
-    )
+    until_resident_observed(&host, child, &provider, || {
+        provider.requests.load(Ordering::SeqCst) >= 2
+            && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
     .await;
 }
 
@@ -906,8 +903,10 @@ async fn finite_zero_cost_requires_verified_zero_price_before_provider_io() {
             )
             .unwrap()
             .agent_id;
-        until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle)
-            .await;
+        until_resident_observed(&host, child, &provider, || {
+            host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+        })
+        .await;
         assert_eq!(
             provider.requests.load(Ordering::SeqCst),
             usize::from(priced)
@@ -954,7 +953,10 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
         )
         .unwrap()
         .agent_id;
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     let resident = runtime
         .residents
         .lock()
@@ -1160,7 +1162,10 @@ async fn actual_resident_stream_is_shared_before_terminal_and_bound_to_physical_
             .contains("next partial")
     );
     provider.partial_release.notify_one();
-    until(|| port.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(port.as_ref(), id, &provider, || {
+        port.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     assert!(
         port.inspect(AgentActor::Operator, id)
             .unwrap()
@@ -1179,7 +1184,10 @@ async fn actual_child_false_test_claim_gets_host_correction_without_running_veri
     });
     let (host, runtime, _, _port) = setup(&root, provider.clone(), false);
     let id = spawn(&host, "report results");
-    until(|| host.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, id, &provider, || {
+        host.inspect(AgentActor::Operator, id).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     let resident = runtime.residents.lock().unwrap().get(&id).unwrap().clone();
     let child = resident.lock().await;
     let evidence = child

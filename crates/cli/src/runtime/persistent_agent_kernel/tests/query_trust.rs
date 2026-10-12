@@ -1,7 +1,7 @@
 //! Real registered controller query results retain the agent-authored payload trust floor.
 use super::{
     AgentActor, AgentCommandV1, AgentIdV1, AgentStateV1, Arc, ProviderFixture, Workspace,
-    register_agent_tools, setup, spawn, until,
+    register_agent_tools, setup, spawn, until_resident_observed,
 };
 use crate::runtime::persistent_agents::AgentControlPort;
 use iteron_protocol::{ToolUse, Trust};
@@ -12,7 +12,10 @@ async fn real_registered_queries_keep_summary_and_sibling_body_untrusted_but_ack
     let provider = Arc::new(ProviderFixture::default());
     let (host, _runtime, _, port) = setup(&workspace, provider.clone(), false);
     let child = spawn(&host, "bounded query trust fixture");
-    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, child, &provider, || {
+        host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     assert_eq!(
         host.inspect(AgentActor::Operator, child)
             .unwrap()

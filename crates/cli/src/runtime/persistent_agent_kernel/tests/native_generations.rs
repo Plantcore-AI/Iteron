@@ -2,7 +2,7 @@
 use super::parent_turn::main_runtime;
 use super::{
     AgentActor, AgentCommandV1, AgentControlPort, Arc, ProviderFixture, Store, Workspace, budget,
-    setup, setup_with_store, until, until_resident_observed,
+    setup, setup_with_store, until_resident_observed,
 };
 use crate::runtime::persistent_agents::AgentEngineRequest;
 use crate::runtime::persistent_native_generations::NativeGenerations;
@@ -317,7 +317,10 @@ async fn actual_nested_bare_spawn_inherits_resident_model_rules_and_exact_child_
         )
         .unwrap()
         .agent_id;
-    until(|| host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle).await;
+    until_resident_observed(&host, first, &current, || {
+        host.inspect(AgentActor::Operator, first).unwrap().state == AgentStateV1::Idle
+    })
+    .await;
     let parent = runtime
         .residents
         .lock()
@@ -352,7 +355,7 @@ async fn actual_nested_bare_spawn_inherits_resident_model_rules_and_exact_child_
         .command(AgentActor::Agent(first), "actual-grandchild", nested)
         .unwrap()
         .agent_id;
-    until(|| {
+    until_resident_observed(&host, grandchild, &current, || {
         host.inspect(AgentActor::Operator, grandchild)
             .unwrap()
             .state
