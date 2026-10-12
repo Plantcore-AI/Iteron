@@ -704,7 +704,8 @@ mod tests {
             .await
         });
         tokio::time::timeout(Duration::from_secs(3), async {
-            while !root.join("marker").exists() {
+            // Redirection creates the file before printf writes; cancel only after its effect.
+            while !std::fs::read(root.join("marker")).is_ok_and(|bytes| bytes == b"actual") {
                 tokio::task::yield_now().await;
             }
         })

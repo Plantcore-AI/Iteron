@@ -187,7 +187,8 @@ async fn lost_observer_keeps_actual_sq_and_adoption_exclusions_until_native_canc
     let (cancel, cancelled) = watch::channel(false);
     let reply = fixture.start("printf started > marker; exec sleep 30", Some(cancelled));
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while !fixture.root.join("marker").exists() {
+        // Redirection creates the file before printf writes; cancel only after its effect.
+        while !std::fs::read(fixture.root.join("marker")).is_ok_and(|bytes| bytes == b"started") {
             tokio::task::yield_now().await;
         }
     })
