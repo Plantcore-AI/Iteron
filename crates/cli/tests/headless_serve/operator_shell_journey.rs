@@ -81,7 +81,7 @@ fn actual_operator_shell_uses_host_scope_and_current_mode_without_a_model_turn()
             shell(&run, "printf forbidden > observer-denied"),
         ),
     );
-    assert_eq!(matching_control(&mut observed, 1184)["type"], "refused");
+    super::native_host_control::observer_authority_denied(&mut observed);
     assert!(!scratch.repo().join("observer-denied").exists());
     drop(observer);
     drop(connection);

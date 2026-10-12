@@ -86,7 +86,7 @@ fn native_workspace_simulation_is_scoped_bounded_redacted_and_operator_only() {
         &mut observer,
         control(1414, PROTOCOL_VERSION, command(&run, "request.json")),
     );
-    assert_eq!(matching_control(&mut observed, 1414)["type"], "refused");
+    super::native_host_control::observer_authority_denied(&mut observed);
     drop(connection);
     drop(observer);
     let _ = stop(process);

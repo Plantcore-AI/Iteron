@@ -99,7 +99,7 @@ fn native_project_init_is_scoped_create_only_and_refused_to_observers_and_plan()
         &mut observer,
         control(1216, PROTOCOL_VERSION, command(&run)),
     );
-    assert_eq!(matching_control(&mut observed, 1216)["type"], "refused");
+    super::native_host_control::observer_authority_denied(&mut observed);
     drop(connection);
     drop(observer);
     let _ = stop(process);

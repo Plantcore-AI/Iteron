@@ -167,7 +167,7 @@ fn native_lab_request_list_and_comparison_share_scope_policy_and_exact_signed_so
             command(&run, json!({"type":"list"})),
         ),
     );
-    assert_eq!(matching_control(&mut observed, 1460)["type"], "refused");
+    super::native_host_control::observer_authority_denied(&mut observed);
     drop(connection);
     drop(observer);
     let _ = stop(process);

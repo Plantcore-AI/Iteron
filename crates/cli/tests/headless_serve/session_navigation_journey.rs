@@ -174,13 +174,7 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
             json!({"type":"session_navigate_v1","command":{"action":"new","thread_id":thread,"run_id":origin}}),
         ),
     );
-    let denied = (0..256)
-        .find_map(|_| {
-            let value = receive(&mut observed);
-            (value["type"] == "error").then_some(value)
-        })
-        .expect("bounded observer replay reaches authority refusal");
-    assert_eq!(denied["code"], "observer_authority");
+    super::super::native_host_control::observer_authority_denied(&mut observed);
     assert_eq!(run_count(&scratch.runs()), before);
 
     let created = confirmed(
@@ -288,7 +282,7 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
                 export(&forked.run_id.0, "observer-export.md", "refuse"),
             ),
         );
-        assert_eq!(matching_control(&mut observed, 908)["type"], "refused");
+        super::super::native_host_control::observer_authority_denied(&mut observed);
         assert!(!scratch.repo().join("observer-export.md").exists());
         send(
             &mut connection,
