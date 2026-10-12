@@ -44,7 +44,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ratatui = { workspace = true }
-crossterm = { workspace = true }
+# Attach consumes its bearer on stdin before polling the controlling terminal. Select the
+# existing Unix poll backend rather than requiring Mio registration of the /dev/tty handle.
+crossterm = { workspace = true, features = ["use-dev-tty"] }
 futures-util = { workspace = true }
 async-trait = "0.1"
 url = "2"
