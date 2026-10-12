@@ -17,6 +17,7 @@ parser.add_argument(
         "issuer-mismatch",
         "resource-mismatch",
         "scope-escalation",
+        "callback-timeout",
         "scope-missing",
         "discovered-scope-rejected-once",
         "refresh-required",
@@ -127,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         elif url.path == "/authorize":
+            if MODE == "callback-timeout":
+                self.send_json(200, {"authorization": "pending"})
+                return
             global AUTHORIZATION_ATTEMPTS
             AUTHORIZATION_ATTEMPTS += 1
             query = urllib.parse.parse_qs(url.query)

@@ -806,9 +806,18 @@ fn oauth_login_reports_when_authentication_is_not_required() {
 
 #[test]
 fn oauth_scope_escalation_and_callback_timeout_fail_without_storing_credentials() {
-    for (mode, callback_timeout) in [("scope-escalation", None), ("success", Some("50"))] {
+    struct FixtureOwner(std::process::Child);
+    impl Drop for FixtureOwner {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    for (mode, callback_timeout) in [("scope-escalation", None), ("callback-timeout", Some("50"))] {
         let config = temp_config(mode);
-        let (mut fixture, resource) = start_oauth_fixture(mode);
+        let (fixture, resource) = start_oauth_fixture(mode);
+        let mut fixture = FixtureOwner(fixture);
         assert_success(&run(
             &config,
             &["mcp", "add", "oauth", "--url", &resource],
@@ -821,7 +830,10 @@ fn oauth_scope_escalation_and_callback_timeout_fail_without_storing_credentials(
             assert_eq!(status, 302);
             assert_eq!(http_get(&location.expect("authorization redirect")).0, 200);
         }
-        assert!(!wait_for_login(&mut login).success());
+        assert!(
+            !wait_for_login(&mut login).success(),
+            "{mode} unexpectedly completed authorization"
+        );
         if callback_timeout.is_some() {
             let mut error = String::new();
             login
@@ -839,8 +851,8 @@ fn oauth_scope_escalation_and_callback_timeout_fail_without_storing_credentials(
         );
         assert_success(&status);
         assert!(stdout(&status).contains("\"authentication\":\"unauthenticated\""));
-        fixture.kill().unwrap();
-        let _ = fixture.wait();
+        fixture.0.kill().unwrap();
+        let _ = fixture.0.wait();
         std::fs::remove_dir_all(config).unwrap();
     }
 }
