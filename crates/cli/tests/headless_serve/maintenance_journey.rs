@@ -40,8 +40,15 @@ fn observe(
 
 #[test]
 fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
-    let provider = ToolProvider::spawn();
+    let wait = timeout().saturating_mul(3);
+    let provider = ToolProvider::spawn_with_wait(wait);
     let scratch = Scratch::new(&provider.api_root);
+    // This journey includes two native requests and their durable maintenance writers.
+    // Keep the producer, runtime and whole completion observation on the same finite bound.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     fs::write(scratch.repo().join("large-output.txt"), "small actual file").unwrap();
     let (child, token, address) = launch(&scratch, &scratch.repo(), 2, &[]);
     let mut connection = connect(address);
@@ -72,7 +79,7 @@ fn actual_maintenance_snapshot_is_readonly_scope_bound_and_survives_restart() {
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,
         "op":{"op":"user_input","text":"read large-output.txt then answer"}}),
     );
-    let deadline = Instant::now() + timeout();
+    let deadline = Instant::now() + wait;
     let mut saw_journal_event = false;
     loop {
         assert!(
