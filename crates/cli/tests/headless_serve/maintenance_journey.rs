@@ -3,6 +3,7 @@ use super::*;
 use iteron_protocol::advisory_maintenance::{MaintenanceKindV1, MaintenanceStateV1};
 use iteron_protocol::advisory_maintenance_control::MaintenanceEventV1;
 
+#[track_caller]
 fn observe(
     connection: &mut TcpStream,
     reader: &mut BufReader<TcpStream>,
