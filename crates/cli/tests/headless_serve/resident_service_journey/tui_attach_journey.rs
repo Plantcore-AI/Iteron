@@ -40,12 +40,12 @@ fn flags(master: &(dyn MasterPty + Send)) -> Vec<u64> {
 }
 impl Ui {
     fn start(scratch: &Scratch, endpoint: SocketAddr, service_id: &str, token_file: &Path) -> Self {
-        // Keep the bounded 120-cell canonical route/session group and effort visible alongside
-        // the mandatory attach status; a narrow footer can legitimately omit that whole group.
+        // Leave room for the actual installed-settings panel. Footer metadata is optional under
+        // width pressure, so route/effort identity is checked through that explicit host control.
         let pair = native_pty_system()
             .openpty(PtySize {
-                rows: 24,
-                cols: 240,
+                rows: 40,
+                cols: 140,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -96,7 +96,7 @@ impl Ui {
             reader: Some(reader),
             baseline,
             capture: Vec::new(),
-            parser: vt100::Parser::new(24, 240, 4096),
+            parser: vt100::Parser::new(40, 140, 4096),
             cursor_queries: 0,
         }
     }
@@ -124,6 +124,25 @@ impl Ui {
         }
     }
     fn visible(&mut self, text: &str) {
+        self.visible_when(text, |screen| screen.contains(text));
+    }
+    fn visible_setting(&mut self, key: &str, value: &str) {
+        let label = format!("{key} {value}");
+        let fields: Vec<_> = label.split_whitespace().collect();
+        self.visible_when(&label, |screen| {
+            screen.lines().any(|line| {
+                let row: Vec<_> = line.split_whitespace().collect();
+                row.ends_with(&fields)
+            })
+        });
+    }
+    fn settings(&mut self) {
+        self.write(b"/settings\r");
+        self.visible("service settings · installed runtime boundary");
+        self.visible_setting("model", "headless-model");
+        self.visible_setting("requested effort", "high");
+    }
+    fn visible_when(&mut self, label: &str, matches: impl Fn(&str) -> bool) {
         let deadline = Instant::now() + timeout();
         while Instant::now() < deadline {
             let next = self
@@ -134,7 +153,7 @@ impl Ui {
             if let Ok(bytes) = next {
                 self.ingest(&bytes);
             }
-            if self.parser.screen().contents().contains(text) {
+            if matches(&self.parser.screen().contents()) {
                 return;
             }
             assert!(
@@ -142,7 +161,7 @@ impl Ui {
                 "attached client exited before the actual frame"
             );
         }
-        panic!("expected attached-client terminal frame {text:?} was not observed");
+        panic!("expected attached-client terminal frame {label:?} was not observed");
     }
     fn detach(mut self, token: &str) {
         self.write(b"/detach\r");
@@ -263,8 +282,7 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         &token_file,
     );
     first.visible("attached · /detach");
-    first.visible("headless-model");
-    first.visible("high");
+    first.settings();
     first.write(b"keep the actual backend turn running\r");
     provider.request_seen.recv_timeout(timeout()).unwrap();
     first.detach(&token);
@@ -279,8 +297,8 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         scope["service_id"].as_str().unwrap(),
         &token_file,
     );
-    second.visible("headless-model");
-    second.visible("high");
+    second.visible("steer the current run");
+    second.settings();
     provider.release.send(()).unwrap();
     second.visible("parity reply");
     second.visible("completed");

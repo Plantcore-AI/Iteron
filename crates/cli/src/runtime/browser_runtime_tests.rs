@@ -282,10 +282,19 @@ fn agent(
             max_consecutive_tool_errors: 8,
         },
     );
-    super::gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
-    agent.workspace = workspace.to_path_buf();
+    // Reserve room for complete HTML/tool schemas inside the fixture's unchanged 120k route
+    // window. Growing those two partitions after pinning would make the genesis checkpoint's
+    // cross-family sum invalid; keep every other partition finite and pin the actual allocation.
+    agent.context_budget_policy =
+        iteron_ctx::ContextBudgetPolicy::for_usable_window(64_000, 8_192, 4_096);
     agent.context_budget_policy.tool_schema_tokens = 20_000;
     agent.context_budget_policy.tool_result_tokens = 40_000;
+    agent
+        .context_budget_policy
+        .validate_for_window(120_000)
+        .unwrap();
+    super::gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    agent.workspace = workspace.to_path_buf();
     agent.permission_mode = PermissionMode::Yolo;
     (agent, provider)
 }
