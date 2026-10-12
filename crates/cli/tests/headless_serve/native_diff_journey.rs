@@ -97,7 +97,10 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
             json!({"path":"created.txt","content":"created whole bytes\n"}),
         ),
     ];
-    let provider = ToolProvider::spawn_for_calls(calls, true);
+    // The listener starts before physical startup and journal fsync. Its bounded admission
+    // window must cover the same 30-second transaction journey as the runtime and observer.
+    let provider =
+        ToolProvider::spawn_for_calls_with_wait(calls, true, timeout().saturating_mul(3));
     let scratch = Scratch::new(&provider.api_root);
     // Four physical transactions retain complete snapshots, including two 300 KiB files.
     // Give this artifact journey its own finite wall ceiling, matching its terminal wait.

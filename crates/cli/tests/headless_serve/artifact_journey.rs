@@ -33,15 +33,15 @@ impl Drop for OwnedCore {
     }
 }
 
-fn accept_before_deadline(listener: &TcpListener) -> TcpStream {
-    let deadline = Instant::now() + timeout();
+fn accept_before_deadline(listener: &TcpListener, wait: Duration) -> TcpStream {
+    let deadline = Instant::now() + wait;
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 // Darwin inherits the listener's O_NONBLOCK on accepted sockets. The fixture
                 // owns ordinary blocking HTTP I/O, with finite read/write deadlines below.
                 stream.set_nonblocking(false).unwrap();
-                stream.set_write_timeout(Some(timeout())).unwrap();
+                stream.set_write_timeout(Some(wait)).unwrap();
                 return stream;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -60,6 +60,7 @@ struct ToolProvider {
     api_root: String,
     completed: Receiver<()>,
     thread: Option<thread::JoinHandle<()>>,
+    wait: Duration,
 }
 
 impl ToolProvider {
@@ -74,13 +75,18 @@ impl ToolProvider {
     }
 
     fn spawn_for_calls(calls: Vec<Value>, final_answer: bool) -> Self {
+        Self::spawn_for_calls_with_wait(calls, final_answer, timeout())
+    }
+
+    fn spawn_for_calls_with_wait(calls: Vec<Value>, final_answer: bool, wait: Duration) -> Self {
+        assert!(wait >= timeout() && wait <= timeout().saturating_mul(3));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let (completed_tx, completed) = sync_channel(1);
         let thread = thread::spawn(move || {
-            let mut first = accept_before_deadline(&listener);
-            first.set_read_timeout(Some(timeout())).unwrap();
+            let mut first = accept_before_deadline(&listener, wait);
+            first.set_read_timeout(Some(wait)).unwrap();
             read_http_request(&mut first);
             let tool = json!({
                 "id":"artifact-provider", "object":"chat.completion.chunk",
@@ -97,8 +103,8 @@ impl ToolProvider {
             drop(first);
 
             if final_answer {
-                let mut second = accept_before_deadline(&listener);
-                second.set_read_timeout(Some(timeout())).unwrap();
+                let mut second = accept_before_deadline(&listener, wait);
+                second.set_read_timeout(Some(wait)).unwrap();
                 read_http_request(&mut second);
                 write_success(&mut second, 1, "retained native tool complete");
             }
@@ -108,12 +114,13 @@ impl ToolProvider {
             api_root: format!("http://{address}/v1"),
             completed,
             thread: Some(thread),
+            wait,
         }
     }
 
     fn finish(mut self) {
         self.completed
-            .recv_timeout(timeout())
+            .recv_timeout(self.wait)
             .expect("two actual provider requests complete");
         self.thread
             .take()
