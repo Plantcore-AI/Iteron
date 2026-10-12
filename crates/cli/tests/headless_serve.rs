@@ -190,10 +190,6 @@ impl PausedProvider {
         Self::spawn_bounded(chunks, respond, 1)
     }
 
-    fn spawn_two_requests() -> Self {
-        Self::spawn_bounded(1, true, 2)
-    }
-
     fn spawn_bounded(chunks: usize, respond: bool, requests: usize) -> Self {
         assert!((1..=2).contains(&requests));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -558,43 +554,6 @@ fn receive_result_within_timeout(reader: &mut BufReader<TcpStream>) -> Value {
     }
 }
 
-fn failed_request_terminal(reader: &mut BufReader<TcpStream>) -> (&'static str, Option<i64>) {
-    let deadline = Instant::now() + quiet_timeout();
-    let mut observed_bytes = 0usize;
-    for _ in 0..256 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
-        let mut line = String::new();
-        let remaining_bytes = 1024 * 1024 - observed_bytes;
-        if !matches!((&mut *reader).take((remaining_bytes + 1) as u64).read_line(&mut line), Ok(count) if count > 0)
-        {
-            break;
-        }
-        observed_bytes = observed_bytes.saturating_add(line.len());
-        if observed_bytes > 1024 * 1024 {
-            break;
-        }
-        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-            break;
-        };
-        if frame["type"] == "result" {
-            let outcome = match frame["result"]["outcome"].as_str() {
-                Some("done") => "done",
-                Some("budget_exhausted") => "budget_exhausted",
-                Some("interrupted") => "interrupted",
-                Some("stuck") => "stuck",
-                Some("harness_error") => "harness_error",
-                _ => "other_result",
-            };
-            return (outcome, frame["result"]["exit_code"].as_i64());
-        }
-    }
-    ("not_observed", None)
-}
-
 #[cfg(unix)]
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
@@ -801,8 +760,7 @@ fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes()
 }
 
 #[test]
-fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_during_parent_turn()
-{
+fn unproved_loopback_physical_bound_refuses_parent_dispatch_without_consuming_mailbox() {
     fn reply(reader: &mut BufReader<TcpStream>, id: u64) -> Value {
         for _ in 0..64 {
             let frame = receive(reader);
@@ -813,7 +771,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         panic!("bounded public control reply not observed");
     }
 
-    let provider = PausedProvider::spawn_two_requests();
+    let provider = PausedProvider::spawn();
     let mut scratch = Scratch::new(&provider.api_root);
     // The root's finite 10-second allocation starts after an actual priced parent turn and
     // scoped controls. The parent journey must still have room to admit that allocation.
@@ -824,9 +782,13 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
     priced_route::configure(&mut scratch);
     let (child, token, address) = spawn_core(&scratch);
     let mut connection = connect(address);
-    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut greeting = hello(&token, PROTOCOL_VERSION, 0);
+    greeting["product_contract_version"] = json!(1);
+    send(&mut connection, greeting);
     let mut reader = BufReader::new(connection.try_clone().unwrap());
-    assert_eq!(receive(&mut reader)["type"], "hello");
+    let greeted = receive(&mut reader);
+    assert_eq!(greeted["type"], "hello");
+    let thread_id = greeted["session_id"].as_str().unwrap().to_owned();
     send(
         &mut connection,
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"establish the real parent route"}}),
@@ -848,7 +810,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
             PROTOCOL_VERSION,
             json!({"type":"agents_v1","command":{
                 "type":"enable","capabilities":["read_only"],
-                // Fund the conservative physical input bound, not eventual reported usage.
+                // This planning window does not prove a financial physical input ceiling.
                 "budget":{"turns":1,"tokens":2000000,"cost_microusd":1000000,"wall_ms":10000},
                 "max_agents":4,"max_pending_per_agent":8,"parallel":2,
             }}),
@@ -879,12 +841,48 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         &mut connection,
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"continue the parent while observing its controller"}}),
     );
-    if let Err(error) = provider.request_seen.recv_timeout(timeout()) {
-        // The actual terminal enum distinguishes a refused/exhausted turn from absent IO.
-        // Never print arbitrary frames or assistant content from this diagnostic path.
-        let terminal = failed_request_terminal(&mut reader);
-        panic!("second physical provider request not observed: {error:?}; terminal={terminal:?}");
-    }
+    let refused = receive_result_within_timeout(&mut reader);
+    assert_eq!(refused["result"]["outcome"], "harness_error");
+    // Terminal diagnostics are explicitly read through the public typed control. They are
+    // deliberately absent from the frozen Result frame; no error text supplies this evidence.
+    send(
+        &mut connection,
+        control(
+            207,
+            PROTOCOL_VERSION,
+            json!({"type":"product_v1","command":{
+                "type":"thread_read","thread_id":thread_id,
+            }}),
+        ),
+    );
+    let thread = reply(&mut reader, 207);
+    let turn_id = thread["reply"]["thread"]["turn"]["turn_id"]
+        .as_u64()
+        .unwrap();
+    send(
+        &mut connection,
+        control(
+            208,
+            PROTOCOL_VERSION,
+            json!({"type":"product_v1","command":{
+                "type":"terminal_diagnostics_read","thread_id":thread_id,"turn_id":turn_id,
+            }}),
+        ),
+    );
+    let diagnostics = reply(&mut reader, 208);
+    assert_eq!(diagnostics["reply"]["type"], "terminal_diagnostics_v1");
+    let diagnostics: iteron_protocol::product_contract::ProductTerminalDiagnosticsV1 =
+        serde_json::from_value(diagnostics["reply"]["diagnostics"].clone()).unwrap();
+    assert_eq!(diagnostics.thread_id.0, thread_id);
+    assert_eq!(diagnostics.turn_id.0, turn_id);
+    assert_eq!(
+        diagnostics.evidence,
+        iteron_protocol::product_contract::TerminalEvidenceV1 {
+            failure_code: Some(iteron_protocol::PolicyHarnessErrorCode::RouteError),
+            effect_state: iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched,
+        }
+    );
+    assert!(provider.request_seen.try_recv().is_err());
     send(
         &mut connection,
         control(
@@ -895,15 +893,14 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
     );
     let live = reply(&mut reader, 204);
     assert_eq!(live["reply"]["type"], "agents_v1");
-    // Main admits its existing mailbox before dispatching the physical request. The
-    // provider's observed request is therefore a barrier for consuming this earlier message.
+    // The refused epoch is settled, and unconsumed delivered inputs have been rejected.
     assert_eq!(live["reply"]["agents"][0]["queued_messages"], 0);
 
     let mut observer = connect(address);
     let mut greeting = hello(
         &token,
         PROTOCOL_VERSION - 1,
-        terminal["seq"].as_u64().unwrap(),
+        refused["seq"].as_u64().unwrap(),
     );
     greeting["observation_only"] = json!(true);
     send(&mut observer, greeting);
@@ -918,7 +915,7 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         ),
     );
     let message = reply(&mut observed, 205);
-    assert_eq!(message["reply"]["message"]["state"]["type"], "consumed");
+    assert_eq!(message["reply"]["message"]["state"]["type"], "rejected");
     send(
         &mut observer,
         control(
@@ -939,17 +936,28 @@ fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_
         }
     }
     assert!(mutation_rejected);
-    provider.release.send(()).unwrap();
-    assert_eq!(
-        receive_result_within_timeout(&mut reader)["result"]["outcome"],
-        "done"
-    );
     drop(observed);
     drop(observer);
     drop(reader);
     drop(connection);
     stop(child);
     provider.finish();
+    let events = iteron_record::replay(&only_rollout(&scratch.runs())).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+        iteron_protocol::EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, iteron_protocol::EventKind::TurnStart))
+            .count(),
+        1
+    );
 }
 
 fn assert_closed_without_frame(stream: TcpStream) {
