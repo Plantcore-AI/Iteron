@@ -1644,6 +1644,12 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
             }
         }),
     );
+    // The first event follows durable turn admission, so use the transaction bound rather
+    // than the short idle socket allowance used by ordinary control replies.
+    first_reader
+        .get_mut()
+        .set_read_timeout(Some(timeout()))
+        .unwrap();
     let first_event = receive(&mut first_reader);
     assert_eq!(first_event["type"], "event", "{first_event}");
     let mut last_seq = first_event["seq"].as_u64().unwrap();
@@ -1666,7 +1672,14 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     assert_eq!(hello["replay_source"], "ring");
 
     let mut results = Vec::new();
+    let result_deadline = Instant::now() + timeout();
     loop {
+        let remaining = result_deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "resumed turn result timed out");
+        resumed_reader
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .unwrap();
         let frame = receive(&mut resumed_reader);
         if let Some(seq) = frame.get("seq").and_then(Value::as_u64) {
             assert_eq!(seq, last_seq + 1, "live cursor has a gap or duplicate");
