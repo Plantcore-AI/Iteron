@@ -367,9 +367,7 @@ use provider_accounting::{
     bounded_provider_notice, bounded_provider_run_notice, elapsed_us,
     provider_run_notice_key_from_text, unix_now_secs,
 };
-use route_validation::{
-    replay_logical_rollout, replay_scoped_rollout, validate_route_digest, validate_route_identifier,
-};
+use route_validation::{replay_scoped_rollout, validate_route_digest, validate_route_identifier};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
 #[cfg(test)]
