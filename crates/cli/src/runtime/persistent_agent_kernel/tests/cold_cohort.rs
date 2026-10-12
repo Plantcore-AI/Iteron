@@ -56,6 +56,9 @@ pub(super) fn make_main(
     agent.workspace = workspace.0.join("repo");
     agent.runtime_state_dir = runs;
     gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    // Install the actual shared governor before restoring consumed attempts. A child must clone
+    // this owner; a cold Main fixture cannot omit it and ask construction to invent a replacement.
+    gate_integration_tests::install_test_provider_governor_from_tunables(&mut agent);
     let key = [42; 32];
     let route = iteron_protocol::PricingRoute {
         provider_id: "test-provider".into(),

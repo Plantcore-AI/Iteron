@@ -247,13 +247,19 @@ impl Provider for ProviderFixture {
             })
             .unwrap_or_default();
         let blocking = last.contains("block-tool");
+        let call = ToolUse {
+            id: "controlled-wait".into(),
+            name: "controlled_wait".into(),
+            input: serde_json::json!({}),
+        };
+        if blocking {
+            // The physical provider declares the exact call before returning its transcript.
+            // Core refuses a tool-only terminal whose streamed declaration is missing.
+            on_item(StreamItem::ToolUseComplete(call.clone()));
+        }
         Ok(TurnResult {
             blocks: if blocking {
-                vec![Block::ToolUse(ToolUse {
-                    id: "controlled-wait".into(),
-                    name: "controlled_wait".into(),
-                    input: serde_json::json!({}),
-                })]
+                vec![Block::ToolUse(call)]
             } else {
                 vec![Block::Text {
                     text: self
