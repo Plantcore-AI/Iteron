@@ -21,9 +21,10 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 const ORIGIN: &str = "http://127.0.0.1:19181/";
+// Use the decoder owner's valid one-pixel PNG, including its checked chunk CRCs.
 const PNG: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
-const IMAGE_SHA: &str = "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f";
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const IMAGE_SHA: &str = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460";
 struct Driver {
     endpoint: String,
     requests: Arc<AtomicUsize>,
