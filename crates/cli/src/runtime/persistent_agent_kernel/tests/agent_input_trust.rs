@@ -157,6 +157,24 @@ async fn agent_steer_crosses_live_child_inbox_with_source_intent_before_its_mess
         .unwrap()
         .message_id
         .unwrap();
+    // Durable acceptance precedes the live mailbox pump's next poll. Keep the real tool
+    // running until delivery, so a fast response cannot settle and reject the queued steer.
+    until_observed(
+        || {
+            matches!(
+                host.message(AgentActor::Operator, steer).unwrap().state,
+                AgentMessageStateV1::Delivered { .. }
+            )
+        },
+        || {
+            format!(
+                "steer={:?}; {}",
+                host.message(AgentActor::Operator, steer),
+                resident_observation(&host, child, &provider)
+            )
+        },
+    )
+    .await;
     provider.tool_release.notify_one();
     until_observed(
         || {

@@ -884,6 +884,18 @@ impl KernelSpawner {
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
+        // These immutable execution owners belong to construction, before verified resume
+        // restores spent provider attempts. Their fresh-only setters must never be called on
+        // an admitted resident; the actual shared governor still owns the whole lineage.
+        if let Ok(routed) = &native_route {
+            sub.set_provider_controls(cx.provider_controls)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.install_fallback_provider_routes(routed.fallbacks.clone())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.install_shared_provider_governor(child_provider_governor(cx)?)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        }
+
         // Fresh children configure policy before genesis. Existing child journals restore their
         // recorded policy through set_resume below; configuring a new initial policy after any
         // durable event correctly refuses, so it must never be used for a cold resident reopen.
@@ -994,16 +1006,6 @@ impl KernelSpawner {
                 error.public_summary()
             ))
         })?;
-        sub.set_provider_controls(cx.provider_controls)
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        sub.install_fallback_provider_routes(routed.fallbacks)
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        let shared_governor = child_provider_governor(cx)?;
-        // The shared owner contains the complete composition-time route set. The child's actual
-        // fallback vector above remains its narrower route authority; cloning the owner here only
-        // shares load-bearing in-flight/quota/circuit state.
-        sub.install_shared_provider_governor(shared_governor)
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         if cx.pricing_port.is_some() {
             let bound = sub.bind_selected_rate_card().map_err(|error| {
                 safe_agent_refusal(&format!(

@@ -85,6 +85,7 @@ impl AgentControllerJournal for Store {
 
 #[derive(Default)]
 struct ProviderFixture {
+    lifetime_wall_ms: Option<u64>,
     requests: AtomicUsize,
     tool_started: AtomicUsize,
     tool_release: tokio::sync::Notify,
@@ -510,6 +511,7 @@ fn setup_with_financial_and_memory(
         root_budget: AgentBudgetV1 {
             cost_microusd: cost,
             tokens: 4_000_000,
+            wall_ms: provider.lifetime_wall_ms.unwrap_or(budget(20).wall_ms),
             ..budget(20)
         },
         max_agents: 8,
@@ -900,9 +902,32 @@ async fn finite_zero_cost_requires_verified_zero_price_before_provider_io() {
 #[tokio::test]
 async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turns_settle() {
     let root = Workspace::new();
-    let provider = Arc::new(ProviderFixture::default());
+    // This positive journey performs four physical requests across three durable segments.
+    // Give this fixture finite IO allowance without changing any production deadline or the
+    // turn/token/cost claims whose settlement the test checks below.
+    let provider = Arc::new(ProviderFixture {
+        lifetime_wall_ms: Some(30_000),
+        ..ProviderFixture::default()
+    });
     let (host, runtime, _, _keepalive) = setup(&root, provider.clone(), true);
-    let child = spawn(&host, "seed lifetime context");
+    let child = host
+        .command(
+            AgentActor::Operator,
+            "spawn",
+            AgentCommandV1::Spawn {
+                parent_id: AgentIdV1(1),
+                label: "resident".into(),
+                task: "seed lifetime context".into(),
+                capabilities: CapabilitySet::only(Capability::ReadOnly),
+                budget: AgentBudgetV1 {
+                    wall_ms: 30_000,
+                    ..budget(8)
+                },
+                write_paths: vec![],
+            },
+        )
+        .unwrap()
+        .agent_id;
     until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
     let resident = runtime
         .residents
@@ -918,7 +943,7 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
             .budget
             .wall_ms
             .saturating_sub(view.usage.wall_ms)
-            .min(5_000);
+            .min(15_000);
         assert!(
             node_wall_ms > 0,
             "resident fixture exhausted its lifetime: {view:?}"
@@ -950,9 +975,38 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
             until(|| provider.tool_started.load(Ordering::SeqCst) == 1).await;
             provider.tool_release.notify_one();
         }
-        until(|| host.workflow_completion(&scheduled).unwrap().is_some()).await;
+        // The node still owns its exact deadline. This observation may wait for that finite
+        // execution window plus five seconds to see its actual controller settlement.
+        tokio::time::timeout(
+            Duration::from_millis(node_wall_ms) + Duration::from_secs(5),
+            async {
+                for _ in 0..10_000 {
+                    if host.workflow_completion(&scheduled).unwrap().is_some() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                panic!(
+                    "node {node} did not settle: {:?}",
+                    host.inspect(AgentActor::Operator, child)
+                );
+            },
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "node {node} did not settle: {:?}",
+                host.inspect(AgentActor::Operator, child)
+            )
+        });
         let completion = host.workflow_completion(&scheduled).unwrap().unwrap();
-        assert!(completion.effects_known);
+        assert!(
+            completion.effects_known,
+            "node {node}: completion={completion:?}; resident={:?}; physical_requests={}; tool_starts={}",
+            host.inspect(AgentActor::Operator, child),
+            provider.requests.load(Ordering::SeqCst),
+            provider.tool_started.load(Ordering::SeqCst)
+        );
         assert_eq!(
             completion.terminal,
             iteron_agents::AgentWorkflowTerminal::Succeeded
