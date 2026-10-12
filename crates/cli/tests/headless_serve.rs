@@ -202,16 +202,17 @@ impl PausedProvider {
         let (release, release_rx) = sync_channel(1);
         let (completed_tx, completed) = sync_channel(1);
         // The replay-fallback fixture must exceed the ring's aggregate byte bound. Single-response
-        // parity keeps its exact assistant text; the flood uses bounded 60 KiB thinking chunks for
-        // 18.75 MiB of diagnostic events, below the 32 MiB provider-output ceiling but above the
-        // 16 MiB replay-byte budget. Bound each harmless token below the scrubber's pending-token
-        // limit even if transport splits the chunk, testing replay retention rather than redaction.
+        // parity keeps its exact assistant text. The flood uses 120 bounded 60 KiB thinking chunks:
+        // 7.03 MiB of raw private text stays below the independent 8 MiB content-store ceiling,
+        // while JSON's escaping of the harmless NUL produces 18.75 MiB before frame metadata,
+        // exceeding the 16 MiB replay budget without changing any production capacity. Spaces
+        // bound each harmless token below the scrubber's pending-token limit even across splits.
         // Keeping the final assistant answer small also respects v7's independent 65,536-byte
         // assistant-message ceiling.
         let content = if chunks == 1 {
             "parity reply".to_owned()
         } else {
-            ("x".repeat(1023) + " ").repeat(60)
+            "\0x ".repeat(20 * 1024)
         };
         let thread = thread::spawn(move || {
             for _ in 0..requests {
@@ -225,7 +226,11 @@ impl PausedProvider {
                     .recv_timeout(timeout())
                     .expect("test releases the provider response");
                 if respond {
-                    write_success(&mut stream, chunks, &content);
+                    if chunks > 1 {
+                        write_success_with_pacing(&mut stream, chunks, &content, Some(&release_rx));
+                    } else {
+                        write_success(&mut stream, chunks, &content);
+                    }
                 }
             }
             completed_tx.send(()).unwrap();
@@ -290,13 +295,23 @@ fn read_http_request(stream: &mut TcpStream) {
 }
 
 fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
+    write_success_with_pacing(stream, chunks, content, None);
+}
+
+fn write_success_with_pacing(
+    stream: &mut TcpStream,
+    chunks: usize,
+    content: &str,
+    observed_chunk: Option<&Receiver<()>>,
+) {
     let event = if chunks == 1 {
         format!(
             "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
         )
     } else {
         format!(
-            "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
+            "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":{}}},\"finish_reason\":null}}],\"usage\":null}}\n\n",
+            serde_json::to_string(content).unwrap()
         )
     };
     let final_answer = (chunks > 1).then_some(
@@ -320,8 +335,10 @@ fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
     for _ in 0..chunks {
         stream.write_all(event.as_bytes()).unwrap();
         stream.flush().unwrap();
-        if chunks > 1 {
-            thread::sleep(Duration::from_millis(5));
+        if let Some(observed_chunk) = observed_chunk {
+            observed_chunk
+                .recv_timeout(timeout())
+                .expect("the client observed the actual flood chunk before the next write");
         }
     }
     if let Some(final_answer) = final_answer {
@@ -1680,9 +1697,9 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
 
 #[test]
 fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
-    // More deltas than the production ring holds force the real fallback path without a
-    // test-only capacity override.
-    let provider = PausedProvider::spawn_with_chunks(320);
+    // Observe enough real frontend bytes to exceed the production ring without a capacity
+    // override. Wire volume alone cannot prove retention across a bounded cosmetic channel.
+    let provider = PausedProvider::spawn_with_chunks(120);
     let scratch = Scratch::new(&provider.api_root);
     // This one admitted synthetic turn must have the same finite 30-second wall ceiling as the
     // existing aggregate flood observation. Ordinary control fixtures retain their 10-second cap.
@@ -1708,14 +1725,42 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
         .request_seen
         .recv_timeout(timeout())
         .expect("provider received the flood turn");
-    drop(reader);
-    drop(client);
-    provider.release.send(()).unwrap();
-
     // This fixture deliberately moves more than 16 MiB through the production byte-bounded ring.
     // Give that volume its own bounded ceiling instead of treating the ordinary 10-second control
     // timeout as a throughput guarantee on contended debug builders.
     let deadline = Instant::now() + timeout().saturating_mul(3);
+    provider.release.send(()).unwrap();
+    let mut observed_bytes = 0usize;
+    let mut observed_serialized_bytes = 0usize;
+    for chunk in 1..=120 {
+        let expected_bytes = chunk * 60 * 1024;
+        while observed_bytes < expected_bytes {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "the bounded frontend flood did not arrive"
+            );
+            reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+            let frame = receive(&mut reader);
+            assert_ne!(
+                frame["type"], "result",
+                "the provider finished before the flood was observed"
+            );
+            if frame["type"] == "event" && frame["event"]["type"] == "thinking" {
+                observed_bytes += frame["event"]["delta"].as_str().unwrap().len();
+                observed_serialized_bytes += serde_json::to_vec(&frame).unwrap().len() + 1;
+            }
+        }
+        assert_eq!(observed_bytes, expected_bytes);
+        if chunk < 120 {
+            provider.release.send(()).unwrap();
+        }
+    }
+    assert_eq!(observed_bytes, 120 * 60 * 1024);
+    assert!(observed_bytes < iteron_record::MAX_PRIVATE_CONTENT_BYTES);
+    assert!(observed_serialized_bytes > 16 * (1024 * 1024 + 1));
+    drop(reader);
+    drop(client);
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
         send(&mut candidate, hello(&token, PROTOCOL_VERSION, 0));
@@ -1762,6 +1807,9 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert_eq!(durable["protocol_version"], PROTOCOL_VERSION);
     assert!(durable["rollout_seq"].as_u64().is_some());
     assert!(durable["event"].is_object());
+    // The last chunk was observed and forced actual fallback. Only now release the successful
+    // provider tail, so an early terminal cannot substitute for the overflow witness.
+    provider.release.send(()).unwrap();
     let terminal = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(

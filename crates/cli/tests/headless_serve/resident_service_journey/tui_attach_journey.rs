@@ -40,10 +40,12 @@ fn flags(master: &(dyn MasterPty + Send)) -> Vec<u64> {
 }
 impl Ui {
     fn start(scratch: &Scratch, endpoint: SocketAddr, service_id: &str, token_file: &Path) -> Self {
+        // Keep the bounded 120-cell canonical route/session group and effort visible alongside
+        // the mandatory attach status; a narrow footer can legitimately omit that whole group.
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
-                cols: 140,
+                cols: 240,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -94,7 +96,7 @@ impl Ui {
             reader: Some(reader),
             baseline,
             capture: Vec::new(),
-            parser: vt100::Parser::new(24, 140, 4096),
+            parser: vt100::Parser::new(24, 240, 4096),
             cursor_queries: 0,
         }
     }
@@ -140,7 +142,7 @@ impl Ui {
                 "attached client exited before the actual frame"
             );
         }
-        panic!("expected attached-client terminal frame was not observed");
+        panic!("expected attached-client terminal frame {text:?} was not observed");
     }
     fn detach(mut self, token: &str) {
         self.write(b"/detach\r");
@@ -260,7 +262,7 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         scope["service_id"].as_str().unwrap(),
         &token_file,
     );
-    first.visible("Attached");
+    first.visible("attached · /detach");
     first.visible("headless-model");
     first.visible("high");
     first.write(b"keep the actual backend turn running\r");
@@ -277,7 +279,6 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
         scope["service_id"].as_str().unwrap(),
         &token_file,
     );
-    second.visible("Attached");
     second.visible("headless-model");
     second.visible("high");
     provider.release.send(()).unwrap();
@@ -287,7 +288,7 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     second.visible("Service sessions");
     second.visible(&format!("run {run}"));
     second.write(b"\x1b");
-    second.visible("Attached");
+    second.visible("completed");
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
     second.detach(&token);
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
