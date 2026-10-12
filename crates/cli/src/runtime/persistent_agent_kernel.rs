@@ -453,7 +453,14 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let result = {
             let execution = async {
                 if started_before {
-                    child.stage_follow_up_transcript().await?;
+                    // Cold construction has already verified set_resume and selected its next
+                    // turn. It has no same-process staging witness; only a retained live
+                    // transcript needs another advance. Mailbox replay validation still applies.
+                    if child.transcript_state.working().is_some()
+                        || child.transcript_state.live_owner(&child.rollout).is_some()
+                    {
+                        child.stage_follow_up_transcript().await?;
+                    }
                     expire_restored(&mut child, &mailbox)?;
                 }
                 // execute owns a newly admitted durable controller epoch. Refresh only here;
