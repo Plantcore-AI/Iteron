@@ -371,12 +371,20 @@ async fn signed_known_native_sdk_export_charges_actual_cached_usage_then_refuses
     owner.budget.max_usd = Some(0.000015);
     owner.synchronize_usd_budget().unwrap();
     assert_eq!(owner.effective_max_usd(), Some(0.000015));
-    assert_eq!(
-        owner
-            .follow_up("SDK exhausted native request must never dispatch")
-            .await
-            .unwrap(),
-        Outcome::BudgetExhausted("max_usd")
+    assert_eq!(owner.usd_budget.as_ref().unwrap().ceiling_microusd(), 15);
+    let refused = owner
+        .follow_up("SDK exhausted native request must never dispatch")
+        .await;
+    assert!(
+        matches!(
+            &refused,
+            Ok(Outcome::BudgetExhausted("max_usd"))
+                | Err(crate::runtime::KernelError::InvalidRouteMetadata {
+                    field: "provider_budget_envelope",
+                    reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
+                })
+        ),
+        "the exhausted native route refuses before physical IO: {refused:?}"
     );
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())

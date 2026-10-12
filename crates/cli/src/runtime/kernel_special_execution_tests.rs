@@ -271,8 +271,6 @@ async fn dropped_actual_direct_await_preserves_unresolved_physical_intent() {
 #[tokio::test]
 async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission_is_full() {
     let (mut host, calls) = host("kernel-accounting-pressure");
-    // Unknown child accounting closes finite admission; the default has no turn ceiling.
-    host.set_turn_ceiling(4).unwrap();
     let call = ToolUse {
         id: "known-at-capacity".into(),
         name: iteron_tools::DISPATCH_AGENT.into(),
@@ -328,6 +326,14 @@ async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission
             .unwrap();
     }
     let (result, source) = completion.into_parts();
+    assert!(
+        result.is_ok(),
+        "the actual child completed before accounting pressure: {result:?}"
+    );
+    assert!(
+        source.is_some(),
+        "the actual child supplied accounting evidence"
+    );
     let result = super::complete_known_special(
         &mut journal,
         failed_actions,
@@ -350,6 +356,8 @@ async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(host.ledger.provider_attempts, 0);
     assert!(host.parent_effects_known());
+    // Establish finite admission after the physical child and its terminal have completed.
+    host.set_turn_ceiling(4).unwrap();
     assert!(matches!(
         host.inference_budget_exhaustion(),
         Err(KernelError::ContextResolution(_))

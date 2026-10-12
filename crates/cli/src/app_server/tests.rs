@@ -2393,10 +2393,43 @@ async fn noninteractive_app_server_delivers_active_steer_to_the_runtime() {
             text: "apply once".into(),
         })
         .unwrap();
-    provider.release.notify_one();
-
     let mut steer_events = 0;
     let mut applied = 0;
+    let admission_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut admitted = false;
+    for _ in 0..256 {
+        let event = tokio::time::timeout_at(admission_deadline, events.recv())
+            .await
+            .expect("the queued steer is admitted while the provider is blocked")
+            .expect("the event channel stays open")
+            .into_current()
+            .unwrap();
+        match event {
+            ServerEvent::Submission {
+                id,
+                state: SubmissionLifecycleState::Admitted,
+                ..
+            } if id == steer_id => {
+                admitted = true;
+                break;
+            }
+            ServerEvent::Ui(UiEvent::SteerSubmissionApplied { id }) if id == steer_id => {
+                steer_events += 1
+            }
+            ServerEvent::Submission {
+                id,
+                state: SubmissionLifecycleState::Applied,
+                ..
+            } if id == steer_id => applied += 1,
+            ServerEvent::RunEnded { .. } => panic!("the blocked run ended before steer admission"),
+            _ => {}
+        }
+    }
+    assert!(
+        admitted,
+        "the steer was admitted within the finite event window"
+    );
+    provider.release.notify_one();
     loop {
         let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
             .await

@@ -18030,6 +18030,7 @@ ant-api03-SuperSecretModelToken12345"
                 "sys".into(),
                 Budget::default(),
             );
+            agent.workspace = ws.clone();
             agent
                 .record_genesis(
                     ws.display().to_string(),
@@ -18080,6 +18081,7 @@ ant-api03-SuperSecretModelToken12345"
             Budget::default(),
         );
         resumed.set_pricing_port(pricing);
+        resumed.workspace = ws.clone();
         resumed.set_resume(messages).unwrap();
         assert_eq!(resumed.effective_max_usd(), Some(0.5));
         drop(resumed);
@@ -20014,7 +20016,13 @@ ant-api03-SuperSecretModelToken12345"
             .spawn_subagent("inspect another area", 1)
             .await
             .unwrap_err();
-        assert!(second.contains("parent inference budget exhausted (max_usd)"));
+        assert_eq!(
+            second,
+            KernelError::ContextResolution(
+                "child accounting is unavailable for finite budget admission".into()
+            )
+            .public_summary()
+        );
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
             1,

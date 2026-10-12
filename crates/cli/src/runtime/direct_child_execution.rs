@@ -300,7 +300,14 @@ pub(super) fn publish_direct_terminal(
             sub_run: run.0.clone(),
             outcome,
             metrics: ledger.workflow_metrics(),
-            error_code: result.as_ref().err().map(|_| "child_failed".into()),
+            error_code: result.as_ref().err().map(|_| {
+                match outcome {
+                    WorkflowChildOutcome::Drained => "operator_drain",
+                    WorkflowChildOutcome::Interrupted => "operator_stop",
+                    _ => "child_failed",
+                }
+                .into()
+            }),
             error_detail: result.as_ref().err().cloned(),
             summary_digest: result
                 .as_ref()
