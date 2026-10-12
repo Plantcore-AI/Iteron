@@ -11740,22 +11740,25 @@ ant-api03-SuperSecretModelToken12345"
             .checkpoint
             .before_verification = false;
 
-        // This bound covers encrypted journal fsyncs, the 25 ms cancellation poll, and scheduler
-        // contention from the full CLI suite. It remains far below the configured 300-second
-        // verifier timeout, so the test proves cancellation rather than waiting out the oracle
-        // without turning host load into the property under test.
-        let outcome = tokio::time::timeout(Duration::from_secs(20), async {
-            let interrupt_after_start = async {
-                await_signal(&started, "the provider's first turn").await;
-                interrupted.store(true, Ordering::SeqCst);
-            };
-            let (outcome, ()) =
-                tokio::join!(agent.run("finish only after checks"), interrupt_after_start);
-            outcome
-        })
-        .await
-        .expect("verification cancellation must be prompt")
-        .unwrap();
+        // Observe actual oracle entry before measuring cancellation. A run that ends earlier
+        // must report its result immediately instead of waiting for a signal it cannot produce.
+        let outcome = {
+            let run = agent.run("finish only after checks");
+            tokio::pin!(run);
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::select! {
+                    () = started.notified() => {}
+                    outcome = &mut run => panic!("run ended before the hanging oracle started: {outcome:?}"),
+                }
+            })
+            .await
+            .expect("the hanging verification oracle must start within its bounded deadline");
+            interrupted.store(true, Ordering::SeqCst);
+            tokio::time::timeout(Duration::from_secs(20), &mut run)
+                .await
+                .expect("verification cancellation must be prompt after oracle entry")
+                .unwrap()
+        };
 
         assert_eq!(outcome, Outcome::Interrupted);
         assert_eq!(agent.verification_state.attempts(), 0);
