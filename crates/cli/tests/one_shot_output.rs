@@ -2250,9 +2250,17 @@ fn d2_24_operator_glm_metadata_notice_is_loaded_surfaced_and_durable_before_atte
             }
             "stream-json" => {
                 let records = json_lines(&output.stdout);
+                // The host also surfaces its terminal transport refusal as a notice. Join the
+                // provider metadata class to its single durable Notice independently.
                 let surfaced = records
                     .iter()
-                    .filter(|record| record["type"] == "notice")
+                    .filter(|record| {
+                        record["type"] == "notice"
+                            && record["message"].as_str().is_some_and(|message| {
+                                message.starts_with("provider run notice [key=sha256:")
+                                    && message.contains("; code=static_metadata]:")
+                            })
+                    })
                     .collect::<Vec<_>>();
                 assert_eq!(surfaced.len(), 1);
                 assert_eq!(surfaced[0]["message"], notice);
