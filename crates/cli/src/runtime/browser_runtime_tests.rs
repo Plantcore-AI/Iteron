@@ -155,6 +155,31 @@ struct Script {
     step: AtomicUsize,
     observed: Mutex<Vec<Block>>,
 }
+
+fn screenshot_failure(agent: &Agent) -> String {
+    agent
+        .transcript_state
+        .working()
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .flat_map(|message| &message.content)
+        .find_map(|block| match block {
+            Block::ToolResult(result) if result.tool_use_id == "pixels-actual" => {
+                let detail = if result.is_error {
+                    iteron_record::redact::scrub(&result.content)
+                        .chars()
+                        .take(1024)
+                        .collect::<String>()
+                } else {
+                    "successful tool result; no error text".into()
+                };
+                Some(format!("is_error={}: {detail}", result.is_error))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "matching in-memory tool result unavailable".into())
+}
 #[async_trait::async_trait]
 impl Provider for Script {
     async fn turn(
@@ -435,7 +460,12 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
             std::fs::remove_dir_all(workspace).unwrap();
             continue;
         }
-        assert_eq!(driver.screenshots.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            driver.screenshots.load(Ordering::SeqCst),
+            1,
+            "actual computer screenshot terminal: {}",
+            screenshot_failure(&agent)
+        );
         assert_eq!(observed.len(), 1);
         let Block::ToolImage(image) = &observed[0] else {
             panic!()
