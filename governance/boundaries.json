@@ -3358,6 +3358,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/cli/src/runtime/public_agent_tcp_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/src/resident_service.rs"
         },
         {

@@ -583,6 +583,7 @@
 /crates/cli/src/runtime/provider_usage_journal_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_usage_reservation.rs @fr0m-scratch
 /crates/cli/src/runtime/provider_usage_reservation_tests.rs @fr0m-scratch
+/crates/cli/src/runtime/public_agent_tcp_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/refusal_provenance.rs @fr0m-scratch
 /crates/cli/src/runtime/request_accounting.rs @fr0m-scratch
 /crates/cli/src/runtime/request_admission.rs @fr0m-scratch
