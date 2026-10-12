@@ -442,7 +442,11 @@ async fn actual_tool_terminal_pixels_reach_the_model_and_private_recovery_with_c
         agent.ui_tx = Some(tx);
         // Public artifact retention requires the real session's genesis workspace metadata.
         // The physical tool result alone cannot supply that authority for image projection.
-        super::gate_integration_tests::record_test_genesis(&mut agent, &workspace);
+        // agent() already installed the finite resolved allocation; write that exact checkpoint
+        // as genesis rather than attempting to resolve and pin a second policy owner.
+        agent
+            .record_genesis_with_tunables(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(30),
