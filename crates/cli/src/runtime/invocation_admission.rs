@@ -71,7 +71,13 @@ impl InvocationAdmissionSession<'_> {
                 .emit(KernelDiagnostic::RecordAppendFailed {});
         }
         recovered?;
-        if self.policy.is_none()
+        // A resident keeps its Agent after an epoch's durable policy-run terminal. The next
+        // intake validates that sealed segment and starts the existing recorder's successor;
+        // it must never append new opportunities to the retained terminal recorder.
+        if self
+            .policy
+            .as_ref()
+            .is_none_or(PolicyEvidenceRecorder::is_run_terminal)
             && let Some((digest, bindings)) = self.policy_identity
         {
             let events = iteron_record::replay_timed(self.funding.journal.rollout.path())?;

@@ -661,7 +661,7 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
         .get(&child)
         .unwrap()
         .clone();
-    let (money, card) = {
+    let (money, card, first_policy_run) = {
         let mut actual = resident.lock().await;
         assert!(
             actual.persistent_agents.is_none(),
@@ -676,7 +676,20 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
         // Exercise lost process-local working state through the real retained mailbox/record.
         // A live followup must not reconstruct or refill its already-owned financial context.
         assert!(actual.transcript_state.take_working().is_some());
-        (money, card)
+        let terminal_runs = iteron_record::replay(actual.rollout.path())
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::PolicyOutcome { evidence }
+                    if evidence.scope == iteron_protocol::PolicyOutcomeScope::Run =>
+                {
+                    Some(evidence.run_id)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_runs.len(), 1);
+        (money, card, terminal_runs[0].clone())
     };
     host.command(
         AgentActor::Operator,
@@ -698,6 +711,26 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
     assert_eq!(runtime.residents.lock().unwrap().len(), 1);
     {
         let actual = resident.lock().await;
+        let events = iteron_record::replay(actual.rollout.path()).unwrap();
+        let terminal_runs = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::PolicyOutcome { evidence }
+                    if evidence.scope == iteron_protocol::PolicyOutcomeScope::Run =>
+                {
+                    Some((event.seq, &evidence.run_id))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_runs.len(), 2);
+        assert_eq!(terminal_runs[0].1, &first_policy_run);
+        assert_ne!(terminal_runs[0].1, terminal_runs[1].1);
+        assert!(events.iter().any(|event| matches!(&event.kind,
+            EventKind::PolicyDecision { evidence }
+                if &evidence.run_id == terminal_runs[1].1
+                    && event.seq > terminal_runs[0].0
+                    && event.seq < terminal_runs[1].0)));
         assert!(Arc::ptr_eq(actual.usd_budget.as_ref().unwrap(), &money));
         assert_eq!(actual.provider_selection.card(), Some(&card));
         assert!(Arc::ptr_eq(
