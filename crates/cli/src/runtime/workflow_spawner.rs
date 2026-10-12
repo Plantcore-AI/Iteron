@@ -884,21 +884,22 @@ impl KernelSpawner {
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
-        // --- Coherent fresh-run runtime policy, BEFORE any durable append (the rollout is still
-        //     empty here; route recording below is the first event). A leaf never orchestrates, so
-        //     `Ultracode` collapses to `Max` (max thinking budget, no fan). ---
-        let effort = profile.effort;
-        sub.configure_initial_runtime_policy(
-            effort,
-            cx.permission_mode,
-            cx.permission_rules.clone(),
-        )
-        .map_err(|error| {
-            safe_agent_refusal(&format!(
-                "child runtime policy rejected: {}",
-                error.public_summary()
-            ))
-        })?;
+        // Fresh children configure policy before genesis. Existing child journals restore their
+        // recorded policy through set_resume below; configuring a new initial policy after any
+        // durable event correctly refuses, so it must never be used for a cold resident reopen.
+        if !resume_existing || sub.rollout.is_empty() {
+            sub.configure_initial_runtime_policy(
+                profile.effort,
+                cx.permission_mode,
+                cx.permission_rules.clone(),
+            )
+            .map_err(|error| {
+                safe_agent_refusal(&format!(
+                    "child runtime policy rejected: {}",
+                    error.public_summary()
+                ))
+            })?;
+        }
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

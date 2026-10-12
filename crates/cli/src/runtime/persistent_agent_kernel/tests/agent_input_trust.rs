@@ -52,7 +52,7 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         .get(&child)
         .unwrap()
         .clone();
-    {
+    let (original_run, original_policy, original_attempts, original_prefix) = {
         let child = resident.lock().await;
         assert_eq!(child.observed_trust, Trust::Untrusted);
         let events = iteron_record::replay(child.rollout.path()).unwrap();
@@ -82,7 +82,17 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
                 .state,
             AgentMessageStateV1::Consumed { .. }
         ));
-    }
+        (
+            child.rollout.run_id().clone(),
+            (
+                child.effort,
+                child.permission_mode,
+                child.permission_rules.clone(),
+            ),
+            child.ledger.provider_attempts,
+            std::fs::read(child.rollout.path()).unwrap(),
+        )
+    };
     runtime.residents.lock().unwrap().remove(&child);
     drop(resident); // Release the real Rollout writer lease before native reopen.
     host.command(
@@ -109,7 +119,23 @@ async fn child_followup_source_and_cold_reopen_preserve_agent_data_taint() {
         .get(&child)
         .unwrap()
         .clone();
-    assert_eq!(reopened.lock().await.observed_trust, Trust::Untrusted);
+    let reopened = reopened.lock().await;
+    assert_eq!(reopened.observed_trust, Trust::Untrusted);
+    assert_eq!(reopened.rollout.run_id(), &original_run);
+    assert_eq!(
+        (
+            reopened.effort,
+            reopened.permission_mode,
+            reopened.permission_rules.clone()
+        ),
+        original_policy
+    );
+    assert_eq!(reopened.ledger.provider_attempts, original_attempts + 1);
+    assert!(
+        std::fs::read(reopened.rollout.path())
+            .unwrap()
+            .starts_with(&original_prefix)
+    );
 }
 
 #[tokio::test]
@@ -131,6 +157,7 @@ async fn agent_steer_crosses_live_child_inbox_with_source_intent_before_its_mess
         .unwrap()
         .message_id
         .unwrap();
+    provider.tool_release.notify_one();
     until_observed(
         || {
             matches!(

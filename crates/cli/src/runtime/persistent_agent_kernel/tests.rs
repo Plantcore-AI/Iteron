@@ -87,6 +87,7 @@ impl AgentControllerJournal for Store {
 struct ProviderFixture {
     requests: AtomicUsize,
     tool_started: AtomicUsize,
+    tool_release: tokio::sync::Notify,
     texts: Mutex<Vec<String>>,
     systems: Mutex<Vec<String>>,
     prepared: AtomicUsize,
@@ -222,31 +223,41 @@ impl Provider for ProviderFixture {
         let last = request
             .messages
             .iter()
+            .enumerate()
             .rev()
-            .find(|message| {
+            .find(|(_, message)| {
                 message.role == iteron_protocol::Role::User
                     && message.content.iter().any(|block| {
                         matches!(block, Block::Text { text }
                             if !text.contains("Main thread task source sha256:"))
                     })
             })
-            .map(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(|block| match block {
-                        Block::Text { text }
-                            if !text.contains("Main thread task source sha256:") =>
-                        {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+            .map(|(index, message)| {
+                (
+                    index,
+                    message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            Block::Text { text }
+                                if !text.contains("Main thread task source sha256:") =>
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
             })
             .unwrap_or_default();
-        let blocking = last.contains("block-tool");
+        let completed_wait = request.messages[last.0..].iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(block, Block::ToolResult(result)
+                    if result.tool_use_id == "controlled-wait")
+            })
+        });
+        let blocking = last.1.contains("block-tool") && !completed_wait;
         let call = ToolUse {
             id: "controlled-wait".into(),
             name: "controlled_wait".into(),
@@ -443,12 +454,17 @@ fn setup_with_financial_and_memory(
                 let settled = settled.clone(); let provider = provider.clone();
                 Box::pin(async move {
                     provider.tool_started.fetch_add(1, Ordering::SeqCst);
+                    let released = provider.tool_release.notified();
+                    tokio::pin!(released);
                     for _ in 0..1_000 {
                         // Observe the real durable epoch stop. The constructor's old caller
                         // flag would be replaced by the runtime's fresh inherited epoch signal.
                         if matches!(control.inspect(AgentActor::Agent(owner), owner).unwrap().state,
                             AgentStateV1::Interrupting { .. } | AgentStateV1::Closing { .. } | AgentStateV1::RecoveryRequired { .. }) { break }
-                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        tokio::select! {
+                            _ = &mut released => break,
+                            _ = tokio::time::sleep(Duration::from_millis(2)) => {}
+                        }
                     }
                     settled.fetch_add(1, Ordering::SeqCst);
                     ToolResult { tool_use_id: call.id, content: "physically stopped".into(), is_error: false, trust: Trust::Workspace, latency_ms: 0 }
