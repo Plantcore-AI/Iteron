@@ -11,6 +11,10 @@ use iteron_protocol::{Capability, ToolUse, Trust, TurnId, context::ContextSource
 use iteron_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "context403_regression_tests.rs"]
+mod context403_regression_tests;
+
 pub(crate) struct LiveContext {
     pub text: String,
     pub governing_trust: Trust,

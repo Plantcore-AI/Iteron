@@ -110,7 +110,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 } => {
                     // Transport receipt does not grant admission. Keep every owned attachment
                     // until the exact operation is applied, and never clear newer typed input.
-                    if clear_composer && app.editor.persistence_revision() == editor_revision {
+                    if clear_composer && app.editor.draft_revision() == editor_revision {
                         let _ = app.editor.take_submit();
                     } else if clear_composer {
                         app.note(

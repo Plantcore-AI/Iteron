@@ -204,7 +204,7 @@ impl<'a> ConnectionSession<'a> {
                 shared.fragment_encoders,
                 error_frame(
                     "product_contract_version_mismatch",
-                    "unsupported product contract version; expected 1",
+                    "unsupported product contract version; expected 2",
                 ),
             )
             .await?;
@@ -605,6 +605,10 @@ impl<'a> ConnectionSession<'a> {
                                             "contract_version": PRODUCT_CONTRACT_VERSION,
                                             "reason_code": "mode_unavailable",
                                         })
+                                    } else if let iteron_protocol::product_contract::ProductControlV1::TurnStart {
+                                        thread_id, request_key, text,
+                                    } = command {
+                                        shared.client.turn_start_v2_async(thread_id, request_key, text).await
                                     } else {
                                         control::product_reply(shared.client, command)
                                     };

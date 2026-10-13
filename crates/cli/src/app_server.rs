@@ -69,6 +69,7 @@ mod workspace_rewind_control;
 pub(crate) use session_host::AppServer;
 
 mod submission_settlement;
+mod turn_start;
 use submission_settlement::{
     discard_expired_product_steers, expire_pending_turns, expire_queued_after_drain,
     forward_runtime_notifications, product_turn_accepts, publish_submission, queue_population,

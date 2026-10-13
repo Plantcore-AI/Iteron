@@ -82,6 +82,7 @@ impl ContextInjectionJournal<'_> {
     fn policy_error(&mut self, error: PolicyEvidenceRecorderError) -> KernelError {
         match error.into_record_error() {
             Ok(error) => {
+                self.transcript.rollout.retain_failure(&error);
                 *self.transcript.record_failed = true;
                 self.transcript
                     .diagnostics

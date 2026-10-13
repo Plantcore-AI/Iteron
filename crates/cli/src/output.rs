@@ -285,6 +285,12 @@ mod tests {
             "the wall-clock ceiling must name the flag that sets it"
         );
         assert!(
+            budget_remedy("max_tokens")
+                .contains("unknown prior provider usage cannot be repaired by raising the limit")
+                && budget_remedy("max_tokens").contains("new run"),
+            "unknown usage must not be presented as fixable by increasing the ceiling"
+        );
+        assert!(
             !budget_remedy("unrecognized").is_empty(),
             "an unknown reason still points the operator somewhere"
         );

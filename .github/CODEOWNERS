@@ -59,6 +59,7 @@
 /docs/reference/** @fr0m-scratch
 /docs/spec/** @fr0m-scratch
 /docs/using/** @fr0m-scratch
+/examples/restricted-reader/** @fr0m-scratch
 /ops/windows-runner/** @fr0m-scratch
 /tests/mcp_conformance/** @fr0m-scratch
 /.github/CODEOWNERS @fr0m-scratch
@@ -133,10 +134,12 @@
 /crates/ctx/src/memory/** @fr0m-scratch
 /crates/ctx/src/memory_records/** @fr0m-scratch
 /crates/provider/src/catalog/** @fr0m-scratch
+/crates/provider/src/openai/** @fr0m-scratch
 /crates/record/src/content_store/** @fr0m-scratch
 /crates/record/src/native_child_context/** @fr0m-scratch
 /crates/record/src/session/** @fr0m-scratch
 /crates/record/src/tunables/** @fr0m-scratch
+/crates/record/src/turn_start_store/** @fr0m-scratch
 /crates/tools/src/browser/** @fr0m-scratch
 /crates/tools/src/contained_source/** @fr0m-scratch
 /crates/tools/src/desktop/** @fr0m-scratch
@@ -275,6 +278,8 @@
 /crates/provider/src/catalog.rs @fr0m-scratch
 /crates/provider/src/controls.rs @fr0m-scratch
 /crates/provider/src/data_policy.rs @fr0m-scratch
+/crates/provider/src/decode.rs @fr0m-scratch
+/crates/provider/src/decode_tests.rs @fr0m-scratch
 /crates/provider/src/governor.rs @fr0m-scratch
 /crates/provider/src/governor_policy.rs @fr0m-scratch
 /crates/provider/src/governor_snapshot.rs @fr0m-scratch
@@ -301,6 +306,7 @@
 /crates/record/src/content_store.rs @fr0m-scratch
 /crates/record/src/erasure.rs @fr0m-scratch
 /crates/record/src/erasure_tests.rs @fr0m-scratch
+/crates/record/src/failure.rs @fr0m-scratch
 /crates/record/src/lib.rs @fr0m-scratch
 /crates/record/src/native_child_context.rs @fr0m-scratch
 /crates/record/src/policy_bundle.rs @fr0m-scratch
@@ -309,13 +315,17 @@
 /crates/record/src/session.rs @fr0m-scratch
 /crates/record/src/session_maintenance.rs @fr0m-scratch
 /crates/record/src/session_private_cache.rs @fr0m-scratch
+/crates/record/src/session_publication_admission.rs @fr0m-scratch
+/crates/record/src/session_publication_admission_tests.rs @fr0m-scratch
 /crates/record/src/tunables.rs @fr0m-scratch
 /crates/record/src/tunables_tests.rs @fr0m-scratch
+/crates/record/src/turn_start_store.rs @fr0m-scratch
 /crates/tools/src/captured_execution.rs @fr0m-scratch
 /crates/tools/src/captured_image.rs @fr0m-scratch
 /crates/tools/src/confined_fs.rs @fr0m-scratch
 /crates/tools/src/confined_helper.rs @fr0m-scratch
 /crates/tools/src/contained_source.rs @fr0m-scratch
+/crates/tools/src/dispatch_agent.rs @fr0m-scratch
 /crates/tools/src/edit.rs @fr0m-scratch
 /crates/tools/src/egress.rs @fr0m-scratch
 /crates/tools/src/execution_policy.rs @fr0m-scratch
@@ -370,6 +380,7 @@
 /crates/cli/src/runtime/policy_evidence_recorder/** @fr0m-scratch
 /crates/cli/src/runtime/telemetry/** @fr0m-scratch
 /crates/cli/src/runtime/tool_output_spill/** @fr0m-scratch
+/crates/cli/src/runtime/transcript/** @fr0m-scratch
 /crates/cli/src/runtime/workflow_spawner/** @fr0m-scratch
 /crates/cli/src/tui/experiment_lab/** @fr0m-scratch
 /crates/cli/src/cli_entry/admitted_view.rs @fr0m-scratch
@@ -407,6 +418,7 @@
 /crates/cli/src/runtime/budget_control.rs @fr0m-scratch
 /crates/cli/src/runtime/candidate_workspace.rs @fr0m-scratch
 /crates/cli/src/runtime/child_ledger_evidence.rs @fr0m-scratch
+/crates/cli/src/runtime/child_profile_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/client_inventory.rs @fr0m-scratch
 /crates/cli/src/runtime/coding_execution_journal.rs @fr0m-scratch
 /crates/cli/src/runtime/coding_provider_assembly.rs @fr0m-scratch
@@ -431,6 +443,7 @@
 /crates/cli/src/runtime/completion_assembly.rs @fr0m-scratch
 /crates/cli/src/runtime/completion_semantics.rs @fr0m-scratch
 /crates/cli/src/runtime/completion_session.rs @fr0m-scratch
+/crates/cli/src/runtime/context403_regression_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/context_injection.rs @fr0m-scratch
 /crates/cli/src/runtime/context_injection_assembly.rs @fr0m-scratch
 /crates/cli/src/runtime/context_injection_gate.rs @fr0m-scratch
@@ -653,6 +666,7 @@
 /crates/cli/src/runtime/tool_images.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_interrupt.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_output_spill.rs @fr0m-scratch
+/crates/cli/src/runtime/tool_preimage_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_presentation.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_presentation_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_response.rs @fr0m-scratch

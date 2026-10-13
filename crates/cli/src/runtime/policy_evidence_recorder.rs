@@ -163,35 +163,42 @@ impl PolicyEvidenceRecorder {
             .policies
             .get(slot.index())
             .ok_or(PolicyEvidenceRecorderError::MissingSlot(slot.name()))?;
-        let sequence = self.next_opportunity_sequence;
-        let id = opportunity_id(
-            self.recorder_id,
-            sequence,
-            &self.run_id.0,
-            &self.tunables_digest_sha256,
-            slot.name(),
-            &policy.bundle_digest_sha256,
-            &policy.policy_digest_sha256,
-        );
-        if self.opportunities.contains_key(&id) {
-            return Err(PolicyEvidenceRecorderError::CounterExhausted);
+        // A cold process can reuse a recorder id while replay restores its durable opportunities.
+        // Their sequences may have gaps from opportunities that never appended a decision, so
+        // decision count is not a sequence high-water. At most the bounded existing set can
+        // collide; preserve its exact identities and advance until an unused one is found.
+        for _ in 0..=self.opportunities.len() {
+            let sequence = self.next_opportunity_sequence;
+            self.next_opportunity_sequence = sequence
+                .checked_add(1)
+                .ok_or(PolicyEvidenceRecorderError::CounterExhausted)?;
+            let id = opportunity_id(
+                self.recorder_id,
+                sequence,
+                &self.run_id.0,
+                &self.tunables_digest_sha256,
+                slot.name(),
+                &policy.bundle_digest_sha256,
+                &policy.policy_digest_sha256,
+            );
+            if self.opportunities.contains_key(&id) {
+                continue;
+            }
+            self.opportunities.insert(
+                id.clone(),
+                OpportunityState {
+                    turn_id,
+                    slot,
+                    status: OpportunityStatus::Pending,
+                },
+            );
+            return Ok(PolicyOpportunity {
+                recorder_id: self.recorder_id,
+                run_id: self.run_id.clone(),
+                opportunity_id: id,
+            });
         }
-        self.next_opportunity_sequence = sequence
-            .checked_add(1)
-            .ok_or(PolicyEvidenceRecorderError::CounterExhausted)?;
-        self.opportunities.insert(
-            id.clone(),
-            OpportunityState {
-                turn_id,
-                slot,
-                status: OpportunityStatus::Pending,
-            },
-        );
-        Ok(PolicyOpportunity {
-            recorder_id: self.recorder_id,
-            run_id: self.run_id.clone(),
-            opportunity_id: id,
-        })
+        Err(PolicyEvidenceRecorderError::CounterExhausted)
     }
 
     /// Validate, durably append, then commit exactly one decision. An append failure leaves the

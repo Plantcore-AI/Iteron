@@ -37,6 +37,7 @@ pub(crate) struct AppServer {
     pub(super) mcp_input_responses: mpsc::Receiver<McpInputResponse>,
     pub(super) mcp_input_owner: mcp_input::PendingInputs,
     pub(super) plantcore: PlantcoreAdmission,
+    product_start_custody: Option<super::turn_start::RuntimeCustody>,
 }
 
 impl AppServer {
@@ -60,6 +61,11 @@ impl AppServer {
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
         ends.events.contract.bind_artifact_owner(&agent);
+        let product_start_custody = ends
+            .events
+            .contract
+            .turn_start_service()
+            .map(|service| service.runtime_custody());
         let (to_kernel, kernel_rx) = mpsc::channel::<TurnSubmission>(
             iteron_tunables::param_integer(
                 "cli.app_server.kernel_inbound_capacity",
@@ -93,6 +99,7 @@ impl AppServer {
             mcp_input_requests: ends.mcp_input.requests,
             mcp_input_responses: ends.mcp_input.responses,
             plantcore: ends.plantcore,
+            product_start_custody,
         }
     }
 
@@ -146,6 +153,7 @@ impl AppServer {
             mut mcp_input_responses,
             mcp_input_owner,
             mut plantcore,
+            product_start_custody: _product_start_custody,
         } = self;
         let mut pending_mcp_inputs = mcp_input_owner;
         let mut maintenance =
@@ -373,6 +381,8 @@ impl AppServer {
                     }
                 }
             };
+            let mut product_execution = None;
+            let mut allocated_product_turn = None;
             let (input, runtime_follow_up, turn_submission_id) = match trigger {
                 TurnTrigger::Runtime(notification) => (RunInput::Text(notification), true, None),
                 TurnTrigger::Submission {
@@ -438,7 +448,48 @@ impl AppServer {
                             .await;
                         continue;
                     }
-                    if !preprocessed
+                    // Keyed work crosses durable admission before any command-running hook.
+                    if let Some(service) = events.contract.turn_start_service()
+                        && service.is_pending(submission_id)
+                    {
+                        let candidate = events
+                            .next_product_turn
+                            .checked_add(1)
+                            .map(|next| next.max(agent.rollout.next_sequence().0));
+                        let admitted = candidate.and_then(|next| {
+                            service
+                                .admit(
+                                    submission_id,
+                                    agent.rollout.run_id(),
+                                    iteron_protocol::product_contract::ProductTurnId(next),
+                                )
+                                .ok()
+                                .flatten()
+                        });
+                        let Some(execution) = admitted else {
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Rejected,
+                                Some("admission_unknown"),
+                            )
+                            .await;
+                            continue;
+                        };
+                        if !execution.begin() {
+                            publish_submission(
+                                &mut events,
+                                submission_id,
+                                SubmissionLifecycleState::Rejected,
+                                Some("admission_unknown"),
+                            )
+                            .await;
+                            continue;
+                        }
+                        allocated_product_turn = Some(execution.turn_id());
+                        product_execution = Some(execution);
+                    }
+                    if (!preprocessed || product_execution.is_some())
                         && let Some(context) = legacy_user_prompt_context(&op, submission_id)
                     {
                         run_legacy_hook(
@@ -467,7 +518,7 @@ impl AppServer {
                         | Op::Drain
                         | Op::Unknown => None,
                     };
-                    if !preprocessed
+                    if (!preprocessed || product_execution.is_some())
                         && let Some(gate_event) = gate_event
                         && let Err(reason) = run_lifecycle_gate(
                             HookExecution {
@@ -558,6 +609,32 @@ impl AppServer {
                             continue;
                         }
                         Routed::StartTurn(input) => {
+                            if allocated_product_turn.is_none()
+                                && let Some(service) = events.contract.turn_start_service()
+                            {
+                                let candidate = events
+                                    .next_product_turn
+                                    .checked_add(1)
+                                    .map(|next| next.max(agent.rollout.next_sequence().0));
+                                let allocated = candidate.and_then(|next| {
+                                    service
+                                        .allocate_product_turn(
+                                            iteron_protocol::product_contract::ProductTurnId(next),
+                                        )
+                                        .ok()
+                                });
+                                let Some(turn) = allocated else {
+                                    publish_submission(
+                                        &mut events,
+                                        submission_id,
+                                        SubmissionLifecycleState::Rejected,
+                                        Some("product_identity_unavailable"),
+                                    )
+                                    .await;
+                                    continue;
+                                };
+                                allocated_product_turn = Some(turn);
+                            }
                             publish_submission(
                                 &mut events,
                                 submission_id,
@@ -570,6 +647,30 @@ impl AppServer {
                     }
                 }
             };
+            if allocated_product_turn.is_none()
+                && let Some(service) = events.contract.turn_start_service()
+            {
+                let candidate = events
+                    .next_product_turn
+                    .checked_add(1)
+                    .map(|next| next.max(agent.rollout.next_sequence().0));
+                allocated_product_turn = candidate.and_then(|next| {
+                    service
+                        .allocate_product_turn(iteron_protocol::product_contract::ProductTurnId(
+                            next,
+                        ))
+                        .ok()
+                });
+                if allocated_product_turn.is_none() {
+                    let _ = events
+                        .publish(ServerEvent::Notice(
+                            "product turn identity storage is unavailable; work was not started"
+                                .into(),
+                        ))
+                        .await;
+                    continue;
+                }
+            }
             if let Some(submission_id) = turn_submission_id {
                 publish_submission(
                     &mut events,
@@ -599,7 +700,15 @@ impl AppServer {
                 .expect("only an idle session admits a turn");
             let live_turn_id = agent.current_turn_id();
             let first_effect_sequence = agent.rollout.next_sequence();
-            events.begin_contract_turn(agent.rollout.run_id().clone(), turn_submission_id);
+            if let Some(turn) = allocated_product_turn {
+                events.begin_allocated_contract_turn(
+                    agent.rollout.run_id().clone(),
+                    turn_submission_id,
+                    turn,
+                );
+            } else {
+                events.begin_contract_turn(agent.rollout.run_id().clone(), turn_submission_id);
+            }
             agent.set_active_product_turn_id(Some(
                 iteron_protocol::product_contract::ProductTurnId(events.next_product_turn),
             ));
@@ -627,6 +736,14 @@ impl AppServer {
                 drain_submission_id,
             } = {
                 let running = async {
+                    if product_execution
+                        .as_ref()
+                        .is_some_and(|execution| !execution.begin())
+                    {
+                        return Err(crate::runtime::KernelError::InvalidSubmission(
+                            "product admission deadline elapsed before execution",
+                        ));
+                    }
                     if runtime_follow_up {
                         match &input {
                             RunInput::Text(notification) => {
@@ -808,7 +925,7 @@ impl AppServer {
             forward_runtime_notifications(&mut snapshot, &mut pending_runtime);
             let terminal_evidence =
                 Some(agent.terminal_diagnostic_snapshot(first_effect_sequence, &completion));
-            let (outcome, mut error) = match completion {
+            let (mut outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
                     // The error's closed type identifies its actual source. No guessed WAL tail
@@ -840,6 +957,12 @@ impl AppServer {
                 expire_pending_turns(&mut events, &mut pending_turns, "drain_settled").await;
                 expire_queued_after_drain(&mut events, &mut submissions, &mut priority_submissions)
                     .await;
+            }
+            if let Some(execution) = product_execution
+                && !execution.finish(&outcome, drain_cleanup_failures.is_empty())
+            {
+                outcome = Outcome::HarnessError;
+                error = Some("product turn terminal durability is unknown; retry the original request key to observe evidence".into());
             }
             turn_lifecycle = match &outcome {
                 Outcome::Done => {

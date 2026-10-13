@@ -51,6 +51,7 @@ impl InvocationAdmissionSession<'_> {
         turn: TurnId,
         file: Option<InputFileEvidence>,
     ) -> Result<InvocationAdmission, KernelError> {
+        self.funding.journal.ensure_healthy()?;
         if mode.operator() && self.compaction_closed {
             return Err(KernelError::ContextResolution(
                 "the pinned compaction failure policy closed the run after an unproven summary"
@@ -63,7 +64,8 @@ impl InvocationAdmissionSession<'_> {
         let recovered = self
             .effects
             .guard_recovery(self.funding.journal.rollout, self.funding.journal.ledger);
-        if matches!(&recovered, Err(KernelError::Record(_))) {
+        if let Err(KernelError::Record(error)) = &recovered {
+            self.funding.journal.rollout.retain_failure(error);
             *self.funding.journal.record_failed = true;
             self.funding
                 .journal
@@ -89,6 +91,7 @@ impl InvocationAdmissionSession<'_> {
             )
             .map_err(|error| match error.into_record_error() {
                 Ok(error) => {
+                    self.funding.journal.rollout.retain_failure(&error);
                     *self.funding.journal.record_failed = true;
                     self.funding
                         .journal

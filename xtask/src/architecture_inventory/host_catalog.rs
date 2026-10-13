@@ -513,6 +513,17 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["no mutable directory, provider transport or filesystem authority"],
     },
     Surface {
+        path: "crates/cli/src/tui/remote_turn_start.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "retain one exact thread, run and UTF-8 request identity across explicit retries",
+            "bound same-key receipt observation without inferring runtime Applied or creating a new admission",
+        ],
+        next_seams: &[
+            "same-candidate real attach, submit, disconnect and reattach evidence remains required",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/tui/attachment_owner.rs",
         boundary: "cli-tui",
         responsibilities: &[

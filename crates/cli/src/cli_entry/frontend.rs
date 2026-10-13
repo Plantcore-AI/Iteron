@@ -121,8 +121,8 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
             format!("effort:{}", agent.effort().label()),
         ];
         // The default mode is what the footer also stays silent about; only a mode the operator
-        // chose (plan, acceptEdits, yolo) is worth a field here.
-        if agent.permission_mode() != iteron_protocol::PermissionMode::AcceptEdits {
+        // chose (default, acceptEdits, plan) is worth a field here.
+        if agent.permission_mode() != iteron_protocol::PermissionMode::Yolo {
             posture.push(format!("mode:{}", agent.permission_mode().label()));
         }
         if let Some(command) = &agent.verify_command {

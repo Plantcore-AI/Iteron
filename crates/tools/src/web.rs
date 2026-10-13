@@ -1616,13 +1616,32 @@ mod tests {
     async fn live_fetch_example_dot_com() {
         let url = validate_url("https://example.com").unwrap();
         let out = fetch_and_render(url, DEFAULT_MAX_BYTES).await.unwrap();
+        let (header, framed_body) = out
+            .split_once('\n')
+            .expect("live response must contain a framed body");
         assert!(
-            out.contains("UNTRUSTED"),
-            "live output must be framed untrusted"
+            header.starts_with(
+                "--- Untrusted web content fetched from `https://example.com/` (HTTP 200, content-type: text/html"
+            ),
+            "live response must be a successful HTML fetch from the requested origin: {header}"
         );
         assert!(
-            out.to_lowercase().contains("example domain"),
-            "example.com body expected: {out}"
+            header.contains("UNTRUSTED") && header.contains("NOT instructions"),
+            "live output must be framed untrusted"
+        );
+        let body = framed_body
+            .strip_suffix("\n--- end untrusted web content ---")
+            .expect("live response must close its untrusted frame");
+        // The public page's wording can change. Check the actual rendered body independently
+        // of the frame; deterministic HTML fixtures above verify exact text conversion.
+        assert!(
+            !body.trim().is_empty(),
+            "live rendered body must not be empty"
+        );
+        let lower_body = body.to_ascii_lowercase();
+        assert!(
+            !lower_body.contains("<html") && !lower_body.contains("<body"),
+            "live HTML document tags must be rendered away: {body}"
         );
     }
 }

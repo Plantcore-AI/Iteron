@@ -18,10 +18,13 @@ use iteron_protocol::{
 use iteron_workflow::AgentOutcome;
 use sha2::{Digest, Sha256};
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -138,7 +141,7 @@ impl DirectChildExecution {
                 };
                 child.inherit_force_cancel(control.force());
                 child.control.inherit_drain(control.drain());
-                (Some(child), None, Some(run))
+                (Some(Box::new(child)), None, Some(run))
             }
             DirectChildWork::Controller(children) => (None, Some(children), None),
         };
@@ -171,17 +174,30 @@ impl DirectChildExecution {
             Result<String, String>,
             WorkflowChildOutcome,
             Option<(RunId, Ledger)>,
-        ) = if let Some(child) = native.as_mut() {
+        ) = if run.is_some() {
+            let Some(mut child) = native.take() else {
+                return unknown_native_child(journal, turn, ticket);
+            };
             child.inherit_interrupt(stop.clone());
-            let mut execution = Box::pin(child.run_leaf(&prompt));
-            let outcome = loop {
+            // A boxed inline future still polls the child on the parent's native stack. Give
+            // the already-journaled child its own task while retaining cancellation custody.
+            let mut execution = NativeChildTask {
+                task: tokio::spawn(native_child_future(child, prompt)),
+                stop: stop.clone(),
+                joined: false,
+            };
+            let joined = loop {
                 match tokio::time::timeout(execution_control_poll(), &mut execution).await {
-                    Ok(outcome) => break outcome,
+                    Ok(joined) => break joined,
                     Err(_) => control.child_stop(journal, turn, &stop),
                 }
             };
             drop(execution);
             control.poll(journal, turn);
+            let (mut child, outcome) = match joined {
+                Ok(completed) => completed,
+                Err(_) => return unknown_native_child(journal, turn, ticket),
+            };
             let processes = child.settle_persistent_owned_processes().await;
             let policy = child.finalize_policy_run().is_ok();
             if !processes || !policy || !child.parent_effects_known() {
@@ -275,6 +291,63 @@ impl DirectChildExecution {
         Ok(super::kernel_child_accounting::KernelChildCompletion::with_child(result, accounting))
     }
 }
+
+type NativeChildResult = (Box<super::Agent>, Result<Outcome, KernelError>);
+
+// Explicitly erase the future at an ordinary function boundary: the leaf's drive loop contains
+// this same direct-child path, so an opaque spawned future would recurse through its Send proof.
+fn native_child_future(
+    mut child: Box<super::Agent>,
+    prompt: String,
+) -> Pin<Box<dyn Future<Output = NativeChildResult> + Send>> {
+    Box::pin(async move {
+        let outcome = child.run_leaf(&prompt).await;
+        (child, outcome)
+    })
+}
+
+struct NativeChildTask {
+    task: tokio::task::JoinHandle<NativeChildResult>,
+    stop: Arc<AtomicBool>,
+    joined: bool,
+}
+impl Future for NativeChildTask {
+    type Output = Result<NativeChildResult, tokio::task::JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = Pin::new(&mut self.task).poll(context);
+        if result.is_ready() {
+            self.joined = true;
+        }
+        result
+    }
+}
+impl Drop for NativeChildTask {
+    fn drop(&mut self) {
+        if !self.joined {
+            self.stop.store(true, Ordering::Release);
+            // Aborting requests future destruction; it is not physical cleanup evidence.
+            // The parent's durable intent stays unresolved when its waiter is dropped.
+            self.task.abort();
+        }
+    }
+}
+
+fn unknown_native_child(
+    journal: &mut KernelDispatchJournal<'_>,
+    turn: TurnId,
+    ticket: effects::EffectTicket,
+) -> Result<super::kernel_child_accounting::KernelChildCompletion, KernelError> {
+    journal.retain_unknown_child_accounting(turn, ticket.effect_id())?;
+    journal.settle(
+        ticket,
+        effects::Settlement::Unknown(
+            "native child task ended without its owned execution state".into(),
+        ),
+    )?;
+    Err(KernelError::UnknownEffects { count: 1 })
+}
+
 fn native_terminal(
     outcome: Result<Outcome, KernelError>,
     summary: &str,

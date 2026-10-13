@@ -4,8 +4,8 @@
 //! write-through source handle and handle-relative rename, followed by a file flush. Microsoft
 //! documents that NTFS write-through requests also flush associated metadata, including rename:
 //! https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew
-//! Relative rename uses the documented RootDirectory field:
-//! https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info
+//! Relative rename uses native FileRenameInformation with its documented RootDirectory field:
+//! https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
 //! Actual device durability still relies on the supported local NTFS/storage contract and must be
 //! validated with platform fault tests. FAT, remote shares and other filesystems are refused.
 
@@ -23,13 +23,14 @@ pub(crate) use private_scratch::WindowsPrivateScratch;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
-    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, NtCreateFile,
-    NtFlushBuffersFileEx,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0,
+    FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileRenameInformation, NtCreateFile,
+    NtFlushBuffersFileEx, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    LocalFree, OBJ_CASE_INSENSITIVE, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    UNICODE_STRING,
+    LocalFree, NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_INVALID_PARAMETER,
+    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SUCCESS, UNICODE_STRING,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -44,10 +45,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_RENAME_INFO_0,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FileDispositionInfo,
-    FileRenameInfo, GetDriveTypeW, GetFileInformationByHandle, GetVolumeInformationByHandleW,
-    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+    FILE_WRITE_ATTRIBUTES, FileDispositionInfo, GetDriveTypeW, GetFileInformationByHandle,
+    GetVolumeInformationByHandleW, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
+    SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::SystemServices::{
@@ -515,6 +516,55 @@ fn flush_directory(file: &File) -> Result<(), WindowsStateError> {
     Ok(())
 }
 
+/// Rename a held source beneath the held destination, using a validated single filename.
+/// The Win32 wrapper can reject this relative-root form with ERROR_INVALID_PARAMETER on Windows
+/// Server. The native API retains the same directory authority without converting
+/// the filename into a process-relative absolute path. Callers retain their publication barriers.
+fn rename_relative(
+    file: &File,
+    directory: &File,
+    target: &[u16],
+    replace: bool,
+) -> Result<(), NTSTATUS> {
+    if target.is_empty()
+        || target.len() > 255
+        || target.iter().any(|unit| matches!(*unit, 0 | 47 | 58 | 92))
+    {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let length = size_of::<FILE_RENAME_INFORMATION>() + (target.len() + 1) * size_of::<u16>();
+    let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: aligned storage covers the fixed header, bounded UTF-16 filename and trailing NUL.
+    unsafe {
+        (*information).Anonymous = FILE_RENAME_INFORMATION_0 {
+            ReplaceIfExists: replace,
+        };
+        (*information).RootDirectory = directory.as_raw_handle();
+        (*information).FileNameLength = (target.len() * size_of::<u16>()) as u32;
+        std::ptr::copy_nonoverlapping(
+            target.as_ptr(),
+            (*information).FileName.as_mut_ptr(),
+            target.len(),
+        );
+    }
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: the source is synchronous and DELETE-capable; the destination handle stays pinned.
+    let status = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut io,
+            information.cast(),
+            length as u32,
+            FileRenameInformation,
+        )
+    };
+    if status != STATUS_SUCCESS {
+        return Err(status);
+    }
+    Ok(())
+}
+
 /// Publish an exact host-derived package filename without adding metadata files to its signed tree.
 /// Create-new semantics preserve an existing file. Empty package files are legitimate. A failed
 /// write/flush after creation reports unknown; callers must not confirm a registry reference.
@@ -714,33 +764,9 @@ impl WindowsSnapshotStore {
             .and_then(|_| file.sync_all())
             .map_err(|_| WindowsStateError::Unavailable)?;
         let target = self.snapshot_name.encode_utf16().collect::<Vec<_>>();
-        let header = offset_of!(FILE_RENAME_INFO, FileName);
-        let length = header + (target.len() + 1) * size_of::<u16>();
-        let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
-        let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        // SAFETY: aligned buffer covers the fixed structure plus complete UTF-16 name and NUL.
-        unsafe {
-            (*info).Anonymous = FILE_RENAME_INFO_0 {
-                ReplaceIfExists: true,
-            };
-            (*info).RootDirectory = self.directory.as_raw_handle();
-            (*info).FileNameLength = (target.len() * size_of::<u16>()) as u32;
-            std::ptr::copy_nonoverlapping(
-                target.as_ptr(),
-                (*info).FileName.as_mut_ptr(),
-                target.len(),
-            );
-        }
-        // SAFETY: the source has DELETE + write-through access; target resolves only in pinned dir.
-        let renamed = unsafe {
-            SetFileInformationByHandle(
-                file.as_raw_handle(),
-                FileRenameInfo,
-                info.cast(),
-                length as u32,
-            )
-        };
-        if renamed == 0 || file.sync_all().is_err() {
+        if rename_relative(&file, &self.directory, &target, true).is_err()
+            || file.sync_all().is_err()
+        {
             self.poisoned = true;
             return Err(WindowsStateError::OutcomeUnknown);
         }

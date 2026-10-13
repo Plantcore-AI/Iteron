@@ -13,7 +13,8 @@ enum Decision {
 fn attach(address: SocketAddr, token: &str) -> (TcpStream, BufReader<TcpStream>, String) {
     let mut connection = connect(address);
     let mut greeting = hello(token, PROTOCOL_VERSION, 0);
-    greeting["product_contract_version"] = json!(1);
+    greeting["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
     send(&mut connection, greeting);
     let mut reader = BufReader::new(connection.try_clone().unwrap());
     let hello = receive(&mut reader);
@@ -131,17 +132,19 @@ fn journey(decision: Decision) {
     let (mut first, mut first_read, thread) = attach(address, &token);
     let (mut second, mut second_read, second_thread) = attach(address, &token);
     assert_eq!(thread, second_thread);
+    let text =
+        "Create the specified marker using the native write tool after the operator decision.";
+    let request_key = super::super::turn_start_journey::request_key(&thread, text);
     send(
         &mut first,
         control_frame(
             1,
-            json!({"type":"turn_start","thread_id":thread,
-        "text":"Create the specified marker using the native write tool after the operator decision."}),
+            json!({"type":"turn_start","request_key":request_key,"thread_id":thread,"text":text}),
         ),
     );
     assert_eq!(
         control_reply(&mut first_read, 1)["type"],
-        "control_queued_v1"
+        "turn_start_receipt_v2"
     );
     let observed = if matches!(decision, Decision::Unavailable) {
         None

@@ -50,6 +50,12 @@ pub(crate) struct EffectiveTunablesView {
 // authenticated effective values and provenance; decoding it must not resolve new defaults.
 const R25_REGISTRY_DIGEST_SHA256: &str =
     "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3";
+const R27_REGISTRY_DIGEST_SHA256: &str =
+    "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb";
+const R28_REGISTRY_DIGEST_SHA256: &str =
+    "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac";
+const R29_REGISTRY_DIGEST_SHA256: &str =
+    "860a7618e4d7c69b77a55ba0856673cf618bef5cc6fde9f98a5aac58aaa31f3b";
 fn r26_registry_digest_sha256() -> &'static str {
     "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2"
 }
@@ -57,6 +63,9 @@ fn r26_registry_digest_sha256() -> &'static str {
 fn supported_checkpoint_registry(revision: u16, digest: &str) -> bool {
     (revision == iteron_tunables::REGISTRY_REVISION
         && digest == iteron_tunables::REGISTRY_DIGEST_SHA256)
+        || (revision == 29 && digest == R29_REGISTRY_DIGEST_SHA256)
+        || (revision == 28 && digest == R28_REGISTRY_DIGEST_SHA256)
+        || (revision == 27 && digest == R27_REGISTRY_DIGEST_SHA256)
         || (revision == 26 && digest == r26_registry_digest_sha256())
         || (revision == 25 && digest == R25_REGISTRY_DIGEST_SHA256)
 }
@@ -272,7 +281,7 @@ impl EffectiveTunablesView {
         let provenance = entry
             .provenance
             .as_ref()
-            .filter(|value| canonical_provenance_matches(family, value))
+            .filter(|value| canonical_provenance_matches(family, value, self.registry_revision))
             .ok_or_else(|| EffectiveViewError::ProvenanceMismatch(family_id.to_owned()))?;
         Ok(provenance["source"]["type"] == "default")
     }
@@ -311,10 +320,9 @@ impl EffectiveTunablesView {
                         ));
                     }
                     if !self.entry_states.get(family.id).is_some_and(|entry| {
-                        entry
-                            .provenance
-                            .as_ref()
-                            .is_some_and(|value| canonical_provenance_matches(family, value))
+                        entry.provenance.as_ref().is_some_and(|value| {
+                            canonical_provenance_matches(family, value, self.registry_revision)
+                        })
                     }) {
                         return Err(EffectiveViewError::ProvenanceMismatch(family.id.to_owned()));
                     }
@@ -341,10 +349,9 @@ impl EffectiveTunablesView {
                         ));
                     }
                     if !self.entry_states.get(family.id).is_some_and(|entry| {
-                        entry
-                            .provenance
-                            .as_ref()
-                            .is_some_and(|value| canonical_provenance_matches(family, value))
+                        entry.provenance.as_ref().is_some_and(|value| {
+                            canonical_provenance_matches(family, value, self.registry_revision)
+                        })
                     }) {
                         return Err(EffectiveViewError::ProvenanceMismatch(family.id.to_owned()));
                     }
@@ -631,6 +638,7 @@ fn validate_inactive_fixed_authority(
 fn canonical_provenance_matches(
     family: &iteron_tunables::Family,
     provenance: &serde_json::Value,
+    registry_revision: u16,
 ) -> bool {
     let Some(source) = provenance.get("source") else {
         return false;
@@ -647,7 +655,17 @@ fn canonical_provenance_matches(
                     == Some(binding.locator)
         }),
         Some("default") => {
-            let resolver_id = default_resolver_id(family.default.resolver);
+            let resolver = if registry_revision <= 29
+                && matches!(
+                    family.id,
+                    "multimodal_input_admission_decode_envelope"
+                        | "provider_discovery_account_probe_cache_policy"
+                ) {
+                iteron_tunables::DefaultResolver::Literal
+            } else {
+                family.default.resolver
+            };
+            let resolver_id = default_resolver_id(resolver);
             source
                 .get("resolver_id")
                 .and_then(serde_json::Value::as_str)
@@ -778,49 +796,54 @@ mod tests {
     }
 
     #[test]
-    fn historical_r25_registry_and_fixed_receipt_are_admitted_exactly() {
-        assert!(supported_checkpoint_registry(
-            25,
-            R25_REGISTRY_DIGEST_SHA256
-        ));
-        assert!(!supported_checkpoint_registry(
-            25,
-            iteron_tunables::REGISTRY_DIGEST_SHA256
-        ));
-        assert!(!supported_checkpoint_registry(
-            24,
-            R25_REGISTRY_DIGEST_SHA256
-        ));
-
+    fn historical_permission_registries_and_fixed_receipts_are_admitted_exactly() {
         let owner = provider_discovery_owner_value();
         let authority = FixedAuthorityId::ProviderDiscoveryBootstrap;
         let family = "provider_discovery_account_probe_cache_policy";
-        let historical_digest = fixed_authority_value_digest_sha256_at_registry(
-            iteron_tunables::REGISTRY_ID,
-            25,
-            R25_REGISTRY_DIGEST_SHA256,
-            family,
-            authority,
-            &owner,
-        )
-        .unwrap();
-        let binding = RunGenesisFixedAuthorityBindingV2 {
-            authority: RunGenesisFixedAuthorityIdV2::ProviderDiscoveryBootstrap,
-            owner_value_digest_sha256: historical_digest,
-        };
-        validate_fixed_authority_binding_at_registry(
-            iteron_tunables::REGISTRY_ID,
-            25,
-            R25_REGISTRY_DIGEST_SHA256,
-            family,
-            authority,
-            &owner,
-            Some(&binding),
-        )
-        .expect("sealed r25 fixed receipt remains valid under its historical registry");
-        assert!(
-            validate_fixed_authority_binding(family, authority, &owner, Some(&binding),).is_err()
-        );
+        for (revision, registry_digest) in [
+            (25, R25_REGISTRY_DIGEST_SHA256),
+            (27, R27_REGISTRY_DIGEST_SHA256),
+            (28, R28_REGISTRY_DIGEST_SHA256),
+            (29, R29_REGISTRY_DIGEST_SHA256),
+        ] {
+            assert!(supported_checkpoint_registry(revision, registry_digest));
+            assert!(!supported_checkpoint_registry(
+                revision,
+                iteron_tunables::REGISTRY_DIGEST_SHA256
+            ));
+            assert!(!supported_checkpoint_registry(
+                revision - 1,
+                registry_digest
+            ));
+            let historical_digest = fixed_authority_value_digest_sha256_at_registry(
+                iteron_tunables::REGISTRY_ID,
+                revision,
+                registry_digest,
+                family,
+                authority,
+                &owner,
+            )
+            .unwrap();
+            let binding = RunGenesisFixedAuthorityBindingV2 {
+                authority: RunGenesisFixedAuthorityIdV2::ProviderDiscoveryBootstrap,
+                owner_value_digest_sha256: historical_digest,
+            };
+            validate_fixed_authority_binding_at_registry(
+                iteron_tunables::REGISTRY_ID,
+                revision,
+                registry_digest,
+                family,
+                authority,
+                &owner,
+                Some(&binding),
+            )
+            .expect("sealed receipt remains valid under its exact historical registry");
+            assert!(
+                validate_fixed_authority_binding(family, authority, &owner, Some(&binding))
+                    .is_err(),
+                "historical receipt must not silently acquire the new registry identity"
+            );
+        }
     }
 
     #[test]
@@ -904,10 +927,18 @@ mod tests {
                 "evidence_digest_sha256": "a".repeat(64),
             }
         });
-        assert!(canonical_provenance_matches(family, &valid));
+        assert!(canonical_provenance_matches(
+            family,
+            &valid,
+            iteron_tunables::REGISTRY_REVISION
+        ));
         let mut forged = valid;
         forged["source"]["declared_locator"] = serde_json::json!("crates/forged.rs");
-        assert!(!canonical_provenance_matches(family, &forged));
+        assert!(!canonical_provenance_matches(
+            family,
+            &forged,
+            iteron_tunables::REGISTRY_REVISION
+        ));
     }
 
     #[test]

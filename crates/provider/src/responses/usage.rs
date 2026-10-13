@@ -1,35 +1,40 @@
 //! Native Responses usage normalization. Missing cache-write evidence remains unknown; an
 //! explicitly reported zero is evidence, rather than a compatibility-schema default.
-use crate::{ProviderError, UsageReport};
+use crate::decode::invalid;
+use crate::{DecodeCode as Code, DecodeField as Field, ProviderError, UsageReport};
 use iteron_protocol::Usage;
 
 pub(super) fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, ProviderError> {
     let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) else {
         return Ok(UsageReport::provider_omitted());
     };
-    let total_input = required_u64(usage, "input_tokens")?;
-    let cache_read = optional_nested_u64(usage, "/input_tokens_details/cached_tokens")?;
+    let total_input = required_u64(usage, "input_tokens", Field::ResponseInputTokens)?;
+    let cache_read = optional_nested_u64(
+        usage,
+        "/input_tokens_details/cached_tokens",
+        Field::ResponseCachedTokens,
+    )?;
     let reported_creation = usage.pointer("/input_tokens_details/cache_write_tokens");
     let cache_creation = match reported_creation {
-        Some(value) => value.as_u64().ok_or_else(|| {
-            ProviderError::Decode(
-                "Responses cache write tokens were not an unsigned integer".into(),
-            )
-        })?,
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| invalid(Code::InvalidType, Field::ResponseCacheWriteTokens))?,
         None => 0,
     };
-    let cached = cache_read.checked_add(cache_creation).ok_or_else(|| {
-        ProviderError::Decode("Responses cache counters overflowed total input tokens".into())
-    })?;
-    let input = total_input.checked_sub(cached).ok_or_else(|| {
-        ProviderError::Decode("Responses cache counters exceeded total input tokens".into())
-    })?;
-    let output = required_u64(usage, "output_tokens")?;
-    let thinking = optional_nested_u64(usage, "/output_tokens_details/reasoning_tokens")?;
+    let cached = cache_read
+        .checked_add(cache_creation)
+        .ok_or_else(|| invalid(Code::InvalidValue, Field::ResponseInputTokens))?;
+    let input = total_input
+        .checked_sub(cached)
+        .ok_or_else(|| invalid(Code::InvalidValue, Field::ResponseInputTokens))?;
+    let output = required_u64(usage, "output_tokens", Field::ResponseOutputTokens)?;
+    let thinking = optional_nested_u64(
+        usage,
+        "/output_tokens_details/reasoning_tokens",
+        Field::ResponseReasoningTokens,
+    )?;
     if thinking > output {
-        return Err(ProviderError::Decode(
-            "Responses reasoning tokens exceeded total output tokens".into(),
-        ));
+        return Err(invalid(Code::InvalidValue, Field::ResponseReasoningTokens));
     }
     let usage = Usage {
         input,
@@ -45,22 +50,26 @@ pub(super) fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, P
     })
 }
 
-fn required_u64(value: &serde_json::Value, field: &str) -> Result<u64, ProviderError> {
+fn required_u64(value: &serde_json::Value, key: &str, field: Field) -> Result<u64, ProviderError> {
+    let value = value
+        .get(key)
+        .ok_or_else(|| invalid(Code::MissingField, field))?;
     value
-        .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| ProviderError::Decode(format!("Responses event lacked integer {field}")))
+        .as_u64()
+        .ok_or_else(|| invalid(Code::InvalidType, field))
 }
 
-fn optional_nested_u64(value: &serde_json::Value, pointer: &str) -> Result<u64, ProviderError> {
+fn optional_nested_u64(
+    value: &serde_json::Value,
+    pointer: &str,
+    field: Field,
+) -> Result<u64, ProviderError> {
     let Some(token) = value.pointer(pointer) else {
         return Ok(0);
     };
-    token.as_u64().ok_or_else(|| {
-        ProviderError::Decode(format!(
-            "Responses usage field {pointer} was not an unsigned integer"
-        ))
-    })
+    token
+        .as_u64()
+        .ok_or_else(|| invalid(Code::InvalidType, field))
 }
 
 #[cfg(test)]

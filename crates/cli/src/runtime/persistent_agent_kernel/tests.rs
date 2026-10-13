@@ -796,9 +796,32 @@ async fn real_agent_retains_context_and_exact_identity_across_followups() {
 #[tokio::test]
 async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
     let root = Workspace::new();
-    let provider = Arc::new(ProviderFixture::default());
+    // Both durable turns consume one lifetime budget. Give this positive IO journey the
+    // fixture host's finite allowance up front; interrupt/follow-up must never refill it.
+    let lifetime_wall_ms = 30_000;
+    let provider = Arc::new(ProviderFixture {
+        lifetime_wall_ms: Some(lifetime_wall_ms),
+        ..ProviderFixture::default()
+    });
     let (host, _runtime, settled, _keepalive) = setup(&root, provider.clone(), true);
-    let child = spawn(&host, "block-tool");
+    let child = host
+        .command(
+            AgentActor::Operator,
+            "spawn",
+            AgentCommandV1::Spawn {
+                parent_id: AgentIdV1(1),
+                label: "resident".into(),
+                task: "block-tool".into(),
+                capabilities: CapabilitySet::only(Capability::ReadOnly),
+                budget: AgentBudgetV1 {
+                    wall_ms: lifetime_wall_ms,
+                    ..budget(8)
+                },
+                write_paths: vec![],
+            },
+        )
+        .unwrap()
+        .agent_id;
     until(|| provider.tool_started.load(Ordering::SeqCst) == 1).await;
     let epoch = host
         .inspect(AgentActor::Operator, child)

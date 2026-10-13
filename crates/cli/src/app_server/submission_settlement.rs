@@ -150,6 +150,13 @@ pub(super) async fn publish_submission(
     state: SubmissionLifecycleState,
     reason_code: Option<&'static str>,
 ) {
+    if matches!(
+        state,
+        SubmissionLifecycleState::Rejected | SubmissionLifecycleState::Expired
+    ) && let Some(service) = events.contract.turn_start_service()
+    {
+        service.reject_pending(id);
+    }
     events.record_submission_lifecycle(id, state, reason_code);
     let _ = events
         .publish(ServerEvent::Submission {

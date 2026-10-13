@@ -142,7 +142,7 @@ async fn actual_read_witness_binds_raw_bom_crlf_bytes_and_explicit_replacement()
         .run(call("plain-read", "read_file", json!({"path":"dirty.txt"})))
         .await;
     assert!(!default.is_error, "{}", default.content);
-    assert!(!default.content.contains("raw_sha256:"));
+    assert!(!default.content.contains("raw_sha256="));
     let read = registry
         .run(call(
             "witness",
@@ -154,7 +154,7 @@ async fn actual_read_witness_binds_raw_bom_crlf_bytes_and_explicit_replacement()
     let digest = format!("{:x}", Sha256::digest(original));
     assert!(
         read.content
-            .starts_with(&format!("raw_sha256: {digest}\n     1\tuser header"))
+            .starts_with(&format!("raw_sha256=sha256-{digest}\n     1\tuser header"))
     );
     assert!(read.content.contains("truncated before line 2"));
     assert!(read.content.len() <= 512);
@@ -178,6 +178,39 @@ async fn actual_read_witness_binds_raw_bom_crlf_bytes_and_explicit_replacement()
 }
 
 #[tokio::test]
+async fn actual_read_witness_does_not_relax_argument_or_preimage_validation() {
+    let root = TestRoot::new();
+    let original = b"42\n";
+    std::fs::write(root.0.join("strict.txt"), original).unwrap();
+    let registry = registry(&root, false);
+    let read = registry
+        .run(call(
+            "invalid-boolean",
+            "read_file",
+            json!({"path":"strict.txt","include_sha256":"True"}),
+        ))
+        .await;
+    assert!(read.is_error);
+    assert!(!read.content.contains("raw_sha256="));
+    let digest = format!("{:x}", Sha256::digest(original));
+    for (id, expected_sha256) in [
+        ("prefixed-token", format!("sha256-{digest}")),
+        ("entire-header", format!("raw_sha256=sha256-{digest}")),
+    ] {
+        let captured = registry
+            .run_effect_captured(call(
+                id,
+                "write_file",
+                json!({"path":"strict.txt","content":"replacement","expected_sha256":expected_sha256}),
+            ))
+            .await;
+        assert!(matches!(&captured.execution, ToolExecution::Definite(result) if result.is_error));
+        assert!(captured.native_mutation.is_none());
+        assert_eq!(std::fs::read(root.0.join("strict.txt")).unwrap(), original);
+    }
+}
+
+#[tokio::test]
 async fn actual_human_edit_after_read_refuses_stale_whole_replacement() {
     let root = TestRoot::new();
     std::fs::write(root.0.join("race.txt"), b"before\n").unwrap();
@@ -198,7 +231,7 @@ async fn actual_human_edit_after_read_refuses_stale_whole_replacement() {
         .lines()
         .next()
         .unwrap()
-        .strip_prefix("raw_sha256: ")
+        .strip_prefix("raw_sha256=sha256-")
         .unwrap();
     std::fs::write(root.0.join("race.txt"), b"human!\n").unwrap();
     let result = registry

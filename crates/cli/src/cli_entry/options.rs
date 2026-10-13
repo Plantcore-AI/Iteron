@@ -402,7 +402,7 @@ pub(crate) struct Cli {
     pub(crate) ask_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// fresh default is `acceptEdits` with dangerous bypass. Explicit default/acceptEdits restores
+    /// fresh default is `yolo` with dangerous bypass. Explicit default/acceptEdits restores
     /// approval gates unless the dangerous flag is also given; plan is always confined read-only.
     #[arg(long)]
     pub(crate) mode: Option<String>,

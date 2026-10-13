@@ -496,6 +496,14 @@ pub(super) fn product_reply(
     client: &crate::app_server::AppServerClient,
     command: ProductControlV1,
 ) -> Value {
+    if let ProductControlV1::TurnStart {
+        thread_id,
+        request_key,
+        text,
+    } = command
+    {
+        return client.turn_start_v2(thread_id, request_key, text);
+    }
     let Some(snapshot) = client.thread_snapshot_v1() else {
         return product_refused("thread_unavailable");
     };
@@ -524,32 +532,6 @@ pub(super) fn product_reply(
                 json!({"type": "product_events_error_v1", "contract_version": PRODUCT_CONTRACT_VERSION, "error": error})
             }
             None => product_refused("thread_unavailable"),
-        };
-    }
-    if let ProductControlV1::TurnStart { text, .. } = &command {
-        if snapshot
-            .turn
-            .as_ref()
-            .is_some_and(|turn| turn.state == TurnStateV1::Running)
-        {
-            return product_refused("turn_active");
-        }
-        if text.trim().is_empty() || text.len() > MAX_TASK_TEXT_BYTES {
-            return product_refused("invalid_turn_text");
-        }
-        return match client.submit_identified(iteron_protocol::Op::UserInput { text: text.clone() })
-        {
-            Ok(id) => json!({
-                "type": "control_queued_v1",
-                "contract_version": PRODUCT_CONTRACT_VERSION,
-                "submission_id": id,
-                "thread_id": snapshot.thread_id,
-                "turn_id": null,
-            }),
-            Err(crate::app_server::SubmitError::Busy) => product_refused("busy"),
-            Err(crate::app_server::SubmitError::Disconnected) => {
-                product_refused("runtime_disconnected")
-            }
         };
     }
     let Some(turn) = snapshot.turn.as_ref() else {
@@ -887,7 +869,8 @@ mod tests {
     }
 
     #[test]
-    fn product_turn_start_queues_input_without_inventing_an_admitted_turn() {
+    fn product_turn_start_without_record_authority_is_unknown_and_never_enqueues() {
+        use sha2::{Digest, Sha256};
         let (sender, mut submissions) = tokio::sync::mpsc::channel(2);
         let client =
             crate::app_server::AppServerClient::connect(iteron_protocol::PROTOCOL_VERSION, sender)
@@ -895,20 +878,35 @@ mod tests {
         let thread_id = iteron_protocol::SessionId("session-r".into());
         client
             .seed_contract_identity_for_test(thread_id.clone(), iteron_protocol::RunId("r".into()));
-        let queued = product_reply(
+        let text = "fix the test";
+        let mut uuid = [0u8; 16];
+        uuid[6] = 0x70;
+        uuid[8] = 0x80;
+        uuid[15] = 1;
+        let mut digest = Sha256::new();
+        digest.update(uuid);
+        digest.update((thread_id.0.len() as u64).to_be_bytes());
+        digest.update(thread_id.0.as_bytes());
+        digest.update((text.len() as u64).to_be_bytes());
+        digest.update(text.as_bytes());
+        let reply = product_reply(
             &client,
             ProductControlV1::TurnStart {
                 thread_id,
-                text: "fix the test".into(),
+                request_key: format!(
+                    "00000000-0000-7000-8000-000000000001:{:x}",
+                    digest.finalize()
+                ),
+                text: text.into(),
             },
         );
-        assert_eq!(queued["type"], "control_queued_v1");
-        assert!(queued["turn_id"].is_null());
+        assert_eq!(reply["type"], "turn_start_receipt_v2");
+        assert_eq!(reply["state"], "admission_unknown");
+        for field in ["submission_id", "run_id", "turn_id"] {
+            assert!(reply[field].is_null());
+        }
         assert!(client.thread_snapshot_v1().unwrap().turn.is_none());
-        assert!(matches!(
-            &submissions.try_recv().unwrap().op,
-            iteron_protocol::Op::UserInput { text } if text == "fix the test"
-        ));
+        assert!(submissions.try_recv().is_err());
     }
 
     #[test]

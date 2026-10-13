@@ -24,9 +24,7 @@ pub(super) struct RequestAdmissionJournal<'a> {
 impl RequestAdmissionJournal<'_> {
     pub(super) fn model_phase(&mut self, turn: TurnId) -> Result<(), KernelError> {
         if *self.record_failed {
-            return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
-                "model preparation requires an available record writer",
-            ))));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         #[cfg(test)]
         if *self.fault == Some(DurableAppendFault::BestEffort) {
@@ -60,6 +58,7 @@ impl RequestAdmissionJournal<'_> {
             .record_kernel_tokens(u64::try_from(tokens).unwrap_or(u64::MAX));
     }
     fn failed(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

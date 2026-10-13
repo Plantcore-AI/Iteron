@@ -64,6 +64,7 @@ impl InvocationFundingTransaction<'_> {
             let scoped =
                 super::route_validation::replay_scoped_rollout(self.journal.rollout.path())
                     .map_err(|error| {
+                        self.journal.rollout.retain_failure(&error);
                         *self.journal.record_failed = true;
                         self.journal.diagnostics.emit(
                             iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {},

@@ -795,6 +795,7 @@ impl Agent {
     /// strictly richer here; the record stays the authority for the paths that cross a process
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
+        let _foreground = self.rollout.foreground_activity()?;
         if self.transcript_state.working().is_none() {
             let live_owner = self.transcript_state.live_owner(&self.rollout);
             let live_control = match (&self.persistent_agents, &self.persistent_mailbox) {
@@ -842,7 +843,8 @@ impl Agent {
                 let recovered = self
                     .effect_journal
                     .guard_recovery(&mut self.rollout, &mut self.ledger);
-                if matches!(&recovered, Err(KernelError::Record(_))) {
+                if let Err(KernelError::Record(error)) = &recovered {
+                    self.rollout.retain_failure(error);
                     self.record_failed = true;
                     self.diagnostic_record_append_failed();
                 }

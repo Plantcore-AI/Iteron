@@ -134,7 +134,7 @@ fn failed_applied_draft_restores_exact_attachments_only_on_explicit_empty_editor
         .unwrap();
     let raw = editor.text();
     let expanded = editor.submission_text();
-    let revision = editor.persistence_revision();
+    let revision = editor.draft_revision();
     let id = SubmissionId(31);
     owner.submission_accepted(id, Instant::now());
     owner.retain_draft_recovery(editor.owned_draft());

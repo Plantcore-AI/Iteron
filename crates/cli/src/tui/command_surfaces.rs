@@ -125,7 +125,11 @@ pub(super) fn open_picker(
         }
         "mode" => (
             "Permission mode",
-            mode_picker_items(session.permission_mode(), session.permission_rules()),
+            mode_picker_items(
+                session.permission_mode(),
+                session.permission_rules(),
+                session.bypass_permissions(),
+            ),
         ),
         "permissions" => (
             "Permissions",

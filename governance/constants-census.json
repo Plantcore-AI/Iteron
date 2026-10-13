@@ -11,14 +11,14 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 218,
+      "bounded": 217,
       "searchable": 264,
-      "structural": 378
+      "structural": 389
     },
     "ctx": {
       "bounded": 53,
       "searchable": 35,
-      "structural": 22
+      "structural": 24
     },
     "eval": {
       "bounded": 41,
@@ -68,12 +68,12 @@
     "provider": {
       "bounded": 70,
       "searchable": 33,
-      "structural": 49
+      "structural": 51
     },
     "record": {
       "bounded": 31,
       "searchable": 22,
-      "structural": 59
+      "structural": 68
     },
     "sandbox": {
       "bounded": 6,
@@ -98,12 +98,12 @@
     "tools": {
       "bounded": 131,
       "searchable": 67,
-      "structural": 46
+      "structural": 52
     },
     "tunables": {
       "bounded": 18,
       "searchable": 4,
-      "structural": 111
+      "structural": 112
     },
     "verify": {
       "bounded": 7,
@@ -117,7 +117,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1468,
-  "structural": 1151,
-  "total": 2619
+  "settable": 1467,
+  "structural": 1182,
+  "total": 2649
 }

@@ -275,7 +275,15 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
     let run = "run-restore";
     let (root, mut rollout) = rollout("restore", run);
     let mut first = recorder(run);
-    append_selected(&mut first, &mut rollout, "core/router", TurnId(1));
+    let original_zero = append_selected(&mut first, &mut rollout, "core/router", TurnId(1));
+    // A crash can discard a minted opportunity without a durable decision, leaving a sequence
+    // gap. It is outside turn one so that turn's durable outcome is still legitimate.
+    let _unpersisted = first
+        .begin_opportunity(&SlotId("core/router".into()), None)
+        .unwrap();
+    let original_two = append_selected(&mut first, &mut rollout, "core/router", TurnId(1));
+    assert!(original_zero.opportunity_id.0.ends_with(":0"));
+    assert!(original_two.opportunity_id.0.ends_with(":2"));
     let turn_one = first.turn_join(TurnId(1));
     first
         .append_turn_outcome(&mut rollout, TurnId(1), &turn_one, outcome())
@@ -287,6 +295,10 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
     let mut restored =
         PolicyEvidenceRecorder::restore(RunId(run.into()), digest('f'), bindings(), &events)
             .unwrap();
+    // An actual new process restarts NEXT_RECORDER_ID. Same-process restore otherwise masks
+    // collisions by allocating a different recorder id; the TCP journey covers the OS boundary.
+    restored.recorder_id = first.recorder_id;
+    assert_eq!(restored.turn_join(TurnId(1)), turn_one);
     assert!(restored.is_turn_terminal(TurnId(1)));
     assert!(matches!(
         restored.begin_opportunity(&SlotId("core/router".into()), Some(TurnId(1))),
@@ -295,9 +307,30 @@ fn replay_restores_joins_ordinals_and_terminal_guards() {
 
     let mut reopened =
         iteron_record::Rollout::open(&root, &RunId(run.into()), TenantId::default()).unwrap();
-    let evidence = append_selected(&mut restored, &mut reopened, "core/context", TurnId(2));
-    assert_eq!(evidence.decision_ordinal, 1);
-    assert_eq!(restored.run_join().opportunity_count, 2);
+    let resumed_one = append_selected(&mut restored, &mut reopened, "core/router", TurnId(2));
+    let resumed_three = append_selected(&mut restored, &mut reopened, "core/router", TurnId(2));
+    assert_eq!(resumed_one.decision_ordinal, 2);
+    assert_eq!(resumed_three.decision_ordinal, 3);
+    assert_eq!(
+        BTreeSet::from([
+            original_zero.opportunity_id,
+            original_two.opportunity_id,
+            resumed_one.opportunity_id,
+            resumed_three.opportunity_id,
+        ])
+        .len(),
+        4
+    );
+    assert_eq!(restored.turn_join(TurnId(1)), turn_one);
+    assert_eq!(restored.run_join().opportunity_count, 4);
+    let join_before_exhaustion = restored.run_join();
+    restored.next_opportunity_sequence = u64::MAX;
+    assert!(matches!(
+        restored.begin_opportunity(&SlotId("core/router".into()), Some(TurnId(2))),
+        Err(PolicyEvidenceRecorderError::CounterExhausted)
+    ));
+    assert_eq!(restored.run_join(), join_before_exhaustion);
+    assert_eq!(restored.pending_opportunity_count(), 0);
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }

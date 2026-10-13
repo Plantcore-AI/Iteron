@@ -1243,7 +1243,7 @@ mod tests {
     #[test]
     fn mode_picker_hint_tracks_the_effective_code_grant() {
         let hint_for = |rules: &PermissionRules, mode: PermissionMode| {
-            mode_picker_items(mode, rules)
+            mode_picker_items(mode, rules, false)
                 .into_iter()
                 .find(|item| item.label == mode.label())
                 .expect("every mode is offered")
@@ -1279,17 +1279,17 @@ mod tests {
             "edits auto; code denied"
         );
 
-        // The two modes whose posture no session rule can change keep their fixed wording.
+        // Plan stays read-only; gated YOLO still reports the actual code rule.
         assert_eq!(
             hint_for(&allowed, PermissionMode::Plan),
             "read-only; propose a plan first"
         );
         assert_eq!(
             hint_for(&allowed, PermissionMode::Yolo),
-            "auto-approve (still asks for trust-mutating + egress)"
+            "trust and external actions follow permission rules; code auto"
         );
         assert!(
-            mode_picker_items(PermissionMode::Plan, &none)
+            mode_picker_items(PermissionMode::Plan, &none, false)
                 .iter()
                 .any(|item| item.label == PermissionMode::Plan.label() && item.is_current),
             "the active mode stays pre-selected"
@@ -1297,8 +1297,47 @@ mod tests {
     }
 
     #[test]
+    fn mode_picker_describes_bypass_without_hiding_plan_or_explicit_denies() {
+        let mut rules = PermissionRules::new();
+        for denied in [false, true] {
+            if denied {
+                rules
+                    .try_set_cap(Capability::CodeExecuting, Verdict::Deny)
+                    .unwrap();
+            }
+            let items = mode_picker_items(PermissionMode::Yolo, &rules, true);
+            for mode in [
+                PermissionMode::Default,
+                PermissionMode::AcceptEdits,
+                PermissionMode::Yolo,
+            ] {
+                let item = items
+                    .iter()
+                    .find(|item| item.label == mode.label())
+                    .unwrap();
+                assert!(item.hint.contains("bypass active"), "{}", item.hint);
+                assert!(item.hint.contains("explicit denies and limits apply"));
+                assert!(item.hint.contains(if denied {
+                    "code denied"
+                } else {
+                    "code auto"
+                }));
+                assert!(!item.hint.contains("prompt"));
+                assert!(!item.hint.contains("still asks"));
+            }
+            let plan = items
+                .iter()
+                .find(|item| item.label == PermissionMode::Plan.label())
+                .unwrap();
+            assert!(plan.hint.contains("read-only"));
+            assert!(!plan.hint.contains("bypass active"));
+            assert!(items.iter().any(|item| item.label == "yolo" && item.is_current));
+        }
+    }
+
+    #[test]
     fn the_permission_picker_states_the_bypass_instead_of_listing_rules_that_do_not_decide() {
-        // The default posture auto-approves every tool. A picker that renders "ask every time"
+        // Bypass auto-approves asking decisions within the authority ceiling. A picker with "ask"
         // rows without saying so would be describing a gate that is not running.
         let gated = permission_picker_items(&PermissionRules::new(), false)
             .into_iter()
@@ -1316,7 +1355,7 @@ mod tests {
             first.hint
         );
         assert!(
-            first.hint.contains("deny"),
+            first.hint.contains("denies"),
             "an explicit deny still applies and the screen must not imply otherwise: {}",
             first.hint
         );
@@ -1878,6 +1917,11 @@ mod tests {
     #[test]
     fn production_stream_path_parses_one_mebibyte_linearly_and_finalizes_exactly() {
         let mut app = App::new();
+        // Use the same content width as the frame, including its reserved scrollbar gutter.
+        // Prewarming at the terminal width would correctly trigger one resize rebuild on paint.
+        let content_width =
+            surface::Surface::resolve(Rect::new(0, 0, 80, 18), 1, 0, 0, true, false)
+                .transcript_content_width();
         let chunk = "streaming-word ".repeat(256);
         let target = 1024 * 1024;
         while app.assistant.authority().len() < target {
@@ -1890,7 +1934,7 @@ mod tests {
                 ..
             } = &mut app;
             assistant.prepare_layout(super::live_markdown::LiveMarkdownRenderContext {
-                width: 80,
+                width: content_width,
                 theme_epoch: *theme_epoch,
                 theme,
                 hyperlinks: hyperlink_policy,
@@ -1909,6 +1953,7 @@ mod tests {
         for _ in 0..8 {
             let screen = render_text(&mut app, 80, 18);
             assert!(screen.contains("streaming-word"));
+            assert_eq!(app.geometry.cache_width(), content_width);
         }
         assert_eq!(
             app.assistant.layout().laid_out_source_bytes(),
@@ -2524,7 +2569,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .unwrap();
 
         let screen = render_text(&mut app, 80, 14);
-        assert!(screen.contains("▧ #1"));
+        assert!(screen.contains("image #1"));
         assert!(screen.contains("clipboard.png"));
         assert!(screen.contains("alt+backspace"));
         assert!(screen.contains("inspect"));
@@ -2892,8 +2937,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
             assert!(
-                screen.contains("iteron"),
-                "compact wordmark at {width}x{height}"
+                screen.contains("████"),
+                "welcome artwork at {width}x{height}"
             );
             assert!(screen.contains('›'), "composer at {width}x{height}");
             assert!(
@@ -3232,7 +3277,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.run.interrupt_accepted(Instant::now());
         let next_prompt = render_text(&mut app, 80, 16);
         assert!(next_prompt.contains("also inspect the tests"));
-        assert!(next_prompt.contains("enter queues after this turn"));
+        assert!(next_prompt.contains("enter queues next prompt"));
+        assert!(next_prompt.contains("esc stop again"));
         assert!(!next_prompt.contains("enter steer"));
     }
 
@@ -3449,7 +3495,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(app.viewport.offset() > prior_offset);
         assert_eq!(u32::from(app.viewport.has_unread()), 1);
-        assert!(buffer_text(&terminal).contains("new output"));
+        assert!(buffer_text(&terminal).contains("ctrl+end latest"));
+        let wide = render_text(&mut app, 120, 14);
+        assert!(
+            wide.contains("new output"),
+            "a wider reading shelf discloses unread output"
+        );
     }
 
     #[test]
@@ -3822,7 +3873,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the terminal stage and brand entrance remain unpainted"
         );
         let screen = buffer_text(&terminal);
-        assert!(screen.contains("iteron"), "compact wordmark is visible");
+        assert!(screen.contains("▄███████"), "welcome artwork is visible");
         assert!(!screen.contains("Prompt"));
         assert!(screen.contains('▌'));
         assert!(screen.contains('›'));
@@ -4420,8 +4471,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            wide.contains("iteron"),
-            "compact wordmark present: {wide:?}"
+            wide.contains("▄███████") && wide.contains("████████"),
+            "welcome artwork present: {wide:?}"
         );
         assert!(
             wide.contains("Build, explore, and ship"),
@@ -4454,7 +4505,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             1
         );
         let first = render_text(&mut app, 40, 12);
-        assert!(first.contains("iteron"));
+        assert!(first.contains("████"), "welcome artwork is present");
         for index in 0..32 {
             app.push_user(format!(
                 "later task {index}: keep the active transcript at the tail"
@@ -6083,7 +6134,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         let (accepted_tx, mut accepted_rx) = tokio::sync::mpsc::channel(1);
-        let accepted_session = Session::for_test(accepted_tx);
+        let mut accepted_session = Session::for_test(accepted_tx);
         submit_queued_model_input(&mut app, &accepted_session, &mut notifier, *returned)
             .expect("the preserved item is accepted exactly once when capacity returns");
         assert!(app.run.running());
@@ -6095,6 +6146,30 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .expect("current protocol envelope"),
             Op::UserInput { text } if text == "preserve me exactly"
         ));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
+            "SQ acceptance does not yet admit a user row"
+        );
+        let submission_id = app.run.pending_id().expect("pending runtime admission");
+        for _ in 0..2 {
+            apply_server_event(
+                &mut app,
+                &mut accepted_session,
+                app_server::ServerEvent::Submission {
+                    id: submission_id,
+                    state: iteron_protocol::SubmissionLifecycleState::Applied,
+                    reason_code: None,
+                },
+                &mut notifier,
+                &mut Vec::new(),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                None,
+            );
+        }
         assert_eq!(
             app.history
                 .blocks()
@@ -6176,6 +6251,63 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
         assert!(!app.editor.has_submission());
+    }
+
+    #[test]
+    fn late_history_hydration_does_not_keep_an_applied_draft_but_new_typing_does() {
+        for newer_input in [false, true] {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let mut session = Session::for_test(tx);
+            let mut app = App::new();
+            let mut notifier = notification::TerminalNotifier::new(false);
+            app.editor.insert_str("hi");
+            submit_composer(&mut app, &session, &mut notifier);
+            assert!(matches!(rx.try_recv().unwrap().into_current().unwrap(),
+                Op::UserInput { text } if text == "hi"));
+            let submission_id = app.run.pending_id().unwrap();
+            let submitted_revision = app.editor.draft_revision();
+            let persistence_revision = app.editor.persistence_revision();
+            app.editor
+                .observe_persisted_history(vec!["earlier task".into()], None);
+            assert_ne!(app.editor.persistence_revision(), persistence_revision);
+            assert_eq!(app.editor.draft_revision(), submitted_revision);
+            assert!(
+                app.run
+                    .awaiting_composer_admission(app.editor.draft_revision())
+            );
+            if newer_input {
+                app.editor.insert_str(" plus a new draft");
+            }
+            apply_server_event(
+                &mut app,
+                &mut session,
+                app_server::ServerEvent::Submission {
+                    id: submission_id,
+                    state: iteron_protocol::SubmissionLifecycleState::Applied,
+                    reason_code: None,
+                },
+                &mut notifier,
+                &mut Vec::new(),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                None,
+            );
+            assert_eq!(
+                app.editor.text(),
+                if newer_input {
+                    "hi plus a new draft"
+                } else {
+                    ""
+                }
+            );
+            assert_eq!(app.editor.history_len(), if newer_input { 1 } else { 2 });
+            let rendered = render_text(&mut app, 100, 16);
+            assert_eq!(
+                rendered.contains("your newer draft was preserved"),
+                newer_input,
+                "{rendered}"
+            );
+        }
     }
 
     #[test]
@@ -7416,7 +7548,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn active_shelf_progressively_discloses_run_metrics() {
+    fn active_shelf_keeps_accounting_in_diagnostics_and_discloses_live_state() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let mut app = App::new();
@@ -7439,7 +7571,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
         app.effort = Effort::Ultracode;
 
-        // At narrower widths lower-priority metrics intentionally yield to route identity.
+        // Even a wide everyday shelf stays concise; exact accounting remains available to
+        // diagnostics through the same retained telemetry and canonical status renderer.
         let mut term = Terminal::new(TestBackend::new(240, 12)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = buffer_text(&term);
@@ -7448,11 +7581,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             !statusline.contains('█') && !statusline.contains('░'),
             "statusline has no permanent gauge chrome: {statusline:?}"
         );
-        assert!(s.contains("cache 61%"), "wide shelf shows cache-hit text");
-        assert!(s.contains("turn 4"), "wide shelf shows the turn counter");
+        assert!(!statusline.contains("cache 61%"));
+        assert!(!statusline.contains("turn 4"));
+        assert_eq!(app.telemetry.turns(), 4);
+        assert_eq!(app.telemetry.usage().unwrap().cache_hit_ratio(), 0.61);
         assert!(
-            s.contains("0.080"),
-            "wide shelf uses the canonical exact milli-USD status value"
+            canonical_statusline(&app).contains("0.080"),
+            "diagnostics retain the canonical exact milli-USD status value"
         );
         assert!(s.contains("thinking"), "shelf shows the live phase word");
         assert!(
@@ -8052,7 +8187,7 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 5,
@@ -8136,7 +8271,7 @@ fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 3,
@@ -8212,7 +8347,7 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 1,
@@ -8293,7 +8428,7 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 1,
@@ -8313,7 +8448,7 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 1,
             next_cursor: 2,
@@ -8371,7 +8506,7 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
     projection.ingest_page(
         &mut old_app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread.clone(),
             requested_after: 0,
             next_cursor: 2,
@@ -8391,7 +8526,7 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
     projection.ingest_page(
         &mut new_app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread.clone(),
             requested_after: 2,
             next_cursor: 5,

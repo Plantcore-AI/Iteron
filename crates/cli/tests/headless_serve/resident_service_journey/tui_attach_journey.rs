@@ -42,15 +42,6 @@ impl Ui {
     fn start(scratch: &Scratch, endpoint: SocketAddr, service_id: &str, token_file: &Path) -> Self {
         // Leave room for the actual installed-settings panel. Footer metadata is optional under
         // width pressure, so route/effort identity is checked through that explicit host control.
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 40,
-                cols: 140,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
-        let baseline = flags(pair.master.as_ref());
         let mut command = CommandBuilder::new("/bin/sh");
         command.env_clear();
         command.env("HOME", scratch.home());
@@ -70,6 +61,18 @@ impl Ui {
         command.arg(endpoint.to_string());
         command.arg(service_id);
         command.arg(token_file);
+        Self::spawn(command)
+    }
+    fn spawn(command: CommandBuilder) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 40,
+                cols: 140,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let baseline = flags(pair.master.as_ref());
         let child = pair.slave.spawn_command(command).unwrap();
         let writer = pair.master.take_writer().unwrap();
         let mut source = pair.master.try_clone_reader().unwrap();
@@ -163,6 +166,29 @@ impl Ui {
         }
         panic!("expected attached-client terminal frame {label:?} was not observed");
     }
+    fn request_seen(&mut self, seen: &Receiver<()>) {
+        let deadline = Instant::now() + timeout();
+        while Instant::now() < deadline {
+            match seen.try_recv() {
+                Ok(()) => return,
+                Err(mpsc::TryRecvError::Disconnected) => panic!("provider observer disconnected"),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Ok(bytes) = self
+                .chunks
+                .as_ref()
+                .unwrap()
+                .recv_timeout(Duration::from_millis(20))
+            {
+                self.ingest(&bytes);
+            }
+            assert!(
+                self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "attached client exited before the actual provider request"
+            );
+        }
+        panic!("actual provider request was not observed");
+    }
     fn detach(mut self, token: &str) {
         self.write(b"/detach\r");
         let deadline = Instant::now() + timeout();
@@ -201,18 +227,50 @@ impl Ui {
 }
 impl Drop for Ui {
     fn drop(&mut self) {
+        // A failed assertion stops consuming the bounded output queue. Disconnect it before
+        // waiting: otherwise the reader retains the PTY master while blocked in send, and
+        // Darwin can keep even a killed child in tty teardown waiting for the master to close.
+        self.chunks = None;
+        self.writer = None;
+        self.slave = None;
+        self.master = None;
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        self.writer = None;
-        self.slave = None;
-        self.master = None;
-        self.chunks = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
     }
+}
+#[test]
+fn failed_terminal_journey_reaps_child_after_output_backpressure() {
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.env_clear();
+    command.args([
+        "-c",
+        "trap '' HUP; i=0; while [ \"$i\" -lt 8192 ]; do printf '%0128d' 0; i=$((i + 1)); done; read -r ignored",
+    ]);
+    let mut ui = Ui::spawn(command);
+    assert!(
+        !ui.chunks
+            .as_ref()
+            .unwrap()
+            .recv_timeout(timeout())
+            .unwrap()
+            .is_empty()
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(ui.child.as_mut().unwrap().try_wait().unwrap().is_none());
+    let (finished, completion) = mpsc::sync_channel(1);
+    let cleanup = std::thread::spawn(move || {
+        drop(ui);
+        finished.send(()).unwrap();
+    });
+    completion
+        .recv_timeout(timeout())
+        .expect("PTY failure cleanup must finish and reap its child");
+    cleanup.join().unwrap();
 }
 #[test]
 fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_terminal() {
@@ -223,7 +281,8 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     let mut socket = connect(endpoint);
     let mut reader = BufReader::new(socket.try_clone().unwrap());
     let mut greeting = hello(&token, PROTOCOL_VERSION, 0);
-    greeting["product_contract_version"] = json!(1);
+    greeting["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
     greeting["live_only"] = json!(true);
     send(&mut socket, greeting);
     assert_eq!(receive(&mut reader)["type"], "hello");
@@ -284,7 +343,7 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     first.visible("attached · /detach");
     first.settings();
     first.write(b"keep the actual backend turn running\r");
-    provider.request_seen.recv_timeout(timeout()).unwrap();
+    first.request_seen(&provider.request_seen);
     first.detach(&token);
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
     let current = read_service(&mut socket, &mut reader, 2);
@@ -304,7 +363,24 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     second.visible("completed");
     second.write(b"/sessions\r");
     second.visible("Service sessions");
-    second.visible(&format!("run {run}"));
+    // The compact picker shows human titles and a current marker, not opaque run IDs.
+    // Bind its recorded row to the actual host identity before checking the rendered state.
+    send(
+        &mut socket,
+        control(
+            12,
+            PROTOCOL_VERSION,
+            json!({"type":"thread_lifecycle_v1","command":{"type":"list","cursor":null,"limit":1}}),
+        ),
+    );
+    let sessions = reply(&mut reader, 12);
+    assert_eq!(sessions["type"], "thread_list_v1");
+    let rows = sessions["threads"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["run_id"], run);
+    assert_eq!(rows[0]["recorded_outcome"], "done");
+    second.visible("  current");
+    second.visible("recorded done");
     second.write(b"\x1b");
     second.visible("completed");
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());

@@ -37,38 +37,20 @@ impl PublicRecordFailure {
     }
 
     fn from_error(error: &iteron_record::RecordError) -> Self {
-        use iteron_record::RecordError;
-        match error {
-            RecordError::Io(source) => match source.kind() {
-                std::io::ErrorKind::StorageFull => Self::StorageFull,
-                std::io::ErrorKind::PermissionDenied
-                | std::io::ErrorKind::ReadOnlyFilesystem
-                | std::io::ErrorKind::NotFound => Self::StorageAccess,
-                _ => Self::StorageIo,
-            },
-            RecordError::WriterBusy { .. } => Self::WriterBusy,
-            RecordError::WriterLock { .. } => Self::WriterLock,
-            RecordError::WriterPoisoned => Self::WriterPoisoned,
-            RecordError::RecordLineTooLarge { .. }
-            | RecordError::EnvironmentContextTooLarge { .. }
-            | RecordError::RolloutTooLarge { .. }
-            | RecordError::TooManyEvents { .. }
-            | RecordError::TooManyRecordLines { .. } => Self::Limit,
-            RecordError::InvalidRunId { .. }
-            | RecordError::InvalidEventSchema { .. }
-            | RecordError::InvalidAppendBatch { .. }
-            | RecordError::Json(_) => Self::InvalidSchema,
-            RecordError::SequenceBroken { .. }
-            | RecordError::TenantMismatch { .. }
-            | RecordError::ChainBroken { .. }
-            | RecordError::ForkParentMismatch { .. } => Self::Integrity,
-            RecordError::Pricing(_)
-            | RecordError::TunablesSnapshot(_)
-            | RecordError::PolicyBundleCheckpoint(_) => Self::Checkpoint,
-            RecordError::PrivateContent(iteron_record::ContentStoreError::Busy) => {
-                Self::ContentBusy
-            }
-            RecordError::PrivateContent(_) => Self::PrivateContent,
+        use iteron_record::{RecordFailure, RecordFailureKind};
+        match RecordFailure::from_error(error).kind {
+            RecordFailureKind::StorageFull => Self::StorageFull,
+            RecordFailureKind::StorageAccess => Self::StorageAccess,
+            RecordFailureKind::StorageIo => Self::StorageIo,
+            RecordFailureKind::WriterBusy => Self::WriterBusy,
+            RecordFailureKind::WriterLock => Self::WriterLock,
+            RecordFailureKind::WriterPoisoned => Self::WriterPoisoned,
+            RecordFailureKind::Limit => Self::Limit,
+            RecordFailureKind::InvalidSchema => Self::InvalidSchema,
+            RecordFailureKind::Integrity => Self::Integrity,
+            RecordFailureKind::Checkpoint => Self::Checkpoint,
+            RecordFailureKind::PrivateContent => Self::PrivateContent,
+            RecordFailureKind::ContentBusy => Self::ContentBusy,
         }
     }
 
@@ -559,10 +541,15 @@ mod tests {
             ),
         ];
         for (record_error, expected_class) in cases {
+            let retained = iteron_record::RecordFailure::from_error(&record_error);
             let public = KernelError::Record(record_error).public_summary();
             assert!(public.contains(expected_class), "{public}");
             assert!(!public.contains(SECRET), "{public}");
             assert!(KernelError::is_public_record_failure(&public));
+            assert_eq!(
+                KernelError::Record(RecordError::PreviousFailure(retained)).public_summary(),
+                public
+            );
         }
         assert!(!KernelError::is_public_record_failure(
             "session record [storage_full]: private/client/sk-test-secret"

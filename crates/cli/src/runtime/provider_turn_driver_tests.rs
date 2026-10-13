@@ -534,6 +534,9 @@ async fn resident_stream_failure_releases_input_and_accepts_one_explicit_follow_
     owner.retry_policy.max_attempts = 1;
     let workspace = owner.workspace.clone();
     let path = owner.rollout.path().to_owned();
+    let maintenance = owner
+        .advisory_maintenance_owner()
+        .expect("resident fixture installs its maintenance owner");
     let Attached { handle, task, .. } = attach(owner, false, true).unwrap();
     let AppServerHandle {
         client,
@@ -625,6 +628,13 @@ async fn resident_stream_failure_releases_input_and_accepts_one_explicit_follow_
         2
     );
     assert_eq!(provider.sent.load(Ordering::SeqCst), 2);
+    // The session has stopped producing work; native advisory IO owns separate workers.
+    maintenance
+        .clone()
+        .finish_fixture_io(Duration::from_secs(30))
+        .await
+        .expect("resident fixture maintenance IO settles before workspace removal");
+    drop(maintenance);
     std::fs::remove_dir_all(workspace).unwrap();
 }
 

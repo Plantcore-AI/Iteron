@@ -1,6 +1,9 @@
 use super::ToolResponseOwner;
 use iteron_protocol::{Block, ToolResult, ToolUse, Trust};
 
+#[path = "tool_preimage_tests.rs"]
+mod preimage;
+
 fn call(id: &str) -> ToolUse {
     ToolUse {
         id: id.into(),
@@ -62,9 +65,11 @@ fn model_projection_scrubs_credentials_without_replacing_the_physical_or_recover
     use crate::runtime::submitted_turn_state::SubmittedTurnState;
     let calls = [call("actual-read")];
     let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
+    let bare_hex = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     let mut physical = result("actual-read", true);
-    physical.content =
-        format!("safe heading\nkey={secret}\nhttps://user:password@host.invalid/\n安全尾部");
+    physical.content = format!(
+        "safe heading\nkey={secret}\nraw_sha256: {bare_hex}\nhttps://user:password@host.invalid/\n安全尾部"
+    );
     physical.latency_ms = 13;
     let mut response = ToolResponseOwner::new(&calls);
     response.accept(0, physical.clone()).unwrap();
@@ -82,6 +87,7 @@ fn model_projection_scrubs_credentials_without_replacing_the_physical_or_recover
     assert_eq!(visible.latency_ms, physical.latency_ms);
     assert!(visible.content.contains("[REDACTED:"));
     assert!(!visible.content.contains(secret));
+    assert!(!visible.content.contains(bare_hex));
     assert!(!visible.content.contains("user:password@"));
     assert!(visible.content.len() <= physical.content.len());
     assert!(visible.content.contains("safe heading"));
@@ -148,6 +154,128 @@ fn model_scrubbing_does_not_rewrite_a_retained_private_spill() {
     assert_eq!(store.read_private(&handle).unwrap(), raw.as_bytes());
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NativeHttpStage {
+    Accept,
+    Headers,
+    Body,
+    Reply,
+    Replied,
+}
+
+#[derive(Debug)]
+struct NativeHttpProgress {
+    stage: NativeHttpStage,
+    step: usize,
+    accepted: usize,
+    bodies: usize,
+    replied: usize,
+}
+
+impl NativeHttpProgress {
+    fn new() -> std::sync::Arc<std::sync::Mutex<Self>> {
+        std::sync::Arc::new(std::sync::Mutex::new(Self {
+            stage: NativeHttpStage::Accept,
+            step: 0,
+            accepted: 0,
+            bodies: 0,
+            replied: 0,
+        }))
+    }
+
+    fn record(progress: &std::sync::Mutex<Self>, step: usize, stage: NativeHttpStage) {
+        let mut progress = progress.lock().unwrap();
+        progress.stage = stage;
+        progress.step = step;
+        match stage {
+            NativeHttpStage::Headers => progress.accepted += 1,
+            NativeHttpStage::Reply => progress.bodies += 1,
+            NativeHttpStage::Replied => progress.replied += 1,
+            NativeHttpStage::Accept | NativeHttpStage::Body => {}
+        }
+    }
+}
+
+// One IO allowance covers the complete native journey, including cold reopen and summary.
+// An early successful server completion is retained while the agent seals its durable result.
+struct NativeHttpJourney {
+    deadline: tokio::time::Instant,
+    progress: std::sync::Arc<std::sync::Mutex<NativeHttpProgress>>,
+    server: Option<tokio::task::JoinHandle<Vec<serde_json::Value>>>,
+    requests: Option<Vec<serde_json::Value>>,
+}
+
+impl NativeHttpJourney {
+    async fn wait<T>(
+        &mut self,
+        stage: &'static str,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        let result = tokio::time::timeout_at(self.deadline, async {
+            tokio::pin!(future);
+            if let Some(server) = self.server.as_mut() {
+                tokio::select! {
+                    value = &mut future => Ok::<T, tokio::task::JoinError>(value),
+                    joined = server => {
+                        self.server = None;
+                        self.requests = Some(joined?);
+                        Ok(future.await)
+                    }
+                }
+            } else {
+                Ok(future.await)
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => panic!(
+                "native HTTP server failed during {stage}: panicked={}, cancelled={}, progress={:?}",
+                error.is_panic(),
+                error.is_cancelled(),
+                self.progress.lock().unwrap()
+            ),
+            Err(_) => {
+                self.abort_and_join().await;
+                panic!(
+                    "native HTTP journey deadline during {stage}: {:?}",
+                    self.progress.lock().unwrap()
+                );
+            }
+        }
+    }
+
+    async fn abort_and_join(&mut self) {
+        if let Some(server) = self.server.take() {
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    async fn finish(mut self) -> Vec<serde_json::Value> {
+        if let Some(mut server) = self.server.take() {
+            match tokio::time::timeout_at(self.deadline, &mut server).await {
+                Ok(Ok(requests)) => self.requests = Some(requests),
+                Ok(Err(error)) => panic!(
+                    "native HTTP server failed at completion: panicked={}, cancelled={}, progress={:?}",
+                    error.is_panic(),
+                    error.is_cancelled(),
+                    self.progress.lock().unwrap()
+                ),
+                Err(_) => {
+                    server.abort();
+                    let _ = server.await;
+                    panic!(
+                        "native HTTP server completion deadline: {:?}",
+                        self.progress.lock().unwrap()
+                    );
+                }
+            }
+        }
+        self.requests.expect("the native server must finish")
+    }
+}
+
 #[tokio::test]
 async fn native_context_and_read_file_credentials_are_absent_from_actual_http_requests() {
     use crate::runtime::gate_integration_tests::{record_test_genesis, temp_ws};
@@ -158,6 +286,9 @@ async fn native_context_and_read_file_credentials_are_absent_from_actual_http_re
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let progress = NativeHttpProgress::new();
+    let server_progress = progress.clone();
     let workspace = temp_ws("model-tool-result-credentials");
     let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
     let source = format!("safe source heading\napi_key={secret}\nsafe source tail\n");
@@ -167,12 +298,20 @@ async fn native_context_and_read_file_credentials_are_absent_from_actual_http_re
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
         for step in 0..3 {
-            let (mut socket, _) = listener.accept().await.unwrap();
+            NativeHttpProgress::record(&server_progress, step, NativeHttpStage::Accept);
+            let (mut socket, _) = tokio::time::timeout_at(deadline, listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            NativeHttpProgress::record(&server_progress, step, NativeHttpStage::Headers);
             let mut head = Vec::new();
             let mut byte = [0; 1];
             while !head.ends_with(b"\r\n\r\n") {
                 assert!(head.len() < 16 * 1024);
-                socket.read_exact(&mut byte).await.unwrap();
+                tokio::time::timeout_at(deadline, socket.read_exact(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap();
                 head.push(byte[0]);
             }
             let head = std::str::from_utf8(&head).unwrap();
@@ -187,7 +326,12 @@ async fn native_context_and_read_file_credentials_are_absent_from_actual_http_re
                 .unwrap();
             assert!(length <= 1024 * 1024);
             let mut body = vec![0; length];
-            socket.read_exact(&mut body).await.unwrap();
+            NativeHttpProgress::record(&server_progress, step, NativeHttpStage::Body);
+            tokio::time::timeout_at(deadline, socket.read_exact(&mut body))
+                .await
+                .unwrap()
+                .unwrap();
+            NativeHttpProgress::record(&server_progress, step, NativeHttpStage::Reply);
             requests.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
             let (delta, finish) = if step == 0 {
                 (
@@ -209,10 +353,20 @@ async fn native_context_and_read_file_credentials_are_absent_from_actual_http_re
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{stream}",
                 stream.len()
             );
-            socket.write_all(reply.as_bytes()).await.unwrap();
+            tokio::time::timeout_at(deadline, socket.write_all(reply.as_bytes()))
+                .await
+                .unwrap()
+                .unwrap();
+            NativeHttpProgress::record(&server_progress, step, NativeHttpStage::Replied);
         }
         requests
     });
+    let mut journey = NativeHttpJourney {
+        deadline,
+        progress,
+        server: Some(server),
+        requests: None,
+    };
     // The native server is only an IO oracle; no custom Provider bypasses the real serializer.
     let provider =
         Arc::new(OpenAiCompat::try_new("fixture-header-only".into(), Some(root)).unwrap());
@@ -247,31 +401,36 @@ async fn native_context_and_read_file_credentials_are_absent_from_actual_http_re
             String::new(),
         )
         .unwrap();
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(5),
-        Box::pin(agent.run(&format!("read source.txt\napi_key={secret}"))),
-    )
-    .await;
-    if outcome.is_err() {
-        server.abort();
-    }
-    assert_eq!(outcome.unwrap().unwrap(), Outcome::Done);
+    let outcome = journey
+        .wait(
+            "credential read",
+            Box::pin(agent.run(&format!("read source.txt\napi_key={secret}"))),
+        )
+        .await;
+    assert_eq!(outcome.unwrap(), Outcome::Done);
     // Explicit auxiliary compaction bypasses the ordinary preparation owner but must still
     // cross the same clean request boundary before paid admission and native serialization.
-    let summary = agent
-        .summarize(
-            &[iteron_protocol::Message::user_text(format!(
-                "auxiliary source api_key={secret}"
-            ))],
-            Some(&format!("focus api_key={secret}")),
+    let summary = journey
+        .wait(
+            "auxiliary summary",
+            agent.summarize(
+                &[iteron_protocol::Message::user_text(format!(
+                    "auxiliary source api_key={secret}"
+                ))],
+                Some(&format!("focus api_key={secret}")),
+            ),
         )
         .await
         .unwrap();
     assert_eq!(summary, "completed source read");
-    let requests = tokio::time::timeout(Duration::from_secs(3), server)
+    journey
+        .wait(
+            "maintenance drain",
+            agent.finish_advisory_maintenance_for_test(),
+        )
         .await
-        .unwrap()
         .unwrap();
+    let requests = journey.finish().await;
     assert_eq!(requests.len(), 3);
     for request in &requests {
         assert!(!serde_json::to_string(request).unwrap().contains(secret));

@@ -1,4 +1,6 @@
-use super::{App, ModelSelection, ProviderCatalogView, Session, app_server, block, ui_safe_text};
+#[cfg(test)]
+use super::ui_safe_text;
+use super::{App, ModelSelection, ProviderCatalogView, Session, app_server, block};
 use std::time::{Duration, Instant};
 
 pub(super) fn format_resume_command(run_id: &str) -> String {

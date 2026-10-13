@@ -57,14 +57,36 @@ fn decode_multimodal_inner(
     view: &EffectiveTunablesView,
 ) -> Result<MultimodalDecodeEnvelope, EffectiveBinaryMediaError> {
     let fields = view.object("multimodal_input_admission_decode_envelope")?;
-    MultimodalDecodeEnvelope::try_new(
+    let envelope = MultimodalDecodeEnvelope::try_new(
         usize_field(fields, "max_images")?,
         usize_field(fields, "per_image_raw_bytes")?,
         usize_field(fields, "aggregate_raw_bytes")?,
         u32_field(fields, "max_dimension")?,
         u32_field(fields, "max_frames")?,
     )
-    .map_err(EffectiveBinaryMediaError::InvalidOwner)
+    .map_err(EffectiveBinaryMediaError::InvalidOwner)?;
+    // A durable image policy remains authoritative without a newly supplied profile. Explicit
+    // process overrides must agree with it; accepting and then ignoring one is not a resume.
+    for (param, field) in [
+        (
+            "cli.image_input.max_image_file_bytes",
+            "per_image_raw_bytes",
+        ),
+        (
+            "cli.image_input.max_total_image_file_bytes",
+            "aggregate_raw_bytes",
+        ),
+        ("cli.image_input.decode.max_animation_frames", "max_frames"),
+    ] {
+        if let Some(value) = iteron_tunables::param_value(param)
+            && fields.get(field) != Some(value)
+        {
+            return Err(EffectiveBinaryMediaError::ParameterCheckpointMismatch(
+                param,
+            ));
+        }
+    }
+    Ok(envelope)
 }
 
 fn usize_field(
@@ -118,6 +140,10 @@ pub(crate) enum EffectiveBinaryMediaError {
     UnknownEnum(String),
     #[error("invalid binary media inspection owner: {0}")]
     InvalidOwner(&'static str),
+    #[error(
+        "parameter `{0}` conflicts with the immutable image policy; resume with matching parameters"
+    )]
+    ParameterCheckpointMismatch(&'static str),
 }
 
 #[cfg(test)]

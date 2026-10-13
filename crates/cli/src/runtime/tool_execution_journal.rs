@@ -276,6 +276,7 @@ impl ToolExecutionJournal<'_> {
         Ok(())
     }
     fn record_error(&mut self, error: iteron_record::RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

@@ -181,7 +181,8 @@ impl CompletionSession<'_> {
                 .ledger
                 .record_fsync_latency_us(super::provider_accounting::elapsed_us(started));
         }
-        if result.is_err() {
+        if let Err(error) = result {
+            self.journal.transcript.rollout.retain_failure(&error);
             *self.journal.transcript.record_failed = true;
             self.journal
                 .transcript

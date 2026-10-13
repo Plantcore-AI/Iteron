@@ -220,6 +220,17 @@ impl EventPublisher {
         );
     }
 
+    /// A V2 identity was allocated by the persistent admission authority, including after restart.
+    pub(super) fn begin_allocated_contract_turn(
+        &mut self,
+        run_id: RunId,
+        submission_id: Option<SubmissionId>,
+        turn_id: iteron_protocol::product_contract::ProductTurnId,
+    ) {
+        self.next_product_turn = self.next_product_turn.max(turn_id.0);
+        self.contract.begin_turn(run_id, turn_id, submission_id);
+    }
+
     pub(super) fn rebind_contract_run(&mut self, run_id: RunId) -> bool {
         self.contract.rebind_run(run_id)
     }

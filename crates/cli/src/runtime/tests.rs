@@ -4395,14 +4395,32 @@ mod gate_integration_tests {
             event,
             UiEvent::Thinking(delta) if delta == "weighing the options"
         )));
-        assert!(
-            !ui_events
+        // Done carries the finalized outcome; it is not itself a successful answer. A failed
+        // provider response must close the UI and durable turn with the same failure label.
+        assert_eq!(
+            ui_events
                 .iter()
-                .any(|event| matches!(event, UiEvent::Done(_))),
-            "a disconnected stream must not display a success terminal"
+                .filter_map(|event| match event {
+                    UiEvent::Done(outcome) => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["HarnessError"],
+            "a disconnected stream must publish one failed terminal and no success terminal"
         );
 
         let events = iteron_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::Done { outcome } => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["HarnessError"],
+            "the physical record must agree with the failed UI terminal"
+        );
         assert_eq!(
             events
                 .iter()
@@ -6528,7 +6546,13 @@ mod gate_integration_tests {
             .last()
             .map(|request| transcript_shape(&request.messages))
             .unwrap();
-        assert_eq!(last, vec!["User:replayed transcript|\n\n|third task"]);
+        assert_eq!(
+            last,
+            vec![
+                "User:replayed transcript|\n\n[Later conversation message; existing source and trust labels still apply]\n|third task"
+            ],
+            "explicit resume preserves the later message boundary without promoting its trust"
+        );
 
         drop(agent);
         let _ = std::fs::remove_dir_all(ws);
@@ -6782,37 +6806,50 @@ mod gate_integration_tests {
         let image = two_by_one_png();
 
         assert!(
-            resolved_with_max_dimension(1).is_err(),
-            "the registry-literal decoder envelope cannot be narrowed by a fabricated Builtin"
+            resolved_with_max_dimension(8_193).is_err(),
+            "a derived owner cannot exceed the fixed decoder safety ceiling"
         );
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        let owner_rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("multimodal-dimension-owner".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut owner = Agent::new(
-            provider.clone(),
-            Registry::read_only(&ws).unwrap(),
-            owner_rollout,
-            "model-a".into(),
-            "sys".into(),
-            Budget::default(),
-        );
-        owner
-            .pin_resolved_tunables(std::sync::Arc::new(
-                resolved_with_max_dimension(8_192)
-                    .expect("the exact physical decoder owner must resolve"),
-            ))
-            .expect("owner checkpoint decode must install family 68");
-        assert!(matches!(
-            owner.admit_input_images(std::slice::from_ref(&image)),
-            Ok(images) if images == std::slice::from_ref(&image)
-        ));
-        assert!(provider.requests.lock().unwrap().is_empty());
-        drop(owner);
+        for (label, max_dimension, accepts_image) in [("lower", 1, false), ("default", 8_192, true)]
+        {
+            let owner_rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
+                &iteron_protocol::RunId(format!("multimodal-dimension-{label}")),
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut owner = Agent::new(
+                provider.clone(),
+                Registry::read_only(&ws).unwrap(),
+                owner_rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget::default(),
+            );
+            owner
+                .pin_resolved_tunables(std::sync::Arc::new(
+                    resolved_with_max_dimension(max_dimension)
+                        .expect("a bounded derived decoder owner must resolve"),
+                ))
+                .expect("owner checkpoint decode must install family 68");
+            assert_eq!(
+                owner.multimodal_decode_envelope.max_dimension,
+                max_dimension as u32
+            );
+            let admitted = owner.admit_input_images(std::slice::from_ref(&image));
+            if accepts_image {
+                assert!(matches!(admitted, Ok(images) if images == std::slice::from_ref(&image)));
+            } else {
+                assert!(matches!(
+                    admitted,
+                    Err(KernelError::InvalidSubmission(
+                        IMAGE_INPUT_INSPECTION_FAILED_REASON
+                    ))
+                ));
+            }
+            assert!(provider.requests.lock().unwrap().is_empty());
+        }
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -12486,8 +12523,14 @@ ant-api03-SuperSecretModelToken12345"
             agent.rollout.next_sequence(),
             &Err(KernelError::InvalidRoute("physical bound unavailable")),
         );
-        assert_eq!(refused.failure_code, Some(iteron_protocol::PolicyHarnessErrorCode::RouteError));
-        assert_eq!(refused.effect_state, iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched);
+        assert_eq!(
+            refused.failure_code,
+            Some(iteron_protocol::PolicyHarnessErrorCode::RouteError)
+        );
+        assert_eq!(
+            refused.effect_state,
+            iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched
+        );
         let phases = iteron_record::replay(agent.rollout.path())
             .unwrap()
             .into_iter()
@@ -14718,7 +14761,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
                 permission_mode: Sourced {
                     value: PermissionMode::AcceptEdits,
-                    origin: ConfigOrigin::Builtin,
+                    origin: ConfigOrigin::Cli,
                 },
                 permission_rules_origin: None,
                 permission_rules: &rules,

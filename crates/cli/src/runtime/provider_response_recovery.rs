@@ -341,6 +341,7 @@ impl ProviderResponseJournal<'_> {
         }
     }
     fn record_error(&mut self, error: iteron_record::RecordError) -> KernelError {
+        self.tools.rollout.retain_failure(&error);
         *self.tools.record_failed = true;
         self.tools
             .diagnostics

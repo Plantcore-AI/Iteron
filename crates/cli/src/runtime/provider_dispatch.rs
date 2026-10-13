@@ -271,6 +271,7 @@ impl ProviderAdmissionJournal<'_> {
         Ok(())
     }
     fn record_error(&mut self, error: iteron_record::RecordError) -> KernelError {
+        self.physical.rollout.retain_failure(&error);
         *self.physical.record_failed = true;
         self.physical
             .diagnostics

@@ -2,6 +2,9 @@
 
 use iteron_protocol::{Block, Event, EventKind, Message, Role, ToolResult, ToolUse, Trust};
 
+const LATER_MESSAGE_BOUNDARY: &str =
+    "\n\n[Later conversation message; existing source and trust labels still apply]\n";
+
 /// Append a user message while preserving provider role alternation.
 pub(super) fn merge_adjacent_user_message(messages: &mut Vec<Message>, mut message: Message) {
     if matches!(message.role, Role::User)
@@ -9,8 +12,19 @@ pub(super) fn merge_adjacent_user_message(messages: &mut Vec<Message>, mut messa
         && matches!(last.role, Role::User)
     {
         if !last.content.is_empty() && !message.content.is_empty() {
+            // Do not promote tool observations to operator instructions. A text-only message
+            // gets a chronological boundary; its existing source labels retain their meaning.
+            let boundary = if message
+                .content
+                .iter()
+                .all(|block| matches!(block, Block::Text { .. }))
+            {
+                LATER_MESSAGE_BOUNDARY
+            } else {
+                "\n\n"
+            };
             last.content.push(Block::Text {
-                text: "\n\n".into(),
+                text: boundary.into(),
             });
         }
         last.content.append(&mut message.content);
@@ -185,3 +199,6 @@ pub(super) fn reconcile_transcript(mut messages: Vec<Message>) -> Vec<Message> {
     }
     messages
 }
+
+#[cfg(test)]
+mod tests;

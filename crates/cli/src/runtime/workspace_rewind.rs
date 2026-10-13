@@ -263,6 +263,7 @@ impl Agent {
         Ok(())
     }
     fn rewind_record_error(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         self.record_failed = true;
         self.diagnostics
             .emit(iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {});

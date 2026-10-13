@@ -133,7 +133,8 @@ impl Agent {
                     self.ui(UiEvent::Phase(phase));
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
             }
@@ -142,11 +143,7 @@ impl Agent {
 
     pub(super) fn ensure_record_healthy(&self) -> Result<(), KernelError> {
         if self.record_failed {
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::other(
-                    "provider admission cannot continue after the durable record failed",
-                ),
-            )));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         Ok(())
     }
@@ -224,6 +221,7 @@ impl Agent {
                 Ok(seq)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))
@@ -249,6 +247,7 @@ impl Agent {
     pub(super) fn effect_boundary_failed(&mut self, error: effects::BrokerError) -> KernelError {
         match error {
             effects::BrokerError::Record(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 KernelError::Record(error)
             }
@@ -626,7 +625,8 @@ impl Agent {
         let result = self
             .effect_journal
             .guard_recovery(&mut self.rollout, &mut self.ledger);
-        if matches!(&result, Err(KernelError::Record(_))) {
+        if let Err(KernelError::Record(error)) = &result {
+            self.rollout.retain_failure(error);
             self.record_failed = true;
             self.diagnostic_record_append_failed();
         }

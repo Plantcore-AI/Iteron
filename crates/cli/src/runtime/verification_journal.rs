@@ -70,9 +70,7 @@ impl VerificationJournal<'_> {
     }
     fn require_healthy(&self) -> Result<(), KernelError> {
         if *self.record_failed {
-            return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
-                "verification cannot continue after the durable record failed",
-            ))));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         Ok(())
     }
@@ -249,6 +247,7 @@ impl VerificationJournal<'_> {
         }
     }
     fn failed_record(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

@@ -3,18 +3,18 @@
 //! user's protected DACL and exclusive handle. Only by-handle rename may publish its full bytes.
 use super::{
     Identity, WindowsStateError, flush_directory, open_file_relative, pin_directory_chain,
+    rename_relative,
 };
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write as _;
-use std::mem::{offset_of, size_of};
+use std::mem::size_of;
 use std::os::windows::io::AsRawHandle as _;
 use std::path::Path;
 use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
-use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, GetLastError};
+use windows_sys::Win32::Foundation::STATUS_OBJECT_NAME_COLLISION;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileDispositionInfo,
-    FileRenameInfo, SetFileInformationByHandle,
+    FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,40 +139,12 @@ impl WindowsWorkspacePublisher {
         stage
             .disposition(false)
             .map_err(|_| WorkspacePublishError::OutcomeUnknown)?;
-        let header = offset_of!(FILE_RENAME_INFO, FileName);
-        let length = header + (target.len() + 1) * size_of::<u16>();
-        let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
-        let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        // SAFETY: aligned bounded storage covers the fixed header, complete UTF-16 name and NUL.
-        unsafe {
-            (*information).Anonymous = FILE_RENAME_INFO_0 {
-                ReplaceIfExists: false,
-            };
-            (*information).RootDirectory = parent.as_raw_handle();
-            (*information).FileNameLength = (target.len() * size_of::<u16>()) as u32;
-            std::ptr::copy_nonoverlapping(
-                target.as_ptr(),
-                (*information).FileName.as_mut_ptr(),
-                target.len(),
-            );
-        }
         // Any ambiguous native return may already have published. Do not delete by guessed path
         // or mark the held final inode for deletion; the domain must preserve Unknown and custody.
         stage.may_have_published = true;
         let file = stage.file.as_ref().expect("stage handle");
-        // SAFETY: exact DELETE-capable stage and retained destination directory; replacement false.
-        if unsafe {
-            SetFileInformationByHandle(
-                file.as_raw_handle(),
-                FileRenameInfo,
-                information.cast(),
-                length as u32,
-            )
-        } == 0
-        {
-            // SAFETY: read thread-local last error immediately after the failed native call.
-            let error = unsafe { GetLastError() };
-            if matches!(error, ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS) {
+        if let Err(status) = rename_relative(file, parent, &target, false) {
+            if status == STATUS_OBJECT_NAME_COLLISION {
                 stage.may_have_published = false;
                 stage.discard(parent, barrier)?;
                 return Err(WorkspacePublishError::Exists);

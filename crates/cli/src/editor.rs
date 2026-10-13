@@ -147,9 +147,10 @@ pub struct Editor {
     /// State for repeated Ctrl-R searches. The query is the text that was present before the first
     /// search; `before` makes every subsequent press continue toward older entries.
     reverse_search: Option<ReverseSearch>,
-    /// Monotonic dirty marker consumed by the persistence adapter. It deliberately counts text
-    /// mutations rather than wall time so tests and replay remain deterministic.
+    /// Dirty marker for persisted state, including history-only hydration.
     persistence_revision: u64,
+    /// Identity of the live composer. History hydration must not invalidate a pending submission.
+    draft_revision: u64,
     /// Bounded, filesystem-free classification of the leading draft token. The TUI reads this
     /// cached value on every paint/key route; only final Enter admission resolves an ambiguous
     /// single-segment absolute path against disk.
@@ -1241,6 +1242,7 @@ impl Editor {
         self.pastes.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
+        self.draft_revision = self.draft_revision.wrapping_add(1);
         self.refresh_draft_shape();
         // All stores promise that an id names a moment, and keep that promise with a counter
         // that a restart destroys. The restored text is the only surviving evidence of the previous
@@ -1273,7 +1275,8 @@ impl Editor {
         if let Some(search) = &mut self.reverse_search {
             search.before = search.before.saturating_add(prefix);
         }
-        self.mark_persistence_change();
+        // Only older history was prepended; the current draft and its attachments are unchanged.
+        self.persistence_revision = self.persistence_revision.wrapping_add(1);
     }
 
     /// Replace composer text after a trusted external-editor round trip. Every tag-backed chip
@@ -1298,6 +1301,10 @@ impl Editor {
         self.persistence_revision
     }
 
+    pub fn draft_revision(&self) -> u64 {
+        self.draft_revision
+    }
+
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
@@ -1311,6 +1318,7 @@ impl Editor {
     fn mark_persistence_change(&mut self) {
         self.vertical_column = None;
         self.persistence_revision = self.persistence_revision.wrapping_add(1);
+        self.draft_revision = self.draft_revision.wrapping_add(1);
         self.refresh_draft_shape();
     }
 

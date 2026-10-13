@@ -4,6 +4,7 @@ use super::{
     App, block, draw, notification,
     product_projection::ProductProjection,
     remote_transport::Transport,
+    remote_turn_start::{Poll as StartPoll, StartReply, StartRequest},
     terminal_input::{ReadResult, TerminalInput},
     terminal_lifecycle::TermGuard,
     theme, ui_safe_text,
@@ -28,6 +29,11 @@ const MAX_DRAFT_BYTES: usize = 64 * 1024;
 const MAX_PENDING_COMMANDS: usize = 8;
 const POLL_PERIOD: Duration = Duration::from_millis(250);
 const REPLY_DEADLINE: Duration = Duration::from_secs(5);
+
+fn poll_period() -> Duration {
+    iteron_tunables::param_duration("cli.tui.remote.poll_period", POLL_PERIOD)
+        .clamp(Duration::from_millis(5), Duration::from_secs(5))
+}
 
 struct Input {
     receiver: mpsc::Receiver<std::io::Result<ReadResult>>,
@@ -75,6 +81,7 @@ impl Drop for Input {
 enum Kind {
     Snapshot,
     Events,
+    Start,
     Submit {
         draft: String,
         revision: u64,
@@ -159,6 +166,7 @@ struct View {
     settings_needed: bool,
     last_live_seq: u64,
     accepted: Option<AcceptedDraft>,
+    start: Option<StartRequest>,
     expected_submission: Option<SubmissionId>,
     artifact: Option<(iteron_protocol::RunId, super::artifact_view::Transfer)>,
 }
@@ -314,12 +322,12 @@ impl View {
         self.product(json!({"type":"turn_interrupt","thread_id":self.service.scope.thread_id,"turn_id":turn}),Kind::Control)
     }
     fn submit(&mut self, app: &mut App) -> Result<bool> {
-        let text = app.editor.text();
-        let text = text.trim();
+        let draft = app.editor.text();
+        let text = draft.trim();
         if text.is_empty() {
             return Ok(false);
         }
-        if text.len() > MAX_DRAFT_BYTES {
+        if draft.len() > MAX_DRAFT_BYTES {
             bail!("draft exceeds the remote composer's 64 KiB bound");
         }
         if matches!(text, "/quit" | "/detach" | "/exit") {
@@ -522,27 +530,107 @@ impl View {
             || self
                 .pending
                 .as_ref()
-                .is_some_and(|request| matches!(&request.kind, Kind::Submit { .. }))
+                .is_some_and(|request| matches!(&request.kind, Kind::Submit { .. } | Kind::Start))
             || self
                 .queued
                 .iter()
-                .any(|(_, kind)| matches!(kind, Kind::Submit { .. }))
+                .any(|(_, kind)| matches!(kind, Kind::Submit { .. } | Kind::Start))
         {
             bail!("the prior submission is awaiting its host receipt; draft retained");
         }
-        let command = if let Some(turn) = self.active_turn() {
-            json!({"type":"turn_steer","thread_id":self.service.scope.thread_id,"turn_id":turn,"text":text})
+        let now = Instant::now();
+        if let Some(start) = &mut self.start
+            && start.matches(
+                &self.service.scope.thread_id,
+                &self.service.current_run_id,
+                &draft,
+            )
+        {
+            start.retry(now);
+            let command = start.command();
+            self.product(command, Kind::Start)?;
+            return Ok(false);
+        }
+        if self
+            .start
+            .as_ref()
+            .is_some_and(|start| !start.can_replace())
+        {
+            bail!("the prior start is unconfirmed; retain or retry its draft, or select /new");
+        }
+        if let Some(turn) = self.active_turn() {
+            self.product(
+                json!({"type":"turn_steer","thread_id":self.service.scope.thread_id,"turn_id":turn,"text":draft}),
+                Kind::Submit { draft, revision: app.editor.draft_revision() },
+            )?;
+            self.start = None;
         } else {
-            json!({"type":"turn_start","thread_id":self.service.scope.thread_id,"text":text})
-        };
-        self.product(
-            command,
-            Kind::Submit {
-                draft: text.to_owned(),
-                revision: app.editor.persistence_revision(),
-            },
-        )?;
+            let start = StartRequest::new(
+                self.service.scope.thread_id.clone(),
+                self.service.current_run_id.clone(),
+                draft,
+                app.editor.draft_revision(),
+                now,
+                poll_period(),
+            )
+            .map_err(anyhow::Error::msg)?;
+            self.product(start.command(), Kind::Start)?;
+            self.start = Some(start);
+        }
         Ok(false)
+    }
+    fn poll_start(&mut self, app: &mut App, now: Instant) -> Result<bool> {
+        if self.pending.is_some() || !self.queued.is_empty() {
+            return Ok(false);
+        }
+        let Some(start) = &mut self.start else {
+            return Ok(false);
+        };
+        match start.poll(now) {
+            StartPoll::Query => {
+                let command = start.command();
+                self.product(command, Kind::Start)?;
+                Ok(true)
+            }
+            StartPoll::Expired => {
+                app.status =
+                    "start remains unconfirmed · draft retained; automatic observation stopped"
+                        .into();
+                Ok(false)
+            }
+            StartPoll::Idle => Ok(false),
+        }
+    }
+    fn accept_draft(
+        &mut self,
+        app: &mut App,
+        id: SubmissionId,
+        draft: String,
+        revision: u64,
+        starts_turn: bool,
+    ) {
+        if starts_turn || self.active_turn().is_none() {
+            self.expected_submission = Some(id);
+            if app.run.submission_id() != Some(id) {
+                app.run.submission_accepted(id, Instant::now());
+            }
+        }
+        self.accepted = Some(AcceptedDraft {
+            id,
+            draft,
+            revision,
+        });
+        let known = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .submissions
+                .iter()
+                .find(|receipt| receipt.submission_id == id)
+                .map(|receipt| receipt.state)
+        });
+        if let Some(state) = known {
+            self.observe_submission(app, id, state);
+        }
+        app.status = "submission accepted · awaiting application".into();
     }
     fn approval_key(&mut self, app: &mut App, code: KeyCode) -> Result<()> {
         if app.permission_prompt.awaiting_response()
@@ -598,9 +686,18 @@ impl View {
             return;
         }
         let draft = self.accepted.take().expect("same id checked above");
+        if self.start.as_ref().is_some_and(|start| {
+            start.matches(
+                &self.service.scope.thread_id,
+                &self.service.current_run_id,
+                &draft.draft,
+            )
+        }) {
+            self.start = None;
+        }
         if state == SubmissionLifecycleState::Applied {
             app.push_user(draft.draft);
-            if app.editor.persistence_revision() == draft.revision {
+            if app.editor.draft_revision() == draft.revision {
                 let _ = app.editor.take_submit();
             }
         } else {
@@ -622,7 +719,8 @@ impl View {
             Kind::Snapshot => {
                 let snapshot: ThreadSnapshotV1 = serde_json::from_value(reply["thread"].clone())
                     .context("thread observation unavailable")?;
-                if snapshot.contract_version != 1
+                if snapshot.contract_version
+                    != iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
                     || snapshot.thread_id != self.service.scope.thread_id
                 {
                     bail!("thread observation changed service scope");
@@ -634,6 +732,8 @@ impl View {
                     super::remote_settings::Settings::invalidate(app);
                     self.queued.clear();
                     self.accepted = None;
+                    self.start = None;
+                    self.queued.retain(|(_, kind)| !matches!(kind, Kind::Start));
                     self.expected_submission = None;
                     self.artifact = None;
                     self.last_terminal = None;
@@ -733,33 +833,46 @@ impl View {
                 self.poll_events = false;
                 self.poll_inputs = true;
             }
+            Kind::Start => {
+                let start = self
+                    .start
+                    .as_mut()
+                    .context("turn-start request custody unavailable")?;
+                match start
+                    .reply(&reply, Instant::now())
+                    .map_err(anyhow::Error::msg)?
+                {
+                    StartReply::Accepted(id) => {
+                        let draft = start.draft.clone();
+                        let revision = start.revision;
+                        self.accept_draft(app, id, draft, revision, true);
+                    }
+                    StartReply::Pending => {
+                        app.status =
+                            "start pending · draft retained; observing the same request".into();
+                    }
+                    StartReply::Unconfirmed => {
+                        app.status =
+                            "start admission unconfirmed · draft retained; no automatic retry"
+                                .into();
+                    }
+                    StartReply::Refused => {
+                        app.status = if start.can_replace() {
+                            "start refused before registration · draft retained"
+                        } else {
+                            "start refused · prior admission unconfirmed; draft retained"
+                        }
+                        .into();
+                    }
+                }
+            }
             Kind::Submit { draft, revision } => {
                 if reply["type"] == "control_queued_v1" {
                     let id = reply["submission_id"]
                         .as_u64()
-                        .filter(|v| *v > 0)
+                        .filter(|id| *id > 0)
                         .context("submission receipt unavailable")?;
-                    if self.active_turn().is_none() {
-                        self.expected_submission = Some(SubmissionId(id));
-                        app.run
-                            .submission_accepted(SubmissionId(id), Instant::now());
-                    }
-                    self.accepted = Some(AcceptedDraft {
-                        id: SubmissionId(id),
-                        draft,
-                        revision,
-                    });
-                    if let Some(snapshot) = &self.snapshot {
-                        let known = snapshot
-                            .submissions
-                            .iter()
-                            .find(|receipt| receipt.submission_id == SubmissionId(id))
-                            .map(|receipt| receipt.state);
-                        if let Some(state) = known {
-                            self.observe_submission(app, SubmissionId(id), state);
-                        }
-                    }
-                    app.status = "submission queued · awaiting application".into();
+                    self.accept_draft(app, SubmissionId(id), draft, revision, false);
                 } else {
                     show_reply(app, &reply);
                 }
@@ -1046,10 +1159,13 @@ impl View {
                         bail!("session navigation scope changed");
                     }
                     self.service.current_run_id = navigation.run_id.clone();
+                    self.snapshot = None;
                     self.models = None;
                     app.persistent_agent_views.clear();
                     super::remote_settings::Settings::invalidate(app);
                     self.accepted = None;
+                    self.start = None;
+                    self.queued.retain(|(_, kind)| !matches!(kind, Kind::Start));
                     self.expected_submission = None;
                     self.artifact = None;
                     self.last_terminal = None;
@@ -1245,25 +1361,36 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
         settings_needed: false,
         last_live_seq: 0,
         accepted: None,
+        start: None,
         expected_submission: None,
         artifact: None,
     };
     view.snapshot_request()?;
-    let mut tick = tokio::time::interval(
-        iteron_tunables::param_duration("cli.tui.remote.poll_period", POLL_PERIOD)
-            .clamp(Duration::from_millis(5), Duration::from_secs(5)),
-    );
+    let mut tick = tokio::time::interval(poll_period());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if view.pending.is_none()
             && let Some((control, kind)) = view.queued.pop_front()
         {
-            let id = transport.control(control).await?;
-            view.pending = Some(Request {
-                id,
-                kind,
-                deadline: Instant::now() + REPLY_DEADLINE,
-            });
+            let deadline = if matches!(&kind, Kind::Start) {
+                view.start
+                    .as_ref()
+                    .context("turn-start request custody unavailable")?
+                    .deadline()
+            } else {
+                Instant::now() + REPLY_DEADLINE
+            };
+            if matches!(&kind, Kind::Start) && Instant::now() >= deadline {
+                if let Some(start) = &mut view.start {
+                    start.stop_observing();
+                }
+                app.status =
+                    "start dispatch unconfirmed · draft retained; observation deadline ended"
+                        .into();
+            } else {
+                let id = transport.control(control).await?;
+                view.pending = Some(Request { id, kind, deadline });
+            }
         }
         app.artifact_viewer.poll(&view.service.current_run_id);
         if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
@@ -1327,8 +1454,15 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
                 }
             },
             _=tick.tick()=>{
-                if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request(false)?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if let Some(request) = &view.pending && Instant::now() > request.deadline {
+                    if matches!(&request.kind, Kind::Start) {
+                        if let Some(start) = &mut view.start { start.stop_observing(); }
+                        // Keep correlation for a late reply. No new command or request key is
+                        // dispatched while this transport outcome remains unconfirmed.
+                        app.status = "start reply timed out · draft retained; delivery unconfirmed".into();
+                    } else { bail!("remote reply timed out; command delivery/continuation is unconfirmed"); }
+                }
+                if view.pending.is_none()&&view.queued.is_empty(){if view.poll_start(&mut app,Instant::now())?{}else if view.final_needed{view.final_request(false)?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -1552,16 +1686,164 @@ mod tests {
             settings_needed: false,
             last_live_seq: 0,
             accepted: None,
+            start: None,
             expected_submission: None,
             artifact: None,
         }
+    }
+    fn start_receipt(wire: &Value, state: &str, id: Option<u64>) -> Value {
+        json!({"type":"turn_start_receipt_v2", "contract_version":iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
+            "request_key":wire["command"]["request_key"], "thread_id":wire["command"]["thread_id"],
+            "state":state, "submission_id":id, "run_id":id.map(|_| "run"),
+            "turn_id":id.map(|_| 1), "window_closed":false})
+    }
+    #[test]
+    fn start_v2_pending_lookup_retains_exact_draft_until_actual_applied_receipt() {
+        let mut app = App::new();
+        let mut view = view();
+        let task = "  后续任务\n";
+        app.editor.insert_str(task);
+        view.submit(&mut app).unwrap();
+        assert!(
+            view.submit(&mut app).is_err(),
+            "queued start cannot mint a second key"
+        );
+        assert_eq!(view.queued.len(), 1);
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert!(matches!(&kind, Kind::Start));
+        assert_eq!(wire["command"]["text"], task);
+        let decoded: iteron_protocol::product_contract::ProductControlV1 =
+            serde_json::from_value(wire["command"].clone()).unwrap();
+        assert!(matches!(
+            decoded,
+            iteron_protocol::product_contract::ProductControlV1::TurnStart { .. }
+        ));
+        iteron_record::turn_start_store::prepare(
+            wire["command"]["request_key"].as_str().unwrap(),
+            &view.service.scope.thread_id,
+            task,
+        )
+        .unwrap();
+        view.pending = Some(Request {
+            id: 1,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, start_receipt(&wire, "pending", None))
+            .unwrap();
+        assert!(view.accepted.is_none());
+        assert!(!app.run.running());
+        assert_eq!(app.editor.text(), task);
+        assert!(
+            view.poll_start(&mut app, Instant::now() + Duration::from_millis(300))
+                .unwrap()
+        );
+        let (lookup, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(
+            lookup, wire,
+            "pending lookup retains key, scope and exact text"
+        );
+        view.pending = Some(Request {
+            id: 2,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 2, start_receipt(&wire, "running", Some(7)))
+            .unwrap();
+        assert!(app.run.running());
+        assert_eq!(app.editor.text(), task);
+        assert!(
+            !app.history
+                .blocks()
+                .iter()
+                .any(|block| matches!(&block.kind, block::BlockKind::User(_)))
+        );
+        view.observe_submission(&mut app, SubmissionId(8), SubmissionLifecycleState::Applied);
+        assert!(view.accepted.is_some());
+        app.editor.clear();
+        app.editor.insert_str("a newer draft");
+        view.observe_submission(&mut app, SubmissionId(7), SubmissionLifecycleState::Applied);
+        assert!(view.start.is_none());
+        assert!(view.accepted.is_none());
+        assert_eq!(app.editor.text(), "a newer draft");
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .filter(|block| matches!(&block.kind, block::BlockKind::User(text) if text == task))
+                .count(),
+            1
+        );
+        app.run.run_ended(Instant::now());
+        app.editor.clear();
+        app.editor.insert_str(task);
+        view.submit(&mut app).unwrap();
+        assert_ne!(
+            view.queued.front().unwrap().0["command"]["request_key"],
+            wire["command"]["request_key"],
+            "a new explicit task after application owns a new identity"
+        );
+    }
+    #[test]
+    fn start_unknown_never_automatically_retries_and_explicit_retry_keeps_key() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("retained task");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        view.pending = Some(Request {
+            id: 1,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, start_receipt(&wire, "admission_unknown", None))
+            .unwrap();
+        assert_eq!(app.editor.text(), "retained task");
+        assert!(view.accepted.is_none());
+        assert!(
+            !view
+                .poll_start(&mut app, Instant::now() + Duration::from_secs(6))
+                .unwrap()
+        );
+        assert!(view.queued.is_empty());
+        view.submit(&mut app).unwrap();
+        assert_eq!(view.queued.front().unwrap().0, wire);
+        assert!(view.submit(&mut app).is_err());
+        assert_eq!(view.queued.len(), 1);
+    }
+    #[test]
+    fn verified_navigation_retires_old_start_identity_and_queued_lookup() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("old task");
+        view.submit(&mut app).unwrap();
+        let old_key = view.queued.front().unwrap().0["command"]["request_key"].clone();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Control,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, json!({"type":"session_navigated_v1","navigation":{
+            "version":1,"thread_id":"thread","origin_run_id":"run","run_id":"new-run","fresh":true,
+            "provider_id":"provider","model_id":"model","effort":"medium","context_window_tokens":null,
+            "messages":0,"turns":0,"checkpoint_digest_sha256":"a".repeat(64),"blocked":null,"substituted_route":null,
+            "transcript":{"source":"verified_record","total_blocks":0,"omitted_blocks":0,"blocks":[]}
+        }})).unwrap();
+        assert!(view.start.is_none());
+        assert!(view.queued.is_empty());
+        assert!(view.snapshot.is_none());
+        view.submit(&mut app).unwrap();
+        assert_ne!(
+            view.queued.front().unwrap().0["command"]["request_key"],
+            old_key
+        );
     }
     #[test]
     fn queued_reply_does_not_claim_application_and_exact_receipt_preserves_new_draft() {
         let mut app = App::new();
         let mut view = view();
         app.editor.insert_str("the original task");
-        let revision = app.editor.persistence_revision();
+        let revision = app.editor.draft_revision();
         view.pending = Some(Request {
             id: 1,
             kind: Kind::Submit {
@@ -1600,7 +1882,7 @@ mod tests {
         view.accepted = Some(AcceptedDraft {
             id: SubmissionId(5),
             draft: "retained task".into(),
-            revision: app.editor.persistence_revision(),
+            revision: app.editor.draft_revision(),
         });
         view.observe_submission(
             &mut app,
@@ -1623,7 +1905,7 @@ mod tests {
             id: 1,
             kind: Kind::Submit {
                 draft: "first".into(),
-                revision: app.editor.persistence_revision(),
+                revision: app.editor.draft_revision(),
             },
             deadline: Instant::now() + REPLY_DEADLINE,
         });
@@ -1654,7 +1936,7 @@ mod tests {
             id: 2,
             kind: Kind::Submit {
                 draft: "second".into(),
-                revision: app.editor.persistence_revision(),
+                revision: app.editor.draft_revision(),
             },
             deadline: Instant::now() + REPLY_DEADLINE,
         });
@@ -1715,7 +1997,7 @@ mod tests {
             event,
         };
         let page = ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: view.service.scope.thread_id.clone(),
             requested_after: 0,
             oldest_available: 1,

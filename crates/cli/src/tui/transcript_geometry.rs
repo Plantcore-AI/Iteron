@@ -359,7 +359,8 @@ mod tests {
         ))];
         let mut owner = TranscriptGeometry::default();
         prepare(&mut owner, &blocks, 80);
-        assert_eq!(owner.layout().block_rows(0), Some((0, 3)));
+        // Five artwork rows plus the tagline and shortcut row remain in the startup block.
+        assert_eq!(owner.layout().block_rows(0), Some((0, 7)));
         blocks.push(Arc::new(block::Block::new(
             1,
             block::BlockKind::User("hello".into()),
@@ -387,7 +388,7 @@ mod tests {
         );
         blocks.truncate(1);
         prepare(&mut owner, &blocks, 40);
-        assert_eq!(owner.layout().block_rows(0), Some((0, 3)));
+        assert_eq!(owner.layout().block_rows(0), Some((0, 7)));
     }
 
     #[test]

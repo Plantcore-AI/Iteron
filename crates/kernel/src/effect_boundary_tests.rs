@@ -834,11 +834,14 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: "child.run_leaf(&prompt)",
-        owners: &[("crates/cli/src/runtime/direct_child_execution.rs", "run")],
-        guidance: "native direct execution follows the actual direct admission with owned stop/accounting custody",
+        owners: &[(
+            "crates/cli/src/runtime/direct_child_execution.rs",
+            "native_child_future",
+        )],
+        guidance: "the private native child future is spawned only after run opens the actual direct ticket; run retains stop, join, cleanup and accounting custody",
     },
     EffectPrimitive {
-        needle: "children.direct(prompt, node)",
+        needle: "children.direct(prompt, node, agent_type)",
         owners: &[("crates/cli/src/runtime/direct_child_execution.rs", "run")],
         guidance: "controller direct execution follows the admitted actual child epoch rather than a local counter",
     },

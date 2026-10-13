@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "8d196334f6eec42849cf3cdea1fb793d76ae86fda0d3335ef4e06d6933a595ac"
+    "value": "3c04d9f9662807c2413e903b484991a261e6eff4148a68d107556537ade7aa29"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 28,
+    "registry_revision": 30,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -1158,7 +1158,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d76ed3ec8b3373405d7e84c894c05fc64a63acf8d805cc2a05b529b024bb00c4"
+          "value": "acdbcf112cf073344a246268e83b02531c2097e644274519c440894793e9bdf4"
         },
         "schema_version": 3,
         "ordinal": 10,
@@ -1190,7 +1190,7 @@
           "requirement": "optional",
           "value": {
             "type": "enum",
-            "value": "acceptEdits"
+            "value": "yolo"
           }
         },
         "source": {
@@ -8694,7 +8694,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "52bd6c5deb3045caadb142ab2121ac181fac944f7ef8860a9fd0de3bc73d2b85"
+          "value": "d4f6cefe577860c036e5b2f2c471f3d83606ce5ece12c4e4d6e01f8a623ad1d8"
         },
         "schema_version": 3,
         "ordinal": 68,
@@ -8720,9 +8720,10 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/multimodal_input_admission_decode_envelope-v1"
           },
           "requirement": "optional",
           "value": {
@@ -9118,7 +9119,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5c2cbf9222928f8b10fb8d6ca3c0bece0eb648e89e5ebd8867ad1cbf5d37bf26"
+          "value": "1c09e890c35e4b3f6aee78b1167fd5bb03ee29b1a84054924658387bb5c4b9fe"
         },
         "schema_version": 3,
         "ordinal": 70,
@@ -9143,9 +9144,10 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/provider_discovery_account_probe_cache_policy-v1"
           },
           "requirement": "optional",
           "value": {

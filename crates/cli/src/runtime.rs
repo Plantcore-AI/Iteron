@@ -1523,6 +1523,9 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
+        // Rebuildable session publication waits until the complete invocation, including
+        // terminal cleanup and policy records, has released the foreground window.
+        let _foreground = self.rollout.foreground_activity()?;
         self.run_assistant_text.clear();
         self.last_assistant_source = None;
         let parent_turn = self.begin_parent_runtime_bridge(task)?;
@@ -1605,6 +1608,7 @@ impl Agent {
     ///    without a recursive obligation through the parent writer, while `Agent::run` itself also
     ///    stays `Send` for top-level callers.
     async fn run_leaf(&mut self, task: &str) -> Result<Outcome, KernelError> {
+        let _foreground = self.rollout.foreground_activity()?;
         let mut outcome = Box::pin(self.run_leaf_inner(task)).await;
         if let Err(cleanup_error) = self
             .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::RunEnd)

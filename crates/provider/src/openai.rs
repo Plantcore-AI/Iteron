@@ -11,11 +11,13 @@
 //! design predicted: providers differ in how early a tool_use is identifiable). Correctness is
 //! unaffected; the latency win is smaller.
 
+use crate::decode::{self, invalid};
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
     ProviderError, ServiceTier, TurnRequest, TurnResult, UsageReport,
 };
+use crate::{DecodeCode as Code, DecodeField as Field};
 use futures_util::StreamExt;
 use iteron_protocol::{
     Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
@@ -23,6 +25,8 @@ use iteron_protocol::{
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+mod ark_thinking;
 
 const MAX_STREAM_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 32 * 1024 * 1024;
@@ -138,6 +142,7 @@ impl OpenAiCompat {
     fn body(&self, req: &TurnRequest) -> Result<serde_json::Value, ProviderError> {
         let mut messages: Vec<serde_json::Value> =
             vec![serde_json::json!({"role":"system","content":req.system})];
+        let ark_route = ark_thinking::ArkRoute::for_root(self.api_root.as_ref());
         let image_target = image_target(&req.messages, &req.input_images)?;
         for (index, m) in req.messages.iter().enumerate() {
             let input_images = if image_target == Some(index) {
@@ -145,13 +150,24 @@ impl OpenAiCompat {
             } else {
                 &[]
             };
-            messages.extend(msg_to_openai(
+            let mut mapped = msg_to_openai(
                 m,
-                ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref()),
+                if ark_route.is_some() {
+                    ChatReasoningReplay::None
+                } else {
+                    ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref())
+                },
                 &self.route_scope,
                 input_images,
                 !req.tools.is_empty(),
-            )?);
+            )?;
+            if let Some(route) = ark_route
+                && m.role == Role::Assistant
+                && let Some(assistant) = mapped.first_mut()
+            {
+                ark_thinking::replay(m, &self.route_scope, route, &req.model, assistant)?;
+            }
+            messages.extend(mapped);
         }
         let mut b = serde_json::json!({
             "model": req.model,
@@ -659,17 +675,17 @@ fn apply_tool_call_id(tool: &mut ToolAcc, id: Option<&str>) {
 }
 
 fn complete_tool(tool: &ToolAcc) -> Result<ToolUse, ProviderError> {
-    if tool.id.is_empty() || tool.name.is_empty() {
-        return Err(ProviderError::Decode(
-            "tool call completed without an id or function name".into(),
-        ));
+    if tool.id.is_empty() {
+        return Err(invalid(Code::MissingField, Field::ChatToolId));
+    }
+    if tool.name.is_empty() {
+        return Err(invalid(Code::MissingField, Field::ChatToolName));
     }
     let input = if tool.args.trim().is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::from_str(&tool.args).map_err(|error| {
-            ProviderError::Decode(format!("tool arguments were not valid JSON: {error}"))
-        })?
+        serde_json::from_str(&tool.args)
+            .map_err(|error| decode::json(&error, Field::ChatToolArguments))?
     };
     Ok(ToolUse {
         id: tool.id.clone(),
@@ -689,9 +705,7 @@ fn assemble_tool_uses(
     }
     if tools.is_empty() {
         return if stop_reason == StopReason::ToolUse {
-            Err(ProviderError::Decode(
-                "tool_calls finish reason contained no tool calls".into(),
-            ))
+            Err(invalid(Code::ProtocolSequence, Field::ChatTools))
         } else {
             Ok(Vec::new())
         };
@@ -701,9 +715,7 @@ fn assemble_tool_uses(
     // terminal to ToolUse; accept EndTurn here as that same narrow case. Every other terminal
     // continues to fail closed.
     if !matches!(stop_reason, StopReason::ToolUse | StopReason::EndTurn) {
-        return Err(ProviderError::Decode(
-            "stream contained tool calls without a tool_calls finish reason".into(),
-        ));
+        return Err(invalid(Code::ProtocolSequence, Field::FinishReason));
     }
     tools.iter().map(complete_tool).collect()
 }
@@ -718,7 +730,7 @@ fn decode_finish_reason(value: &str) -> Result<StopReason, ProviderError> {
         "pause_turn" => Ok(StopReason::PauseTurn),
         future => StopReasonCode::parse(future)
             .map(StopReason::Unknown)
-            .map_err(|_| ProviderError::Decode("provider finish reason code was invalid".into())),
+            .map_err(|_| invalid(Code::InvalidValue, Field::FinishReason)),
     }
 }
 
@@ -746,22 +758,17 @@ fn parse_sse_line(
         return Ok(OpenAiSseLine::Ignore);
     }
     let Some(data) = line.strip_prefix("data:") else {
-        return Err(ProviderError::Decode(format!(
-            "malformed OpenAI SSE line (expected data field, got {} bytes)",
-            line.len()
-        )));
+        return Err(invalid(Code::InvalidValue, Field::SseData));
     };
     let data = data.trim();
     if data == "[DONE]" {
         return Ok(OpenAiSseLine::Done);
     }
     if data.is_empty() {
-        return Err(ProviderError::Decode(
-            "empty OpenAI SSE data field".to_string(),
-        ));
+        return Err(invalid(Code::MissingField, Field::SseData));
     }
-    let value: serde_json::Value = serde_json::from_str(data)
-        .map_err(|error| ProviderError::Decode(format!("malformed OpenAI SSE JSON: {error}")))?;
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|error| decode::json(&error, Field::SseData))?;
     if let Some(error) = crate::minimax_base_response_failure_for(
         AdapterKind::OpenAiCompatibleChat,
         error_profile,
@@ -789,11 +796,8 @@ fn parse_sse_line(
 }
 
 fn validate_stream_end(pending: &[u8], saw_terminal: bool) -> Result<(), ProviderError> {
-    let pending = std::str::from_utf8(pending).map_err(|_| {
-        ProviderError::Decode(
-            "OpenAI stream ended with an incomplete or invalid UTF-8 code point".to_string(),
-        )
-    })?;
+    let pending =
+        std::str::from_utf8(pending).map_err(|_| invalid(Code::InvalidUtf8, Field::SseData))?;
     if !pending.trim().is_empty() {
         return Err(ProviderError::Http(
             "OpenAI stream ended with an incomplete SSE event".to_string(),
@@ -842,48 +846,49 @@ fn apply_reported_usage(
     if raw.is_null() {
         return Ok(ReportedUsage::Absent);
     }
-    let object = raw.as_object().ok_or_else(|| {
-        ProviderError::Decode("OpenAI-compatible usage field was not an object".into())
-    })?;
-    let required_token = |key: &str| -> Result<u64, ProviderError> {
-        object
+    let object = raw
+        .as_object()
+        .ok_or_else(|| invalid(Code::InvalidType, Field::Usage))?;
+    let required_token = |key: &str, field: Field| -> Result<u64, ProviderError> {
+        let value = object
             .get(key)
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| {
-                ProviderError::Decode(
-                    "OpenAI-compatible usage omitted a required integer token count".into(),
-                )
-            })
+            .ok_or_else(|| invalid(Code::MissingField, field))?;
+        value
+            .as_u64()
+            .ok_or_else(|| invalid(Code::InvalidType, field))
     };
-    let total_input = required_token("prompt_tokens")?;
-    usage.output = required_token("completion_tokens")?;
+    let total_input = required_token("prompt_tokens", Field::PromptTokens)?;
+    usage.output = required_token("completion_tokens", Field::CompletionTokens)?;
     let mut cache_creation_reported = false;
     if let Some(details) = object
         .get("prompt_tokens_details")
         .filter(|value| !value.is_null())
     {
-        let details = details.as_object().ok_or_else(|| {
-            ProviderError::Decode(
-                "OpenAI-compatible prompt token details were not an object".into(),
-            )
-        })?;
+        let details = details
+            .as_object()
+            .ok_or_else(|| invalid(Code::InvalidType, Field::PromptDetails))?;
         if let Some(cached) = details
             .get("cached_tokens")
             .filter(|value| !value.is_null())
         {
-            usage.cache_read = cached.as_u64().ok_or_else(|| {
-                ProviderError::Decode(
-                    "OpenAI-compatible usage contained a non-integer token count".into(),
-                )
-            })?;
+            usage.cache_read = cached
+                .as_u64()
+                .ok_or_else(|| invalid(Code::InvalidType, Field::CachedTokens))?;
         }
-        if let Some(written) = CACHE_CREATION_DETAIL_KEYS
-            .into_iter()
-            .find_map(|key| details.get(key).filter(|value| !value.is_null()))
-        {
+        if let Some((key, written)) = CACHE_CREATION_DETAIL_KEYS.into_iter().find_map(|key| {
+            details
+                .get(key)
+                .filter(|value| !value.is_null())
+                .map(|value| (key, value))
+        }) {
             usage.cache_creation = written.as_u64().ok_or_else(|| {
-                ProviderError::Decode(
-                    "OpenAI-compatible usage contained a non-integer token count".into(),
+                invalid(
+                    Code::InvalidType,
+                    if key == "cache_write_tokens" {
+                        Field::CacheWriteTokens
+                    } else {
+                        Field::CacheCreationTokens
+                    },
                 )
             })?;
             cache_creation_reported = true;
@@ -892,34 +897,24 @@ fn apply_reported_usage(
     let cached_prompt = usage
         .cache_read
         .checked_add(usage.cache_creation)
-        .ok_or_else(|| {
-            ProviderError::Decode(
-                "OpenAI-compatible cached token counts overflowed the prompt total".into(),
-            )
-        })?;
-    usage.input = total_input.checked_sub(cached_prompt).ok_or_else(|| {
-        ProviderError::Decode(
-            "OpenAI-compatible cached token count exceeded total prompt tokens".into(),
-        )
-    })?;
+        .ok_or_else(|| invalid(Code::InvalidValue, Field::PromptDetails))?;
+    usage.input = total_input
+        .checked_sub(cached_prompt)
+        .ok_or_else(|| invalid(Code::InvalidValue, Field::PromptDetails))?;
     if let Some(details) = object
         .get("completion_tokens_details")
         .filter(|value| !value.is_null())
     {
-        let details = details.as_object().ok_or_else(|| {
-            ProviderError::Decode(
-                "OpenAI-compatible completion token details were not an object".into(),
-            )
-        })?;
+        let details = details
+            .as_object()
+            .ok_or_else(|| invalid(Code::InvalidType, Field::CompletionDetails))?;
         if let Some(reasoning) = details
             .get("reasoning_tokens")
             .filter(|value| !value.is_null())
         {
-            usage.thinking = reasoning.as_u64().ok_or_else(|| {
-                ProviderError::Decode(
-                    "OpenAI-compatible usage contained a non-integer token count".into(),
-                )
-            })?;
+            usage.thinking = reasoning
+                .as_u64()
+                .ok_or_else(|| invalid(Code::InvalidType, Field::ReasoningTokens))?;
         }
     }
     Ok(ReportedUsage::Present {
@@ -937,9 +932,7 @@ fn apply_unique_reported_usage(
     };
     if let Some(first) = first_usage {
         if first != raw {
-            return Err(ProviderError::Decode(
-                "OpenAI-compatible stream emitted conflicting usage reports".into(),
-            ));
+            return Err(invalid(Code::ConflictingValue, Field::Usage));
         }
         // An identical trailing usage frame is a duplicate observation, not another charge.
         return Ok(ReportedUsage::Absent);
@@ -1120,6 +1113,8 @@ impl Provider for OpenAiCompat {
             on_item(StreamItem::RateLimit(snapshot));
         }
 
+        let mut frame_index = 0u64;
+        let mut finish_frame = None;
         let mut stream = resp.bytes_stream();
         // A byte cursor keeps split UTF-8 intact and advances without shifting the whole tail for
         // every SSE line. Compaction is amortized after a large consumed prefix.
@@ -1127,6 +1122,8 @@ impl Provider for OpenAiCompat {
         let mut wire_start = 0usize;
         let mut text = String::new();
         let mut thinking = String::new();
+        let ark_route = ark_thinking::ArkRoute::for_root(self.api_root.as_ref());
+        let mut ark_thinking = ark_thinking::StreamState::default();
         let mut tools: Vec<ToolAcc> = Vec::new();
         let mut emitted_tools = BTreeSet::new();
         let mut usage = Usage::default();
@@ -1168,13 +1165,13 @@ impl Provider for OpenAiCompat {
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|e| ProviderError::Http(e.to_string()))?;
-            total_stream_bytes = total_stream_bytes
-                .checked_add(bytes.len())
-                .ok_or_else(|| ProviderError::Decode("stream byte counter overflow".into()))?;
+            total_stream_bytes = total_stream_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1))
+            })?;
             if total_stream_bytes > max_stream_bytes {
-                return Err(ProviderError::Decode(format!(
-                    "OpenAI-compatible stream exceeded {max_stream_bytes} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1)));
             }
             wire.extend_from_slice(&bytes);
             while let Some(relative_nl) = wire[wire_start..].iter().position(|byte| *byte == b'\n')
@@ -1185,44 +1182,52 @@ impl Provider for OpenAiCompat {
                         MAX_SSE_LINE_BYTES,
                     )
                 {
-                    return Err(ProviderError::Decode(format!(
-                        "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
-                    )));
+                    return Err(invalid(Code::LimitExceeded, Field::SseData)
+                        .at_decode_frame(frame_index.saturating_add(1)));
                 }
                 let line_end = wire_start.saturating_add(relative_nl);
                 let line = std::str::from_utf8(&wire[wire_start..line_end]).map_err(|_| {
-                    ProviderError::Decode("OpenAI-compatible stream contained invalid UTF-8".into())
+                    invalid(Code::InvalidUtf8, Field::SseData)
+                        .at_decode_frame(frame_index.saturating_add(1))
                 })?;
                 wire_start = line_end.saturating_add(1);
+                if line.trim().starts_with("data:") {
+                    frame_index = frame_index.saturating_add(1);
+                }
                 let parsed = parse_sse_line(
                     line,
                     self.error_profile,
                     response_retry_after,
                     response_request_id.clone(),
-                )?;
+                )
+                .map_err(|error| {
+                    error.at_decode_frame(if line.trim().starts_with("data:") {
+                        frame_index
+                    } else {
+                        frame_index.saturating_add(1)
+                    })
+                })?;
                 if saw_done {
                     if matches!(parsed, OpenAiSseLine::Ignore) {
                         continue;
                     }
-                    return Err(ProviderError::Decode(
-                        "OpenAI-compatible stream emitted data after [DONE]".into(),
-                    ));
+                    return Err(invalid(Code::ProtocolSequence, Field::SseData)
+                        .at_decode_frame(frame_index.max(1)));
                 }
                 let v = match parsed {
                     OpenAiSseLine::Ignore => continue,
                     OpenAiSseLine::Done => {
                         if stop.is_none() {
-                            return Err(ProviderError::Decode(
-                                "OpenAI-compatible stream reached [DONE] before finish_reason"
-                                    .into(),
-                            ));
+                            return Err(invalid(Code::ProtocolSequence, Field::FinishReason)
+                                .at_decode_frame(frame_index.max(1)));
                         }
                         saw_done = true;
                         continue;
                     }
                     OpenAiSseLine::Chunk(value) => value,
                 };
-                let reported_usage = apply_unique_reported_usage(&v, &mut usage, &mut first_usage)?;
+                let reported_usage = apply_unique_reported_usage(&v, &mut usage, &mut first_usage)
+                    .map_err(|error| error.at_decode_frame(frame_index))?;
                 saw_usage |= reported_usage.present();
                 saw_cache_creation |= matches!(
                     reported_usage,
@@ -1235,37 +1240,56 @@ impl Provider for OpenAiCompat {
                     None if stop.is_some()
                         && v.get("usage").is_none_or(|usage| usage.is_null()) =>
                     {
-                        return Err(ProviderError::Decode(
-                            "OpenAI-compatible stream emitted a non-usage chunk after finish_reason"
-                                .into(),
-                        ));
+                        return Err(invalid(Code::ProtocolSequence, Field::FinishReason)
+                            .at_decode_frame(frame_index.max(1)));
                     }
                     None => continue,
                 };
                 if stop.is_some() {
-                    return Err(ProviderError::Decode(
-                        "OpenAI-compatible stream emitted a choice after finish_reason".into(),
-                    ));
+                    return Err(invalid(Code::ProtocolSequence, Field::FinishReason)
+                        .at_decode_frame(frame_index.max(1)));
                 }
                 let frame_stop = choice
                     .get("finish_reason")
                     .and_then(|value| value.as_str())
                     .map(decode_finish_reason)
-                    .transpose()?;
+                    .transpose()
+                    .map_err(|error| error.at_decode_frame(frame_index))?;
                 let delta = choice.get("delta");
+                if ark_route.is_some() {
+                    let added = ark_thinking
+                        .observe_encrypted(delta)
+                        .map_err(|error| error.at_decode_frame(frame_index))?;
+                    assembled_output_bytes =
+                        assembled_output_bytes.checked_add(added).ok_or_else(|| {
+                            invalid(Code::LimitExceeded, Field::ChatEncryptedContent)
+                                .at_decode_frame(frame_index)
+                        })?;
+                    if assembled_output_bytes > max_assembled_output_bytes {
+                        return Err(invalid(Code::LimitExceeded, Field::ChatEncryptedContent)
+                            .at_decode_frame(frame_index));
+                    }
+                    ark_thinking::validate_reasoning_delta(delta)
+                        .map_err(|error| error.at_decode_frame(frame_index))?;
+                }
                 if let Some(reasoning) = delta
                     .and_then(|d| d.get("reasoning_content"))
                     .and_then(|value| value.as_str())
                 {
+                    if ark_route.is_some() {
+                        ark_thinking
+                            .append_reasoning_len(reasoning.len())
+                            .map_err(|error| error.at_decode_frame(frame_index))?;
+                    }
                     assembled_output_bytes = assembled_output_bytes
                         .checked_add(reasoning.len())
                         .ok_or_else(|| {
-                            ProviderError::Decode("assembled output byte counter overflow".into())
+                            invalid(Code::LimitExceeded, Field::Response)
+                                .at_decode_frame(frame_index.max(1))
                         })?;
                     if assembled_output_bytes > max_assembled_output_bytes {
-                        return Err(ProviderError::Decode(format!(
-                            "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
-                        )));
+                        return Err(invalid(Code::LimitExceeded, Field::Response)
+                            .at_decode_frame(frame_index.max(1)));
                     }
                     thinking.push_str(reasoning);
                     on_item(StreamItem::ThinkingDelta(reasoning.to_string()));
@@ -1276,12 +1300,12 @@ impl Provider for OpenAiCompat {
                 {
                     assembled_output_bytes =
                         assembled_output_bytes.checked_add(t.len()).ok_or_else(|| {
-                            ProviderError::Decode("assembled output byte counter overflow".into())
+                            invalid(Code::LimitExceeded, Field::Response)
+                                .at_decode_frame(frame_index.max(1))
                         })?;
                     if assembled_output_bytes > max_assembled_output_bytes {
-                        return Err(ProviderError::Decode(format!(
-                            "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
-                        )));
+                        return Err(invalid(Code::LimitExceeded, Field::Response)
+                            .at_decode_frame(frame_index.max(1)));
                     }
                     text.push_str(t);
                     on_item(StreamItem::TextDelta(t.to_string()));
@@ -1298,18 +1322,16 @@ impl Provider for OpenAiCompat {
                             ),
                         );
                         let idx = usize::try_from(raw_index).map_err(|_| {
-                            ProviderError::Decode("tool call index exceeded platform bounds".into())
+                            invalid(Code::LimitExceeded, Field::ChatTools)
+                                .at_decode_frame(frame_index.max(1))
                         })?;
                         if idx >= max_tool_calls {
-                            return Err(ProviderError::Decode(format!(
-                                "OpenAI-compatible output exceeded {max_tool_calls} tool calls"
-                            )));
+                            return Err(invalid(Code::LimitExceeded, Field::ChatTools)
+                                .at_decode_frame(frame_index.max(1)));
                         }
                         if emitted_tools.contains(&idx) {
-                            return Err(ProviderError::Decode(
-                                "provider emitted additional deltas for a tool call after its next-index completion boundary"
-                                    .into(),
-                            ));
+                            return Err(invalid(Code::ProtocolSequence, Field::ChatTools)
+                                .at_decode_frame(frame_index.max(1)));
                         }
                         // OpenAI-compatible streams provide no per-call done event. The first
                         // delta for a higher index is nevertheless an ordering boundary: every
@@ -1317,7 +1339,10 @@ impl Provider for OpenAiCompat {
                         if idx >= tools.len() {
                             for (completed_index, completed) in tools.iter().enumerate() {
                                 if emitted_tools.insert(completed_index) {
-                                    on_item(StreamItem::ToolUseComplete(complete_tool(completed)?));
+                                    on_item(StreamItem::ToolUseComplete(
+                                        complete_tool(completed)
+                                            .map_err(|error| error.at_decode_frame(frame_index))?,
+                                    ));
                                 }
                             }
                         }
@@ -1328,9 +1353,8 @@ impl Provider for OpenAiCompat {
                             assembled_output_bytes = assembled_output_bytes
                                 .checked_add(id.len())
                                 .ok_or_else(|| {
-                                ProviderError::Decode(
-                                    "assembled output byte counter overflow".into(),
-                                )
+                                invalid(Code::LimitExceeded, Field::Response)
+                                    .at_decode_frame(frame_index.max(1))
                             })?;
                             apply_tool_call_id(&mut tools[idx], Some(id));
                         }
@@ -1339,9 +1363,8 @@ impl Provider for OpenAiCompat {
                                 assembled_output_bytes = assembled_output_bytes
                                     .checked_add(n.len())
                                     .ok_or_else(|| {
-                                        ProviderError::Decode(
-                                            "assembled output byte counter overflow".into(),
-                                        )
+                                        invalid(Code::LimitExceeded, Field::Response)
+                                            .at_decode_frame(frame_index.max(1))
                                     })?;
                                 tools[idx].name.push_str(n);
                             }
@@ -1349,21 +1372,20 @@ impl Provider for OpenAiCompat {
                                 assembled_output_bytes = assembled_output_bytes
                                     .checked_add(a.len())
                                     .ok_or_else(|| {
-                                        ProviderError::Decode(
-                                            "assembled output byte counter overflow".into(),
-                                        )
+                                        invalid(Code::LimitExceeded, Field::Response)
+                                            .at_decode_frame(frame_index.max(1))
                                     })?;
                                 tools[idx].args.push_str(a);
                             }
                         }
                         if assembled_output_bytes > max_assembled_output_bytes {
-                            return Err(ProviderError::Decode(format!(
-                                "OpenAI-compatible output exceeded {max_assembled_output_bytes} bytes"
-                            )));
+                            return Err(invalid(Code::LimitExceeded, Field::Response)
+                                .at_decode_frame(frame_index.max(1)));
                         }
                     }
                 }
                 if let Some(frame_stop) = frame_stop {
+                    finish_frame = Some(frame_index);
                     stop = Some(frame_stop);
                 }
             }
@@ -1373,9 +1395,8 @@ impl Provider for OpenAiCompat {
                     MAX_SSE_LINE_BYTES,
                 )
             {
-                return Err(ProviderError::Decode(format!(
-                    "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1)));
             }
             if wire_start >= 64 * 1024 && wire_start >= wire.len() / 2 {
                 wire.drain(..wire_start);
@@ -1385,12 +1406,14 @@ impl Provider for OpenAiCompat {
                 // [DONE] is authoritative. Return without waiting for a peer that keeps the HTTP
                 // connection alive, but reject any partial/trailing event already received in the
                 // same network chunk.
-                validate_stream_end(&wire[wire_start..], stop.is_some())?;
+                validate_stream_end(&wire[wire_start..], stop.is_some())
+                    .map_err(|error| error.at_decode_frame(frame_index.saturating_add(1)))?;
                 break 'stream;
             }
         }
 
-        validate_stream_end(&wire[wire_start..], stop.is_some())?;
+        validate_stream_end(&wire[wire_start..], stop.is_some())
+            .map_err(|error| error.at_decode_frame(frame_index.saturating_add(1)))?;
         let stop = stop.ok_or_else(|| {
             ProviderError::Http("OpenAI-compatible stream ended before finish_reason".into())
         })?;
@@ -1417,20 +1440,33 @@ impl Provider for OpenAiCompat {
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| emitted_tools.contains(index))
-                .map(|(_, tool)| complete_tool(tool))
+                .map(|(_, tool)| {
+                    complete_tool(tool)
+                        .map_err(|error| error.at_decode_frame(finish_frame.unwrap_or(frame_index)))
+                })
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            assemble_tool_uses(tools, effective_stop)?
+            assemble_tool_uses(tools, effective_stop)
+                .map_err(|error| error.at_decode_frame(finish_frame.unwrap_or(frame_index)))?
         };
         let mut blocks: Vec<Block> = Vec::new();
+        if let Some(route) = ark_route
+            && let Some(state) = ark_thinking
+                .finish(&self.route_scope, route, &req.model, &thinking)
+                .map_err(|error| error.at_decode_frame(finish_frame.unwrap_or(frame_index)))?
+        {
+            blocks.push(Block::ProviderState(state));
+        }
         if !thinking.is_empty() {
-            if ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref())
-                .retains(!tool_uses.is_empty())
+            if ark_route.is_none()
+                && ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref())
+                    .retains(!tool_uses.is_empty())
             {
-                blocks.push(Block::ProviderState(reasoning_provider_state(
-                    &self.route_scope,
-                    &thinking,
-                )?));
+                blocks.push(Block::ProviderState(
+                    reasoning_provider_state(&self.route_scope, &thinking).map_err(|error| {
+                        error.at_decode_frame(finish_frame.unwrap_or(frame_index))
+                    })?,
+                ));
             }
             blocks.push(Block::Thinking { thinking });
         }
@@ -1930,7 +1966,7 @@ mod tests {
                 None,
                 None,
             ),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
         assert!(matches!(
             parse_sse_line(
@@ -1939,7 +1975,7 @@ mod tests {
                 None,
                 None,
             ),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
     }
 

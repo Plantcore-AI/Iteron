@@ -74,9 +74,24 @@ fn exact_workspace_publication_preserves_acl_collision_and_pinned_namespace() {
         b"actual complete transcript"
     );
     publisher.publish("empty.md", b"", [3; 16]).unwrap();
+    publisher
+        .publish("a", b"single-character leaf", [4; 16])
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.join("a")).unwrap(),
+        b"single-character leaf"
+    );
+    assert_eq!(
+        publisher.publish("a", b"replacement", [5; 16]),
+        Err(WorkspacePublishError::Exists)
+    );
+    assert_eq!(
+        std::fs::read(root.join("a")).unwrap(),
+        b"single-character leaf"
+    );
     assert_eq!(
         std::fs::read_dir(&root).unwrap().count(),
-        2,
+        3,
         "all exact private stages are gone"
     );
     drop(publisher);

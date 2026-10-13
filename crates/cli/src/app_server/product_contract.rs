@@ -147,6 +147,7 @@ struct Projection {
     workspace_reads: Option<Arc<super::tunables_simulation::WorkspaceReadService>>,
     lab: Option<Arc<super::experiment_lab::LabService>>,
     completion: Option<super::path_completion::CompletionBinding>,
+    turn_starts: Option<Arc<super::turn_start::TurnStartService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -315,6 +316,21 @@ impl ContractReader {
         }
     }
     pub(super) fn bind_artifact_owner(&self, agent: &crate::runtime::Agent) {
+        if let Some(root) = agent.rollout.path().parent() {
+            self.with_mut(|projection| {
+                if projection
+                    .turn_starts
+                    .as_ref()
+                    .is_none_or(|service| !service.matches(root, agent.rollout.tenant()))
+                {
+                    projection.turn_starts =
+                        Some(Arc::new(super::turn_start::TurnStartService::new(
+                            root.to_owned(),
+                            agent.rollout.tenant().clone(),
+                        )));
+                }
+            });
+        }
         let scope = agent.rollout.path().parent().map(|runs| {
             crate::artifacts::ArtifactReadScope::capture(
                 runs.to_owned(),
@@ -371,6 +387,10 @@ impl ContractReader {
             Some(owner) => owner.shutdown().await,
             None => true,
         }
+    }
+
+    pub(super) fn turn_start_service(&self) -> Option<Arc<super::turn_start::TurnStartService>> {
+        self.with_mut(|projection| projection.turn_starts.clone())
     }
     pub(super) fn bind_submission_exclusion(
         &self,

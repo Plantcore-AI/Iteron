@@ -22,6 +22,9 @@ pub mod browser;
 mod confined_fs;
 mod confined_helper;
 pub mod desktop;
+mod dispatch_agent;
+use dispatch_agent::register_dispatch_agent;
+pub use dispatch_agent::{DispatchAgentProfile, MAX_DISPATCH_AGENT_PROFILES};
 mod edit;
 mod egress;
 mod execution_policy;
@@ -1851,40 +1854,6 @@ pub const DISPATCH_AGENT: &str = "dispatch_agent";
 /// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so
 /// the registered executor's fallback message is only reached by a non-kernel caller.
 pub const WORKFLOW_TOOL: &str = "Workflow";
-
-fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
-    r.push_tool(
-        ToolSpec {
-            name: DISPATCH_AGENT.into(),
-            description: "Delegate a READ-ONLY investigation to a subagent with its own fresh \
-                          context: it explores the repo (read/grep/list/repo_map) and returns a \
-                          concise summary. Use for wide search or multi-file investigation to \
-                          keep your own context clean. The subagent cannot edit or run code; you \
-                          remain the only writer. Give it a specific question and the output you \
-                          want. Optionally select an existing agent_type whose configured tools \
-                          further restrict the child's read-only toolset."
-                .into(),
-            input_schema: serde_json::json!({
-                "type":"object",
-                "properties":{
-                    "task":{"type":"string","description":"the investigation question + desired output"},
-                    "agent_type":{"type":"string","description":"Optional existing agent profile name; its tools allowlist narrows the read-only child tools (for example a profile configured with tools: [read_file]). Defaults to generic. Unknown or disallowed profiles are refused."}
-                },
-                "required":["task"]
-            }),
-            // Effecting so it is not early-dispatched; the kernel intercepts by name before the
-            // normal effecting path and runs the subagent itself.
-            purity: Purity::Effecting,
-            capability: Capability::ReversibleLocal,
-        },
-        |call, _root| {
-            boxfut::box_it(async move {
-                // Never reached: the kernel intercepts DISPATCH_AGENT. This is a safety net.
-                err_result(call.id, "dispatch_agent must be handled by the kernel".into())
-            })
-        },
-    )
-}
 
 /// Resolve a caller-supplied path to an absolute host path.
 ///

@@ -63,7 +63,8 @@ fn disconnected_client_leaves_paid_turn_live_and_new_client_reuses_the_same_serv
     let mut first = connect(endpoint);
     let mut first_reader = BufReader::new(first.try_clone().unwrap());
     let mut initial = hello(&token, PROTOCOL_VERSION, 0);
-    initial["product_contract_version"] = json!(1);
+    initial["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
     initial["live_only"] = json!(true);
     send(&mut first, initial);
     let greeting = receive(&mut first_reader);
@@ -75,15 +76,18 @@ fn disconnected_client_leaves_paid_turn_live_and_new_client_reuses_the_same_serv
         .as_str()
         .unwrap()
         .to_owned();
+    let text = "continue after the UI disconnects";
+    let request_key =
+        super::turn_start_journey::request_key(scope["thread_id"].as_str().unwrap(), text);
     send(
         &mut first,
         control(
             2,
             PROTOCOL_VERSION,
-            json!({"type":"product_v1","command":{"type":"turn_start","thread_id":scope["thread_id"],"text":"continue after the UI disconnects"}}),
+            json!({"type":"product_v1","command":{"type":"turn_start","request_key":request_key,"thread_id":scope["thread_id"],"text":text}}),
         ),
     );
-    assert_eq!(reply(&mut first_reader, 2)["type"], "control_queued_v1");
+    assert_eq!(reply(&mut first_reader, 2)["type"], "turn_start_receipt_v2");
     provider.request_seen.recv_timeout(timeout()).unwrap();
     drop(first_reader);
     drop(first);
@@ -91,7 +95,8 @@ fn disconnected_client_leaves_paid_turn_live_and_new_client_reuses_the_same_serv
     let mut reopened = connect(endpoint);
     let mut reader = BufReader::new(reopened.try_clone().unwrap());
     let mut attach = hello(&token, PROTOCOL_VERSION, 0);
-    attach["product_contract_version"] = json!(1);
+    attach["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
     attach["live_only"] = json!(true);
     send(&mut reopened, attach);
     assert_eq!(receive(&mut reader)["session_id"], greeting["session_id"]);

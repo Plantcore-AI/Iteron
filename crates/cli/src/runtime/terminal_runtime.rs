@@ -94,6 +94,7 @@ impl Agent {
         turn: TurnId,
         mut outcome: Outcome,
     ) -> Result<Outcome, KernelError> {
+        self.ensure_record_healthy()?;
         self.publish_captured_answer();
         if outcome == Outcome::Done && self.complete_plantcore_product().is_err() {
             outcome = Outcome::HarnessError;

@@ -51,9 +51,7 @@ impl ApprovalJournal<'_> {
         kind: EventKind,
     ) -> Result<Seq, KernelError> {
         if *self.record_failed {
-            return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
-                "approval cannot continue after the durable record failed",
-            ))));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         #[cfg(test)]
         if *self.fault == Some(super::DurableAppendFault::Notice)
@@ -76,6 +74,7 @@ impl ApprovalJournal<'_> {
         result.map_err(|error| self.failed(error))
     }
     fn failed(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

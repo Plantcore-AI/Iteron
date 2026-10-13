@@ -2,8 +2,40 @@
 
 The authenticated headless transport and interactive TUI address the same resident control
 owners. A control reply is a result from that owner; an SQ submission receipt remains a queue
-receipt and does not prove an authorized effect. This document does not change TurnStart retry
-or durable admission semantics.
+receipt and does not prove an authorized effect. Product contract version 2 adds durable,
+idempotent TurnStart admission. Generic SQ submissions retain their existing protocol.
+
+## TurnStart admission V2
+
+Negotiate `product_contract_version: 2` in the authenticated Hello. The existing `product_v1`
+control wrapper and read/event tags remain unchanged; `turn_start` now requires `request_key`,
+`thread_id` and `text`. An unkeyed start or an older product-contract handshake is rejected.
+
+Generate one UUIDv7 for each new start intent and reuse its complete key when retrying that
+intent. The canonical key is 101 ASCII bytes: lowercase UUIDv7, a colon, then lowercase SHA-256
+hex of `UUID raw 16 bytes || thread byte length u64 big-endian || exact thread UTF-8 bytes ||
+text byte length u64 big-endian || exact text UTF-8 bytes`. Text is not normalized or trimmed
+for identity. A changed thread or text with the original key returns `request_conflict` before
+time, capacity or rate checks. The key is an identity, not a credential or permission grant.
+
+`turn_start_receipt_v2` returns the request key, thread, state, `submission_id`, `run_id`,
+`turn_id` and `window_closed`. Pending and admission-unknown receipts have null identities.
+Only atomic durable admission proves a fixed identity; sequential or concurrent retries
+observe that identity without enqueuing or executing another turn. States are `pending`,
+`admitted`, `running`, `completed`, `interrupted`, `drained`, `budget_exhausted`, `stuck`,
+`failed`, `unknown` and `admission_unknown`. An unknown result never authorizes replay.
+Response loss or a service restart is recovered by retrying the original key and request;
+Answer text and detailed errors remain available through the existing thread/event reads.
+
+`turn_start_refused_v2` supplies `reason_code` and `definitely_unregistered`. Only a proven
+unregistered refusal permits the same intent to try admission again. Use a new UUIDv7 for an
+intentional new execution. Keys have a 30-minute window and five-minute future tolerance.
+The root/tenant authority retains at most 1,024 records, preserves unresolved thread occupancy,
+and persists its clock floor across cleanup and restart. Replies and lock waits have a five-second deadline,
+32 concurrent authority requests and a 64-per-second token bucket with burst 64. Capacity
+pressure preserves retained-key recovery; it never evicts an unexpired key to admit new work.
+Synchronous filesystem calls cannot be forcibly cancelled. Their ownership and concurrency
+remain bounded after a reply timeout, and a late admission cannot start fresh execution.
 
 ## Permission prompts in an attached service
 

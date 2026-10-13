@@ -5,6 +5,7 @@ use crate::resolution_types::{
 };
 
 pub(super) fn preflight(input: &ResolutionInput) -> Result<(), String> {
+    const { assert!(MAX_DEFAULT_EVIDENCE == crate::EXPECTED_FAMILY_COUNT) };
     bounded_len(
         input.declared_values.len(),
         crate::param_integer(

@@ -60,14 +60,16 @@ the [output-format reference](../reference/output-formats.md).
 
 ## Permissions in a non-interactive run
 
-One-shot mode defaults to `acceptEdits`: reversible local edits can proceed behind
-the checkpoint path, while code execution still asks unless explicitly granted.
-Because there is no live answer channel, an unresolved `Ask` is denied.
+One-shot mode defaults to `yolo`, with permission bypass and code execution on,
+and execution unconfined. Within the admitted authority ceiling, edits, code,
+trust changes and declared external effects can proceed without approval prompts.
 
-Use `--allow-code` only in a repository you have reviewed. `--mode yolo` is not an
-unbounded bypass: declared trust-mutating and irreversible external operations
-still require approval and therefore cannot silently succeed in ordinary one-shot
-operation.
+Use `--ask-permissions` to restore approval gates and confinement, `--confine`
+to confine execution while retaining bypass, or `--mode plan` for read-only.
+There is no live answer channel, so any decision that remains `Ask` under an
+explicit gated posture is refused. Explicit denies and code restrictions remain
+binding. Resume preserves the checkpoint's authority; see the
+[permission contract](permissions-and-sandbox.md).
 
 ## Bound the run
 

@@ -205,6 +205,7 @@ impl WorkspaceCheckpoint<'_> {
         );
     }
     fn record_error(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

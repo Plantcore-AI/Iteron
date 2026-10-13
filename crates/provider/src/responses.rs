@@ -8,11 +8,13 @@
 mod usage;
 use usage::parse_usage;
 
+use crate::decode::{self, invalid};
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
     ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult,
 };
+use crate::{DecodeCode as Code, DecodeField as Field};
 use futures_util::StreamExt;
 use iteron_protocol::{Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -363,6 +365,7 @@ struct WireFrame {
 
 #[derive(Default)]
 struct SseDecoder {
+    data_frames: u64,
     pending: Vec<u8>,
     cursor: usize,
     total_bytes: usize,
@@ -370,20 +373,19 @@ struct SseDecoder {
 
 impl SseDecoder {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<WireFrame>, ProviderError> {
+        self.push_inner(bytes)
+            .map_err(|error| error.at_decode_frame(self.data_frames.saturating_add(1)))
+    }
+
+    fn push_inner(&mut self, bytes: &[u8]) -> Result<Vec<WireFrame>, ProviderError> {
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes.len())
-            .ok_or_else(|| ProviderError::Decode("Responses stream byte count overflow".into()))?;
+            .ok_or_else(|| invalid(Code::LimitExceeded, Field::SseData))?;
         if self.total_bytes
             > iteron_tunables::param_usize("provider.responses.max_stream_bytes", MAX_STREAM_BYTES)
         {
-            return Err(ProviderError::Decode(format!(
-                "Responses stream exceeded {} bytes",
-                iteron_tunables::param_usize(
-                    "provider.responses.max_stream_bytes",
-                    MAX_STREAM_BYTES
-                )
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData));
         }
         self.pending.extend_from_slice(bytes);
         let mut frames = Vec::new();
@@ -394,15 +396,16 @@ impl SseDecoder {
                     MAX_SSE_FRAME_BYTES,
                 )
             {
-                return Err(ProviderError::Decode(format!(
-                    "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData));
             }
             let frame_start = self.cursor;
             let frame_end = frame_start.saturating_add(boundary);
             let block = self.pending[frame_start..frame_end].to_vec();
             self.cursor = frame_end.saturating_add(separator_len);
-            if let Some(frame) = parse_wire_frame(&block)? {
+            if let Some(frame) = parse_wire_frame(&block)
+                .map_err(|error| error.at_decode_frame(self.data_frames.saturating_add(1)))?
+            {
+                self.data_frames = self.data_frames.saturating_add(1);
                 frames.push(frame);
             }
         }
@@ -412,9 +415,7 @@ impl SseDecoder {
                 MAX_SSE_FRAME_BYTES,
             )
         {
-            return Err(ProviderError::Decode(format!(
-                "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData));
         }
         if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
             self.pending.drain(..self.cursor);
@@ -449,9 +450,8 @@ impl SseDecoder {
         {
             Ok(())
         } else {
-            Err(ProviderError::Decode(
-                "Responses stream contained invalid partial data after terminal event".into(),
-            ))
+            Err(invalid(Code::ProtocolSequence, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)))
         }
     }
 }
@@ -478,9 +478,8 @@ fn frame_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn parse_wire_frame(block: &[u8]) -> Result<Option<WireFrame>, ProviderError> {
-    let text = std::str::from_utf8(block).map_err(|error| {
-        ProviderError::Decode(format!("Responses SSE frame was not valid UTF-8: {error}"))
-    })?;
+    let text =
+        std::str::from_utf8(block).map_err(|_| invalid(Code::InvalidUtf8, Field::SseData))?;
     let mut event = None;
     let mut data = Vec::new();
     for line in text.split(['\r', '\n']).filter(|line| !line.is_empty()) {
@@ -520,6 +519,7 @@ struct FunctionMeta {
 }
 
 struct ResponseParser {
+    frame_index: u64,
     outputs: BTreeMap<u64, OutputAcc>,
     functions: HashMap<String, FunctionMeta>,
     done_items: HashSet<String>,
@@ -546,6 +546,7 @@ impl ResponseParser {
     ) -> Result<Self, ProviderError> {
         validate_route_scope(&route_scope)?;
         Ok(Self {
+            frame_index: 0,
             outputs: BTreeMap::new(),
             functions: HashMap::new(),
             done_items: HashSet::new(),
@@ -565,37 +566,39 @@ impl ResponseParser {
         response_retry_after: Option<Duration>,
         response_request_id: Option<&str>,
     ) -> Result<Vec<StreamItem>, ProviderError> {
+        self.frame_index = self.frame_index.saturating_add(1);
+        self.push_frame_inner(frame, response_retry_after, response_request_id)
+            .map_err(|error| error.at_decode_frame(self.frame_index))
+    }
+
+    fn push_frame_inner(
+        &mut self,
+        frame: WireFrame,
+        response_retry_after: Option<Duration>,
+        response_request_id: Option<&str>,
+    ) -> Result<Vec<StreamItem>, ProviderError> {
         if frame.data.trim() == "[DONE]" {
             if self.saw_done_marker {
-                return Err(ProviderError::Decode(
-                    "Responses stream emitted duplicate [DONE] markers".into(),
-                ));
+                return Err(invalid(Code::ProtocolSequence, Field::SseData));
             }
             self.saw_done_marker = true;
             return Ok(Vec::new());
         }
         if self.saw_done_marker {
-            return Err(ProviderError::Decode(
-                "Responses stream emitted data after [DONE]".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::SseData));
         }
         if self.terminal {
-            return Err(ProviderError::Decode(
-                "Responses stream emitted data after a terminal event".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::Type));
         }
 
-        let value: serde_json::Value = serde_json::from_str(&frame.data).map_err(|error| {
-            ProviderError::Decode(format!("malformed Responses SSE JSON: {error}"))
-        })?;
+        let value: serde_json::Value = serde_json::from_str(&frame.data)
+            .map_err(|error| decode::json(&error, Field::SseData))?;
         let event_type = required_str(&value, "type")?;
         if let Some(wire_event) = frame.event.as_deref()
             && wire_event != "message"
             && wire_event != event_type
         {
-            return Err(ProviderError::Decode(
-                "Responses SSE event/data type mismatch".into(),
-            ));
+            return Err(invalid(Code::ConflictingValue, Field::Type));
         }
 
         match event_type {
@@ -828,14 +831,13 @@ impl ResponseParser {
     ) -> Result<Vec<StreamItem>, ProviderError> {
         let item_id = required_str(value, "item_id")?;
         if self.done_items.contains(item_id) {
-            return Err(ProviderError::Decode(
-                "duplicate function_call_arguments.done".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::ItemId));
         }
         let (meta_call_id, meta_name, meta_output_index) = {
-            let meta = self.functions.get(item_id).ok_or_else(|| {
-                ProviderError::Decode("function_call_arguments.done lacked prior metadata".into())
-            })?;
+            let meta = self
+                .functions
+                .get(item_id)
+                .ok_or_else(|| invalid(Code::ProtocolSequence, Field::ItemId))?;
             (meta.call_id.clone(), meta.name.clone(), meta.output_index)
         };
         let output_index = required_u64(value, "output_index")?;
@@ -850,7 +852,7 @@ impl ResponseParser {
             meta_name.as_str()
         };
         if event_name.is_empty() || event_name != meta_name.as_str() {
-            return Err(ProviderError::Decode("function call changed name".into()));
+            return Err(invalid(Code::ConflictingValue, Field::Name));
         }
         let arguments = required_str(value, "arguments")?;
         let input = parse_arguments(event_name, arguments)?;
@@ -962,7 +964,7 @@ impl ResponseParser {
         let output = response
             .get("output")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| ProviderError::Decode("terminal response lacked output array".into()))?;
+            .ok_or_else(|| invalid(Code::InvalidType, Field::ResponseOutput))?;
         if output.len()
             > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
         {
@@ -1100,9 +1102,7 @@ impl ResponseParser {
         let existing = self.outputs[&output_index].thinking.get(&key);
         if let Some(existing) = existing {
             if existing != full {
-                return Err(ProviderError::Decode(
-                    "Responses completed reasoning disagreed with streamed deltas".into(),
-                ));
+                return Err(invalid(Code::ConflictingValue, Field::ResponseOutput));
             }
             return Ok(());
         }
@@ -1451,26 +1451,26 @@ fn validate_bounded_string(
 }
 
 fn required_str<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str, ProviderError> {
-    value
+    let raw = value
         .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ProviderError::Decode(format!("Responses event lacked string {field}")))
+        .ok_or_else(|| invalid(Code::MissingField, Field::schema_key(field)))?;
+    raw.as_str()
+        .ok_or_else(|| invalid(Code::InvalidType, Field::schema_key(field)))
 }
 
 fn required_u64(value: &serde_json::Value, field: &str) -> Result<u64, ProviderError> {
-    value
+    let raw = value
         .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| ProviderError::Decode(format!("Responses event lacked integer {field}")))
+        .ok_or_else(|| invalid(Code::MissingField, Field::schema_key(field)))?;
+    raw.as_u64()
+        .ok_or_else(|| invalid(Code::InvalidType, Field::schema_key(field)))
 }
 
 fn parse_arguments(_name: &str, arguments: &str) -> Result<serde_json::Value, ProviderError> {
     if arguments.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
-    serde_json::from_str(arguments).map_err(|error| {
-        ProviderError::Decode(format!("tool arguments were not valid JSON: {error}"))
-    })
+    serde_json::from_str(arguments).map_err(|error| decode::json(&error, Field::Arguments))
 }
 
 fn stream_failure(
@@ -2183,7 +2183,7 @@ mod tests {
                 None,
             );
             assert!(
-                matches!(result, Err(ProviderError::Decode(message)) if message == "function call changed name")
+                matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ConflictingValue && diagnostic.field == Field::Name)
             );
         }
     }
@@ -2202,7 +2202,7 @@ mod tests {
             None,
         );
         assert!(
-            matches!(result, Err(ProviderError::Decode(message)) if message == "function_call_arguments.done lacked prior metadata")
+            matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ProtocolSequence && diagnostic.field == Field::ItemId)
         );
     }
 
@@ -2218,7 +2218,7 @@ mod tests {
         parser.push_frame(frame(done.clone()), None, None).unwrap();
         let result = parser.push_frame(frame(done), None, None);
         assert!(
-            matches!(result, Err(ProviderError::Decode(message)) if message == "duplicate function_call_arguments.done")
+            matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ProtocolSequence && diagnostic.field == Field::ItemId)
         );
     }
 
@@ -2578,7 +2578,7 @@ mod tests {
                 None,
                 None,
             );
-            assert!(matches!(result, Err(ProviderError::Decode(_))));
+            assert!(matches!(result, Err(ProviderError::InvalidResponse(_))));
         }
         let mut parser = ResponseParser::default();
         assert!(matches!(
@@ -2590,7 +2590,7 @@ mod tests {
                 None,
                 None
             ),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
     }
 
@@ -2621,8 +2621,10 @@ mod tests {
                 None,
                 None,
             );
-            assert!(matches!(result, Err(ProviderError::Decode(message))
-                if message == "Responses completed reasoning disagreed with streamed deltas"));
+            assert!(
+                matches!(result, Err(ProviderError::InvalidResponse(diagnostic))
+                if diagnostic.code == Code::ConflictingValue && diagnostic.field == Field::ResponseOutput)
+            );
         }
     }
 
@@ -2833,7 +2835,7 @@ mod tests {
         };
         assert!(matches!(
             ResponseParser::default().push_frame(malformed, None, None),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
         assert!(ResponseParser::default().finish().is_err());
     }
@@ -3013,7 +3015,7 @@ mod tests {
         });
         assert!(matches!(
             parser.push_frame(frame(complete), None, None),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
     }
 }

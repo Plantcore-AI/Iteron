@@ -269,7 +269,10 @@ impl RunningTurnPump<'_> {
                             .await;
                             continue;
                         }
-                        if let Some(context) = legacy_user_prompt_context(op, submission_id) {
+                        let keyed_pending = events.contract.turn_start_service()
+                            .is_some_and(|service| service.is_pending(submission_id));
+                        // A queued keyed turn is admitted by the idle owner before its hooks run.
+                        if !keyed_pending && let Some(context) = legacy_user_prompt_context(op, submission_id) {
                             run_legacy_hook(
                                 HookExecution {
                                     hooks: lifecycle_gate_hooks,
@@ -295,7 +298,7 @@ impl RunningTurnPump<'_> {
                             | Op::Drain
                             | Op::Unknown => None,
                         };
-                        if let Some(gate_event) = gate_event
+                        if !keyed_pending && let Some(gate_event) = gate_event
                             && let Err(reason) = run_lifecycle_gate(
                                 HookExecution {
                                     hooks: lifecycle_gate_hooks,

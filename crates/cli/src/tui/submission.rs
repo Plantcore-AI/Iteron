@@ -108,7 +108,7 @@ fn queue_composer_submission_preparation(
         file_preparer: app.editor.files().preparer(),
         workspace: session.workspace().to_path_buf(),
         raw,
-        draft_revision: app.editor.persistence_revision(),
+        draft_revision: app.editor.draft_revision(),
         image_mentions,
         file_mentions,
     });
@@ -283,7 +283,7 @@ pub(super) fn submit_staged_input(
         };
         Op::UserInputV2 { segments }
     };
-    let editor_revision = app.editor.persistence_revision();
+    let editor_revision = app.editor.draft_revision();
     if let Some(submission_id) = submit_operation(app, session, notifier, op) {
         // Keep the exact owned composer for explicit review after an admitted turn fails.
         // Capture before newer typing; recovery never dispatches the request itself.

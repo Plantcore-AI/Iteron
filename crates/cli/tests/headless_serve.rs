@@ -810,7 +810,8 @@ fn unproved_loopback_physical_bound_refuses_parent_dispatch_without_consuming_ma
     let (child, token, address) = spawn_core(&scratch);
     let mut connection = connect(address);
     let mut greeting = hello(&token, PROTOCOL_VERSION, 0);
-    greeting["product_contract_version"] = json!(1);
+    greeting["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
     send(&mut connection, greeting);
     let mut reader = BufReader::new(connection.try_clone().unwrap());
     let greeted = receive(&mut reader);
@@ -1931,3 +1932,6 @@ mod final_evidence_journey;
 
 #[path = "headless_serve/resident_service_journey.rs"]
 mod resident_service_journey;
+
+#[path = "headless_serve/turn_start_journey.rs"]
+mod turn_start_journey;

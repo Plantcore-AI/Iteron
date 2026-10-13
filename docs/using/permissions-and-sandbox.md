@@ -60,8 +60,9 @@ highest capability classes cannot be changed to automatic.
 
 ## New sessions and historical checkpoints
 
-Fresh ordinary TUI and one-shot sessions default to `acceptEdits` with dangerous
-permission bypass **on** and execution **unconfined**. Tools can act without an
+Fresh ordinary TUI, one-shot and standalone serve sessions default to `yolo`,
+code execution **on**, dangerous permission bypass **on** and execution
+**unconfined**. Tools can act without an
 approval prompt, including declared external effects, within the kernel's
 authority ceiling. This is not a sandbox or a safety guarantee. A visible
 startup warning and status notice identify this posture before execution.
@@ -80,6 +81,12 @@ startup warning and status notice identify this posture before execution.
 - `--dangerously-bypass-permissions` remains accepted for existing invocations;
   ordinary fresh sessions no longer need the flag. Explicit deny rules and the
   kernel capability ceiling still apply.
+
+The TUI mode picker reports the current bypass separately. Changing `/mode`
+does not change that session's recorded bypass: selecting `default` in an
+already-bypassed session does not restore prompts. Start a new session with
+`--ask-permissions` for approval gates. Selecting `plan` still makes the session
+read-only.
 
 Resume uses the checkpoint's recorded bypass, not today's fresh-session
 default. An older gated run remains gated; a bypassed run retains its bypass.
@@ -107,10 +114,11 @@ limits; changing defaults does not remove them or rewrite a resumed checkpoint.
 
 `bash`, builds, tests, and `--verify` are enabled by default. `--allow-code` is
 retained and still grants the `code_executing` capability explicitly; an operator
-removes that automatic code rule with `"allow_code": false` in
+disables code execution with `"allow_code": false` in
 `~/.iteron/config.json` or the same key in a project `.iteron/config.json`.
-That rule alone does not override dangerous bypass: use `--ask-permissions` for
-approval gates, an explicit deny for refusal, or `--mode plan` for read-only.
+This is an authority ceiling and remains binding under dangerous bypass. Use
+`--ask-permissions` for approval gates, an explicit deny for refusal, or
+`--mode plan` for read-only.
 
 ## Sandbox contract
 

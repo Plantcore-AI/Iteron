@@ -48,6 +48,7 @@ impl Agent {
         &mut self,
         task: &str,
     ) -> Result<Option<ParentTurnGuard>, KernelError> {
+        self.ensure_record_healthy()?;
         self.require_installed_cohort()?;
         let Some(control) = self.persistent_agents.clone() else {
             return Ok(None);

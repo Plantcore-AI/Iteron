@@ -4,6 +4,7 @@ use super::*;
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use windows_sys::Win32::System::Console::{
     CONSOLE_SCREEN_BUFFER_INFO, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,

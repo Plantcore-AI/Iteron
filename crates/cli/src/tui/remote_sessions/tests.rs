@@ -57,20 +57,25 @@ fn actual_shared_picker_rows_keep_recorded_and_live_provenance_distinct_in_termi
         "owner_scope":{"kind":"resident_session","thread_id":"thread","creation_run_id":null}}]}}),
         &snapshot(),
     );
-    sessions.changes(&mut app, &json!({"type":"artifacts_v1","contract_version":1,
+    let changes = json!({"type":"artifacts_v1","contract_version":1,
         "thread_id":"thread","run_id":"current","retained_catalog_available":true,
         "resident_artifact_ids":[],"evicted_artifacts":0,"artifacts":[{
             "artifact_id":"a".repeat(64),"schema":"iteron.file-diff.v1","mime_type":"application/json",
-            "bytes":100,"complete":true,"source_event_seq":17,"required_capability":"read_only"}]}), &snapshot());
+            "bytes":100,"complete":true,"source_event_seq":17,"required_capability":"read_only"}]});
+    let retained = super::super::session_changes::Summary::capture(
+        &changes,
+        &snapshot().thread_id,
+        &snapshot().run_id,
+    )
+    .unwrap();
+    assert!(retained.label().contains("retained diff snapshots 1"));
+    assert!(retained.label().contains("current workspace not scanned"));
+    sessions.changes(&mut app, &changes, &snapshot());
     let picker = app.pickers.view().unwrap();
     assert!(picker.items[0].hint.contains("recorded done"));
     assert!(picker.items[0].hint.contains("resident session tasks 1"));
-    assert!(picker.items[0].hint.contains("retained diff snapshots 1"));
-    assert!(
-        picker.items[0]
-            .hint
-            .contains("current workspace not scanned")
-    );
+    assert!(picker.items[0].hint.contains("0 unresolved · 2 omitted"));
+    assert!(!picker.items[0].hint.contains("retained diff snapshots"));
     assert!(!picker.items[1].hint.contains("resident session tasks"));
     let mut terminal = Terminal::new(TestBackend::new(180, 28)).unwrap();
     terminal

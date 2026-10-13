@@ -1239,7 +1239,7 @@ pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<Run
 /// Persist a run's projected metadata (the kernel calls this at each turn boundary). The per-run
 /// sidecar is the incremental O(1) index entry. The sorted global `sessions.index` is repaired by
 /// list/reindex away from the turn boundary, so foreground durability never scans all sessions.
-pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
+pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<bool, RecordError> {
     SessionIndexPublication {
         runs_dir,
         projected,
@@ -1251,7 +1251,7 @@ pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(),
 pub(crate) fn write_meta_if_current(
     runs_dir: &Path,
     projected: &SessionMeta,
-) -> Result<(), RecordError> {
+) -> Result<bool, RecordError> {
     SessionIndexPublication {
         runs_dir,
         projected,
@@ -1279,7 +1279,7 @@ struct SessionIndexPublication<'a> {
     require_current: bool,
 }
 impl SessionIndexPublication<'_> {
-    fn commit(self) -> Result<(), RecordError> {
+    fn commit(self) -> Result<bool, RecordError> {
         let Self {
             runs_dir,
             projected,
@@ -1288,6 +1288,12 @@ impl SessionIndexPublication<'_> {
         validate_run_id(&projected.run_id)?;
 
         crate::create_state_dir(runs_dir)?;
+        let Some(publication) =
+            crate::session_publication_admission::publication(runs_dir, &projected.tenant)?
+        else {
+            let _ = crate::session_maintenance::enqueue(runs_dir.to_owned(), projected.clone());
+            return Ok(false);
+        };
         // The marker precedes the sidecar: a crash at any later point makes latency-sensitive readers
         // report not-ready instead of returning a ready page that silently omits this newer run. The
         // same lock serializes publication transactions; compaction is the only operation allowed to
@@ -1296,12 +1302,12 @@ impl SessionIndexPublication<'_> {
         let mut compact_after = false;
         crate::cache_io::with_session_index_lock(runs_dir, || {
             if require_current && !projection_is_current(runs_dir, projected) {
-                transaction_result = Some(Ok(()));
+                transaction_result = Some(Ok(false));
                 return Ok(());
             }
 
             let inherited_dirty = index_publication_incomplete(runs_dir);
-            let transaction = (|| -> Result<(), RecordError> {
+            let transaction = (|| -> Result<bool, RecordError> {
                 if !inherited_dirty {
                     mark_index_dirty_unlocked(runs_dir)?;
                 }
@@ -1315,7 +1321,7 @@ impl SessionIndexPublication<'_> {
                 }
                 compact_after = append_delta_index_unlocked(runs_dir, projected)?;
                 clear_index_dirty_unlocked(runs_dir)?;
-                Ok(())
+                Ok(true)
             })();
             if transaction.is_err() || inherited_dirty {
                 compact_after = true;
@@ -1324,6 +1330,9 @@ impl SessionIndexPublication<'_> {
             Ok(())
         })?;
         let transaction = transaction_result.expect("the session-index lock always executes");
+        if matches!(transaction, Ok(true)) {
+            publication.published(projected);
+        }
         if compact_after {
             schedule_session_index_compaction(runs_dir);
         }

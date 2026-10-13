@@ -501,7 +501,7 @@ where
                 && !shift
                 && app
                     .run
-                    .awaiting_composer_admission(app.editor.persistence_revision())
+                    .awaiting_composer_admission(app.editor.draft_revision())
             {
                 app.status = "awaiting submission admission · draft preserved".into();
                 return Ok(true);
@@ -510,8 +510,7 @@ where
             // Pickers and approvals have already consumed their keys above. The completion
             // menu gets first Esc/navigation handling below; otherwise Vim normal mode owns
             // ordinary editor keys before readline insertion can see them.
-            if !menu_open
-                && !(k.code == KeyCode::Esc && app.run.running())
+            if !(menu_open || k.code == KeyCode::Esc && app.run.running())
                 && let Some(action) = vim.route(
                     active_keymap.mode() == keymap::Mode::Vim,
                     k.code,

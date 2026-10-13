@@ -19,6 +19,7 @@ pub mod anthropic;
 pub mod catalog;
 mod controls;
 mod data_policy;
+mod decode;
 mod governor;
 mod governor_policy;
 mod governor_snapshot;
@@ -50,6 +51,7 @@ pub use data_policy::{
     DataPolicyDeclaration, DataPolicyObservation, DataPolicyProvenance, DataProcessing,
     DataRetention, DataTrainingUse,
 };
+pub use decode::{DecodeCode, DecodeDiagnostic, DecodeField};
 pub use governor::{
     Admission as ProviderAdmission, AdmissionReason, AttemptPermit, CircuitTransition,
     ProviderGovernor,
@@ -384,6 +386,9 @@ pub enum ProviderError {
     Stream(StreamError),
     #[error("stream decode: {0}")]
     Decode(String),
+    /// Content-free decoder diagnostics for live response parsing.
+    #[error("{0}")]
+    InvalidResponse(DecodeDiagnostic),
     /// A completed, billable provider turn explicitly refused the request. This is a typed
     /// terminal condition, not a malformed response and never a successful completion.
     #[error("provider refused the turn")]
@@ -462,6 +467,7 @@ impl ProviderError {
             ProviderError::RetryAfterTooLong { .. } => RetryDisposition::Never,
             ProviderError::Http(_) | ProviderError::Timeout { .. } => RetryDisposition::Never,
             ProviderError::Decode(_)
+            | ProviderError::InvalidResponse(_)
             | ProviderError::Refusal
             | ProviderError::UnknownStopReason { .. }
             | ProviderError::DeadlineExceeded
@@ -511,9 +517,12 @@ impl ProviderError {
                 "provider requested a retry delay beyond the interactive wait ceiling".into()
             }
             ProviderError::Timeout { stage } => format!("provider timed out during {stage}"),
-            ProviderError::Decode(_) | ProviderError::Json(_) => {
-                "provider response was invalid".into()
-            }
+            ProviderError::Decode(_)
+            | ProviderError::Json(_)
+            | ProviderError::InvalidResponse(_) => self
+                .decode_diagnostic()
+                .expect("decode variants have diagnostics")
+                .to_string(),
             ProviderError::Refusal => "provider refused the request".into(),
             ProviderError::UnknownStopReason { .. } => {
                 "provider returned an unsupported stop reason".into()
@@ -531,6 +540,25 @@ impl ProviderError {
             ProviderError::KnownModelUnavailable { .. } => {
                 "the selected model is known unavailable".into()
             }
+        }
+    }
+
+    pub fn decode_diagnostic(&self) -> Option<DecodeDiagnostic> {
+        match self {
+            Self::InvalidResponse(diagnostic) => Some(*diagnostic),
+            Self::Decode(_) => Some(DecodeDiagnostic::new(
+                DecodeCode::InvalidResponse,
+                DecodeField::Response,
+            )),
+            Self::Json(error) => Some(DecodeDiagnostic::json(error, DecodeField::Response)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn at_decode_frame(self, frame: u64) -> Self {
+        match self.decode_diagnostic() {
+            Some(diagnostic) => Self::InvalidResponse(diagnostic.at_frame(frame)),
+            None => self,
         }
     }
 }
@@ -867,18 +895,22 @@ pub(crate) fn minimax_base_response_failure_for(
     response_retry_after: Option<Duration>,
     request_id: Option<String>,
 ) -> Result<Option<StreamError>, ProviderError> {
-    let status_code = value
-        .pointer("/base_resp/status_code")
-        .or_else(|| value.pointer("/baseResp/statusCode"));
+    let (status_code, field) = if let Some(code) = value.pointer("/base_resp/status_code") {
+        (Some(code), DecodeField::BaseResponseStatus)
+    } else {
+        (
+            value.pointer("/baseResp/statusCode"),
+            DecodeField::BaseResponseStatusCamel,
+        )
+    };
     let Some(status_code) = status_code else {
         return Ok(None);
     };
-    let code = json_scalar_string(status_code).ok_or_else(|| {
-        ProviderError::Decode("MiniMax base_resp.status_code was not an integer".into())
-    })?;
-    let code_value = code.parse::<i64>().map_err(|_| {
-        ProviderError::Decode("MiniMax base_resp.status_code was not an integer".into())
-    })?;
+    let code = json_scalar_string(status_code)
+        .ok_or_else(|| decode::invalid(DecodeCode::InvalidType, field))?;
+    let code_value = code
+        .parse::<i64>()
+        .map_err(|_| decode::invalid(DecodeCode::InvalidType, field))?;
     if code_value == 0 {
         return Ok(None);
     }
@@ -1987,6 +2019,9 @@ pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod decode_tests;
+
+#[cfg(test)]
 mod guard_tests {
     use super::*;
     use iteron_protocol::Usage;
@@ -1995,7 +2030,7 @@ mod guard_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn request(model: &str) -> TurnRequest {
+    pub(super) fn request(model: &str) -> TurnRequest {
         TurnRequest {
             model: model.into(),
             system: "stable system".into(),
@@ -2020,7 +2055,7 @@ mod guard_tests {
         assert!(policy.validate().is_ok());
     }
 
-    fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
+    pub(super) fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -2341,7 +2376,9 @@ mod guard_tests {
         let provider = crate::openai::OpenAiCompat::try_new("test-key".into(), Some(root)).unwrap();
         assert!(matches!(
             provider.turn(&request("model"), &mut |_| {}).await,
-            Err(ProviderError::Decode(message)) if message.contains("conflicting usage reports")
+            Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic == DecodeDiagnostic {
+                code: DecodeCode::ConflictingValue, field: DecodeField::Usage, frame: Some(2)
+            }
         ));
         let _wire = server.join().unwrap();
     }

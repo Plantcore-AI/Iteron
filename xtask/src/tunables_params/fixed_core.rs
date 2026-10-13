@@ -10,12 +10,48 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         ("crates/workflow/src/live_scheduler/file_journal.rs", "LEASE") => "unix::LEASE",
         ("crates/workflow/src/live_scheduler/file_journal.rs", "PENDING") => "unix::PENDING",
         ("crates/workflow/src/live_scheduler/file_journal.rs", "SNAPSHOT") => "unix::SNAPSHOT",
+        ("crates/ctx/src/memory_records/file.rs", "ATTEMPTS") => "open_writer_lease::ATTEMPTS",
         _ => name,
     };
     if owner != expected_owner {
         return None;
     }
     match (relative, name) {
+        // The bounded native coordination-file creation retry precedes lease acquisition and
+        // never retries publication or treats an unobserved lease as success. Both cfg variants
+        // implement this same durable owner, rather than two independently selectable policies.
+        ("crates/ctx/src/memory_records/file.rs", "ATTEMPTS") => {
+            Some(InvariantReason::DurabilityReplay)
+        }
+        // Request expiry, rollback tolerance, physical lock slots and snapshot bounds define
+        // the same authoritative TurnStart store on admission and reopen. Independent changes
+        // could reinterpret retained keys or change the shared native lock namespace.
+        (
+            "crates/record/src/turn_start_store.rs",
+            "CAPACITY"
+            | "MAX_ENTRY_BYTES"
+            | "WINDOW_MS"
+            | "FUTURE_TOLERANCE_MS"
+            | "MAX_SNAPSHOT_BYTES"
+            | "LOCK_TIMEOUT"
+            | "REQUEST_SLOTS",
+        ) => Some(InvariantReason::DurabilityReplay),
+        // This finite schema projection describes a host-pinned catalog. Explicit profile
+        // names still resolve against the complete catalog; these are retained metadata/input
+        // envelopes, not a policy for granting or selecting additional child capabilities.
+        (
+            "crates/tools/src/dispatch_agent.rs",
+            "MAX_DISPATCH_AGENT_PROFILES"
+            | "MAX_PROFILE_DESCRIPTION_CHARS"
+            | "MAX_PROFILE_METADATA_BYTES"
+            | "MAX_PROFILE_NAME_BYTES"
+            | "MAX_PROFILE_TOOLS",
+        ) => Some(InvariantReason::Security),
+        // The schema hint states the closed existing-profile/default/refusal authority contract.
+        // It is rebuilt with the pinned catalog and cannot independently advertise new grants.
+        ("crates/tools/src/dispatch_agent.rs", "PROFILE_PARAMETER_DESCRIPTION") => {
+            Some(InvariantReason::CapabilityAuthority)
+        }
         // Whole-call DP work and pattern bytes refuse before exponential or unbounded glob
         // matching. The caller's actual traversal/output policy remains independently applied.
         ("crates/tools/src/fs_tools.rs", "MAX_GLOB_PATTERN_BYTES" | "MAX_GLOB_MATCH_STEPS") => {

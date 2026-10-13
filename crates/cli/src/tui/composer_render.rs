@@ -266,7 +266,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
                 "Resume command · copy to a new terminal"
             } else if app
                 .run
-                .awaiting_composer_admission(app.editor.persistence_revision())
+                .awaiting_composer_admission(app.editor.draft_revision())
             {
                 "Awaiting admission · draft preserved"
             } else if composer_command_attachments(app) {

@@ -50,8 +50,12 @@ fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
     host_with_profile(label, false)
 }
 fn host_with_profile(label: &str, narrow: bool) -> (Agent, Arc<AtomicUsize>) {
-    let workspace = gate_integration_tests::temp_ws(label);
     let calls = Arc::new(AtomicUsize::new(0));
+    let host = host_with_provider(label, narrow, Arc::new(Answer(calls.clone(), narrow)));
+    (host, calls)
+}
+fn host_with_provider(label: &str, narrow: bool, provider: Arc<dyn Provider>) -> Agent {
+    let workspace = gate_integration_tests::temp_ws(label);
     let rollout = iteron_record::Rollout::open(
         &workspace.join(".iteron/runs"),
         &RunId(label.into()),
@@ -59,7 +63,7 @@ fn host_with_profile(label: &str, narrow: bool) -> (Agent, Arc<AtomicUsize>) {
     )
     .unwrap();
     let mut host = Agent::new(
-        Arc::new(Answer(calls.clone(), narrow)),
+        provider,
         iteron_tools::Registry::coding_agent_for_tests(&workspace).unwrap(),
         rollout,
         "fixture-model".into(),
@@ -70,8 +74,11 @@ fn host_with_profile(label: &str, narrow: bool) -> (Agent, Arc<AtomicUsize>) {
     if narrow {
         let home = host.workspace.join("operator-home");
         std::fs::create_dir_all(home.join(".iteron/agents")).unwrap();
-        std::fs::write(home.join(".iteron/agents/file-reader.md"),
-            "---\nname: file-reader\ndescription: Read one file\ntools: [read_file]\n---\nRead the requested file and report its content.\n").unwrap();
+        std::fs::write(
+            home.join(".iteron/agents/file-reader.md"),
+            include_str!("../../../../examples/restricted-reader/file-reader.md"),
+        )
+        .unwrap();
         host.pin_agent_catalog(iteron_agents::AgentCatalog::discover(
             &home,
             &host.workspace,
@@ -100,8 +107,11 @@ fn host_with_profile(label: &str, narrow: bool) -> (Agent, Arc<AtomicUsize>) {
     .unwrap();
     gate_integration_tests::install_test_provider_governor_from_tunables(&mut host);
     host.guard_unresolved_effects().unwrap();
-    (host, calls)
+    host
 }
+#[path = "child_profile_tests.rs"]
+mod child_profiles;
+
 async fn execute(
     host: &mut Agent,
     kind: KernelSpecialKind,

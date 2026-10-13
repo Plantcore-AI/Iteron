@@ -49,6 +49,23 @@ pub(crate) fn resolve(
     file: &FileConfig,
     user_file: &FileConfig,
 ) -> anyhow::Result<ResolvedLaunchOptions> {
+    use std::io::IsTerminal;
+    resolve_with_terminal(
+        cli,
+        file,
+        user_file,
+        std::io::stdout().is_terminal() && std::io::stdin().is_terminal(),
+    )
+}
+
+// Keep launch-policy tests independent of the test runner's terminal without bypassing any
+// production option resolution or validation.
+pub(crate) fn resolve_with_terminal(
+    cli: &Cli,
+    file: &FileConfig,
+    user_file: &FileConfig,
+    has_tty: bool,
+) -> anyhow::Result<ResolvedLaunchOptions> {
     // Keep the CLI fallback identical to the protocol owner so interactive budget policy has one
     // default and repository/user configuration can only tighten or explicitly override it.
     let trusted_max_turns = config::pick_with_origin(
@@ -120,8 +137,6 @@ pub(crate) fn resolve(
     let resolved_effort = iteron_protocol::Effort::parse(&effort_value).ok_or_else(|| {
         anyhow::anyhow!("unknown effort `{effort_value}` (low|medium|high|xhigh|max|ultracode)")
     })?;
-    use std::io::IsTerminal;
-    let has_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     let headless_serve = matches!(cli.command.as_ref(), Some(LocalCommand::Serve { .. }));
     if let Some(LocalCommand::Serve {
         listen,

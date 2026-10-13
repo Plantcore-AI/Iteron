@@ -165,7 +165,7 @@ pub(super) fn finish_attachment_effect(
                 );
                 return;
             };
-            if app.editor.persistence_revision() != draft_revision || app.editor.text() != raw {
+            if app.editor.draft_revision() != draft_revision || app.editor.text() != raw {
                 app.attachments.draft_changed();
                 app.note(
                     block::NoticeLevel::Info,
@@ -201,7 +201,7 @@ pub(super) fn finish_attachment_effect(
                     followup,
                     ..
                 } => {
-                    if app.editor.persistence_revision() != *draft_revision
+                    if app.editor.draft_revision() != *draft_revision
                         || app.editor.span(*start, *end) != *original
                     {
                         app.attachments.draft_changed();
@@ -636,7 +636,7 @@ pub(super) fn queue_bare_image_path(
             workspace.join(path)
         };
         let original = app.editor.span(start, end);
-        let draft_revision = app.editor.persistence_revision();
+        let draft_revision = app.editor.draft_revision();
         let queued = queue_image_path_effect(
             app,
             absolute.clone(),

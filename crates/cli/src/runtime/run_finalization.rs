@@ -67,6 +67,9 @@ impl RunFinalization<'_> {
         mut self,
         mut outcome: Outcome,
     ) -> Result<FinalizedTurn, KernelError> {
+        if *self.record_failed {
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
+        }
         let turn = self.scope.turn;
         if outcome == Outcome::Done {
             self.scope
@@ -134,9 +137,7 @@ impl RunFinalization<'_> {
             }
         }
         if *self.record_failed {
-            return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
-                "run finalization cannot publish a terminal after the durable record failed",
-            ))));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         let (terminal, error) = self
             .terminal
@@ -203,6 +204,7 @@ impl RunFinalization<'_> {
         result.map(|_| ()).map_err(|error| self.record_error(error))
     }
     fn record_error(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

@@ -263,6 +263,7 @@ impl ProviderRouteBindingJournal<'_> {
     fn policy_error(&mut self, error: PolicyEvidenceRecorderError) -> KernelError {
         match error.into_record_error() {
             Ok(error) => {
+                self.selection.rollout.retain_failure(&error);
                 *self.selection.record_failed = true;
                 self.selection
                     .diagnostics

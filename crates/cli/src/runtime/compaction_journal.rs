@@ -243,9 +243,7 @@ impl CompactionCommitJournal<'_> {
     }
     fn ensure_healthy(&self) -> Result<(), KernelError> {
         if *self.record_failed {
-            return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
-                "compaction record writer is unavailable",
-            ))));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         Ok(())
     }
@@ -300,6 +298,7 @@ impl CompactionCommitJournal<'_> {
         }
     }
     fn record_error(&mut self, error: RecordError) -> KernelError {
+        self.rollout.retain_failure(&error);
         *self.record_failed = true;
         self.diagnostics
             .emit(KernelDiagnostic::RecordAppendFailed {});

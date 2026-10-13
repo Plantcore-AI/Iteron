@@ -77,6 +77,7 @@ impl PreparedTurnAdvance {
                 )
                 .map_err(|error| match error.into_record_error() {
                     Ok(error) => {
+                        ports.rollout.retain_failure(&error);
                         *ports.record_failed = true;
                         ports
                             .diagnostics

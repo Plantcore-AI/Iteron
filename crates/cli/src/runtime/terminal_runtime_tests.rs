@@ -61,6 +61,86 @@ fn write() -> ToolUse {
         input: serde_json::json!({"path":"f","content":"never written"}),
     }
 }
+
+#[tokio::test]
+async fn first_record_failure_survives_admission_and_terminal_refusal_until_reopen() {
+    let root = gate_integration_tests::temp_ws("record-first-cause");
+    let mut agent = resident_agent(&root);
+    let path = agent.rollout.path().to_owned();
+    let before = std::fs::read(&path).unwrap();
+    let max = iteron_protocol::event::MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES;
+    // A real record validator rejects this observation before any WAL write. The old emit path
+    // discarded EnvironmentContextTooLarge and every later guard reported generic storage_io.
+    let invalid_observation = |bytes| EventKind::ContextInjection {
+        text: String::new(),
+        trust: iteron_protocol::Trust::Workspace,
+        instructions: Some(iteron_protocol::DurableInstructionContext {
+            text: String::new(),
+            trust: iteron_protocol::Trust::Workspace,
+            environment: Some(iteron_protocol::DurableEnvironmentContext {
+                text: "x".repeat(bytes),
+                trust: iteron_protocol::Trust::Workspace,
+            }),
+        }),
+    };
+    agent.emit(TurnId(0), invalid_observation(max + 1));
+    assert!(agent.record_failed);
+    let failure = agent.rollout.retained_failure().unwrap();
+    assert_eq!(failure.kind, iteron_record::RecordFailureKind::Limit);
+    assert_eq!(failure.bytes, Some((max + 1) as u64));
+    assert_eq!(failure.limit, Some(max as u64));
+    // A second failure must not replace the evidence of what first stopped this live run.
+    agent.emit(TurnId(0), invalid_observation(max + 2));
+    assert_eq!(agent.rollout.retained_failure(), Some(failure));
+    for error in [
+        agent.ensure_record_healthy().unwrap_err(),
+        agent.finish(TurnId(0), Outcome::Done).await.unwrap_err(),
+        agent
+            .run("do not admit another provider request")
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(error.public_summary().contains("session record [limit]"));
+        assert!(matches!(
+            error,
+            KernelError::Record(iteron_record::RecordError::PreviousFailure(retained))
+                if retained == failure
+        ));
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(
+        !iteron_record::replay(&path)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event.kind,
+                EventKind::Done { .. } | EventKind::EffectIntent { .. }
+            ))
+    );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
+    drop(agent);
+    // Only a new writer loses the process-local failure diagnosis. Reopening still performs
+    // the ordinary lock/chain/tail validation; no effects or submissions are retried here.
+    let mut reopened = Rollout::open(
+        path.parent().unwrap(),
+        &RunId("terminal-owner-fixture".into()),
+        TenantId::default(),
+    )
+    .unwrap();
+    assert!(reopened.retained_failure().is_none());
+    reopened
+        .append(&iteron_protocol::Event {
+            seq: iteron_protocol::Seq::ZERO,
+            turn: TurnId(0),
+            kind: EventKind::Notice {
+                text: "reopened verified writer".into(),
+            },
+        })
+        .unwrap();
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn force_cancel_atomic_during_approval_refuses_before_effect_and_retains_receiver() {
     let root = gate_integration_tests::temp_ws("approval-atomic-force");

@@ -77,6 +77,7 @@ impl Summary {
                 .ok_or("retained change eviction count unavailable")?,
         })
     }
+    #[cfg(test)]
     pub(super) fn label(self) -> String {
         format!(
             "retained diff snapshots {} · evicted objects {} · current workspace not scanned",

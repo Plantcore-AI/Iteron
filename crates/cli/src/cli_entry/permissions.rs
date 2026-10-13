@@ -15,7 +15,7 @@ pub(crate) fn default_permission_mode(ask_permissions: bool) -> iteron_protocol:
     if ask_permissions {
         iteron_protocol::PermissionMode::Default
     } else {
-        iteron_protocol::PermissionMode::AcceptEdits
+        iteron_protocol::PermissionMode::Yolo
     }
 }
 

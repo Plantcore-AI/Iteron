@@ -27,6 +27,29 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // This delimiter preserves conversation chronology and the existing trust labels.
+        // It is model-facing transcript grammar, not a user-adjustable runtime value.
+        ("crates/cli/src/runtime/transcript.rs", "LATER_MESSAGE_BOUNDARY") => {
+            Some(InvariantReason::WireCompatibility)
+        }
+        // Product turn admission owns native request custody through its deadline; changing a
+        // profile cannot enlarge the worker population or make a late admission executable.
+        (
+            "crates/cli/src/app_server/turn_start.rs",
+            "MAX_IN_FLIGHT" | "REQUEST_DEADLINE",
+        ) => Some(InvariantReason::HardBudgetEffectLedger),
+        // A retained request can observe only this finite number of replies within its fixed
+        // custody window. Polling cadence remains the existing configurable remote UI policy.
+        (
+            "crates/cli/src/tui/remote_turn_start.rs",
+            "OBSERVATION_WINDOW" | "MAX_POLLS",
+        ) => Some(InvariantReason::HardBudgetEffectLedger),
+        // Retired compatibility symbol: resolve_landing ignores its legacy welcome-row input
+        // and shares the full-width terminal grid. Retain the address as read-only so an old
+        // profile is refused explicitly instead of advertising a setting with no effect.
+        ("crates/cli/src/surface.rs", "LANDING_MAX_WIDTH") => {
+            Some(InvariantReason::RuntimeStateNotAValue)
+        }
         // Shared callback retention, source-shaped JSON and live refusal rows are fixed host
         // envelopes. The existing MCP queue capacity keeps its independent lowering helper.
         (
@@ -140,7 +163,8 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
             "MAX_ACTIVE" | "MAX_ACTIVE_BYTES" | "MAX_RETIRED",
         )
         | ("crates/cli/src/tui/live_workflows.rs", "MAX_COMMAND_BYTES" | "MAX_RENDERED_NODES")
-        | ("crates/cli/src/tui/picker_owner.rs", "MAX_SESSION_ROWS")
+        // Empty filtered pages must not bypass the request bound and enumerate all history.
+        | ("crates/cli/src/tui/picker_owner.rs", "MAX_SESSION_ROWS" | "MAX_SEARCH_PAGES")
         | ("crates/cli/src/tui/run_presentation.rs", "MAX_RETRY_BYTES")
         | ("crates/cli/src/tui/transcript_geometry.rs", "MAX_CACHE_BYTES") => {
             Some(InvariantReason::Security)

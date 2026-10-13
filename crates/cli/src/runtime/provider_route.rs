@@ -633,6 +633,7 @@ pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::Provider
             | iteron_provider::ProviderError::Http(_)
             | iteron_provider::ProviderError::Stream(_)
             | iteron_provider::ProviderError::Decode(_)
+            | iteron_provider::ProviderError::InvalidResponse(_)
     )
 }
 
@@ -652,7 +653,10 @@ pub(super) fn provider_failure_stage(error: &KernelError) -> &'static str {
         KernelError::Provider(iteron_provider::ProviderError::ConnectFailed) => {
             "connect_failed_pre_acceptance"
         }
-        KernelError::Provider(iteron_provider::ProviderError::Decode(_)) => "decode",
+        KernelError::Provider(
+            iteron_provider::ProviderError::Decode(_)
+            | iteron_provider::ProviderError::InvalidResponse(_),
+        ) => "decode",
         KernelError::Provider(iteron_provider::ProviderError::Stream(_)) => "stream",
         KernelError::Provider(iteron_provider::ProviderError::Http(_)) => "transport",
         _ => "provider_error",

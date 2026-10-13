@@ -1236,6 +1236,7 @@ impl Agent {
         self.ledger
             .record_fsync_latency_us(elapsed_us(fsync_started));
         if let Err(error) = appended {
+            self.rollout.retain_failure(&error);
             self.record_failed = true;
             self.diagnostic_record_append_failed();
             return Err(KernelError::Record(error));
@@ -1261,6 +1262,7 @@ impl Agent {
         self.ledger
             .record_fsync_latency_us(elapsed_us(fsync_started));
         if let Err(error) = appended {
+            self.rollout.retain_failure(&error);
             self.record_failed = true;
             self.diagnostic_record_append_failed();
             return Err(KernelError::Record(error));

@@ -84,7 +84,10 @@ impl Transport {
             .await
             .context("service handshake timed out")??
             .context("service closed before handshake")?;
-        if hello["type"] != "hello" || hello["product_contract_version"] != 1 {
+        if hello["type"] != "hello"
+            || hello["product_contract_version"]
+                != iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+        {
             bail!("service refused the current client contract");
         }
         let thread = hello["session_id"]

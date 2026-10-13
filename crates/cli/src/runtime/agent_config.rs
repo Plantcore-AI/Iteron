@@ -464,9 +464,37 @@ impl Agent {
                     reason: "contains an invalid executable agent definition",
                 })?;
         }
+        Self::configure_dispatch_profiles(&mut self.registry, &catalog);
         self.agent_catalog = std::sync::Arc::new(catalog);
         self.agent_catalog_pinned = true;
         Ok(())
+    }
+
+    /// Project metadata before fresh execution facts are sealed; pinning repeats this idempotently
+    /// after checkpoint identity validation, including resume and controller-child construction.
+    pub(crate) fn configure_dispatch_profiles(
+        registry: &mut Registry,
+        catalog: &iteron_agents::AgentCatalog,
+    ) {
+        let mut direct_profiles = catalog.defs().iter().filter(|def| {
+            !def.is_isolated_writer()
+                && def.validate().is_ok()
+                && iteron_record::redact::scrub(&def.name) == def.name
+        });
+        let profiles = direct_profiles
+            .by_ref()
+            .take(iteron_tools::MAX_DISPATCH_AGENT_PROFILES)
+            .map(|def| iteron_tools::DispatchAgentProfile {
+                name: def.name.clone(),
+                description: iteron_record::redact::scrub(&def.description)
+                    .chars()
+                    .filter(|ch| !crate::semantic_text::is_unsafe_display_char(*ch))
+                    .take(160)
+                    .collect(),
+                tools: def.tools.narrow(),
+            })
+            .collect::<Vec<_>>();
+        registry.set_dispatch_agent_profiles(&profiles, direct_profiles.next().is_some());
     }
 
     pub fn agent_catalog_digest(&self) -> String {
@@ -651,6 +679,7 @@ impl Agent {
                 Ok(changed)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))
@@ -694,6 +723,7 @@ impl Agent {
                 Ok(changed)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))

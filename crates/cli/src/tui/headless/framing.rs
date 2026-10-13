@@ -987,7 +987,10 @@ mod tests {
             client_access: None,
         })
         .unwrap();
-        assert_eq!(negotiated["product_contract_version"], 1);
+        assert_eq!(
+            negotiated["product_contract_version"],
+            iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+        );
     }
 
     fn event(seq: u64, text: String) -> ServerFrame {

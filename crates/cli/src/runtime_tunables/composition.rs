@@ -572,6 +572,10 @@ fn scope_digest(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "composition_parameter_tests.rs"]
+mod parameter_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderGovernorConfig, ProviderModelCapabilities};
@@ -681,7 +685,10 @@ mod tests {
         );
     }
 
-    fn assert_fresh_composition(context_window: Option<u64>, expected_output: u32) {
+    pub(super) fn assert_fresh_composition(
+        context_window: Option<u64>,
+        expected_output: u32,
+    ) -> iteron_record::TunablesCheckpoint {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
         let directory =
             ProviderDirectory::inspect_local(&[fixture_provider(context_window)]).unwrap();
@@ -724,7 +731,7 @@ mod tests {
             .resolve(run_limits.max_concurrency(), false)
             .unwrap();
         let tenant = TenantId::default();
-        let tunables_profile = super::super::adhoc::apply_set_arguments(
+        let mut tunables_profile = super::super::adhoc::apply_set_arguments(
             None,
             &[
                 "max_turns=10".to_owned(),
@@ -733,6 +740,16 @@ mod tests {
         )
         .expect("Tier-1 --set assignments are valid")
         .expect("assignments create a value-bearing profile");
+        for id in super::parameter_tests::PARAMETER_IDS {
+            if let Some(value) = iteron_tunables::param_value(id) {
+                tunables_profile
+                    .params
+                    .push(iteron_tunables::ParamAssignment {
+                        param: id.into(),
+                        value: value.clone(),
+                    });
+            }
+        }
 
         let compose = |effort: Sourced<Effort>,
                        provider_origin: ConfigOrigin,
@@ -817,7 +834,7 @@ mod tests {
             ConfigOrigin::Builtin,
             ConfigOrigin::Builtin,
             Sourced {
-                value: PermissionMode::AcceptEdits,
+                value: PermissionMode::Yolo,
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
@@ -848,7 +865,7 @@ mod tests {
         );
         assert_eq!(fresh.settings.provider_id, selection.provider_id);
         assert_eq!(fresh.settings.model_id, selection.model_id);
-        assert_eq!(fresh.settings.permission_mode, PermissionMode::AcceptEdits);
+        assert_eq!(fresh.settings.permission_mode, PermissionMode::Yolo);
         assert!(fresh.settings.bypass_permissions);
         for family_id in ["permission_mode", "bypass_permissions"] {
             let entry = fresh
@@ -930,7 +947,7 @@ mod tests {
             ConfigOrigin::Builtin,
             ConfigOrigin::Builtin,
             Sourced {
-                value: PermissionMode::AcceptEdits,
+                value: PermissionMode::Yolo,
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
@@ -982,7 +999,7 @@ mod tests {
             ConfigOrigin::Builtin,
             ConfigOrigin::Builtin,
             Sourced {
-                value: PermissionMode::AcceptEdits,
+                value: PermissionMode::Yolo,
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
@@ -1050,7 +1067,7 @@ mod tests {
             ConfigOrigin::Builtin,
             ConfigOrigin::Builtin,
             Sourced {
-                value: PermissionMode::AcceptEdits,
+                value: PermissionMode::Yolo,
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
@@ -1223,5 +1240,6 @@ mod tests {
                 "provider".into()
             )
         );
+        checkpoint
     }
 }

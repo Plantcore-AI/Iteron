@@ -524,7 +524,11 @@ async fn read_numbered_file(
     // The witness and rendered window come from these same bounded raw bytes (including BOM
     // and original newline encoding). It grants no filesystem authority; the writer must still
     // compare against its own retained snapshot and identity immediately before replacement.
-    let witness = include_sha256.then(|| format!("raw_sha256: {:x}\n", Sha256::digest(&bytes)));
+    // A bare 64-hex word is secret-shaped to the ordinary text scrubber. Keep the computed
+    // digest inside a named lowercase token so live model projection and record replay retain
+    // it without granting an exemption to file contents or changing the writer's preimage check.
+    let witness =
+        include_sha256.then(|| format!("raw_sha256=sha256-{:x}\n", Sha256::digest(&bytes)));
     if let Some(witness) = &witness {
         policy.output_max_bytes = policy
             .output_max_bytes
@@ -678,8 +682,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                  pinned in the run checkpoint. Binary, unsupported-encoding, and oversized files \
                  are not injected. Truncation reports the next offset to read. \
                  Set include_sha256=true to obtain the SHA-256 of the full observed raw file \
-                 bytes for a deliberate write_file replacement; the rendered window may still \
-                 be partial, so preserve changes outside it.",
+                 bytes for a deliberate write_file replacement. The header is \
+                 raw_sha256=sha256-<64 lowercase hex digits>; pass only those 64 digits as \
+                 write_file.expected_sha256. The rendered window may still be partial, \
+                 so preserve changes outside it.",
                 ObservationToolPolicy::default().read_file.output_max_bytes,
             ),
             input_schema: serde_json::json!({
@@ -701,7 +707,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     },
                     "include_sha256":{
                         "type":"boolean",
-                        "description":"include the SHA-256 of the full bounded raw file bytes, including BOM/newlines, for write_file expected_sha256; false by default"
+                        "description":"include raw_sha256=sha256-<64 lowercase hex digits> for the full bounded raw file bytes, including BOM/newlines; pass only the 64 digits to write_file expected_sha256; false by default"
                     }
                 },
                 "required":["path"]

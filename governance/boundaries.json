@@ -224,6 +224,10 @@
         {
           "kind": "file",
           "path": "requirements-docs.lock"
+        },
+        {
+          "kind": "tree",
+          "path": "examples/restricted-reader"
         }
       ],
       "contracts": [
@@ -645,6 +649,14 @@
         },
         {
           "kind": "file",
+          "path": "crates/record/src/session_publication_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/session_publication_admission_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/record/src/checkpoint/restore.rs"
         },
         {
@@ -658,6 +670,18 @@
         {
           "kind": "tree",
           "path": "crates/record/src/native_child_context"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/turn_start_store.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record/src/turn_start_store"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/failure.rs"
         }
       ],
       "contracts": [
@@ -850,6 +874,14 @@
         {
           "kind": "file",
           "path": "crates/provider/src/data_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/decode.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/decode_tests.rs"
         }
       ],
       "contracts": [
@@ -889,6 +921,10 @@
         {
           "kind": "file",
           "path": "crates/provider/src/responses/usage.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/provider/src/openai"
         }
       ],
       "contracts": [
@@ -1602,6 +1638,10 @@
         {
           "kind": "tree",
           "path": "crates/tools/src/write_file"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/dispatch_agent.rs"
         }
       ],
       "contracts": [
@@ -2814,6 +2854,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/cli/src/runtime/tool_preimage_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/src/client_inventory/catalog_host.rs"
         },
         {
@@ -3407,6 +3451,18 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/native_change_evidence_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/child_profile_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context403_regression_tests.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/transcript"
         }
       ],
       "contracts": [
@@ -5025,6 +5081,10 @@
         {
           "kind": "tree",
           "path": "crates/extension-sdk"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/failure.rs"
         }
       ]
     },

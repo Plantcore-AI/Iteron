@@ -218,7 +218,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "permission_mode",
-        en("acceptEdits"),
+        en("yolo"),
         input.permission_mode.origin,
         en(input.permission_mode.value.label()),
     )?;

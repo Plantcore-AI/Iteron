@@ -2,11 +2,13 @@
 //! stream into `SseFrame`s and feeds them to the pure `sse` parser, so all the interesting
 //! logic stays testable without a network.
 
+use crate::decode::invalid;
 use crate::sse::{ANTHROPIC_CONTENT_BLOCKS_FORMAT, SseFrame, StreamItem, StreamParser};
 use crate::{
     AdapterKind, ApiRoot, CacheBreakpoint, CacheScope, EffortApplication, ErrorProfile, Provider,
     ProviderControlCapabilities, ProviderError, TurnRequest, TurnResult,
 };
+use crate::{DecodeCode as Code, DecodeField as Field};
 use futures_util::StreamExt;
 use iteron_protocol::{Block, Message, ProviderState, Role};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -666,6 +668,7 @@ fn required_native_string<'a>(
 
 #[derive(Default)]
 struct AnthropicSseDecoder {
+    data_frames: u64,
     pending: Vec<u8>,
     cursor: usize,
 }
@@ -681,15 +684,15 @@ impl AnthropicSseDecoder {
                     MAX_SSE_FRAME_BYTES,
                 )
             {
-                return Err(ProviderError::Decode(format!(
-                    "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(self.data_frames.saturating_add(1)));
             }
             let block_start = self.cursor;
             let block_end = block_start.saturating_add(idx);
             let block =
                 std::str::from_utf8(&self.pending[block_start..block_end]).map_err(|_| {
-                    ProviderError::Decode("Anthropic stream contained invalid UTF-8".into())
+                    invalid(Code::InvalidUtf8, Field::SseData)
+                        .at_decode_frame(self.data_frames.saturating_add(1))
                 })?;
             self.cursor = block_end.saturating_add(separator_len);
             let mut event = String::new();
@@ -703,6 +706,7 @@ impl AnthropicSseDecoder {
             }
             let data = data_lines.join("\n");
             if !event.is_empty() && !data.is_empty() {
+                self.data_frames = self.data_frames.saturating_add(1);
                 frames.push(SseFrame { event, data });
             }
         }
@@ -712,9 +716,8 @@ impl AnthropicSseDecoder {
                 MAX_SSE_FRAME_BYTES,
             )
         {
-            return Err(ProviderError::Decode(format!(
-                "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)));
         }
         if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
             self.pending.drain(..self.cursor);
@@ -725,16 +728,14 @@ impl AnthropicSseDecoder {
 
     fn finish(&self) -> Result<(), ProviderError> {
         let pending = std::str::from_utf8(&self.pending[self.cursor..]).map_err(|_| {
-            ProviderError::Decode(
-                "Anthropic stream ended with an incomplete or invalid UTF-8 code point".into(),
-            )
+            invalid(Code::InvalidUtf8, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1))
         })?;
         if pending.trim().is_empty() {
             Ok(())
         } else {
-            Err(ProviderError::Decode(
-                "Anthropic stream ended with an incomplete SSE frame".into(),
-            ))
+            Err(invalid(Code::ProtocolSequence, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)))
         }
     }
 }
@@ -949,6 +950,7 @@ impl Provider for Anthropic {
             .map_err(ProviderError::Configuration)?; // persistent across chunks
         let mut result: Option<TurnResult> = None;
         let mut total_stream_bytes = 0usize;
+        let mut frame_index = 0u64;
         let max_stream_bytes =
             iteron_tunables::param_usize("provider.anthropic.max_stream_bytes", MAX_STREAM_BYTES);
 
@@ -973,20 +975,20 @@ impl Provider for Anthropic {
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|e| ProviderError::Http(e.to_string()))?;
-            total_stream_bytes = total_stream_bytes
-                .checked_add(bytes.len())
-                .ok_or_else(|| ProviderError::Decode("stream byte counter overflow".into()))?;
+            total_stream_bytes = total_stream_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1))
+            })?;
             if total_stream_bytes > max_stream_bytes {
-                return Err(ProviderError::Decode(format!(
-                    "Anthropic stream exceeded {max_stream_bytes} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1)));
             }
             let frames = decoder.push(&bytes)?;
             for frame in &frames {
+                frame_index = frame_index.saturating_add(1);
                 if result.is_some() {
-                    return Err(ProviderError::Decode(
-                        "Anthropic stream emitted data after message_stop".into(),
-                    ));
+                    return Err(invalid(Code::ProtocolSequence, Field::SseEvent)
+                        .at_decode_frame(frame_index));
                 }
                 if frame.event.len().saturating_add(frame.data.len())
                     > iteron_tunables::param_integer(
@@ -994,9 +996,9 @@ impl Provider for Anthropic {
                         MAX_SSE_FRAME_BYTES,
                     )
                 {
-                    return Err(ProviderError::Decode(format!(
-                        "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                    )));
+                    return Err(
+                        invalid(Code::LimitExceeded, Field::SseData).at_decode_frame(frame_index)
+                    );
                 }
                 // Anthropic can accept a request with HTTP 200 and then report overloads or
                 // other API failures in-band. Treat that as a first-class provider failure;
@@ -1013,7 +1015,7 @@ impl Provider for Anthropic {
                 }
                 // Feed each frame to the persistent parser; mid-stream items (incl. the
                 // flagship ToolUseComplete) reach the callback as early as they exist.
-                for item in parser.push(frame).map_err(ProviderError::Decode)? {
+                for item in parser.push_diagnostic(frame)? {
                     if let StreamItem::TurnComplete {
                         blocks,
                         stop_reason,

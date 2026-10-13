@@ -105,7 +105,7 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
         "copy to a new terminal · enter keeps draft · esc clear"
     } else if app
         .run
-        .awaiting_composer_admission(app.editor.persistence_revision())
+        .awaiting_composer_admission(app.editor.draft_revision())
     {
         "awaiting admission · draft preserved"
     } else if super::composer_render::composer_command_attachments(app) {

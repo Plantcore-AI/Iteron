@@ -40,8 +40,9 @@ impl BearerToken {
         }
         write!(
             &mut *input,
-            r#"","protocol_version":{},"product_contract_version":1,"live_only":true}}"#,
-            iteron_protocol::PROTOCOL_VERSION
+            r#"","protocol_version":{},"product_contract_version":{},"live_only":true}}"#,
+            iteron_protocol::PROTOCOL_VERSION,
+            iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
         )
         .expect("writing a String is infallible");
         input.push('\n');
@@ -135,7 +136,7 @@ mod tests {
         let decoded = super::super::input::parse(&encoded).unwrap();
         assert!(matches!(decoded, super::super::input::ClientFrame::Hello {
             bearer_token, protocol_version: iteron_protocol::PROTOCOL_VERSION,
-            product_contract_version: Some(1), live_only: true,
+            product_contract_version: Some(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION), live_only: true,
             observation_only: false, resume_from: None, session_id: None,
         } if token.authorizes(&bearer_token)));
         assert!(!format!("{token:?}").contains("aaaa"));

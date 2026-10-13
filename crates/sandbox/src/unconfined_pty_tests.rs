@@ -141,3 +141,60 @@ async fn an_unconfined_pty_keeps_the_operator_tmpdir() {
         "an unconfined child was redirected to the confined scratch dir: {observed}"
     );
 }
+
+#[tokio::test]
+async fn canonical_eof_preserves_partial_input_without_synthetic_echo() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    for (label, text) in [("eof-empty", ""), ("eof-partial", "héllo界")] {
+        let fx = fixture(label);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut process = spawn_confined_pty_process(
+                "stty icanon echo eof '^D' || exit 91; printf ready; value=$(cat); printf 'real:^D\\b\\b|%s|done' \"$value\"",
+                &Confinement::unconfined(&fx.workspace),
+                window(),
+            )
+            .await
+            .expect("spawn canonical terminal reader");
+            let mut input = process.take_input().expect("pty input");
+            let mut output = process.take_output().expect("pty output");
+            let mut ready = [0; 5];
+            output.read_exact(&mut ready).await.expect("child ready");
+            assert_eq!(&ready, b"ready");
+
+            if !text.is_empty() {
+                input.write_all(text.as_bytes()).await.expect("partial line");
+                let mut echo = vec![0; text.len()];
+                output.read_exact(&mut echo).await.expect("interactive echo");
+                assert_eq!(echo, text.as_bytes(), "ordinary input still echoes");
+            }
+            input.send_eof().await.expect("close canonical input");
+            drop(input);
+
+            // The first EOF must release a partial line, and the second must let cat terminate.
+            // The child's own caret/backspace bytes must survive exactly, without another copy
+            // from synthetic input echo. No output normalization is allowed in this assertion.
+            let expected = format!("real:^D\u{8}\u{8}|{text}|done").into_bytes();
+            let mut actual = vec![0; expected.len()];
+            output.read_exact(&mut actual).await.expect("exact child output");
+            assert_eq!(actual, expected);
+            assert!(process.wait().await.expect("reap child").success());
+
+            // Darwin may leave a master read pending after the last slave closes.
+            // Inspect the bounded tail after confirmed child exit without requiring terminal EOF.
+            let mut trailing = Vec::new();
+            let mut tail = output.take(256);
+            if let Ok(result) = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                tail.read_to_end(&mut trailing),
+            )
+            .await
+            {
+                result.expect("read trailing terminal output");
+            }
+            assert!(trailing.is_empty(), "unexpected trailing output: {trailing:?}");
+        })
+        .await
+        .expect("canonical EOF must finish within five seconds");
+    }
+}

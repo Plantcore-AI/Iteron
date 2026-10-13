@@ -476,6 +476,7 @@ impl HookExecution<'_> {
     fn boundary_error(&mut self, error: effects::BrokerError) -> KernelError {
         match error {
             effects::BrokerError::Record(error) => {
+                self.rollout.retain_failure(&error);
                 *self.record_failed = true;
                 self.diagnostics
                     .emit(KernelDiagnostic::RecordAppendFailed {});

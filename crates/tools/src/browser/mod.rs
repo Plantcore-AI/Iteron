@@ -339,6 +339,16 @@ impl BrowserOwner {
         format!("brw-{}-g{}-close", self.nonce, state.session_generation)
     }
     async fn observe(&self, session: &str, issued: &mut bool) -> Result<View, &'static str> {
+        // A completed action may still be navigating. Re-read only the observation;
+        // never dispatch the action again or reset the enclosing operation deadline.
+        match self.observe_once(session, issued).await {
+            Err("browser_navigation_changed_during_observation") => {
+                self.observe_once(session, issued).await
+            }
+            result => result,
+        }
+    }
+    async fn observe_once(&self, session: &str, issued: &mut bool) -> Result<View, &'static str> {
         let first = self
             .driver
             .request(Method::GET, &format!("session/{session}/url"), None, issued)
@@ -366,6 +376,10 @@ impl BrowserOwner {
             .request(Method::GET, &format!("session/{session}/url"), None, issued)
             .await?;
         if first != second {
+            let changed = web_url(second.as_str().ok_or("browser_current_url_unavailable")?)?;
+            if !self.configuration.permits(&changed) {
+                return Err("browser_current_origin_not_admitted");
+            }
             return Err("browser_navigation_changed_during_observation");
         }
         Ok(View {

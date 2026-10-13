@@ -10,7 +10,9 @@ pub const RESOLUTION_SCHEMA_VERSION: u16 = 2;
 pub const RESOLUTION_INPUT_MAX_BYTES: usize = 1_048_576;
 pub(crate) const MAX_DECLARED_VALUES: usize = 193;
 pub(crate) const MAX_PROFILE_VALUES: usize = crate::EXPECTED_FAMILY_COUNT;
-pub(crate) const MAX_DEFAULT_EVIDENCE: usize = 106;
+// Default evidence is unique per registered family. Keep a numeric parameter ceiling so
+// existing profiles can still lower it; preflight asserts its registry cardinality at compile time.
+pub(crate) const MAX_DEFAULT_EVIDENCE: usize = 160;
 pub(crate) const MAX_ACTIVATION_EVIDENCE: usize = 53;
 pub(crate) const MAX_CONSTRAINTS: usize = 201;
 pub(crate) const MAX_ROUTES: usize = 16;

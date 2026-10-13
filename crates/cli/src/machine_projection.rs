@@ -82,7 +82,7 @@ fn outcome_reason(outcome: &Outcome) -> Option<&str> {
     }
 }
 
-/// The concrete operator action that clears one budget ceiling.
+/// Conditional operator guidance for a budget terminal, including unknown prior usage.
 ///
 /// A bare `budget_exhausted` is indistinguishable from a hang: the run stops, nothing is broken,
 /// and nothing says what would make the next submission run. `max_turns` is the worst of the five
@@ -100,7 +100,11 @@ pub fn budget_remedy(reason: &str) -> &'static str {
             "the wall-clock ceiling bounds one submission: restart with --max-wall-secs <seconds>"
         }
         "max_usd" => "raise the spend ceiling with --max-usd <dollars>",
-        "max_tokens" => "raise the aggregate token ceiling with --max-tokens <tokens>",
+        "max_tokens" => {
+            "with complete usage, choose a higher --max-tokens <tokens> for a new run; \
+             unknown prior provider usage cannot be repaired by raising the limit: \
+             review prior work, then start a new run"
+        }
         "verify_attempts" => {
             "the verification retry ceiling was reached: fix the failing check, or rerun without \
              --verify"

@@ -54,7 +54,7 @@ change session settings.
 
 ## 4. Choose the authority posture deliberately
 
-The shipped default uses `acceptEdits` with dangerous broad host authority.
+The shipped default uses `yolo` with dangerous broad host authority.
 Use `--ask-permissions` or an explicit gated `--mode` for approval checks,
 `--confine` for shell sandboxing, and `--mode plan` for a read-only run. Review the
 [permission and sandbox contract](../using/permissions-and-sandbox.md) before

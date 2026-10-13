@@ -107,7 +107,7 @@ const MAX_PROBE_CACHE_ENTRIES: usize = MAX_PROVIDER_INSTANCES;
 
 /// Immutable bootstrap owner for provider discovery and account-probe reuse. Discovery happens
 /// before a run checkpoint can be resolved, so resumed checkpoints may only attest these exact
-/// binary-owned values; a different pin is rejected instead of pretending it changed work that
+/// admitted bootstrap values; a different pin is rejected instead of pretending it changed work that
 /// already happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct ProviderDiscoveryPolicy {
@@ -119,6 +119,10 @@ pub(crate) struct ProviderDiscoveryPolicy {
 
 impl ProviderDiscoveryPolicy {
     pub(crate) fn owner() -> Self {
+        let failure_backoff_cap_seconds = iteron_tunables::param_integer(
+            "cli.providers.probe_backoff_cap_secs",
+            PROBE_BACKOFF_CAP_SECS,
+        );
         Self {
             eager_budget_milliseconds: EAGER_DISCOVERY_BUDGET.as_millis() as u64,
             positive_ttl_seconds: iteron_tunables::param_integer(
@@ -127,12 +131,9 @@ impl ProviderDiscoveryPolicy {
             ),
             failure_backoff_base_seconds: iteron_tunables::param_integer(
                 "cli.providers.probe_backoff_base_secs",
-                PROBE_BACKOFF_BASE_SECS,
+                PROBE_BACKOFF_BASE_SECS.min(failure_backoff_cap_seconds),
             ),
-            failure_backoff_cap_seconds: iteron_tunables::param_integer(
-                "cli.providers.probe_backoff_cap_secs",
-                PROBE_BACKOFF_CAP_SECS,
-            ),
+            failure_backoff_cap_seconds,
         }
     }
 
@@ -923,6 +924,7 @@ fn setup_provider_outcome_is_unobservable(error: &ProviderError) -> bool {
             | ProviderError::Timeout { .. }
             | ProviderError::Stream(_)
             | ProviderError::Decode(_)
+            | ProviderError::InvalidResponse(_)
     )
 }
 
@@ -977,4 +979,89 @@ fn describe_validation_failure(error: &ProviderError) -> String {
         ),
         other => format!("the validating request failed: {other}"),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_installed_probe_policy_controls_cache() {
+    let policy = ProviderDiscoveryPolicy::owner();
+    assert_eq!(
+        probe_backoff_secs(policy, 1),
+        policy.failure_backoff_base_seconds()
+    );
+    assert_eq!(
+        probe_backoff_secs(policy, u32::MAX),
+        policy.failure_backoff_cap_seconds()
+    );
+    let identity: probe_cache::ProbeIdentity = (
+        "fixture".into(),
+        "https://example.invalid".into(),
+        "deepseek-balance".into(),
+        format!(
+            "{CATALOG_CACHE_SCOPE_PREFIX}{}",
+            "ab".repeat(CATALOG_CACHE_SCOPE_KEY_BYTES)
+        ),
+    );
+    let mut cache = ProbeCache::default();
+    let observed = 1_800_000_000;
+    let observed_probe = CachedProbe {
+        provider_id: identity.0.clone(),
+        api_root: identity.1.clone(),
+        probe: identity.2.clone(),
+        credential_scope: identity.3.clone(),
+        observed_at_unix_secs: observed,
+        outcome: CachedProbeOutcome::Observed {
+            availability: CachedAvailability::Ready,
+            balance: CachedBalance::Sufficient,
+        },
+    };
+    // Upsert rejects malformed identities; prove this fixture reaches the policy reader.
+    assert!(observed_probe.is_valid());
+    cache.upsert(observed_probe);
+    assert_eq!(cache.fixture_entries().len(), 1);
+    if policy.positive_ttl_seconds() > 0 {
+        assert!(matches!(
+            cache.decide(
+                &identity,
+                observed + policy.positive_ttl_seconds() - 1,
+                policy
+            ),
+            ProbeDecision::Reuse(_)
+        ));
+    }
+    assert!(matches!(
+        cache.decide(&identity, observed + policy.positive_ttl_seconds(), policy),
+        ProbeDecision::Run { failures: 0 }
+    ));
+    cache.upsert(CachedProbe {
+        provider_id: identity.0.clone(),
+        api_root: identity.1.clone(),
+        probe: identity.2.clone(),
+        credential_scope: identity.3.clone(),
+        observed_at_unix_secs: observed,
+        outcome: CachedProbeOutcome::Failed {
+            consecutive_failures: 1,
+        },
+    });
+    assert_eq!(
+        cache.fixture_entries()[0].outcome,
+        CachedProbeOutcome::Failed {
+            consecutive_failures: 1
+        }
+    );
+    assert!(matches!(
+        cache.decide(
+            &identity,
+            observed + policy.failure_backoff_base_seconds() - 1,
+            policy
+        ),
+        ProbeDecision::Skip
+    ));
+    assert!(matches!(
+        cache.decide(
+            &identity,
+            observed + policy.failure_backoff_base_seconds(),
+            policy
+        ),
+        ProbeDecision::Run { failures: 1 }
+    ));
 }

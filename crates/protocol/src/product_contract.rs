@@ -1,6 +1,6 @@
 //! Public, bounded Thread/Turn/Item view of the resident App Server.
 //!
-//! Version 1 exposes a bounded, cursor-addressed content stream alongside read and control.
+//! Version 2 requires a stable request key for TurnStart; existing event and read shapes remain.
 //! Its resident replay is not a durable rollout; an expired cursor reports a gap explicitly.
 //! A queued control receipt never claims execution or an authorized effect.
 
@@ -9,7 +9,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const PRODUCT_CONTRACT_VERSION: u32 = 1;
+pub const PRODUCT_CONTRACT_VERSION: u32 = 2;
 pub const MAX_THREAD_ITEMS: usize = 256;
 pub const MAX_THREAD_SUBMISSIONS: usize = 256;
 pub const MAX_PRODUCT_EVENTS: usize = 512;
@@ -301,6 +301,9 @@ pub enum ProductControlV1 {
         after: u64,
     },
     TurnStart {
+        /// Canonical UUIDv7:SHA-256 identity for this exact thread and unmodified UTF-8 text.
+        /// Retries retain this key; the durable admission owner validates its binding and age.
+        request_key: String,
         thread_id: SessionId,
         text: String,
     },
@@ -392,6 +395,22 @@ mod tests {
                 "type": "cursor_ahead", "requested_after": 12, "latest_cursor": 10
             })
         );
+    }
+
+    #[test]
+    fn turn_start_requires_a_client_key_and_preserves_exact_request_bytes() {
+        let legacy = json!({"type":"turn_start","thread_id":"session-r1","text":" task\n"});
+        assert!(serde_json::from_value::<ProductControlV1>(legacy.clone()).is_err());
+        let mut keyed = legacy;
+        // The protocol preserves input. Shape, digest and expiry belong to durable admission.
+        keyed["request_key"] = json!("client-supplied-key");
+        let decoded: ProductControlV1 = serde_json::from_value(keyed.clone()).unwrap();
+        assert!(
+            matches!(&decoded, ProductControlV1::TurnStart { request_key, text, .. }
+            if request_key == "client-supplied-key" && text == " task\n")
+        );
+        assert_eq!(serde_json::to_value(decoded).unwrap(), keyed);
+        assert_eq!(PRODUCT_CONTRACT_VERSION, 2);
     }
 
     #[test]

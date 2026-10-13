@@ -2637,7 +2637,7 @@ fn non_success_process_exit_codes_match_terminal_results() {
     );
     assert_eq!(
         harness_lines[0]["error"],
-        "provider: provider response was invalid"
+        "provider: provider response was invalid [code=json_syntax, field=sse.data, frame=1]"
     );
     assert_diagnostics_on_stderr(&harness, "HarnessError");
 }

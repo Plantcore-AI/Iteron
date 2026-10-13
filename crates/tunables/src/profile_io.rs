@@ -116,8 +116,16 @@ pub enum ProfileLoadError {
         param: String,
         reason: String,
     },
+    UnsupportedParamOverride {
+        param: String,
+        reason: String,
+    },
     DuplicateFamily(String),
     DuplicateParam(String),
+    ParamOwnerConstraint {
+        family: String,
+        reason: String,
+    },
     OutsideModuleScope {
         id: String,
         scope: ModuleId,
@@ -185,8 +193,14 @@ impl std::fmt::Display for ProfileLoadError {
             Self::ParamType { param, reason } => {
                 write!(formatter, "parameter `{param}`: {reason}")
             }
+            Self::UnsupportedParamOverride { param, reason } => {
+                write!(formatter, "parameter `{param}`: {reason}")
+            }
             Self::DuplicateFamily(id) => write!(formatter, "family `{id}` is assigned twice"),
             Self::DuplicateParam(id) => write!(formatter, "parameter `{id}` is assigned twice"),
+            Self::ParamOwnerConstraint { family, reason } => {
+                write!(formatter, "parameter owner `{family}`: {reason}")
+            }
             Self::UnknownArtifact(id) => write!(
                 formatter,
                 "unknown prompt artifact `{id}`; the surface export lists every addressable id"
@@ -335,6 +349,12 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
                     param: param.id.clone(),
                     reason: violation.to_string(),
                 },
+                ParamValueViolation::UnsupportedOverride { .. } => {
+                    ProfileLoadError::UnsupportedParamOverride {
+                        param: param.id.clone(),
+                        reason: violation.to_string(),
+                    }
+                }
             })?;
         if !seen_params.insert(param.id.clone()) {
             return Err(ProfileLoadError::DuplicateParam(param.id.clone()));
@@ -349,6 +369,16 @@ pub fn validate_profile(document: &ProfileDocument) -> Result<(), ProfileLoadErr
             });
         }
     }
+    crate::param_authority::validate(
+        document
+            .params
+            .iter()
+            .map(|assignment| (assignment.param.as_str(), &assignment.value)),
+    )
+    .map_err(|(family, reason)| ProfileLoadError::ParamOwnerConstraint {
+        family: family.to_owned(),
+        reason,
+    })?;
     let mut seen_artifacts = std::collections::BTreeSet::new();
     for override_entry in &document.artifacts {
         let prompt_artifact = crate::export::PROMPT_ARTIFACTS

@@ -257,6 +257,7 @@ impl Agent {
     /// this terminal segment and begins a new deterministic policy run rather than appending
     /// decisions after a terminal outcome.
     pub(crate) fn finalize_policy_run(&mut self) -> Result<(), KernelError> {
+        let _foreground = self.rollout.foreground_activity()?;
         if !self.ensure_policy_evidence()? {
             return Ok(());
         }
@@ -288,6 +289,7 @@ impl Agent {
     ) -> KernelError {
         match error.into_record_error() {
             Ok(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 KernelError::Record(error)

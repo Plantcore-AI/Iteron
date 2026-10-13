@@ -1,7 +1,9 @@
 # Executable agent definitions
 
-Iteron discovers agent definitions once when a run or standalone workflow starts. The accepted set
-is immutable for that runtime. User definitions live in `~/.iteron/agents/*.md`; repository
+Iteron pins one agent-definition catalog when a run or standalone workflow starts. One-shot runs
+discover it before composition. Interactive startup can use the last cached catalog, then refresh
+the cache after first paint for the next process; that scan never changes the running catalog.
+The accepted set is immutable for that runtime. User definitions live in `~/.iteron/agents/*.md`; repository
 definitions live under `.iteron/agents/*.md`. Definitions below dependency/vendor directories are
 reported and stripped.
 
@@ -70,12 +72,22 @@ tools: [read_file]
 Read the exact requested path and report the relevant content or the actual error.
 ```
 
+The parent-facing `dispatch_agent.agent_type` schema lists eligible pinned profile names,
+descriptions, and configured tools. This metadata is bounded to 16 profiles and 4 KiB; the listing
+can omit additional names without rejecting explicit selections from the full catalog. Tool schema
+search uses the same metadata. No child prompt body is exposed, and the isolated writer profile is
+not an investigator choice. Host policy may narrow the configured tool list further. `/agents`
+shows the runtime catalog; restart after the startup scan if a newly added definition is absent.
+
 Then call `dispatch_agent` with
 `{"task":"Read src/example.rs and summarize its exports","agent_type":"file-reader"}`.
 The allowlist is enforced during execution as well as in the advertised tools.
 Omitting `agent_type` keeps the generic read-only child. Invalid profiles are
 refused before child admission. A restricted toolset does not establish that a
-model completed the requested investigation; inspect its returned outcome.
+model completed the requested investigation; inspect its returned outcome and the child record's
+actual tool result. See the runnable [restricted reader example](../../examples/restricted-reader/README.md).
+The native regression selects this example's advertised profile, reads a real synthetic file,
+checks matching durable intent/result records, and runs restricted and generic siblings concurrently.
 
 The diagnostic `ITERON_WORKFLOW_SPAWNER=provider` fallback does not interpret this catalog. It
 supports only the built-in `generic` agent on the exact parent model; named definitions and model

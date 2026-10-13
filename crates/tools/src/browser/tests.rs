@@ -68,6 +68,7 @@ struct DriverState {
     lose_click_reply: bool,
     element_reply: Option<String>,
     navigate_after_screenshot: bool,
+    observations_after_click: std::collections::VecDeque<(String, String)>,
     proxy: String,
 }
 struct DriverFixture {
@@ -141,7 +142,16 @@ impl DriverFixture {
                             Value::Null
                         }
                         ("GET", "/session/driver-private-1/url") => json!(state.url),
-                        ("GET", "/session/driver-private-1/source") => json!(state.source),
+                        ("GET", "/session/driver-private-1/source") => {
+                            if state.clicks > 0
+                                && let Some((url, source)) =
+                                    state.observations_after_click.pop_front()
+                            {
+                                state.url = url;
+                                state.source = source;
+                            }
+                            json!(state.source)
+                        }
                         ("POST", "/session/driver-private-1/element") => {
                             json!({"element-6066-11e4-a52e-4f735466cecf":state.element_reply.as_deref().unwrap_or("f.frame-1.d.loader_1.e.7")})
                         }
@@ -347,6 +357,7 @@ async fn stale_dom_never_clicks_and_actual_lost_click_is_unknown_not_retried() {
         .await;
     assert!(matches!(lost.execution, ToolExecution::Unknown(_)));
     assert_eq!(driver.state.lock().await.clicks, 1);
+    assert_single_click_observation_requests(&*driver.state.lock().await, &[]);
     let lost = content(&lost);
     assert!(lost["owner_reconciliation_required"].as_bool().unwrap());
     let before = driver.state.lock().await.requests.len();
@@ -367,6 +378,223 @@ async fn stale_dom_never_clicks_and_actual_lost_click_is_unknown_not_retried() {
         .await;
     successful(&closed);
     assert!(!driver.state.lock().await.alive);
+}
+
+fn assert_single_click_observation_requests(state: &DriverState, reads: &[&str]) {
+    assert_eq!(state.clicks, 1);
+    assert_eq!(state.actions, 0);
+    let posts = state
+        .requests
+        .iter()
+        .filter(|request| request.starts_with("POST "))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        posts,
+        [
+            "POST /session",
+            "POST /session/driver-private-1/url",
+            "POST /session/driver-private-1/element",
+            "POST /session/driver-private-1/element/f.frame-1.d.loader_1.e.7/click",
+        ]
+    );
+    let click = state
+        .requests
+        .iter()
+        .position(|request| request.ends_with("/click"))
+        .unwrap();
+    let expected = reads
+        .iter()
+        .map(|path| format!("GET /session/driver-private-1/{path}"))
+        .collect::<Vec<_>>();
+    assert_eq!(state.requests[click + 1..], expected);
+}
+
+#[tokio::test]
+async fn observation_navigation_race_reobserves_once_without_repeating_click() {
+    let root = Root::new();
+    let driver = DriverFixture::new().await;
+    let registry = registry(&root, &driver);
+    let opened = open(&registry).await;
+    driver
+        .state
+        .lock()
+        .await
+        .observations_after_click
+        .push_back((
+            "http://127.0.0.1:19181/published".into(),
+            "<html><h1>Published once</h1></html>".into(),
+        ));
+    let published = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"click","page_ref":opened["page_ref"],"selector":"#post"}),
+        ))
+        .await;
+    successful(&published);
+    let page = content(&published);
+    assert_eq!(page["source_url"], "http://127.0.0.1:19181/published");
+    assert_eq!(page["html_preview"], "<html><h1>Published once</h1></html>");
+    assert_ne!(page["page_ref"], opened["page_ref"]);
+    assert_eq!(published.captured_outputs.len(), 1);
+    assert!(published.captured_images.is_empty());
+    assert_single_click_observation_requests(
+        &*driver.state.lock().await,
+        &["url", "source", "url", "url", "source", "url"],
+    );
+    let closed = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"close","page_ref":page["close_ref"]}),
+        ))
+        .await;
+    successful(&closed);
+    assert!(!driver.state.lock().await.alive);
+}
+
+#[tokio::test]
+async fn persistent_navigation_race_remains_unknown_and_close_only() {
+    let root = Root::new();
+    let driver = DriverFixture::new().await;
+    let registry = registry(&root, &driver);
+    let opened = open(&registry).await;
+    driver.state.lock().await.observations_after_click.extend([
+        (
+            "http://127.0.0.1:19181/published".into(),
+            "<html>first navigation</html>".into(),
+        ),
+        (
+            "http://127.0.0.1:19181/still-navigating".into(),
+            "<html>second navigation</html>".into(),
+        ),
+    ]);
+    let published = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"click","page_ref":opened["page_ref"],"selector":"#post"}),
+        ))
+        .await;
+    assert!(matches!(published.execution, ToolExecution::Unknown(_)));
+    assert!(published.captured_outputs.is_empty());
+    assert!(published.captured_images.is_empty());
+    let uncertain = content(&published);
+    assert_eq!(
+        uncertain["error"],
+        "browser_navigation_changed_during_observation"
+    );
+    assert_eq!(uncertain["owner_reconciliation_required"], true);
+    assert_single_click_observation_requests(
+        &*driver.state.lock().await,
+        &["url", "source", "url", "url", "source", "url"],
+    );
+    let before = driver.state.lock().await.requests.len();
+    for (name, input) in [
+        (
+            "browser",
+            json!({"action":"observe","page_ref":opened["page_ref"]}),
+        ),
+        (
+            "computer",
+            json!({"action":"key","page_ref":opened["page_ref"],"key":"enter"}),
+        ),
+        (
+            "browser",
+            json!({"action":"click","page_ref":opened["page_ref"],"selector":"#post"}),
+        ),
+    ] {
+        let refused = registry.run_effect_captured(call(name, input)).await;
+        assert_eq!(
+            content(&refused)["error"],
+            "browser_reconciliation_required_close_only"
+        );
+        assert_eq!(driver.state.lock().await.requests.len(), before);
+        assert_eq!(driver.state.lock().await.clicks, 1);
+    }
+    let closed = registry
+        .run_effect_captured(call(
+            "browser",
+            json!({"action":"close","page_ref":uncertain["close_ref"]}),
+        ))
+        .await;
+    successful(&closed);
+    assert!(!driver.state.lock().await.alive);
+}
+
+#[tokio::test]
+async fn observation_retry_preserves_origin_and_source_bounds() {
+    for (prior_race, url, source, reason, reads) in [
+        (
+            false,
+            "http://not-admitted.invalid/",
+            "<html>outside origin</html>".into(),
+            "browser_current_origin_not_admitted",
+            &["url", "source", "url"][..],
+        ),
+        (
+            true,
+            "http://not-admitted.invalid/",
+            "<html>outside origin</html>".into(),
+            "browser_current_origin_not_admitted",
+            &["url", "source", "url", "url", "source", "url"][..],
+        ),
+        (
+            true,
+            "file:///not-a-web-page",
+            "<html>invalid URL</html>".into(),
+            "browser_url_scheme_or_credentials_refused",
+            &["url", "source", "url", "url", "source", "url"][..],
+        ),
+        (
+            true,
+            "http://127.0.0.1:19181/published",
+            "x".repeat(1024 * 1024 + 1),
+            "browser_source_exceeds_bound",
+            &["url", "source", "url", "url", "source"][..],
+        ),
+    ] {
+        let root = Root::new();
+        let driver = DriverFixture::new().await;
+        let registry = registry(&root, &driver);
+        let opened = open(&registry).await;
+        if prior_race {
+            driver
+                .state
+                .lock()
+                .await
+                .observations_after_click
+                .push_back((
+                    "http://127.0.0.1:19181/published".into(),
+                    "<html>first navigation</html>".into(),
+                ));
+        }
+        driver
+            .state
+            .lock()
+            .await
+            .observations_after_click
+            .push_back((url.into(), source));
+        let published = registry
+            .run_effect_captured(call(
+                "browser",
+                json!({"action":"click","page_ref":opened["page_ref"],"selector":"#post"}),
+            ))
+            .await;
+        assert!(matches!(published.execution, ToolExecution::Unknown(_)));
+        assert!(published.captured_outputs.is_empty());
+        assert!(published.captured_images.is_empty());
+        let uncertain = content(&published);
+        assert_eq!(uncertain["error"], reason);
+        assert_eq!(uncertain["owner_reconciliation_required"], true);
+        assert_single_click_observation_requests(&*driver.state.lock().await, reads);
+        let closed = registry
+            .run_effect_captured(call(
+                "browser",
+                json!({"action":"close","page_ref":uncertain["close_ref"]}),
+            ))
+            .await;
+        successful(&closed);
+        assert!(!driver.state.lock().await.alive);
+    }
 }
 
 #[tokio::test]

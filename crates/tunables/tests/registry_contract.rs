@@ -883,9 +883,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(
         family("permission_mode").default.value,
-        Some(TunableValue::Enum {
-            value: "acceptEdits"
-        })
+        Some(TunableValue::Enum { value: "yolo" })
     );
     assert_eq!(
         family("memory_enable").default.value,

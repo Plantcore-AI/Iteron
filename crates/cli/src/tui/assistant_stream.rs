@@ -44,6 +44,7 @@ impl AssistantStream {
     pub(super) fn thinking(&self) -> &str {
         &self.thinking
     }
+    #[cfg(test)]
     pub(super) fn authority(&self) -> &str {
         &self.authority
     }
