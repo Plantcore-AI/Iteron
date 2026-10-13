@@ -121,6 +121,14 @@ impl ProductTools {
                 self.bytes = self
                     .bytes
                     .saturating_sub(row.input.len() + row.output.len());
+                if row.input_omitted {
+                    row.output
+                        .push_str("\n[tool input omitted from resident view]");
+                }
+                if *state == ItemStateV1::InProgress {
+                    row.output
+                        .push_str("\n[tool outcome unknown: no terminal state was supplied]");
+                }
                 if row.output_omitted {
                     row.output.push_str("\n[tool output omitted from resident view; full artifact read remains available]");
                 }

@@ -15,10 +15,11 @@ enum PublicRecordFailure {
     Integrity,
     Checkpoint,
     PrivateContent,
+    ContentBusy,
 }
 
 impl PublicRecordFailure {
-    fn all() -> [Self; 11] {
+    fn all() -> [Self; 12] {
         [
             Self::StorageFull,
             Self::StorageAccess,
@@ -31,6 +32,7 @@ impl PublicRecordFailure {
             Self::Integrity,
             Self::Checkpoint,
             Self::PrivateContent,
+            Self::ContentBusy,
         ]
     }
 
@@ -63,6 +65,9 @@ impl PublicRecordFailure {
             RecordError::Pricing(_)
             | RecordError::TunablesSnapshot(_)
             | RecordError::PolicyBundleCheckpoint(_) => Self::Checkpoint,
+            RecordError::PrivateContent(iteron_record::ContentStoreError::Busy) => {
+                Self::ContentBusy
+            }
             RecordError::PrivateContent(_) => Self::PrivateContent,
         }
     }
@@ -101,6 +106,9 @@ impl PublicRecordFailure {
             }
             Self::PrivateContent => {
                 "session record [private_content]: private-content storage or validation failed; do not continue this run"
+            }
+            Self::ContentBusy => {
+                "session record [content_busy]: session storage remained busy; wait for other session work to finish, then close and reopen this run"
             }
         }
     }
@@ -447,6 +455,10 @@ mod tests {
                 "[writer_lock]",
             ),
             (RecordError::WriterPoisoned, "[writer_poisoned]"),
+            (
+                RecordError::PrivateContent(iteron_record::ContentStoreError::Busy),
+                "[content_busy]",
+            ),
             (
                 RecordError::RolloutTooLarge {
                     bytes: 101,

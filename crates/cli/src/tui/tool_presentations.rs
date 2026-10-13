@@ -17,11 +17,16 @@ struct Pending {
     reveal: ToolReveal,
     deadline: Instant,
 }
+struct Active {
+    id: String,
+    name: String,
+    label: String,
+}
 #[derive(Default)]
 pub(super) struct ToolPresentations {
     pending: VecDeque<Pending>,
     revealed: HashMap<String, u64>,
-    active: VecDeque<(String, String)>,
+    active: VecDeque<Active>,
 }
 impl ToolPresentations {
     pub(super) fn start(
@@ -33,9 +38,12 @@ impl ToolPresentations {
     ) -> Vec<ToolReveal> {
         let name = ui_safe_text(&name);
         let args = ui_safe_json(&args);
-        self.active.retain(|(active, _)| active != &id);
-        self.active
-            .push_back((id.clone(), block::activity_label(&name, &args)));
+        self.active.retain(|active| active.id != id);
+        self.active.push_back(Active {
+            id: id.clone(),
+            name: name.clone(),
+            label: block::activity_label(&name, &args),
+        });
         while self.active.len() > 16 {
             self.active.pop_front();
         }
@@ -97,23 +105,27 @@ impl ToolPresentations {
         self.revealed.insert(id, block_id);
     }
     pub(super) fn observe_arguments(&mut self, id: &str, args: serde_json::Value) {
+        let args = ui_safe_json(&args);
+        if let Some(active) = self.active.iter_mut().find(|active| active.id == id) {
+            active.label = block::activity_label(&active.name, &args);
+        }
         if let Some(pending) = self
             .pending
             .iter_mut()
             .find(|pending| pending.reveal.id == id)
         {
-            pending.reveal.args = ui_safe_json(&args);
+            pending.reveal.args = args;
         }
     }
     pub(super) fn revealed_block(&self, id: &str) -> Option<u64> {
         self.revealed.get(id).copied()
     }
     pub(super) fn finish(&mut self, id: &str) {
-        self.active.retain(|(active, _)| active != id);
+        self.active.retain(|active| active.id != id);
         self.revealed.remove(id);
     }
     pub(super) fn finish_activity(&mut self, id: &str) {
-        self.active.retain(|(active, _)| active != id);
+        self.active.retain(|active| active.id != id);
     }
     pub(super) fn unfinished_ids(&self) -> Vec<String> {
         let mut ids = self
@@ -132,7 +144,7 @@ impl ToolPresentations {
     pub(super) fn active_summary(&self) -> Option<(&str, usize)> {
         self.active
             .back()
-            .map(|(_, activity)| (activity.as_str(), self.active.len()))
+            .map(|activity| (activity.label.as_str(), self.active.len()))
     }
     pub(super) fn clear_revealed(&mut self) {
         self.revealed.clear();
@@ -156,11 +168,15 @@ impl ToolPresentations {
     }
     #[cfg(test)]
     pub(super) fn has_active(&self, id: &str) -> bool {
-        self.active.iter().any(|(active, _)| active == id)
+        self.active.iter().any(|active| active.id == id)
     }
     #[cfg(test)]
     pub(super) fn fixture_active(&mut self, id: String, label: String) {
-        self.active.push_back((id, label));
+        self.active.push_back(Active {
+            id,
+            name: "tool".into(),
+            label,
+        });
     }
 }
 
@@ -169,6 +185,25 @@ mod tests {
     use super::ToolPresentations;
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
+    #[test]
+    fn compact_transcript_activity_tracks_arguments_before_and_after_reveal() {
+        let mut owner = ToolPresentations::default();
+        owner.start(
+            "call".into(),
+            "bash".into(),
+            serde_json::Value::Null,
+            Instant::now(),
+        );
+        owner.observe_arguments("call", serde_json::json!({"command":"cargo check"}));
+        assert!(owner.active_summary().unwrap().0.contains("cargo check"));
+        let reveal = owner.take_pending("call").unwrap();
+        assert_eq!(reveal.args["command"], "cargo check");
+        owner.bind_revealed("call".into(), 9);
+        owner.observe_arguments("call", serde_json::json!({"command":"cargo test"}));
+        assert!(owner.active_summary().unwrap().0.contains("cargo test"));
+        assert_eq!(owner.revealed_block("call"), Some(9));
+    }
+
     #[test]
     fn duplicate_timer_reveal_and_eviction_keep_one_exact_correlated_projection() {
         let mut owner = ToolPresentations::default();

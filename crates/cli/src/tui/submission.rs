@@ -285,8 +285,13 @@ pub(super) fn submit_staged_input(
     };
     let editor_revision = app.editor.persistence_revision();
     if let Some(submission_id) = submit_operation(app, session, notifier, op) {
-        // Only the plain-text turn is offered back: re-sending staged attachments would re-read
-        // files that may have changed since, which is a different request, not a retry (I-39).
+        // Keep the exact owned composer for explicit review after an admitted turn fails.
+        // Capture before newer typing; recovery never dispatches the request itself.
+        if clear_composer {
+            app.run.retain_draft_recovery(app.editor.owned_draft());
+        }
+        // The fallback contains plain text only. Owned recovery separately preserves existing
+        // chips and pasted bytes; typed file mentions still require fresh admission on Enter.
         app.run.retain_plain_text_retry(
             (staged.is_empty() && staged_files.is_empty()).then(|| text.clone()),
         );

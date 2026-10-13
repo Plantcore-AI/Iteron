@@ -114,22 +114,24 @@ impl Observation {
         self.changes = changes;
     }
     fn label(&self) -> String {
-        format!(
-            "live parent {} · run tasks {} · resident session tasks {} · unresolved states {} · omitted {} · {}",
-            if self.parent_running {
-                "running"
-            } else {
-                "idle"
-            },
-            self.run_tasks,
-            self.resident_tasks,
-            self.unknown,
-            self.omitted,
-            self.changes.map_or_else(
-                || "retained changes unavailable".into(),
-                |changes| changes.label()
-            )
-        )
+        let mut parts = vec![if self.parent_running {
+            "running".into()
+        } else {
+            "idle".into()
+        }];
+        if self.run_tasks > 0 {
+            parts.push(format!("run tasks {}", self.run_tasks));
+        }
+        if self.resident_tasks > 0 {
+            parts.push(format!("resident session tasks {}", self.resident_tasks));
+        }
+        if self.unknown > 0 || self.omitted > 0 {
+            parts.push(format!(
+                "{} unresolved · {} omitted",
+                self.unknown, self.omitted
+            ));
+        }
+        parts.join(" · ")
     }
     pub(super) fn apply(&self, items: &mut [PickItem], run: &str, base: Option<&str>) {
         for item in items {

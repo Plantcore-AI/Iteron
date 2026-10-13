@@ -2,10 +2,10 @@
 
 use super::{
     App, Frame, InputDestination, Line, Modifier, Paragraph, PopupRow, Rect, Scrollbar,
-    ScrollbarOrientation, ScrollbarState, Span, Style, block, cached_input_destination,
-    capability_can_be_remembered, clip_text, hyperlink, live_markdown, render_composer,
-    render_list_popup, render_lr_line, render_pending_lanes, render_status, surface, theme,
-    transcript_layout, transcript_viewer, ui_safe_text, workflow_panel_runs, workflows_panel,
+    ScrollbarOrientation, ScrollbarState, Span, Style, block, capability_can_be_remembered,
+    clip_text, hyperlink, live_markdown, render_composer, render_list_popup, render_lr_line,
+    render_pending_lanes, render_status, surface, theme, transcript_layout, transcript_viewer,
+    ui_safe_text, workflow_panel_runs, workflows_panel,
 };
 
 pub(super) fn route_label(app: &App) -> String {
@@ -24,6 +24,8 @@ pub(super) fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static
         "ctrl+z",
         "ctrl+g",
         "ctrl+r",
+        "ctrl+p",
+        "ctrl+t",
         "alt+↑",
         "alt+backspace",
         "ctrl+end",
@@ -44,7 +46,7 @@ pub(super) fn footer_spans(text: &str, theme: &theme::Theme) -> Vec<Span<'static
         let (head, tail) = item.split_once(' ').unwrap_or((item, ""));
         if KEYS.contains(&head) {
             let key_style = if theme.mono {
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
                     .fg(theme.accent)
@@ -101,8 +103,35 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
         }
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
-    } else if app.run.running() && !text.is_empty() {
-        match cached_input_destination(true, app.run.interrupting(), app.editor.draft_shape()) {
+    } else if app
+        .run
+        .awaiting_composer_admission(app.editor.persistence_revision())
+    {
+        "awaiting admission · draft preserved"
+    } else if super::composer_render::composer_command_attachments(app) {
+        "alt+backspace remove command attachments"
+    } else if !app.viewport.follows_tail() && text.is_empty() && app.editor.chip_count() == 0 {
+        "ctrl+end latest · ↑↓ prompt history"
+    } else if !app.input_lanes.held().is_empty() && text.is_empty() && app.editor.chip_count() == 0
+    {
+        if app.run.running() {
+            "alt+↑ review held · type to steer · esc stop"
+        } else {
+            "alt+↑ review held · / commands · ? help"
+        }
+    } else if app.run.interrupting()
+        && matches!(
+            super::composer_render::composer_destination(app),
+            InputDestination::AfterTurn
+        )
+    {
+        if density == surface::Density::Compact {
+            "enter queue · esc stop again"
+        } else {
+            "enter queues next prompt · ctrl+j newline · esc stop again"
+        }
+    } else if app.run.running() && (!text.is_empty() || app.editor.chip_count() > 0) {
+        match super::composer_render::composer_destination(app) {
             InputDestination::ImmediateCommand if density == surface::Density::Compact => {
                 "enter control · ctrl+j newline · esc stop"
             }
@@ -136,20 +165,65 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
             "type to steer · tab queues · ctrl+j newline · esc interrupt"
         }
     } else if !text.is_empty() || app.editor.chip_count() > 0 {
-        "enter send · ctrl+j newline · ctrl+g edit · alt+backspace remove chip · esc clear"
+        if density == surface::Density::Compact {
+            "enter send · ctrl+j newline · esc clear"
+        } else if app.editor.chip_count() > 0 {
+            "enter send · alt+backspace remove chip · ctrl+j newline · esc clear"
+        } else {
+            "enter send · ctrl+j newline · ctrl+g edit · esc clear"
+        }
+    } else if app.run.has_draft_recovery() {
+        "ctrl+r restore request · / commands · ctrl+p sessions"
     } else if density == surface::Density::Compact {
-        "/ commands · @ image/file · ctrl+v image · ? help"
+        "/ commands · ctrl+p sessions · ? help"
     } else {
-        "/ commands · @ image/file · ctrl+v image · ! shell · ? help"
+        "/ commands · @ files · ctrl+p sessions · ? help"
     };
     let left = if !app.run.running() && text.is_empty() && app.editor.has_recently_cleared() {
         format!("{left} · ctrl+z restore")
     } else {
         left.to_string()
     };
-    let left = format!("{left} · {}", app.mouse_capture.hint());
+    // Keep whole affordances when possible. Mouse ownership is always available through Ctrl-T
+    // and the help surface, but does not crowd the send/steer decision off a narrow terminal.
+    let mouse = format!("{left} · {}", app.mouse_capture.hint());
+    let left = if super::text_width(&mouse) <= area.width {
+        mouse
+    } else {
+        left
+    };
     let left = clip_text(&left, area.width);
     render_lr_line(f, area, footer_spans(&left, &app.theme), Vec::new());
+}
+
+fn render_session_header(f: &mut Frame, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut spans = vec![Span::styled(
+        "Iteron",
+        Style::default()
+            .fg(app.theme.fg)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if area.width >= 14 {
+        spans.push(Span::styled(" · ", Style::default().fg(app.theme.faint)));
+        spans.push(Span::styled(
+            clip_text(
+                &ui_safe_text(&app.session_name),
+                area.width.saturating_sub(10),
+            ),
+            Style::default().fg(app.theme.muted),
+        ));
+    }
+    let used = super::spans_width(&spans);
+    if area.width.saturating_sub(used) >= 4 {
+        spans.push(Span::styled(
+            format!("  {}", "─".repeat(usize::from(area.width - used - 2))),
+            Style::default().fg(app.theme.border),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Refresh the parsed streaming Markdown document only when its source revision changed. Returns
@@ -280,7 +354,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         6
     } else {
         (app.editor.text().split('\n').count().clamp(1, 6) as u16)
-            .saturating_add(u16::try_from(app.editor.chip_count()).unwrap_or(u16::MAX))
+            .saturating_add(u16::try_from(app.editor.chip_count().min(3)).unwrap_or(3))
     };
     let blocking_input = app.permission_prompt.read().is_some() || app.mcp_form.is_waiting();
     let lane_rows = if blocking_input {
@@ -288,6 +362,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     } else {
         u16::from(!app.input_lanes.steers().is_empty())
             + u16::from(!app.input_lanes.queued().is_empty())
+            + u16::from(!app.input_lanes.held().is_empty())
     };
     // The status line is stable chrome below the composer, including on the fresh landing. Surface
     // geometry drops it only when a physically tiny frame cannot spare the row.
@@ -339,6 +414,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // Reset the complete full-screen frame, then draw only semantic terminal primitives. There is
     // intentionally no desktop canvas, window fill, chrome strip, or card background.
     f.render_widget(ratatui::widgets::Clear, f.area());
+    render_session_header(f, surface.header, app);
 
     // transcript — each structured block self-renders to ALREADY-WRAPPED rows at `inner_w`
     // (ADR-015 §3), so the concatenation is fed to the exact pre-wrap→scroll-unit math unchanged
@@ -694,6 +770,10 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 pk.title,
                 app.pickers.omitted_rows()
             )
+        };
+        let picker_title = match app.pickers.search_status() {
+            Some(status) => format!("{picker_title} · {status}"),
+            None => picker_title,
         };
         render_list_popup(
             f,

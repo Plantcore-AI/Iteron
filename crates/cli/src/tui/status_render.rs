@@ -40,9 +40,9 @@ pub(super) fn effort_status_accent(app: &App) -> status_line::Accent {
     }
 }
 
-/// Build the factual portion of the footer through the public status-line contract. Runtime/UI
-/// activity affordances remain separate groups, but model/tokens/cost/context/session have one
-/// renderer and one unknown-value policy across the product.
+/// Full observation snapshot for explicit diagnostics and regression checks. Model, tokens, cost,
+/// context and session keep one canonical renderer and one unknown-value policy.
+#[cfg(test)]
 pub(super) fn canonical_statusline(app: &App) -> String {
     let tokens = app.telemetry.usage().map(|usage| {
         usage
@@ -98,104 +98,91 @@ pub(super) fn canonical_statusline_with_tokens(app: &App, tokens: Option<u64>) -
     line.render_snapshot(&snapshot)
 }
 
-pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<status_line::Group> {
+pub(super) fn status_right_groups(
+    app: &App,
+    _density: surface::Density,
+) -> Vec<status_line::Group> {
     use status_line::{Accent, Group};
 
-    // Mouse ownership yields first under width pressure; the hint row independently exposes the
-    // Ctrl-T transition. The label always says who owns the next drag/wheel gesture.
-    let mut groups = vec![Group::single(
-        app.mouse_capture.status_label(),
-        Accent::Metadata,
-    )];
-    if app.activity_observations.has_presentation_gap() {
-        groups.push(Group::single("activity gap · /activity", Accent::Warning));
+    // The everyday footer reports identity and actionable state. Full accounting remains in
+    // `/status`; unknown usage is never turned into a decorative zero or an estimated cost.
+    let mut groups = Vec::new();
+    if !app.mouse_capture.is_captured() {
+        groups.push(Group::single(
+            app.mouse_capture.status_label(),
+            Accent::Metadata,
+        ));
+    }
+    let live_runs = app.workflow_monitor.live_count();
+    if live_runs > 0 {
+        groups.push(Group::single(
+            format!("⟳ {live_runs} run{}", if live_runs == 1 { "" } else { "s" }),
+            Accent::Progress,
+        ));
     }
     if app.keymap_status != "keys:standard" {
         groups.push(Group::single(app.keymap_status.clone(), Accent::Mode));
     }
-    // A live QuickJS workflow run announces itself only through its transcript card, and a
-    // terminal too short for that card — the workflow region negotiates down to zero rows before
-    // the status row gives up its last one (`surface::Surface::resolve`) — showed no sign that a
-    // run was still going at all. This bit is that sign and nothing more: `⟳ n run(s)`, the
-    // smallest thing that answers "is something still running?".
-    //
-    // It follows the keymap bit's rule — say it only when it is not the default — so an operator
-    // with no workflow running never pays a column for it. It is placed here, immediately after
-    // mouse ownership, because it is a redundancy: whenever the region itself is on screen the
-    // region is the better answer, so under width pressure this yields ahead of context, mode,
-    // the pending count, and the route/effort identity, which have no second place to be read.
-    let live_runs = app.workflow_monitor.live_count();
-    if live_runs > 0 {
-        groups.push(Group::single(
-            format!(
-                "\u{27f3} {live_runs} run{}", // ⟳
-                if live_runs == 1 { "" } else { "s" }
-            ),
-            Accent::Progress,
-        ));
-    }
-    if density == surface::Density::Wide && app.telemetry.turns() > 0 {
-        groups.push(Group::single(
-            format!("turn {}", app.telemetry.turns()),
-            Accent::Metadata,
-        ));
-    }
-    if density == surface::Density::Wide && app.workspace_dirty == Some(true) {
-        groups.push(Group::single("dirty", Accent::Warning));
-    }
-    if density == surface::Density::Wide
-        && let Some(latency) = app.run.last_latency()
+    if let Some(remaining) = app.telemetry.context_remaining_percent()
+        && remaining <= 20
     {
         groups.push(Group::single(
-            format!("last {}", fmt_mmss(latency)),
-            Accent::Metadata,
+            format!("ctx {remaining}% left"),
+            if remaining <= 10 {
+                Accent::Warning
+            } else {
+                Accent::Usage
+            },
         ));
     }
-    if app.run.running() && !app.assistant.authority().is_empty() {
-        let approximate_tokens = app.assistant.approximate_tokens();
-        groups.push(Group::single(
-            format!("~{approximate_tokens} tok"),
-            Accent::Usage,
-        ));
-    }
-    if density != surface::Density::Compact
-        && let Some(usage) = app.telemetry.usage()
-    {
-        groups.push(Group::single(
-            format!("cache {:.0}%", usage.cache_hit_ratio() * 100.0),
-            Accent::Usage,
-        ));
-    }
-    if !app.remote_settings_pending && app.mode != PermissionMode::Default {
-        groups.push(Group::single(app.mode.label(), Accent::Mode));
+    if app.activity_observations.has_presentation_gap() {
+        groups.push(Group::single("activity gap · /activity", Accent::Warning));
     }
     let pending = app
         .input_lanes
-        .steers()
-        .len()
-        .saturating_add(app.input_lanes.queued().len());
+        .pending_count()
+        .saturating_sub(app.input_lanes.held().len());
     if pending > 0 {
         groups.push(Group::single(
             format!("{pending} pending"),
             Accent::Progress,
         ));
     }
-    // The canonical renderer owns model/tokens/cost/context/session and their unknown semantics.
-    // Keep it near the high-priority end, while effort remains an Iteron-specific semantic beside
-    // it rather than being smuggled into the model field.
-    groups.push(Group::single(canonical_statusline(app), Accent::Metadata));
-    // Ultracode is a harness MODE (internal fan-out orchestration), not just a thinking level, so
-    // it announces itself once, the way the permission mode does. The adjacent effort segment
-    // reports only the adapter's reasoning level/application.
+    if !app.input_lanes.held().is_empty() {
+        groups.push(Group::single(
+            format!("{} held", app.input_lanes.held().len()),
+            Accent::Warning,
+        ));
+    }
+    if !app.remote_settings_pending && app.mode != PermissionMode::Default {
+        groups.push(Group::single(app.mode.label(), Accent::Mode));
+    }
+    let route = route_label(app);
+    let route = if route.is_empty() {
+        "model unknown".to_string()
+    } else {
+        route
+    };
     if app.remote_settings_pending {
-        groups.push(Group::single("settings pending", Accent::Metadata));
-        return groups;
+        groups.push(Group::pair(
+            route,
+            Accent::Model,
+            "settings pending",
+            Accent::Metadata,
+        ));
+    } else {
+        if app.effort == Effort::Ultracode {
+            groups.push(Group::single("ultracode", Accent::Mode));
+        }
+        // Keep the selected route and actual effort application in one width negotiation unit.
+        // A narrow footer must never drop the model while retaining an unqualified effort label.
+        groups.push(Group::pair(
+            route,
+            Accent::Model,
+            effort_status_label(app),
+            effort_status_accent(app),
+        ));
     }
-    if app.effort == Effort::Ultracode {
-        groups.push(Group::single("✦ ultracode", Accent::Mode));
-    }
-    let effort = effort_status_label(app);
-    groups.push(Group::single(effort, effort_status_accent(app)));
     groups
 }
 
@@ -293,22 +280,22 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
 
     let mut left = if app.run.draining() {
         vec![
-            Span::styled("◆ ", warn),
+            Span::styled("● ", warn),
             Span::styled("draining session", warn),
         ]
     } else if app.run.force_cancelling() {
         vec![
-            Span::styled("◆ ", error),
+            Span::styled("● ", error),
             Span::styled("stronger cancellation requested", error),
         ]
     } else if app.permission_prompt.read().is_some() {
         vec![
-            Span::styled("◆ ", warn),
+            Span::styled("● ", warn),
             Span::styled("approval required", warn),
         ]
     } else if app.run.interrupting() {
         vec![
-            Span::styled("◆ ", warn),
+            Span::styled("● ", warn),
             Span::styled(
                 app.run.stop_requested_at().map_or_else(
                     || "interrupt requested · stopping now".into(),
@@ -334,7 +321,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             ""
         };
         vec![Span::styled(
-            format!("↑ reading history{unread}{anchor} · ctrl+end to follow"),
+            format!("ctrl+end latest · reading history{unread}{anchor}"),
             Style::default().fg(th.warn),
         )]
     } else if let Some((activity, elapsed)) = visible_activity(app) {
@@ -433,10 +420,10 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
         } else {
             accent
         };
-        vec![Span::styled("◆ ", beacon), Span::styled(label, muted)]
+        vec![Span::styled("● ", beacon), Span::styled(label, muted)]
     };
-    // Right-side metadata is progressively disclosed. When it does not fit, low-priority economics
-    // disappear first; the route/pending state at the end survives and is clipped explicitly.
+    // Secondary observations yield first as the footer narrows. The route and actual effort
+    // remain one group; a clipped identity is visibly marked rather than silently relabeled.
     let mut groups = status_right_groups(app, density);
     let left_budget = if groups.is_empty() {
         area.width
@@ -444,16 +431,15 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
         area.width.saturating_mul(2) / 3
     };
     if spans_width(&left) > left_budget {
-        let summary = left
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        left = vec![Span::styled(clip_text(&summary, left_budget), accent)];
+        left = clip_spans(left, left_budget);
     }
     let left_w = spans_width(&left);
     let available = area.width.saturating_sub(left_w.saturating_add(2));
     while groups.len() > 1 && status_line::width(&groups) > available {
         groups.remove(0);
+    }
+    if groups.len() == 1 {
+        groups[0].fit_identity(available);
     }
     let right = clip_spans(status_line::spans(&groups, th), available);
     render_lr_line(f, area, left, right);

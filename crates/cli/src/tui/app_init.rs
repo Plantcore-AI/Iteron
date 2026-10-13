@@ -22,11 +22,12 @@ impl App {
         let welcome = block::Block::new(
             0,
             block::BlockKind::Welcome {
-                tagline: "Iteron · Build, explain, and verify".into(),
+                tagline: "Build, explore, and ship".into(),
             },
         );
         App {
             session_name: "New session".into(),
+            session_title: super::session_presentation::TitleLookup::default(),
             history: super::transcript_history::TranscriptHistory::with_landing(welcome.kind),
             transcript_viewer: transcript_viewer::Viewer::default(),
             artifact_viewer: super::artifact_view::Viewer::default(),

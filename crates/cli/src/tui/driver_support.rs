@@ -411,10 +411,6 @@ pub(super) fn reload_operator_keymap(
             *active = next;
             *external_editor_command = editor;
             vim.reset();
-            app.note(
-                block::NoticeLevel::Info,
-                "reloaded operator keymap and external-editor configuration",
-            );
             for warning in warnings {
                 app.note(block::NoticeLevel::Warn, warning);
             }

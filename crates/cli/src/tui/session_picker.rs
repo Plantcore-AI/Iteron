@@ -244,12 +244,11 @@ pub(super) fn host_session_picker_items(
         );
         let turns = row["turns"].as_u64().unwrap_or(0);
         let mut item = PickItem::flat(
-            ui_safe_text(title),
+            super::session_presentation::title(title, run),
             format!(
-                "run {run} · {turns} turns · {cost} · {}{flags} · {} · recorded {}",
+                "{} · {turns} turns · recorded {outcome}{flags} · {} · {cost}",
+                super::session_presentation::workspace_label(workspace),
                 ui_safe_text(&route),
-                ui_safe_text(workspace),
-                outcome
             ),
             run == current_run,
             PickAction::AdoptRun(run.into()),

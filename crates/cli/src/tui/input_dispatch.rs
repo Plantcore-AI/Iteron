@@ -10,12 +10,13 @@ use super::{
     VecDeque, apply_theme_selection, apply_vim_action, block, bold, cancel_local_effect_then_turn,
     command_dispatch, external_edit_round_trip, force_cancel_turn, handle_composer_paste,
     input_destination, keymap, maybe_prefetch_session_page, mcp_input, notification,
-    open_transcript_viewer, queue_bare_image_path, queue_clipboard_image_effect,
-    queue_draft_with_chips, queue_effort, queue_model_selection, queue_permission_capability,
-    queue_permission_mode, queue_workflows_panel_action, reload_operator_keymap, request_drain,
-    request_interrupt, running_ctrl_c_action, schedule_transcript_viewer_effect,
-    show_tunable_detail, slash_command_body, start_adopt_session, submit_composer, submit_turn,
-    transcript_effect, update_keymap_status, workflow_panel_runs,
+    open_session_picker, open_transcript_viewer, queue_bare_image_path,
+    queue_clipboard_image_effect, queue_draft_with_chips, queue_effort, queue_model_selection,
+    queue_permission_capability, queue_permission_mode, queue_workflows_panel_action,
+    reload_operator_keymap, request_drain, request_interrupt, running_ctrl_c_action,
+    schedule_transcript_viewer_effect, show_tunable_detail, slash_command_body,
+    start_adopt_session, submit_composer, transcript_effect, update_keymap_status,
+    workflow_panel_runs,
 };
 
 pub(super) struct InputContext<'a, B: ratatui::backend::Backend> {
@@ -129,7 +130,22 @@ where
         // selection mode cannot mutate transcript or composer state.
         CEvent::Mouse(_) => {}
         CEvent::Key(k) => {
-            if k.kind != KeyEventKind::Press {
+            if k.kind == KeyEventKind::Release
+                || (k.kind == KeyEventKind::Repeat
+                    && (k.modifiers.contains(KeyModifiers::CONTROL)
+                        || !matches!(
+                            k.code,
+                            KeyCode::Char(_)
+                                | KeyCode::Left
+                                | KeyCode::Right
+                                | KeyCode::Up
+                                | KeyCode::Down
+                                | KeyCode::Backspace
+                                | KeyCode::Delete
+                                | KeyCode::PageUp
+                                | KeyCode::PageDown
+                        )))
+            {
                 return Ok(true);
             }
             if keymap_watcher.changed() {
@@ -276,8 +292,9 @@ where
                 active_keymap.mode() == keymap::Mode::Standard,
                 mapped_action.is_none(),
             ) {
-                request_interrupt(app, session, interrupt);
-                app.push(bold(Color::Yellow), "interrupting now…");
+                if request_interrupt(app, session, interrupt) {
+                    app.push(bold(Color::Yellow), "interrupting now…");
+                }
                 return Ok(true);
             }
 
@@ -380,6 +397,15 @@ where
             let shift = k.modifiers.contains(KeyModifiers::SHIFT);
             let menu_open = app.completions.is_open();
 
+            if k.code == KeyCode::End && ctrl && mapped_action.is_none() {
+                app.follow_latest();
+                return Ok(true);
+            }
+            if k.code == KeyCode::Char('p') && ctrl && mapped_action.is_none() {
+                open_session_picker(app, session);
+                return Ok(true);
+            }
+
             if let Some(action) = mapped_action {
                 match action {
                     keymap::Action::ExternalEditor if !app.run.running() => {
@@ -434,11 +460,16 @@ where
                         return Ok(true);
                     }
                     keymap::Action::ReverseSearch if !app.run.running() && !menu_open => {
-                        if !shift
-                            && app.editor.is_empty()
+                        if !shift && app.run.restore_draft_recovery(&mut app.editor) {
+                            app.status =
+                                "previous draft restored · review or copy before sending".into();
+                        } else if !shift
+                            && app.editor.can_restore_owned_draft()
                             && let Some(task) = app.run.retry_text().map(str::to_owned)
                         {
-                            submit_turn(app, session, notifier, task);
+                            app.editor.insert_str(&task);
+                            app.run.clear_retry();
+                            app.status = "previous prompt restored · review the result before pressing Enter".into();
                         } else if !app.editor.reverse_search_previous() {
                             app.status = "no older matching prompt".into();
                         }
@@ -454,10 +485,24 @@ where
                 }
             }
 
+            // The original composer remains visible until Applied. Repeated Enter/Tab during
+            // that short interval must not submit the same draft again as a steering message.
+            if matches!(k.code, KeyCode::Enter | KeyCode::Tab)
+                && !alt
+                && !shift
+                && app
+                    .run
+                    .awaiting_composer_admission(app.editor.persistence_revision())
+            {
+                app.status = "awaiting submission admission · draft preserved".into();
+                return Ok(true);
+            }
+
             // Pickers and approvals have already consumed their keys above. The completion
             // menu gets first Esc/navigation handling below; otherwise Vim normal mode owns
             // ordinary editor keys before readline insertion can see them.
             if !menu_open
+                && !(k.code == KeyCode::Esc && app.run.running())
                 && let Some(action) = vim.route(
                     active_keymap.mode() == keymap::Mode::Vim,
                     k.code,
@@ -486,11 +531,12 @@ where
                                 if transcript_effects.is_active() {
                                     let _ = transcript_effects.cancel();
                                 }
-                                request_interrupt(app, session, interrupt);
-                                app.push(
-                                    bold(Color::Yellow),
-                                    "interrupting now… (Ctrl-C again to exit)",
-                                );
+                                if request_interrupt(app, session, interrupt) {
+                                    app.push(
+                                        bold(Color::Yellow),
+                                        "interrupting now… (Ctrl-C again to exit)",
+                                    );
+                                }
                             }
                             RunningCtrlCAction::ForceQuit => {
                                 if transcript_effects.is_active() {
@@ -508,7 +554,7 @@ where
                         let _ = transcript_effects.cancel();
                         app.note(
                             block::NoticeLevel::Warn,
-                            "local transcript effect cancelled",
+                            "local transcript effect cancellation requested",
                         );
                     } else if app.editor.has_submission() {
                         app.editor.clear_recoverable();
@@ -554,19 +600,19 @@ where
                     if submit && !app.run.running() {
                         // Consume this physical Enter exactly once: it submits the command,
                         // but the picker opened by that command does not see the same key.
-                        let line = app.editor.take_submit();
+                        let line = app.editor.text();
                         let trimmed = line.trim();
                         app.completions.dismiss();
                         if let Some(cmd) = trimmed.strip_prefix('/') {
                             if pending_slash_commands.len() < 8 {
                                 pending_slash_commands.push_back((cmd.to_owned(), None));
+                                let _ = app.editor.take_submit();
                                 app.status = format!("queued /{cmd}");
                             } else {
                                 app.note(
                                     block::NoticeLevel::Warn,
-                                    "command queue is full; draft restored",
+                                    "command queue is full; draft preserved",
                                 );
-                                app.editor.insert_str(&line);
                             }
                         }
                     } else {
@@ -576,13 +622,25 @@ where
                 KeyCode::Esc if menu_open => {
                     app.completions.dismiss();
                 }
-                // ---- input history (idle, no menu) ----
-                KeyCode::Up if !app.run.running() => {
-                    app.editor.history_prev();
+                // Queue recovery never submits, including after a run stopped or was refused.
+                KeyCode::Up if alt => {
+                    refresh = reclaim_queued_key(app, k);
+                    if !refresh && app.input_lanes.pending_count() > 0 {
+                        app.status =
+                            "keep or clear your draft before restoring pending input".into();
+                    }
+                }
+                // Arrow keys move inside explicit draft lines before browsing prompt history.
+                KeyCode::Up => {
+                    if !app.editor.move_vertical(true) && !app.run.running() {
+                        app.editor.history_prev();
+                    }
                     refresh = true;
                 }
-                KeyCode::Down if !app.run.running() => {
-                    app.editor.history_next();
+                KeyCode::Down => {
+                    if !app.editor.move_vertical(false) && !app.run.running() {
+                        app.editor.history_next();
+                    }
                     refresh = true;
                 }
                 // ---- cursor + readline editing (idle or composing while running) ----
@@ -598,7 +656,6 @@ where
                     app.editor.right();
                     refresh = true;
                 }
-                KeyCode::End if ctrl => app.follow_latest(),
                 KeyCode::Home => app.editor.home(),
                 KeyCode::End => app.editor.end(),
                 KeyCode::Char('a') if ctrl => app.editor.home(),
@@ -621,15 +678,11 @@ where
                     app.editor.newline();
                     refresh = true;
                 }
-                // A queued (not yet delivered) follow-up is safe to take back for editing.
-                KeyCode::Up if alt && app.run.running() => {
-                    refresh = reclaim_queued_key(app, k);
-                }
                 KeyCode::Delete => {
                     app.editor.delete();
                     refresh = true;
                 }
-                KeyCode::Backspace if alt && !app.run.running() && app.editor.chip_count() > 0 => {
+                KeyCode::Backspace if alt && app.editor.chip_count() > 0 => {
                     let _ = app.editor.remove_last_attachment();
                     refresh = true;
                 }
@@ -687,16 +740,15 @@ where
                             // serve returns to the composer after the notice, so nothing
                             // the operator typed or dropped is consumed by a misparse.
                             let restore = commands::parse(cmd).is_err().then(|| line.clone());
-                            let _ = app.editor.take_submit();
                             if pending_slash_commands.len() < 8 {
                                 pending_slash_commands.push_back((cmd.to_owned(), restore));
+                                let _ = app.editor.take_submit();
                                 app.status = format!("queued /{cmd}");
                             } else {
                                 app.note(
                                     block::NoticeLevel::Warn,
-                                    "command queue is full; draft restored",
+                                    "command queue is full; draft preserved",
                                 );
-                                app.editor.insert_str(&line);
                             }
                         } else if !has_attachments && let Some(bash) = trimmed.strip_prefix('!') {
                             let Some(request) =
@@ -708,8 +760,8 @@ where
                                 );
                                 return Ok(false);
                             };
-                            let _ = app.editor.take_submit();
                             if transcript_effects.start(request).is_ok() {
+                                let _ = app.editor.take_submit();
                                 app.note(
                                     block::NoticeLevel::Info,
                                     "shell running · Ctrl-C or Esc cancels it",
@@ -719,7 +771,6 @@ where
                                     block::NoticeLevel::Warn,
                                     "shell not started: another local effect is pending",
                                 );
-                                app.editor.insert_str(&trimmed);
                             }
                         } else {
                             // The operator may ask for multi-agent orchestration in the
@@ -763,7 +814,7 @@ where
                 // Enter while running: STEER at the next turn-atomic safe point. Slash/shell
                 // input remains a
                 // post-run frontend action; it must not be injected as model prose.
-                KeyCode::Enter if app.run.running() && !app.editor.is_empty() => {
+                KeyCode::Enter if app.run.running() && app.editor.has_submission() => {
                     // A draft carrying chips has exactly one honest destination. `Op::Steer`
                     // is text — the protocol is frozen, there is no image or file field on
                     // it — so steering this draft would mean sending the words and dropping
@@ -779,7 +830,7 @@ where
                         // the transcript.
                         queue_draft_with_chips(app);
                     } else {
-                        let text = app.editor.take_submit();
+                        let text = app.editor.submission_text();
                         match input_destination(app.run.running(), app.run.interrupting(), &text) {
                             InputDestination::ImmediateCommand => {
                                 let command = slash_command_body(&text)
@@ -787,36 +838,26 @@ where
                                 if pending_slash_commands.len() < 8 {
                                     pending_slash_commands.push_back((command.to_owned(), None));
                                     app.status = format!("queued /{command}");
-                                } else if let Err(text) = app.queue_after_turn(text) {
-                                    app.editor.insert_str(&text);
+                                    let _ = app.editor.take_submit();
+                                } else {
+                                    queue_plain_composer(app);
                                 }
                             }
                             InputDestination::AfterTurn => {
-                                if let Err(text) = app.queue_after_turn(text) {
-                                    app.editor.insert_str(&text);
-                                }
+                                queue_plain_composer(app);
                             }
                             InputDestination::SteerCurrentRun => {
-                                match app.steer_admission(&text) {
-                                    SubmissionAdmission::Accept => {
-                                        if let Ok(id) = session
-                                            .submit_for_running_turn(Op::Steer {
-                                                text: text.clone(),
-                                            })
-                                            .ok_or(())
-                                            .and_then(|result| result.map_err(|_| ()))
-                                        {
-                                            app.track_steer(text, id);
-                                        } else {
-                                            // Receiver disappeared at the run boundary:
-                                            // preserve the words as an ordered follow-up.
-                                            if let Err(text) = app.queue_after_turn(text) {
-                                                app.editor.insert_str(&text);
-                                            }
-                                        }
+                                if app.steer_admission(&text) == SubmissionAdmission::Accept {
+                                    if let Some(Ok(id)) = session
+                                        .submit_for_running_turn(Op::Steer { text: text.clone() })
+                                    {
+                                        app.track_steer(text, id);
+                                        let _ = app.editor.take_submit();
+                                    } else {
+                                        // Explicit SQ refusal is safe to queue. Unknown delivery
+                                        // after acceptance is held separately for manual review.
+                                        queue_plain_composer(app);
                                     }
-                                    SubmissionAdmission::IgnoreEmpty => {}
-                                    SubmissionAdmission::Reject => app.editor.insert_str(&text),
                                 }
                             }
                             InputDestination::StartTurn => {
@@ -827,17 +868,14 @@ where
                     app.completions.dismiss();
                 }
                 // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
-                KeyCode::Tab if app.run.running() && !app.editor.is_empty() => {
+                KeyCode::Tab if app.run.running() && app.editor.has_submission() => {
                     if queue_bare_image_path(app, repo, AttachmentFollowup::QueueRunningDraft) {
                         return Ok(true);
                     }
                     if app.editor.chip_count() > 0 {
                         queue_draft_with_chips(app);
                     } else {
-                        let text = app.editor.take_submit();
-                        if let Err(text) = app.queue_after_turn(text) {
-                            app.editor.insert_str(&text);
-                        }
+                        queue_plain_composer(app);
                     }
                     app.completions.dismiss();
                 }
@@ -849,19 +887,14 @@ where
                     } else if app.run.interrupting() {
                         force_cancel_turn(app, session);
                     } else {
-                        let pending = app
-                            .input_lanes
-                            .steers()
-                            .len()
-                            .saturating_add(app.input_lanes.queued().len());
-                        request_interrupt(app, session, interrupt);
-                        app.push(bold(Color::Yellow), if pending == 0 {
-                                    "interrupting now… (Esc again for stronger cancellation)".into()
-                                } else {
-                                    format!(
-                                        "interrupting now… {pending} pending submission(s) will send next"
-                                    )
-                                });
+                        let pending = app.input_lanes.pending_count();
+                        if request_interrupt(app, session, interrupt) {
+                            app.push(bold(Color::Yellow), if pending == 0 {
+                                "interrupting now… (Esc again for stronger cancellation)".into()
+                            } else {
+                                format!("interrupting now… {pending} pending submission(s) preserved")
+                            });
+                        }
                     }
                 }
                 KeyCode::Char('?')
@@ -893,8 +926,27 @@ where
 /// The exact Alt-Up branch used by physical input dispatch. A draft containing any text, paste
 /// or image/file chip keeps focus and cannot be replaced by a queued value.
 pub(super) fn reclaim_queued_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
-    app.run.running()
-        && key.code == KeyCode::Up
+    key.code == KeyCode::Up
         && key.modifiers.contains(KeyModifiers::ALT)
         && app.input_lanes.reclaim_latest(&mut app.editor)
+}
+
+/// The local queue accepts a copy before the editor relinquishes its exact raw draft. Even plain
+/// text can contain continuation markers whose spelling must survive a full-queue refusal.
+fn queue_plain_composer(app: &mut App) -> bool {
+    let text = app.editor.submission_text();
+    let metadata = app.editor.queued_draft_metadata();
+    if let Err(refusal) = app.queue_after_turn_with_draft(
+        text,
+        crate::image_input::ImageAttachments::default(),
+        crate::file_input::FileAttachments::default(),
+        Some(metadata),
+    ) {
+        // The exact editor remains canonical until acceptance; the returned owned draft is its
+        // duplicate staging value, so freeing it cannot discard the operator's composition.
+        drop(refusal.into_owned_draft());
+        return false;
+    }
+    let _ = app.editor.take_submit();
+    true
 }

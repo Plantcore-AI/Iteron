@@ -48,8 +48,9 @@ required. A pipeline should use [one-shot mode](one-shot.md) instead.
   through into shell output from before Iteron started and never navigates the composer's
   prompt history. Press ++ctrl+t++ to release mouse capture for native drag selection and
   copy without leaving the full-screen TUI; press it again to restore application
-  scrolling. The status line reports `mouse:on · wheel:transcript` or `selection:on`
-  truthfully. Page Up/Down and `/transcript` remain keyboard-accessible inspection paths.
+  scrolling. The shortcut hint describes the current mouse action; `selection:on`
+  appears in the status line while capture is released. Page Up/Down and `/transcript`
+  remain keyboard-accessible inspection paths.
 - Use ++shift+tab++ to cycle `default`, `acceptEdits`, `plan`, and `yolo`.
 - Use `/model`, `/effort`, `/mode`, `/permissions`, and `/theme` for explicit
   pickers or session changes.
@@ -78,6 +79,49 @@ the source for tests. Assistant Markdown supports CJK-aware tables, bounded
 nested and task lists, ordered continuations, labeled fences, and width-neutral
 links. Streaming and resize paths converge on the same terminal-cell rendering
 as the completed document.
+
+## Interface and everyday controls
+
+The session title stays at the top. Conversation content occupies the middle;
+the composer, contextual shortcuts and one status row stay at the bottom.
+Starting a conversation removes the welcome content without moving the composer.
+The default status shows the current route, effort and permission mode, plus
+active work or warnings. `/status`, `/cost` and `/context` show detailed metrics.
+
+| Action | Control |
+| --- | --- |
+| Send a message | Enter |
+| Add a line | Ctrl-J |
+| Browse and search saved sessions | Ctrl-P or `/resume` |
+| Restore a failed request for review, otherwise search previous prompts | Ctrl-R |
+| Search the conversation | Ctrl-F |
+| Expand tool output or thinking | Ctrl-O |
+| Edit in your external editor | Ctrl-G |
+| Send guidance during work | Enter |
+| Queue a message for the next turn | Tab while running |
+| Review held input or edit the last queued message | Alt-Up |
+| Stop current work | Esc while running |
+| Return to the latest output | Ctrl-End |
+| Toggle terminal text selection | Ctrl-T |
+
+Attachments sent during a run queue for the next turn. The composer labels the
+actual destination before submission. Transport receipt alone does not clear a
+draft: it remains until the host applies that submission. A newer draft is never
+cleared by an older receipt. Input with uncertain delivery is held for review and
+does not run again automatically. After a failed run, the retry shortcut restores
+the request with its retained attachments for editing; Enter is required to send
+it. A session-record failure requires a new session before sending again.
+
+Session search loads older pages automatically within a bounded window of 512
+rows and reports its search scope. Titles, workspace, route and recorded outcome
+are searchable; exact run IDs remain searchable without crowding every row.
+Use `/sessions new` for a fresh conversation or `/fork` to branch the current one.
+
+Successful tools show compact summaries. Expand a card for retained output,
+commands and diffs; errors remain visible when collapsed. Large diffs use bounded
+previews in the conversation and retain their complete content for inspection
+and export. Routine completion checks and background maintenance do not append
+reports to normal conversation; explicit diagnostic commands remain available.
 
 ## Visual grammar
 

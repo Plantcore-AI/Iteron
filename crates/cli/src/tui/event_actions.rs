@@ -99,28 +99,39 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             state,
             reason_code,
         } => {
+            if state == iteron_protocol::SubmissionLifecycleState::Applied {
+                app.settle_steer_submission(id);
+            }
             match app.run.observe_receipt(id, state) {
-                super::run_presentation::ReceiptObservation::Received {
+                super::run_presentation::ReceiptObservation::Applied {
+                    display_text,
                     editor_revision,
-                    clear_composer: true,
+                    clear_composer,
                 } => {
-                    if app.editor.persistence_revision() == editor_revision {
+                    // Transport receipt does not grant admission. Keep every owned attachment
+                    // until the exact operation is applied, and never clear newer typed input.
+                    if clear_composer && app.editor.persistence_revision() == editor_revision {
                         let _ = app.editor.take_submit();
-                    } else {
-                        app.note(block::NoticeLevel::Info, "submission received; composer changed before its receipt, so the newer draft was preserved");
+                    } else if clear_composer {
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "submission applied; your newer draft was preserved",
+                        );
                     }
-                }
-                super::run_presentation::ReceiptObservation::Applied { display_text } => {
-                    app.push_user(display_text)
+                    app.input_lanes.settle_submitted();
+                    app.push_user(display_text);
                 }
                 super::run_presentation::ReceiptObservation::Refused => {
-                    app.activity_observations.retire_run_observations()
+                    app.activity_observations.retire_run_observations();
+                    if app.input_lanes.hold_submitted() {
+                        app.note(
+                            block::NoticeLevel::Warn,
+                            "queued input was not admitted · Alt-Up restores it for review",
+                        );
+                    }
+                    app.status = "submission not accepted · draft preserved".into();
                 }
-                super::run_presentation::ReceiptObservation::Received {
-                    clear_composer: false,
-                    ..
-                }
-                | super::run_presentation::ReceiptObservation::None => {}
+                super::run_presentation::ReceiptObservation::None => {}
             }
             if matches!(
                 state,
@@ -153,6 +164,9 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
         app_server::ServerEvent::RunEnded { snapshot, summary } => {
             let completion_notification = notifier.run_completed();
             app.run.run_ended(Instant::now());
+            if app.input_lanes.hold_submitted() {
+                app.note(block::NoticeLevel::Warn, "input admission was not confirmed · Alt-Up restores it for review; check the conversation before sending again");
+            }
             app.ctrl_c_quit_deadline = None;
             app.activity_observations.retire_run_observations();
             app.flush_think();
@@ -193,7 +207,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 app.note(
                     block::NoticeLevel::Warn,
                     format!(
-                        "delivery could not be confirmed for {unmatched_previews} steering submission(s); preserved after the turn"
+                        "delivery could not be confirmed for {unmatched_previews} steering submission(s); held for review · Alt-Up restores without sending"
                     ),
                 );
             }
@@ -244,6 +258,22 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 .get("outcome")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("harness_error");
+            if (result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+                || canonical_outcome == "harness_error")
+                && app.input_lanes.hold_queued_after_failure() > 0
+            {
+                app.note(block::NoticeLevel::Warn, "remaining queued input is held after the failure · Alt-Up restores it for review");
+            }
+            app.run.finish_draft_recovery(
+                canonical_outcome == "done"
+                    && result
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none(),
+            );
             if let Some(detail) = result
                 .get("error")
                 .and_then(serde_json::Value::as_str)
@@ -251,7 +281,11 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             {
                 // Everything already streamed is on the record as an interrupted message, so a
                 // retry continues from evidence rather than from nothing (I-39).
-                let detail = if !record_failed && app.run.retry_text().is_some() {
+                let detail = if record_failed && app.run.has_draft_recovery() {
+                    format!(
+                        "{detail}\n\nCtrl-R restores the draft and attachments for review or copying. Start a new session before sending; this writer cannot accept another turn."
+                    )
+                } else if app.run.has_draft_recovery() || app.run.retry_text().is_some() {
                     format!("{detail}\n\n{}", retry_hint())
                 } else {
                     detail

@@ -1,9 +1,8 @@
 //! Client attachment and presentation after the host has admitted a complete session.
 //! Consumes one Agent; runtime identity, permissions and policy are already pinned by the host.
 use super::{
-    Cli, LocalCommand, StderrDiagnosticDrain, agent_discovery_activity, dangerous_bypass_notice,
-    erasure_now_unix_ms, report_agent_catalog_scan, safe_agent_diagnostic, scan_agent_catalog,
-    submit_one_shot,
+    Cli, LocalCommand, StderrDiagnosticDrain, agent_discovery_activity, erasure_now_unix_ms,
+    report_agent_catalog_scan, safe_agent_diagnostic, scan_agent_catalog, submit_one_shot,
 };
 use crate::output::{Emitter, OutputFormat};
 use crate::runtime::Agent;
@@ -133,9 +132,23 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
             posture.push("verify-preconfined:outer-sandbox-attested".into());
         }
         initial_notices.push(posture.join(" · "));
-        // Keep the explicit dangerous opt-in conspicuous on every affected run.
+        // The TUI keeps authority visible in one short line. The full explanation remains in
+        // primary-screen startup and /status; routine chat should not repeat that paragraph.
         if agent.bypass_permissions {
-            initial_notices.push(dangerous_bypass_notice().to_owned());
+            initial_notices.pop();
+            initial_notices.push(format!(
+                "Bypass · tools run without approval · {}{}",
+                if confine_execution {
+                    "workspace confined"
+                } else {
+                    "host access"
+                },
+                if agent.verify_command.is_some() {
+                    " · configured completion check"
+                } else {
+                    ""
+                },
+            ));
         }
         let attached = match app_server::attach(agent, true, false) {
             Ok(attached) => attached,

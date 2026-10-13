@@ -123,6 +123,7 @@ fn queue_navigation(
         .navigation
         .queue_adoption(&scope, session.control_sender(), command(&scope))
     {
+        app.session_title.cancel();
         app.status = label.into();
     } else {
         app.note(
@@ -161,8 +162,16 @@ pub(super) fn apply_navigated_session(
     app.session_name = if fact.fresh {
         "New session".into()
     } else {
-        fact.run_id.0.clone()
+        "Loading session…".into()
     };
+    if !fact.fresh
+        && let Some(history) = super::history_client::HistoryClient::capture(
+            session.client.clone(),
+            session.control_sender(),
+        )
+    {
+        app.session_title.start(history, app.session_name.clone());
+    }
     app.mode = snapshot.mode;
     app.effort = snapshot.effort;
     app.model = snapshot.model.clone();
@@ -182,7 +191,7 @@ pub(super) fn apply_navigated_session(
     app.status = if fact.fresh {
         "ready".into()
     } else {
-        format!("idle · resumed {}", ui_safe_text(&fact.run_id.0))
+        "ready · resumed".into()
     };
     if let Some(reason) = fact.substituted_route {
         app.note(
@@ -193,12 +202,14 @@ pub(super) fn apply_navigated_session(
     app.note(
         block::NoticeLevel::Ok,
         format!(
-            "{} {} · {} messages · {} turns · left {}",
-            if fact.fresh { "created" } else { "adopted" },
-            fact.run_id.0,
+            "{} · {} messages · {} turns",
+            if fact.fresh {
+                "New session"
+            } else {
+                "Session resumed"
+            },
             fact.messages,
             fact.turns,
-            fact.origin_run_id.0
         ),
     );
     if let Some(reason) = fact.blocked {
@@ -282,10 +293,10 @@ fn adoption_draft_ready(app: &mut App) -> bool {
         );
         return false;
     }
-    if !app.input_lanes.queued().is_empty() || !app.input_lanes.steers().is_empty() {
+    if app.input_lanes.pending_count() > 0 {
         app.note(
             block::NoticeLevel::Warn,
-            "send or clear pending submissions before switching sessions",
+            "review pending input with Alt-Up before switching sessions; your draft is preserved",
         );
         return false;
     }

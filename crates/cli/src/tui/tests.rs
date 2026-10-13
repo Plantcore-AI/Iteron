@@ -2020,7 +2020,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn unmatched_steer_previews_are_preserved_as_ordered_follow_ups() {
+    fn unmatched_steer_previews_are_held_for_explicit_review() {
         let mut app = App::new();
         app.track_steer("returned by kernel".into(), SubmissionId(1));
         app.track_steer(
@@ -2042,11 +2042,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .collect::<Vec<_>>(),
             vec![
                 "returned by kernel",
-                "preview missing from reclaim report",
                 "already queued"
             ],
-            "count mismatch must preserve at-least-once operator intent in submission order"
+            "only positively unadmitted input may enter the automatic queue"
         );
+        assert_eq!(app.input_lanes.held().front().unwrap().text, "preview missing from reclaim report");
     }
 
     #[test]
@@ -2117,16 +2117,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 (0..64).map(|index| format!("legacy {index}")).collect(),
                 &[]
             ),
-            (1, MAX_PENDING_SUBMISSIONS - 1)
+            (0, MAX_PENDING_SUBMISSIONS - 1)
         );
-        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
-        assert_eq!(app.input_lanes.queued().front().unwrap().text, "own 0");
-        assert_eq!(app.input_lanes.queued().back().unwrap().text, "legacy 0");
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS - 1);
+        assert!(app.input_lanes.queued().is_empty());
+        assert_eq!(app.input_lanes.held().front().unwrap().text, "own 0");
         assert!(
             app.history
                 .blocks()
                 .iter()
-                .any(|block| block.to_text().contains("63 legacy steering submission(s)"))
+                .any(|block| block.to_text().contains("64 legacy steering submission(s)"))
         );
     }
 
@@ -2557,9 +2557,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor.capture_paste(&pasted).expect("a held paste");
 
         let screen = render_text(&mut app, 100, 18);
-        assert!(screen.contains("▧ #1"), "{screen}");
-        assert!(screen.contains("▤ [file] notes.md"), "{screen}");
-        assert!(screen.contains("▥ #1 held paste"), "{screen}");
+        assert!(screen.contains("image #1"), "{screen}");
+        assert!(screen.contains("[file] notes.md"), "{screen}");
+        assert!(screen.contains("paste #1"), "{screen}");
         assert!(
             screen.contains("04bade72"),
             "complete file digest is represented on the chip"
@@ -2568,14 +2568,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("notes.md"), "{screen}");
         assert!(screen.contains("inspect"), "{screen}");
         let rows = screen.lines().collect::<Vec<_>>();
-        let image_row = rows.iter().position(|row| row.contains("▧ #1")).unwrap();
+        let image_row = rows.iter().position(|row| row.contains("image #1")).unwrap();
         let file_row = rows
             .iter()
-            .position(|row| row.contains("▤ [file] notes.md"))
+            .position(|row| row.contains("[file] notes.md"))
             .unwrap();
         let paste_row = rows
             .iter()
-            .position(|row| row.contains("▥ #1 held paste"))
+            .position(|row| row.contains("paste #1"))
             .unwrap();
         assert_eq!(file_row, image_row + 1, "each chip owns exactly one row");
         assert_eq!(paste_row, file_row + 1, "each chip owns exactly one row");
@@ -2600,7 +2600,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let screen = render_text(&mut app, 100, 14);
         let digest = app.editor.files().as_slice()[0].digest().get(..8).unwrap();
-        assert!(screen.contains("± [diff] working tree"), "{screen}");
+        assert!(screen.contains("[diff] working tree"), "{screen}");
         assert!(screen.contains("17 B"), "{screen}");
         assert!(screen.contains(digest), "{screen}");
         assert!(
@@ -2715,7 +2715,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .iter()
                 .position(|bit| bit.contains(GLYPH))
                 .unwrap_or_else(|| panic!("{density:?}: no workflow bit in {bits:?}"));
-            assert_eq!(at, 1, "{density:?}: wrong drop rank in {bits:?}");
+            assert_eq!(at, 0, "{density:?}: wrong drop rank in {bits:?}");
             assert!(at < bits.len() - 1, "{density:?}: it must not be the last");
         }
 
@@ -2756,13 +2756,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn app_mouse_is_default_and_ctrl_t_selection_state_is_truthful() {
         let mut app = App::new();
         let rendered = render_text(&mut app, 240, 14);
-        assert!(rendered.contains("mouse:on"));
-        assert!(rendered.contains("wheel:transcript"));
+        assert_eq!(app.mouse_capture, mouse_capture::State::Captured);
         assert!(rendered.contains("ctrl+t selection"));
 
         app.mouse_capture = mouse_capture::State::Released;
         let released = render_text(&mut app, 240, 14);
-        assert!(released.contains("selection:on"));
         assert!(released.contains("ctrl+t app mouse"));
     }
 
@@ -2780,7 +2778,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let bits = status_right_bits(&app, surface::Density::Wide);
         assert_eq!(
             bits.iter()
-                .filter(|bit| bit.as_str() == "✦ ultracode")
+                .filter(|bit| bit.as_str() == "ultracode")
                 .count(),
             1
         );
@@ -2862,7 +2860,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.route.provider_id = "anthropic".into();
             app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
-            assert!(screen.contains("▄██"), "Plantcore icon at {width}x{height}");
+            assert!(screen.contains("iteron"), "compact wordmark at {width}x{height}");
             assert!(screen.contains('›'), "composer at {width}x{height}");
             assert!(
                 screen.contains("commands"),
@@ -3790,7 +3788,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the terminal stage and brand entrance remain unpainted"
         );
         let screen = buffer_text(&terminal);
-        assert!(screen.contains("▄██"), "Plantcore icon is visible");
+        assert!(screen.contains("iteron"), "compact wordmark is visible");
         assert!(!screen.contains("Prompt"));
         assert!(screen.contains('▌'));
         assert!(screen.contains('›'));
@@ -4379,7 +4377,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_is_a_responsive_plantcore_icon_in_the_transcript() {
+    fn welcome_is_a_compact_responsive_coding_workspace() {
         let app = App::new();
         let wide: String = app.history.blocks()[0]
             .render(80, &app.theme, 0)
@@ -4387,9 +4385,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(wide.contains("▄██"), "Plantcore icon present: {wide:?}");
+        assert!(wide.contains("iteron"), "compact wordmark present: {wide:?}");
         assert!(
-            wide.contains("Build, explain, and verify"),
+            wide.contains("Build, explore, and ship"),
             "tagline present: {wide:?}"
         );
         let rows = app.history.blocks()[0].render(20, &app.theme, 0);
@@ -4408,7 +4406,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_icon_is_one_startup_block_and_scrolls_away() {
+    fn welcome_is_one_startup_block_and_disappears_after_conversation_begins() {
         let mut app = App::new();
         assert_eq!(
             app.history
@@ -4419,14 +4417,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             1
         );
         let first = render_text(&mut app, 40, 12);
-        assert!(first.contains("▄██"));
+        assert!(first.contains("iteron"));
         for index in 0..32 {
             app.push_user(format!(
                 "later task {index}: keep the active transcript at the tail"
             ));
         }
         let tail = render_text(&mut app, 40, 12);
-        assert!(!tail.contains("▄██"), "the brand is entrance, not chrome");
+        assert!(!tail.contains("Build, explore"), "welcome leaves the conversation");
         assert_eq!(
             app.history
                 .blocks()
@@ -6119,6 +6117,21 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
+        assert!(app.editor.has_submission(), "transport receipt preserves the draft until admission");
+        apply_server_event(
+            &mut app,
+            &mut session,
+            app_server::ServerEvent::Submission {
+                id: submission_id,
+                state: iteron_protocol::SubmissionLifecycleState::Applied,
+                reason_code: None,
+            },
+            &mut notifier,
+            &mut Vec::new(),
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        );
         assert!(!app.editor.has_submission());
     }
 
@@ -6176,7 +6189,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
-        assert!(!app.editor.has_submission());
+        assert!(app.editor.has_submission(), "Received is not admission");
         let op = rx
             .try_recv()
             .expect("composer submits through the bounded SQ")
@@ -6219,6 +6232,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
+        assert!(!app.editor.has_submission(), "Applied consumes the unchanged draft");
         assert_eq!(
             app.history
                 .blocks()
@@ -6269,6 +6283,21 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app_server::ServerEvent::Submission {
                 id: submission_id,
                 state: iteron_protocol::SubmissionLifecycleState::Received,
+                reason_code: None,
+            },
+            &mut notifier,
+            &mut Vec::new(),
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        );
+        assert!(app.editor.has_submission(), "transport receipt preserves the draft until admission");
+        apply_server_event(
+            &mut app,
+            &mut session,
+            app_server::ServerEvent::Submission {
+                id: submission_id,
+                state: iteron_protocol::SubmissionLifecycleState::Applied,
                 reason_code: None,
             },
             &mut notifier,
@@ -7321,8 +7350,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(
             status_right_bits(&app, surface::Density::Wide)
                 .iter()
-                .any(|bit| bit == "cache 70%"),
-            "cache is the last-turn ratio even when the low-priority bit yields to width"
+                .all(|bit| !bit.starts_with("cache ")),
+            "cache details are available on request and do not crowd the default status"
         );
         let canonical_fields = canonical.split(" | ").collect::<Vec<_>>();
         assert_eq!(canonical_fields[1], "109", "tokens are provider-observed");

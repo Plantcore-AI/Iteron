@@ -6,7 +6,7 @@ use crate::{file_input, image_input};
 use iteron_protocol::SubmissionId;
 use std::collections::VecDeque;
 
-/// Bound the two pending lanes together.
+/// Bound queued, steering, held, and awaiting-admission input together.
 pub(super) const MAX_PENDING_SUBMISSIONS: usize = 32;
 /// Oversize interactive follow-ups stay in the draft.
 pub(super) const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
@@ -22,7 +22,7 @@ pub(super) enum SubmissionAdmission {
 pub(super) struct PendingInput {
     pub(super) seq: u64,
     pub(super) text: String,
-    /// Set only while an identified steer awaits an exact runtime admission signal.
+    /// Exact runtime identity while awaiting admission, including input held for review.
     pub(super) submission_id: Option<SubmissionId>,
     /// The chips this submission was composed with, moved out of the composer when it was queued.
     ///
@@ -74,6 +74,9 @@ impl PendingInput {
 pub(super) struct InputLanes {
     queued: VecDeque<PendingInput>,
     steer_previews: VecDeque<PendingInput>,
+    /// Inputs whose admission could not be confirmed require explicit review before resubmission.
+    held: VecDeque<PendingInput>,
+    submitted: Option<PendingInput>,
     next_submission_seq: u64,
 }
 impl InputLanes {
@@ -83,8 +86,34 @@ impl InputLanes {
     pub(super) fn steers(&self) -> &VecDeque<PendingInput> {
         &self.steer_previews
     }
+    pub(super) fn held(&self) -> &VecDeque<PendingInput> {
+        &self.held
+    }
     pub(super) fn pending_count(&self) -> usize {
-        self.queued.len().saturating_add(self.steer_previews.len())
+        self.queued
+            .len()
+            .saturating_add(self.steer_previews.len())
+            .saturating_add(self.held.len())
+            .saturating_add(usize::from(self.submitted.is_some()))
+    }
+    pub(super) fn retain_submitted(&mut self, input: PendingInput) {
+        debug_assert!(self.submitted.is_none());
+        self.submitted = Some(input);
+    }
+    pub(super) fn settle_submitted(&mut self) {
+        self.submitted = None;
+    }
+    pub(super) fn hold_submitted(&mut self) -> bool {
+        let Some(input) = self.submitted.take() else {
+            return false;
+        };
+        self.held.push_back(input);
+        true
+    }
+    pub(super) fn hold_queued_after_failure(&mut self) -> usize {
+        let count = self.queued.len();
+        self.held.append(&mut self.queued);
+        count
     }
     pub(super) fn pop_next(&mut self) -> Option<PendingInput> {
         self.queued.pop_front()
@@ -93,7 +122,14 @@ impl InputLanes {
         if !editor.can_restore_owned_draft() {
             return false;
         }
-        let Some(input) = self.queued.pop_back() else {
+        // Held input gets explicit review priority; neither lane is replayed by reclaim itself.
+        let from_held = !self.held.is_empty();
+        let Some(input) = (if from_held {
+            &mut self.held
+        } else {
+            &mut self.queued
+        })
+        .pop_back() else {
             return false;
         };
         let seq = input.seq;
@@ -113,7 +149,12 @@ impl InputLanes {
                     files,
                     metadata,
                 } = *draft;
-                self.queued.push_back(PendingInput {
+                (if from_held {
+                    &mut self.held
+                } else {
+                    &mut self.queued
+                })
+                .push_back(PendingInput {
                     seq,
                     submission_id,
                     text,
@@ -181,7 +222,12 @@ impl InputLanes {
         Ok(())
     }
 
-    pub(super) fn track_steer(&mut self, text: String, id: SubmissionId) {
+    pub(super) fn track_steer(
+        &mut self,
+        text: String,
+        id: SubmissionId,
+        draft: Option<crate::editor::QueuedDraftMetadata>,
+    ) {
         debug_assert!(!text.trim().is_empty());
         debug_assert!(
             text.len()
@@ -199,6 +245,7 @@ impl InputLanes {
         );
         let mut input = self.mint(text);
         input.submission_id = Some(id);
+        input.draft = draft;
         self.steer_previews.push_back(input);
     }
 
@@ -209,6 +256,15 @@ impl InputLanes {
             .position(|preview| preview.submission_id == Some(id))
         {
             self.steer_previews.remove(index);
+        }
+        // A late exact Applied receipt can resolve input held after an incomplete terminal
+        // snapshot. Remove its review affordance before it could invite a duplicate submission.
+        if let Some(index) = self
+            .held
+            .iter()
+            .position(|input| input.submission_id == Some(id))
+        {
+            self.held.remove(index);
         }
     }
 
@@ -250,27 +306,17 @@ impl InputLanes {
                 // The run can contain steering from another authenticated client. Observing its
                 // non-admission does not grant this frontend authority to resubmit its request.
                 report.foreign += 1;
-            } else if matches!(
-                Self::admission(&text, self.pending_count()),
-                Ok(SubmissionAdmission::Accept)
-            ) {
-                let input = self.mint(text);
-                self.queued.push_back(input);
-                report.queued += 1;
             } else {
-                // Old no-ID snapshots have no exact owner correlation. Reserve capacity for
-                // every tracked local preview first, and report incompatible overflow explicitly.
+                // A legacy no-ID observation cannot prove this frontend owns the operation.
+                // Preserve local previews below for review; never manufacture a new submission.
+                let _ = text;
                 report.legacy_unrestored += 1;
             }
         }
         report.unmatched = self.steer_previews.len();
-        self.queued
-            .extend(self.steer_previews.drain(..).map(|mut preview| {
-                preview.submission_id = None;
-                preview
-            }));
+        self.held.extend(self.steer_previews.drain(..));
         self.queued.make_contiguous().sort_by_key(|input| input.seq);
-        debug_assert!(self.queued.len() <= pending_limit());
+        debug_assert!(self.pending_count() <= pending_limit());
         report
     }
 }
@@ -316,4 +362,82 @@ fn submission_bytes() -> usize {
         "cli.tui.driver_support.max_submission_bytes",
         MAX_SUBMISSION_BYTES,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(lanes: &mut InputLanes, text: &str) {
+        assert!(
+            lanes
+                .queue(text.into(), Default::default(), Default::default(), None)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn uncertain_steering_is_held_for_review_and_never_automatically_replayed() {
+        let mut lanes = InputLanes::default();
+        lanes.track_steer("possibly applied edit".into(), SubmissionId(1), None);
+        lanes.track_steer("known unadmitted".into(), SubmissionId(2), None);
+        let report =
+            lanes.requeue_unadmitted(vec!["known unadmitted".into()], &[Some(SubmissionId(2))]);
+        assert_eq!((report.queued, report.unmatched), (1, 1));
+        assert_eq!(lanes.pop_next().unwrap().text, "known unadmitted");
+        assert!(lanes.pop_next().is_none());
+        assert_eq!(lanes.held().len(), 1);
+        let mut editor = crate::editor::Editor::new();
+        editor.insert_str("new draft");
+        assert!(!lanes.reclaim_latest(&mut editor));
+        editor.clear();
+        assert!(lanes.reclaim_latest(&mut editor));
+        assert_eq!(editor.text(), "possibly applied edit");
+        assert!(lanes.held().is_empty());
+        assert!(lanes.pop_next().is_none());
+    }
+
+    #[test]
+    fn refused_queued_submission_keeps_its_reserved_capacity_and_owned_draft() {
+        let mut lanes = InputLanes::default();
+        queue(&mut lanes, "first");
+        let input = lanes.pop_next().unwrap();
+        lanes.retain_submitted(input);
+        for _ in 1..pending_limit() {
+            queue(&mut lanes, "later");
+        }
+        assert_eq!(lanes.pending_count(), pending_limit());
+        assert!(
+            lanes
+                .queue(
+                    "overflow".into(),
+                    Default::default(),
+                    Default::default(),
+                    None
+                )
+                .is_err()
+        );
+        assert!(lanes.hold_submitted());
+        assert_eq!(lanes.pending_count(), pending_limit());
+        let mut editor = crate::editor::Editor::new();
+        assert!(lanes.reclaim_latest(&mut editor));
+        assert_eq!(editor.text(), "first");
+        assert_eq!(lanes.pending_count(), pending_limit() - 1);
+        assert_eq!(lanes.hold_queued_after_failure(), pending_limit() - 1);
+        assert!(lanes.pop_next().is_none());
+        assert_eq!(lanes.pending_count(), pending_limit() - 1);
+        assert_eq!(lanes.held().len(), pending_limit() - 1);
+    }
+    #[test]
+    fn late_exact_applied_receipt_retires_held_input_before_manual_replay() {
+        let mut lanes = InputLanes::default();
+        lanes.track_steer("edit".into(), SubmissionId(3), None);
+        lanes.requeue_unadmitted(Vec::new(), &[]);
+        assert_eq!(lanes.held().len(), 1);
+        lanes.settle_steer_submission(SubmissionId(4));
+        assert_eq!(lanes.held().len(), 1);
+        lanes.settle_steer_submission(SubmissionId(3));
+        assert!(lanes.held().is_empty());
+        assert!(lanes.pop_next().is_none());
+    }
 }

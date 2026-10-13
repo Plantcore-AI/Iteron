@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use tokio::task::JoinHandle;
 
 const MAX_SESSION_ROWS: usize = 512;
+const MAX_SEARCH_PAGES: usize = 24;
 pub(super) const REMOTE_SESSION_TITLE: &str = "Service sessions · resume here";
 
 pub(super) struct PickerUpdate {
@@ -43,6 +44,9 @@ pub(super) struct PickerOwner {
     activity_job: Option<JoinHandle<Result<super::session_activity::Observation, String>>>,
     activity_due: Option<std::time::Instant>,
     current_base_hint: Option<String>,
+    search_query: String,
+    search_pages: usize,
+    search_paused: bool,
 }
 impl PickerOwner {
     pub(super) fn view(&self) -> Option<&Picker> {
@@ -57,6 +61,25 @@ impl PickerOwner {
     pub(super) fn omitted_rows(&self) -> u64 {
         self.omitted_rows
     }
+    pub(super) fn search_status(&self) -> Option<String> {
+        let picker = self
+            .picker
+            .as_ref()
+            .filter(|picker| self.sessions && picker.has_query())?;
+        Some(if self.search_paused {
+            "search paused · edit query to retry".into()
+        } else if self.job.is_some() {
+            "searching recent sessions".into()
+        } else if self
+            .backing
+            .as_ref()
+            .is_some_and(|backing| backing.has_more)
+        {
+            format!("{} searched · loaded window", picker.items.len())
+        } else {
+            format!("{} sessions searched", picker.items.len())
+        })
+    }
     fn cancel_page(&mut self) {
         if let Some(job) = self.job.take() {
             job.abort();
@@ -69,6 +92,9 @@ impl PickerOwner {
         self.activity_due = None;
         self.current_base_hint = None;
         self.sessions = false;
+        self.search_query.clear();
+        self.search_pages = 0;
+        self.search_paused = false;
         self.generation = self.generation.wrapping_add(1);
     }
     pub(super) fn open(&mut self, picker: Picker) {
@@ -245,6 +271,11 @@ impl PickerOwner {
         if let Some(warning) = page.warning.take() {
             warnings.push(warning);
         }
+        // A replaced cursor page while searching means the index changed under this search.
+        // Keep the refreshed page visible, but require user intent before another automatic pass.
+        if page.replace && self.search_pages > 0 {
+            self.search_paused = true;
+        }
         if page.replace {
             if page.items.is_empty() {
                 let mut empty = PickItem::flat(
@@ -355,19 +386,35 @@ impl PickerOwner {
         else {
             return;
         };
+        if self.search_query != picker.query {
+            self.search_query.clone_from(&picker.query);
+            self.search_pages = 0;
+            self.search_paused = false;
+        }
         let Some(backing) = self.backing.as_ref() else {
             return;
         };
-        if !backing.has_more
-            || backing.next_cursor.is_none()
-            || picker
+        // A filter may hide every loaded row. It must still reach older pages instead of
+        // requiring the user to select an invisible last item. Bound one search window so a
+        // no-match query cannot enumerate an unbounded history or evict its earlier matches.
+        if picker.has_query() && self.search_pages >= MAX_SEARCH_PAGES {
+            self.search_paused = true;
+        }
+        let search_next =
+            picker.has_query() && !self.search_paused && picker.items.len() < MAX_SESSION_ROWS;
+        let browsing_next = !picker.has_query()
+            && picker
                 .sel
                 .saturating_add(session_picker_prefetch_distance())
-                < picker.items.len()
-        {
+                >= picker.items.len();
+        if !backing.has_more || backing.next_cursor.is_none() || !(search_next || browsing_next) {
             return;
         }
-        let page_size = session_picker_page_size();
+        let page_size = if picker.has_query() {
+            session_picker_page_size().min(MAX_SESSION_ROWS.saturating_sub(picker.items.len()))
+        } else {
+            session_picker_page_size()
+        };
         let runs = backing.runs.clone();
         let current_run = backing.current_run.clone();
         let generation = backing.generation;
@@ -375,6 +422,9 @@ impl PickerOwner {
         let Some(history) = self.history.clone() else {
             return;
         };
+        if picker.has_query() {
+            self.search_pages += 1;
+        }
         self.job = Some(spawn_host_session_page_load(
             history,
             runs,
@@ -420,6 +470,7 @@ impl PickerOwner {
 
         let visible = self.picker.as_ref()?.visible_indices();
         if visible.is_empty() {
+            self.prefetch();
             return Some(PickerUpdate::event(PickerEvent::Consumed));
         }
 
@@ -500,6 +551,7 @@ impl PickerOwner {
                 None
             }
         });
+        self.prefetch();
         Some(PickerUpdate {
             event: PickerEvent::Consumed,
             theme: preview,
@@ -516,6 +568,7 @@ impl PickerOwner {
         picker.append_query_text(pasted);
         let visible = picker.visible_indices();
         picker.normalize_selection(&visible);
+        self.prefetch();
         true
     }
 
@@ -554,6 +607,52 @@ impl Drop for PickerOwner {
 mod tests {
     use super::{MAX_SESSION_ROWS, PickAction, PickItem, Picker, PickerOwner, SessionPageResult};
     use std::path::PathBuf;
+
+    #[test]
+    fn session_search_pauses_on_stale_or_exhausted_pages_until_query_changes() {
+        let mut owner = PickerOwner::default();
+        owner.install_session_fixture(
+            Picker {
+                title: "Sessions · resume here".into(),
+                items: Vec::new(),
+                sel: 0,
+                query: "missing title".into(),
+                saved_theme: None,
+            },
+            7,
+            None,
+        );
+        owner.search_query = "missing title".into();
+        owner.search_pages = 1;
+        owner.apply_page(Ok(SessionPageResult {
+            generation: 7,
+            runs: PathBuf::new(),
+            current_run: String::new(),
+            next_cursor: Some("replacement-cursor".into()),
+            has_more: true,
+            replace: true,
+            warning: None,
+            items: Vec::new(),
+        }));
+        owner.prefetch();
+        assert!(owner.search_paused);
+        assert!(!owner.has_worker());
+        assert!(owner.search_status().unwrap().contains("paused"));
+        owner.paste(" edited");
+        assert!(!owner.search_paused);
+        assert_eq!(owner.search_pages, 0);
+        // Empty pages cannot evade the separate request budget by retaining fewer than 512 rows.
+        owner.search_pages = super::MAX_SEARCH_PAGES;
+        owner.prefetch();
+        assert!(owner.search_paused);
+        assert!(!owner.has_worker());
+        owner.key(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(!owner.search_paused);
+        assert!(owner.search_status().is_none());
+    }
 
     #[test]
     fn page_window_is_bounded_and_closed_catalog_rejects_stale_session_observations() {

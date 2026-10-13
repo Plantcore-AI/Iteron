@@ -201,6 +201,48 @@ fn bounded_semantic_projection_matches_authoritative_text_below_its_cap() {
 }
 
 #[test]
+fn compact_transcript_viewer_search_copy_and_raw_keep_hidden_command_and_diff() {
+    let command = format!("printf '{}'\nprintf exact_command_tail", "x".repeat(100));
+    let blocks = vec![Arc::new(block::Block::new(
+        18,
+        block::BlockKind::Tool(block::ToolCard {
+            name: "bash".into(),
+            args: serde_json::json!({"command":command}),
+            status: block::ToolStatus::Ok,
+            output: "retained output\n\nlast output".into(),
+            diff: Some(iteron_protocol::FileDiff::from_replacement(
+                "src/example.rs",
+                "before",
+                "diff_search_target",
+            )),
+            exit_code: Some(0),
+            started: std::time::Instant::now(),
+            elapsed: None,
+            open: false,
+        }),
+    ))];
+    let mut viewer = Viewer::default();
+    viewer.open("diff_search_target", &blocks, 1);
+    settle(&mut viewer, &blocks, 1);
+    assert_eq!(viewer.results, vec![18]);
+    viewer.editing_query = false;
+    let Some(Effect::Copy { text, .. }) =
+        viewer.key(KeyCode::Char('Y'), KeyModifiers::SHIFT, &blocks, 1)
+    else {
+        panic!("copy projection")
+    };
+    assert!(text.contains("exact_command_tail") && text.contains("+diff_search_target"));
+    assert_eq!(text, blocks[0].to_text());
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let raw = super::projection::detail_block(&blocks[0], true, &cancelled).unwrap();
+    assert!(!raw.truncated);
+    let value: serde_json::Value = serde_json::from_str(&raw.text).unwrap();
+    assert_eq!(value["arguments"]["command"], command);
+    assert_eq!(value["diff"]["path"], "src/example.rs");
+    assert_eq!(value["output"], "retained output\n\nlast output");
+}
+
+#[test]
 fn query_and_detail_escape_controls_and_limit_state() {
     let secret = format!("sk-{}", "b".repeat(48));
     let blocks = vec![user(1, &format!("{secret}\u{1b}]52;bad\u{7}"))];

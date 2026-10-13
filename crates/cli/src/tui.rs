@@ -112,6 +112,7 @@ mod session_inspection;
 mod session_management;
 mod session_navigation;
 mod session_picker;
+mod session_presentation;
 mod status_command;
 mod status_line;
 mod submission;
@@ -513,9 +514,8 @@ fn cached_input_destination(
 /// inactivity deadline, which is the point: the operator learns
 /// which failure they are watching while the request is still open (I-64).
 const FIRST_TOKEN_SLOW_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-/// The one-keystroke retry offer printed under a failed run (I-39).
-const RETRY_HINT: &str = "ctrl+r re-sends this turn. Whatever the model had already streamed is \
-recorded as an interrupted message, so a retry continues from it rather than from nothing.";
+/// Restore the last request for review; retrying always requires an explicit submission.
+const RETRY_HINT: &str = "ctrl+r restores this request for review. Inspect completed work, edit if needed, then Enter to send.";
 
 fn retry_hint() -> &'static str {
     iteron_tunables::param_str("cli.tui.retry_hint", RETRY_HINT)
@@ -609,6 +609,7 @@ struct App {
     /// Stable operator-facing identity of the current rollout. This follows session adoption and
     /// rename, and is reused by footer, fullscreen panels, and the physical terminal tab title.
     session_name: String,
+    session_title: session_presentation::TitleLookup,
     history: transcript_history::TranscriptHistory,
     transcript_viewer: transcript_viewer::Viewer,
     artifact_viewer: artifact_view::Viewer,

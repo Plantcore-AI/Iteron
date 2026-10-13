@@ -169,10 +169,14 @@ impl Picker {
             return false;
         };
         let haystack = format!(
-            "{} {} {}",
+            "{} {} {} {}",
             item.label,
             item.hint,
-            item.disabled_reason.as_deref().unwrap_or_default()
+            item.disabled_reason.as_deref().unwrap_or_default(),
+            match &item.action {
+                PickAction::AdoptRun(run) => run.as_str(),
+                _ => "",
+            },
         )
         .to_lowercase();
         self.query

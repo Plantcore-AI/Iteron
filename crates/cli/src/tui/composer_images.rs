@@ -704,11 +704,7 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
         );
         return false;
     }
-    let pending = app
-        .input_lanes
-        .queued()
-        .len()
-        .saturating_add(app.input_lanes.steers().len());
+    let pending = app.input_lanes.pending_count();
     if matches!(
         app.submission_admission(&preview, pending, "pending input"),
         SubmissionAdmission::Reject

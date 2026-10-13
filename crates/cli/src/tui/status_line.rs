@@ -31,7 +31,13 @@ pub(super) enum Accent {
 impl Accent {
     fn style(self, theme: &Theme) -> Style {
         if theme.mono {
-            return Style::default().add_modifier(Modifier::DIM);
+            return match self {
+                Self::Warning => Style::default().add_modifier(Modifier::BOLD),
+                Self::Model | Self::Mode => Style::default(),
+                Self::Usage | Self::Metadata | Self::Progress => {
+                    Style::default().add_modifier(Modifier::DIM)
+                }
+            };
         }
         let color = match self {
             Self::Model => theme.accent,
@@ -72,7 +78,6 @@ impl Group {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn pair(
         first: impl Into<String>,
         first_accent: Accent,
@@ -85,6 +90,32 @@ impl Group {
                 Segment::new(second, second_accent),
             ],
         }
+    }
+
+    /// Preserve visible pieces of both route and actual effort under severe width pressure.
+    /// Clipping each separately leaves an explicit ellipsis instead of dropping the effort caveat
+    /// merely because a provider uses a long model identifier.
+    pub(super) fn fit_identity(&mut self, available: u16) {
+        if self.segments.len() != 2 || width(std::slice::from_ref(self)) <= available {
+            return;
+        }
+        let separator_width = u16::try_from(separator().width()).unwrap_or(u16::MAX);
+        let content = available.saturating_sub(separator_width);
+        if content < 2 {
+            return;
+        }
+        let first_width = u16::try_from(self.segments[0].text.width()).unwrap_or(u16::MAX);
+        let second_width = u16::try_from(self.segments[1].text.width()).unwrap_or(u16::MAX);
+        let first_budget = first_width.min(
+            content
+                .saturating_sub(second_width)
+                .max((content / 3).clamp(1, 6)),
+        );
+        let second_budget = content.saturating_sub(first_budget);
+        self.segments[0].text =
+            super::popup_render::clip_text(&self.segments[0].text, first_budget);
+        self.segments[1].text =
+            super::popup_render::clip_text(&self.segments[1].text, second_budget);
     }
 
     #[cfg(test)]
@@ -160,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn mono_keeps_the_same_text_and_dims_every_semantic_item() {
+    fn mono_preserves_identity_and_emphasizes_warnings_without_color() {
         let theme = Theme::mono();
         let groups = vec![Group::pair(
             "provider/model",
@@ -171,8 +202,12 @@ mod tests {
         let rendered = spans(&groups, &theme);
 
         assert_eq!(text(&rendered), "provider/model · ● high");
-        assert!(rendered.iter().all(|span| {
-            span.style.fg == Some(Color::Reset) || span.style.add_modifier.contains(Modifier::DIM)
-        }));
+        assert!(
+            rendered
+                .iter()
+                .all(|span| span.style.fg.is_none() || span.style.fg == Some(Color::Reset))
+        );
+        assert!(!rendered[0].style.add_modifier.contains(Modifier::DIM));
+        assert!(rendered[2].style.add_modifier.contains(Modifier::BOLD));
     }
 }

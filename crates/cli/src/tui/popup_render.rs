@@ -75,7 +75,16 @@ pub(super) fn render_compact_popup(
         Style::default().fg(theme.on_accent).bg(theme.accent)
     };
     let label = row
-        .map(|row| format!("› {}", row.lead))
+        .map(|row| {
+            if area.height == 1 && area.width >= 14 {
+                format!(
+                    "› {} · esc",
+                    clip_text(&row.lead, area.width.saturating_sub(8))
+                )
+            } else {
+                format!("› {}", row.lead)
+            }
+        })
         .unwrap_or_else(|| "no matches · esc".into());
     let mut spans = vec![Span::styled(clip_text(&label, area.width), selection)];
     pad_line_to(&mut spans, area.width, selection);
@@ -134,7 +143,7 @@ pub(super) fn render_list_popup(
             .saturating_sub(query_h)
             .saturating_sub(footer_h)
             .saturating_sub(min_list_h)
-            .min(3)
+            .min(2)
     } else {
         0
     };
@@ -255,16 +264,22 @@ pub(super) fn render_list_popup(
     visible.extend(detail_lines);
     if footer_h > 0 {
         let footer_text = if total == 0 {
-            " no matches · type to search · backspace edit · esc clear".to_string()
-        } else if query.is_some() {
+            if bar_w < 50 {
+                " type to search · esc clear/close".to_string()
+            } else {
+                " type to search · backspace edit · esc clear/close".to_string()
+            }
+        } else if bar_w < 50 {
+            format!(" {}/{} · ↑↓ · enter · esc", sel + 1, total)
+        } else if query.is_some() && bar_w >= 64 {
             format!(
-                " {}/{}  type filter · ↑↓ navigate · enter select · esc clear/close",
+                " {}/{} · type filter · ↑↓ move · enter select · esc clear/close",
                 sel + 1,
                 total
             )
         } else {
             format!(
-                " {}/{}  ↑↓ navigate · enter select · esc close",
+                " {}/{} · ↑↓ move · enter select · esc close",
                 sel + 1,
                 total
             )
@@ -293,8 +308,11 @@ pub(super) fn render_list_popup(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(full),
+            .border_style(Style::default().fg(theme.border))
+            .title(Line::from(Span::styled(
+                full,
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ))),
     );
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(popup, area);

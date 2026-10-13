@@ -45,10 +45,11 @@ impl App {
     /// change. The command is display/copy state only; nothing executes it.
     pub(super) fn prepare_resume_handoff(&mut self, run_id: &str) {
         let command = format_resume_command(run_id);
-        self.editor.clear();
-        self.editor.insert_str(&command);
-        self.completions.dismiss();
-        self.resume_handoff = Some(command.clone());
+        if self.editor.can_restore_owned_draft() {
+            self.editor.insert_str(&command);
+            self.completions.dismiss();
+            self.resume_handoff = Some(command.clone());
+        }
         self.note(
             block::NoticeLevel::Info,
             format!("not resumed here — copy this restart command into a new terminal: {command}"),
@@ -68,6 +69,7 @@ impl App {
         self.viewport.scroll_down(rows);
     }
 
+    #[cfg(test)]
     pub(super) fn queue_after_turn(&mut self, text: String) -> Result<(), String> {
         self.queue_after_turn_with_draft(
             text,
@@ -129,7 +131,9 @@ impl App {
     }
 
     pub(super) fn track_steer(&mut self, text: String, id: SubmissionId) {
-        self.input_lanes.track_steer(text, id);
+        let draft =
+            (self.editor.submission_text() == text).then(|| self.editor.queued_draft_metadata());
+        self.input_lanes.track_steer(text, id, draft);
     }
 
     pub(super) fn settle_steer_submission(&mut self, id: SubmissionId) {
@@ -148,7 +152,7 @@ impl App {
             self.note(block::NoticeLevel::Info, format!("{} unadmitted steering submission(s) belong to another client; this TUI did not resubmit them", report.foreign));
         }
         if report.legacy_unrestored > 0 {
-            self.note(block::NoticeLevel::Warn, format!("{} legacy steering submission(s) have no matched frontend identity or pending capacity; inspect the session before resubmitting", report.legacy_unrestored));
+            self.note(block::NoticeLevel::Warn, format!("{} legacy steering submission(s) have no matched frontend identity; inspect the session before resubmitting", report.legacy_unrestored));
         }
         (report.queued, report.unmatched)
     }

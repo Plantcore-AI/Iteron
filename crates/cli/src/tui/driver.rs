@@ -145,13 +145,12 @@ pub async fn run(
     // The exact title is a cache, not a reason to enumerate every session before paint. New runs
     // acquire their title from the first accepted prompt; resumed runs use their O(1) rollout id
     // until a background/session-picker projection provides a friendlier label.
-    let initial_session_name = facts
-        .rollout_path
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("New session")
-        .to_owned();
+    let initial_session_name = if initial_transcript.is_some() {
+        "Loading session…"
+    } else {
+        "New session"
+    }
+    .to_owned();
     // RAII: the terminal is restored on ANY exit path (error/panic/normal).
     let mut guard = TermGuard::new()?;
     let _ = guard.set_title(
@@ -203,7 +202,7 @@ pub async fn run(
 
     let repo = facts.workspace.clone();
     let mut app = App::new_with_detected_theme(detected_theme);
-    app.session_name = initial_session_name;
+    app.session_name = initial_session_name.clone();
     if terminal_capabilities.presentation == iteron_statusline::Presentation::Semantic {
         // Screen-reader mode keeps the same keyboard-complete interaction model, but removes the
         // raster logo and colour-only distinctions from the initial surface. Later blocks already
@@ -490,6 +489,7 @@ pub async fn run(
             for warning in update.warnings { app.note(block::NoticeLevel::Info, warning); }
             redraw |= update.changed;
         }
+        if app.session_title.poll(&mut app.session_name).await { redraw = true; }
         let navigation_scope = if app.navigation.has_work() {session.client.thread_snapshot_v1()} else {None};
         if let Some(preview) = app.navigation.poll_preview(navigation_scope.as_ref()).await {
             match preview {
@@ -705,6 +705,7 @@ pub async fn run(
             wake = Some(wake.map_or(due, |scheduled| scheduled.min(due)));
         }
         let local_job_active = app.pickers.has_worker()
+            || app.session_title.busy()
             || app.navigation.has_work()
             || app.completions.has_worker()
             || app.workspace_commands.is_busy()
@@ -774,8 +775,8 @@ pub async fn run(
                     if hydrated.workflows.incomplete || hydrated.workflows.omitted>0 {
                         app.note(block::NoticeLevel::Info,format!("workflow history is a bounded persisted-sidecar observation; {} known rows omitted{}",hydrated.workflows.omitted,if hydrated.workflows.incomplete {"; additional unavailable rows may exist"} else {""}));
                     }
-                    if same_run && hydrated_title != "New session" && !hydrated_title.trim().is_empty() {
-                        app.session_name = hydrated_title;
+                    if same_run {
+                        super::session_presentation::apply_startup_title(&mut app.session_name, &initial_session_name, &hydrated_title);
                     }
                     if same_run {app.workflow_monitor.observe_restored(hydrated.workflows.rows);}
                     } else {app.note(block::NoticeLevel::Warn,"session startup hydration was unavailable; live draft was preserved");}

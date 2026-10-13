@@ -114,6 +114,7 @@ impl SessionTelemetry {
     pub(super) fn effort(&self) -> Option<EffortApplication> {
         self.effort
     }
+    #[cfg(test)]
     pub(super) fn turns(&self) -> u32 {
         self.completed_turns
     }

@@ -111,3 +111,46 @@ fn missing_old_terminal_and_reused_item_id_never_join_two_turns() {
     assert!(!text.contains("unscoped bytes"));
     assert!(owner.rows.is_empty());
 }
+
+#[test]
+fn compact_transcript_remote_omission_and_unknown_terminal_remain_visible() {
+    let mut app = App::new();
+    let mut owner = ProductTools::default();
+    for kind in [
+        ProductEventKindV1::ItemStarted {
+            kind: ItemKindV1::ToolCall,
+            title: Some("read_file".into()),
+        },
+        ProductEventKindV1::ItemContent {
+            channel: ItemContentChannelV1::ToolInputJson,
+            content: "{\"path\":\"src/example.rs\"}".into(),
+        },
+        ProductEventKindV1::ItemContent {
+            channel: ItemContentChannelV1::ToolOutput,
+            content: "first line".into(),
+        },
+        ProductEventKindV1::ContentOmitted {
+            channel: ItemContentChannelV1::ToolOutput,
+            omitted_redacted_bytes: 42,
+        },
+        ProductEventKindV1::ItemEnded {
+            state: ItemStateV1::InProgress,
+        },
+    ] {
+        owner.observe(&mut app, &event(Some(1), kind));
+    }
+    let block = app
+        .history
+        .blocks()
+        .iter()
+        .find(|block| matches!(block.kind, crate::block::BlockKind::Tool(_)))
+        .unwrap();
+    let text = block
+        .render(100, &crate::theme::Theme::mono(), 0)
+        .into_iter()
+        .flat_map(|line| line.spans.into_iter().map(|span| span.content.into_owned()))
+        .collect::<String>();
+    assert!(text.contains("failed") && text.contains("outcome unknown"));
+    assert!(text.contains("output omitted") && text.contains("src/example.rs"));
+    assert!(block.to_text().contains("first line"));
+}

@@ -19,19 +19,16 @@ struct ActiveRun {
     admitted: bool,
 }
 struct PendingReceipt {
-    id: SubmissionId,
     editor_revision: u64,
     clear_composer: bool,
     display_text: String,
 }
 pub(super) enum ReceiptObservation {
     None,
-    Received {
-        editor_revision: u64,
-        clear_composer: bool,
-    },
     Applied {
         display_text: String,
+        editor_revision: u64,
+        clear_composer: bool,
     },
     Refused,
 }
@@ -41,11 +38,23 @@ pub(super) struct RunPresentation {
     pending: Option<PendingReceipt>,
     last_latency: Option<Duration>,
     retry: Option<String>,
+    /// Exactly one admitted draft, with already bounded attachment stores. It is never replayed.
+    recovery: Option<crate::editor::OwnedComposerDraft>,
+    recovery_ready: bool,
+    recovery_applied: bool,
     result: Option<serde_json::Value>,
 }
 impl RunPresentation {
     pub(super) fn running(&self) -> bool {
         self.active.is_some()
+    }
+    pub(super) fn submission_id(&self) -> Option<SubmissionId> {
+        self.active.as_ref().map(|active| active.submission)
+    }
+    pub(super) fn awaiting_composer_admission(&self, revision: u64) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.clear_composer && pending.editor_revision == revision)
     }
     pub(super) fn interrupting(&self) -> bool {
         self.active
@@ -65,6 +74,7 @@ impl RunPresentation {
     pub(super) fn started(&self) -> Option<Instant> {
         self.active.as_ref().map(|active| active.started)
     }
+    #[cfg(test)]
     pub(super) fn last_latency(&self) -> Option<Duration> {
         self.last_latency
     }
@@ -78,6 +88,9 @@ impl RunPresentation {
             admitted: false,
         });
         self.pending = None;
+        self.recovery = None;
+        self.recovery_ready = false;
+        self.recovery_applied = false;
     }
     pub(super) fn interrupt_accepted(&mut self, now: Instant) {
         if let Some(active) = self.active.as_mut()
@@ -116,7 +129,6 @@ impl RunPresentation {
             .is_some_and(|active| active.submission == id)
         {
             self.pending = Some(PendingReceipt {
-                id,
                 editor_revision,
                 clear_composer,
                 display_text,
@@ -136,16 +148,6 @@ impl RunPresentation {
             return ReceiptObservation::None;
         }
         match state {
-            SubmissionLifecycleState::Received => self
-                .pending
-                .as_ref()
-                .filter(|pending| pending.id == id)
-                .map_or(ReceiptObservation::None, |pending| {
-                    ReceiptObservation::Received {
-                        editor_revision: pending.editor_revision,
-                        clear_composer: pending.clear_composer,
-                    }
-                }),
             SubmissionLifecycleState::Admitted => {
                 if let Some(active) = self.active.as_mut() {
                     active.admitted = true;
@@ -153,6 +155,7 @@ impl RunPresentation {
                 ReceiptObservation::None
             }
             SubmissionLifecycleState::Applied => {
+                self.recovery_applied = true;
                 if let Some(active) = self.active.as_mut() {
                     active.admitted = true;
                 }
@@ -161,6 +164,8 @@ impl RunPresentation {
                     .map_or(ReceiptObservation::None, |pending| {
                         ReceiptObservation::Applied {
                             display_text: pending.display_text,
+                            editor_revision: pending.editor_revision,
+                            clear_composer: pending.clear_composer,
                         }
                     })
             }
@@ -171,9 +176,13 @@ impl RunPresentation {
                 self.active = None;
                 self.pending = None;
                 self.retry = None;
+                self.recovery = None;
+                self.recovery_ready = false;
+                self.recovery_applied = false;
                 ReceiptObservation::Refused
             }
-            SubmissionLifecycleState::Created
+            SubmissionLifecycleState::Received
+            | SubmissionLifecycleState::Created
             | SubmissionLifecycleState::Enqueued
             | SubmissionLifecycleState::Requeued => ReceiptObservation::None,
         }
@@ -187,6 +196,41 @@ impl RunPresentation {
             .take()
             .map(|active| now.saturating_duration_since(active.started));
         self.pending = None;
+    }
+    pub(super) fn retain_draft_recovery(&mut self, draft: crate::editor::OwnedComposerDraft) {
+        self.recovery = draft
+            .within_recovery_bound(MAX_RETRY_BYTES)
+            .then_some(draft);
+        self.recovery_ready = false;
+    }
+    pub(super) fn finish_draft_recovery(&mut self, succeeded: bool) {
+        self.recovery_ready = !succeeded && self.recovery_applied && self.recovery.is_some();
+        if succeeded || !self.recovery_applied {
+            self.recovery = None;
+        }
+    }
+    pub(super) fn has_draft_recovery(&self) -> bool {
+        !self.running() && self.recovery_ready && self.recovery.is_some()
+    }
+    /// Restoring is an explicit editor action. Neither this owner nor the caller dispatches it.
+    pub(super) fn restore_draft_recovery(&mut self, editor: &mut crate::editor::Editor) -> bool {
+        if !self.has_draft_recovery() || !editor.can_restore_owned_draft() {
+            return false;
+        }
+        let Some(draft) = self.recovery.take() else {
+            return false;
+        };
+        match editor.restore_owned_draft(draft) {
+            Ok(()) => {
+                self.recovery_ready = false;
+                self.retry = None;
+                true
+            }
+            Err(draft) => {
+                self.recovery = Some(*draft);
+                false
+            }
+        }
     }
     pub(super) fn retain_plain_text_retry(&mut self, text: Option<String>) {
         self.retry =
@@ -210,7 +254,10 @@ impl RunPresentation {
     }
     #[cfg(test)]
     pub(super) fn pending_id(&self) -> Option<SubmissionId> {
-        self.pending.as_ref().map(|pending| pending.id)
+        self.pending
+            .as_ref()
+            .and(self.active.as_ref())
+            .map(|active| active.submission)
     }
     pub(super) fn stop_requested_at(&self) -> Option<Instant> {
         match self.active.as_ref()?.stop {

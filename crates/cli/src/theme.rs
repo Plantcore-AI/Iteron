@@ -158,7 +158,7 @@ impl Theme {
             removed_bg: Color::Reset,
             syn_keyword: Color::Magenta,
             syn_string: Color::Green,
-            syn_comment: Color::DarkGray,
+            syn_comment: Color::Gray,
             syn_number: Color::Yellow,
             // syn_type must DIFFER from accent (Cyan) so code type names don't light up in the
             // prompt/user cyan (TUI v3 §3, findings 5) — a teal, distinct from the accent hue.
@@ -202,7 +202,7 @@ impl Theme {
             removed_bg: rgb(0x2a, 0x17, 0x1d),
             syn_keyword: rgb(0xbb, 0x9a, 0xf7),
             syn_string: rgb(0xb8, 0xd4, 0x7a),
-            syn_comment: rgb(0x56, 0x5f, 0x89),
+            syn_comment: rgb(0x91, 0x9c, 0xb0),
             syn_number: rgb(0xff, 0x9e, 0x64),
             syn_type: rgb(0x2a, 0xc3, 0xde),
             // distinct from accent (0x7aa2f7) so code function names don't light up like UI chrome.
@@ -241,7 +241,7 @@ impl Theme {
             removed_bg: rgb(0xfa, 0xe2, 0xe6),
             syn_keyword: rgb(0x7b, 0x43, 0xba),
             syn_string: rgb(0x38, 0x7d, 0x2c),
-            syn_comment: rgb(0x9a, 0xa0, 0xb0),
+            syn_comment: rgb(0x65, 0x70, 0x85),
             syn_number: rgb(0xb1, 0x5c, 0x00),
             syn_type: rgb(0x0f, 0x86, 0x9e),
             // distinct from accent (0x3455b5) — a teal, not the accent blue.

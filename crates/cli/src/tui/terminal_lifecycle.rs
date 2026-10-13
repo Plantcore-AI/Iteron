@@ -123,13 +123,14 @@ pub(super) fn set_terminal_title_to(
         Err(_) => return Ok(false),
     };
     writer.write_all(iteron_statusline::title_stack_push().as_bytes())?;
+    // The pushed stack frame is owned as soon as it was written, even if title output or flush
+    // fails. Drop/panic restoration must still pop it on that partial-initialization path.
+    active.store(true, Ordering::Release);
     if let Err(error) = writer.write_all(title.as_bytes()) {
-        let _ = writer.write_all(iteron_statusline::restore_title().as_bytes());
-        let _ = writer.flush();
+        restore_terminal_title_to(writer, active);
         return Err(error);
     }
     writer.flush()?;
-    active.store(true, Ordering::Release);
     Ok(true)
 }
 

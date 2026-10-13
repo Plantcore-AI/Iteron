@@ -935,18 +935,29 @@ pub(super) fn handle_registered_command(
 }
 
 pub(super) fn show_help(app: &mut App) {
+    let everyday = [
+        "model", "effort", "mode", "resume", "sessions", "fork", "diff", "context", "status",
+        "quit",
+    ];
     let mut rows: Vec<block::PanelRow> = commands::COMMANDS
         .iter()
+        .filter(|command| everyday.contains(&command.name))
         .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
         .collect();
-    rows.push(block::PanelRow::Note("keys: drag selects · wheel/trackpad scrolls transcript · ↑↓ prompt history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-C interrupt".into()));
     rows.push(block::PanelRow::Note(
-        "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
+        "Write: Enter send · Ctrl-J newline · Ctrl-G editor · @ attach · ! shell".into(),
     ));
     rows.push(block::PanelRow::Note(
-        "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
+        "Browse: Ctrl-P sessions · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-O expand details".into(),
     ));
-    app.panel("?", "commands", rows);
+    rows.push(block::PanelRow::Note(
+        "While running: Enter steer · Tab queue · Alt-Up review pending · Esc stop · Ctrl-End latest".into(),
+    ));
+    rows.push(block::PanelRow::Note(
+        "Select: Ctrl-T terminal selection · Shift+Tab permission mode · / searches all commands"
+            .into(),
+    ));
+    app.panel("?", "Quick guide", rows);
 }
 
 pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryControlReply) {

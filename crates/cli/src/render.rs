@@ -110,14 +110,25 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
             chars.push((c, s.style));
         }
     }
-    if width == 0 || chars.is_empty() {
+    if width == 0 {
+        return vec![Line::default()];
+    }
+    if chars.is_empty() {
         return vec![to_line(&chars)];
     }
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut cur: Vec<(char, Style)> = Vec::new();
     let mut cur_w = 0u16;
     let mut last_space: Option<usize> = None; // index in `cur` just after a space
+    let trailing_newline = chars.last().is_some_and(|(c, _)| *c == '\n');
     for (c, st) in chars {
+        if c == '\n' {
+            rows.push(to_line(&cur));
+            cur.clear();
+            cur_w = 0;
+            last_space = None;
+            continue;
+        }
         // A double-width glyph cannot physically fit in a one-cell terminal row. Keep the
         // renderer's hard width contract by using a visible, single-cell replacement at that
         // degenerate width instead of handing Ratatui an overflowing glyph.
@@ -151,7 +162,7 @@ pub fn wrap_spans(spans: &[Span], width: u16) -> Vec<Line<'static>> {
             last_space = Some(cur.len());
         }
     }
-    if !cur.is_empty() || rows.is_empty() {
+    if !cur.is_empty() || rows.is_empty() || trailing_newline {
         rows.push(to_line(&cur));
     }
     rows
@@ -176,7 +187,10 @@ pub(crate) fn wrap_annotated_spans(spans: &[AnnotatedSpan], width: u16) -> Rende
             chars.push((c, span.span.style, target));
         }
     }
-    if width == 0 || chars.is_empty() {
+    if width == 0 {
+        return RenderedLines::plain(vec![Line::default()]);
+    }
+    if chars.is_empty() {
         let (line, hyperlinks) = annotated_line(&chars, &targets, 0);
         return RenderedLines {
             lines: vec![line],
@@ -188,7 +202,15 @@ pub(crate) fn wrap_annotated_spans(spans: &[AnnotatedSpan], width: u16) -> Rende
     let mut current: Vec<(char, Style, Option<usize>)> = Vec::new();
     let mut current_width = 0u16;
     let mut last_space: Option<usize> = None;
+    let trailing_newline = chars.last().is_some_and(|(c, _, _)| *c == '\n');
     for (character, style, target) in chars {
+        if character == '\n' {
+            push_annotated_line(&mut rendered, &current, &targets);
+            current.clear();
+            current_width = 0;
+            last_space = None;
+            continue;
+        }
         // Match `wrap_spans`: at a one-cell viewport an over-wide glyph has no valid placement.
         // Retain its style and hyperlink identity on a visible one-cell replacement.
         let character = if char_width(character) > width {
@@ -225,7 +247,7 @@ pub(crate) fn wrap_annotated_spans(spans: &[AnnotatedSpan], width: u16) -> Rende
             last_space = Some(current.len());
         }
     }
-    if !current.is_empty() || rendered.lines.is_empty() {
+    if !current.is_empty() || rendered.lines.is_empty() || trailing_newline {
         push_annotated_line(&mut rendered, &current, &targets);
     }
     rendered
@@ -320,6 +342,26 @@ mod tests {
 
     fn styled(text: &str, color: Color) -> Span<'static> {
         Span::styled(text.to_string(), Style::default().fg(color))
+    }
+
+    #[test]
+    fn compact_transcript_newlines_and_links_share_exact_cjk_geometry() {
+        let span = styled("中文\n\nnext\n", Color::Blue);
+        let plain = wrap_spans(std::slice::from_ref(&span), 8);
+        let linked = wrap_annotated_spans(
+            &[AnnotatedSpan {
+                span,
+                hyperlink: Some("https://example.com/docs".into()),
+            }],
+            8,
+        );
+        assert_eq!(plain, linked.lines);
+        assert_eq!(plain.len(), 4);
+        assert!(plain.iter().all(|line| line_width(line) <= 8));
+        assert_eq!(linked.hyperlinks.len(), 2);
+        assert_eq!(linked.hyperlinks[0].row, 0);
+        assert_eq!(linked.hyperlinks[1].row, 2);
+        assert_eq!(line_width(&wrap_spans(&[Span::raw("text")], 0)[0]), 0);
     }
 
     #[test]

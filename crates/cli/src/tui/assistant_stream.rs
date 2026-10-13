@@ -47,6 +47,7 @@ impl AssistantStream {
     pub(super) fn authority(&self) -> &str {
         &self.authority
     }
+    #[cfg(test)]
     pub(super) fn approximate_tokens(&self) -> usize {
         self.authority_chars.div_ceil(4)
     }

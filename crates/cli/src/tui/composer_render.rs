@@ -1,73 +1,114 @@
 //! Approval and composer rendering, pending input lanes and attachment presentation.
 
 use super::{
-    App, ApprovalChoice, Block, BorderType, Borders, Color, Frame, Line, Modifier, Paragraph,
-    Pending, Rect, Span, Style, approval_operation_text, block, cap_label,
-    capability_can_be_remembered, clip_spans, clip_text, command_token, display_col, mcp_input,
-    one_line_preview, popup_detail_lines, text_width, ui_safe_text,
+    App, ApprovalChoice, Block, BorderType, Borders, Color, Frame, InputDestination, Line,
+    Modifier, Paragraph, Pending, Rect, Span, Style, approval_operation_text, block,
+    cached_input_destination, cap_label, capability_can_be_remembered, clip_spans, clip_text,
+    command_token, display_col, mcp_input, one_line_preview, popup_detail_lines, text_width,
+    ui_safe_text,
 };
+
+/// Drafts carrying chips cannot travel through the text-only steer protocol. A command with chips
+/// has a separate refusal affordance below; ordinary attached prose goes to the next-turn lane.
+pub(super) fn composer_destination(app: &App) -> InputDestination {
+    if app.run.running() && app.editor.chip_count() > 0 {
+        InputDestination::AfterTurn
+    } else {
+        cached_input_destination(
+            app.run.running(),
+            app.run.interrupting(),
+            app.editor.draft_shape(),
+        )
+    }
+}
+
+pub(super) fn composer_command_attachments(app: &App) -> bool {
+    app.run.running()
+        && app.editor.chip_count() > 0
+        && matches!(
+            app.editor.draft_shape(),
+            crate::editor::DraftShape::Slash { .. } | crate::editor::DraftShape::Shell
+        )
+}
 
 pub(super) fn render_pending_lanes(f: &mut Frame, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let mut lines = Vec::new();
-    let label_w = if area.width >= 72 { 19 } else { 9 };
-    if let Some(input) = app.input_lanes.steers().front() {
-        let label = if area.width >= 72 {
-            "  next safe point  "
-        } else {
-            "  steer  "
+    let line =
+        |label: String, input: &super::input_lanes::PendingInput, suffix: &str, warning: bool| {
+            let attachments = input.images.len().saturating_add(input.files.len());
+            let preview = if input.text.trim().is_empty() && attachments > 0 {
+                format!("{attachments} attachments")
+            } else if attachments > 0 {
+                format!("{} · {attachments} attachments", ui_safe_text(&input.text))
+            } else {
+                ui_safe_text(&input.text)
+            };
+            let suffix = if area.width >= 36 { suffix } else { "" };
+            let preview_w = area
+                .width
+                .saturating_sub(text_width(&label))
+                .saturating_sub(text_width(suffix));
+            let mut spans = vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(if warning {
+                        app.theme.warn
+                    } else {
+                        app.theme.muted
+                    }),
+                ),
+                Span::styled(
+                    one_line_preview(&preview, preview_w),
+                    Style::default().fg(app.theme.fg),
+                ),
+            ];
+            let used = super::spans_width(&spans).saturating_add(text_width(suffix));
+            if used < area.width {
+                spans.push(Span::raw(" ".repeat(usize::from(area.width - used))));
+            }
+            spans.push(Span::styled(
+                suffix.to_string(),
+                Style::default().fg(app.theme.muted),
+            ));
+            Line::from(clip_spans(spans, area.width))
         };
-        let suffix = app
-            .input_lanes
-            .steers()
-            .len()
-            .checked_sub(1)
-            .filter(|count| *count > 0)
-            .map(|count| format!("  +{count}"))
-            .unwrap_or_default();
-        let preview_w = area
-            .width
-            .saturating_sub(label_w)
-            .saturating_sub(text_width(&suffix));
-        lines.push(Line::from(vec![
-            Span::styled(label, Style::default().fg(app.theme.accent)),
-            Span::styled(
-                one_line_preview(&ui_safe_text(&input.text), preview_w),
-                Style::default().fg(app.theme.fg),
-            ),
-            Span::styled(suffix, Style::default().fg(app.theme.muted)),
-        ]));
+    if let Some(input) = app.input_lanes.held().back() {
+        lines.push(line(
+            format!("held {} · ", app.input_lanes.held().len()),
+            input,
+            " · alt+↑ review",
+            true,
+        ));
+    }
+    let steers = app.input_lanes.steers().len();
+    let queued = app.input_lanes.queued().len();
+    if let Some(input) = app.input_lanes.steers().front()
+        && (lines.is_empty() || queued == 0)
+    {
+        lines.push(line(
+            format!("steer {steers} · "),
+            input,
+            " · next safe point",
+            false,
+        ));
     }
     if let Some(input) = app.input_lanes.queued().front() {
-        let label = if area.width >= 72 {
-            "  after this turn  "
+        let label = if !app.input_lanes.held().is_empty() && steers > 0 {
+            format!("queued {queued} + {steers} steer · ")
         } else {
-            "  queued "
+            format!("queued {queued} · ")
         };
-        let suffix = app
-            .input_lanes
-            .queued()
-            .len()
-            .checked_sub(1)
-            .filter(|count| *count > 0)
-            .map(|count| format!("  +{count}"))
-            .unwrap_or_default();
-        let preview_w = area
-            .width
-            .saturating_sub(label_w)
-            .saturating_sub(text_width(&suffix));
-        lines.push(Line::from(vec![
-            Span::styled(label, Style::default().fg(app.theme.muted)),
-            Span::styled(
-                one_line_preview(&ui_safe_text(&input.text), preview_w),
-                Style::default().fg(app.theme.fg),
-            ),
-            Span::styled(suffix, Style::default().fg(app.theme.muted)),
-        ]));
+        let suffix = if app.input_lanes.held().is_empty() {
+            " · alt+↑ edit last"
+        } else {
+            " · after this turn"
+        };
+        lines.push(line(label, input, suffix, false));
     }
-    lines.truncate(area.height as usize);
+    lines.truncate(usize::from(area.height));
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -171,7 +212,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let text = app.editor.text();
     let attachment_count = app.editor.chip_count();
     let is_bash = text.starts_with('!');
-    let line_color = if app.permission_prompt.read().is_some() {
+    let line_color = if app.permission_prompt.read().is_some() || app.run.interrupting() {
         app.theme.warn
     } else if !text.is_empty() || attachment_count > 0 || app.run.running() {
         app.theme.accent
@@ -192,7 +233,8 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         let inner = approval.inner(area);
         f.render_widget(approval, area);
         inner
-    } else if app.permission_prompt.read().is_some() {
+    } else if app.permission_prompt.read().is_some() || area.width < 6 {
+        // The single editable cell is more useful than a decorative rail on a tiny terminal.
         area
     } else {
         let surface_style = if app.theme.mono {
@@ -219,6 +261,51 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
             Rect::new(area.x, area.y, area.width.min(1), area.height),
         );
 
+        if area.height >= 3 {
+            let state = if app.is_resume_handoff_draft() {
+                "Resume command · copy to a new terminal"
+            } else if app
+                .run
+                .awaiting_composer_admission(app.editor.persistence_revision())
+            {
+                "Awaiting admission · draft preserved"
+            } else if composer_command_attachments(app) {
+                "Command unavailable · remove attachments"
+            } else if app.run.interrupting()
+                && matches!(composer_destination(app), InputDestination::AfterTurn)
+            {
+                "Stopping · next prompt will queue"
+            } else {
+                match composer_destination(app) {
+                    InputDestination::ImmediateCommand => "Control · enter runs now",
+                    InputDestination::AfterTurn => "Next turn · enter queues",
+                    InputDestination::SteerCurrentRun => "Steer · enter now · tab queue",
+                    InputDestination::StartTurn if is_bash => "Shell command",
+                    InputDestination::StartTurn => "Message",
+                }
+            };
+            let state = if attachment_count > 0 {
+                format!(
+                    "{state} · {attachment_count} attachment{}",
+                    if attachment_count == 1 { "" } else { "s" }
+                )
+            } else {
+                state.to_string()
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    clip_text(&state, area.width.saturating_sub(3)),
+                    Style::default().fg(app.theme.muted),
+                ))),
+                Rect::new(
+                    area.x.saturating_add(2),
+                    area.y,
+                    area.width.saturating_sub(3),
+                    1,
+                ),
+            );
+        }
+
         let left = u16::from(area.width >= 2) + u16::from(area.width >= 3);
         let vertical = u16::from(area.height >= 3);
         Rect::new(
@@ -228,7 +315,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
             area.height.saturating_sub(vertical.saturating_mul(2)),
         )
     };
-    if body.height == 0 {
+    if body.height == 0 || body.width == 0 {
         return;
     }
 
@@ -316,29 +403,40 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         let chips = app.editor.chips();
         let chip_height = u16::try_from(chips.len())
             .unwrap_or(u16::MAX)
-            .min(body.height);
+            .min(body.height.saturating_sub(1))
+            .min(3);
         let chip_area = Rect::new(body.x, body.y, body.width, chip_height);
         let chip_lines = chips
             .iter()
             .enumerate()
+            .take(usize::from(chip_height))
             .map(|(index, chip)| {
+                if index + 1 == usize::from(chip_height) && chips.len() > usize::from(chip_height) {
+                    let remaining = chips.len() - index;
+                    return Line::from(Span::styled(
+                        clip_text(
+                            &format!("{remaining} more attachments · alt+backspace remove last"),
+                            chip_area.width,
+                        ),
+                        Style::default().fg(app.theme.muted),
+                    ));
+                }
                 let mut text = match chip {
                     crate::editor::DraftChip::Image(attachment) => format!(
-                        "▧ #{} {} · {}",
+                        "image #{} {} · {}",
                         attachment.id(),
                         attachment.display_name(),
                         format_attachment_size(attachment.file_bytes())
                     ),
                     crate::editor::DraftChip::File(attachment) => format!(
-                        "{} [{}] {} · {} · {}",
-                        attachment.kind().glyph(),
+                        "[{}] {} · {} · {}",
                         attachment.kind().label(),
                         attachment.display_name(),
                         format_attachment_size(attachment.text_bytes()),
                         attachment.digest().get(..8).unwrap_or(attachment.digest())
                     ),
                     crate::editor::DraftChip::Paste(paste) => format!(
-                        "▥ #{} held paste · {} line{} · {}",
+                        "paste #{} · {} line{} · {}",
                         paste.id(),
                         paste.lines() + 1,
                         if paste.lines() == 0 { "" } else { "s" },
@@ -378,12 +476,8 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         app.theme.accent
     };
     let marker = if is_bash { "! " } else { "› " };
-    let marker_area = Rect::new(
-        input_body.x,
-        input_body.y,
-        input_body.width.min(2),
-        input_body.height,
-    );
+    let marker_width = if input_body.width >= 3 { 2 } else { 0 };
+    let marker_area = Rect::new(input_body.x, input_body.y, marker_width, input_body.height);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             marker,
@@ -394,9 +488,9 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         marker_area,
     );
     let text_area = Rect::new(
-        input_body.x.saturating_add(2),
+        input_body.x.saturating_add(marker_width),
         input_body.y,
-        input_body.width.saturating_sub(2),
+        input_body.width.saturating_sub(marker_width),
         input_body.height,
     );
     let (crow, ccol) = app.editor.cursor_row_col();
@@ -406,14 +500,20 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let crow_u16 = u16::try_from(crow).unwrap_or(u16::MAX);
     let scroll_y = crow_u16.saturating_sub(text_area.height.saturating_sub(1));
     if text.is_empty() {
-        let placeholder = if app.run.running() {
-            "steer the current run"
+        let placeholder = if app.run.interrupting() {
+            "draft the next prompt while stopping".to_string()
+        } else if attachment_count > 0 && input_body == body {
+            format!("{attachment_count} attachments ready · add a message")
+        } else if app.run.running() && attachment_count > 0 {
+            "add a message for the next turn".to_string()
+        } else if app.run.running() {
+            "steer the current run".to_string()
         } else {
-            "ask about this codebase or describe a task"
+            "ask about this codebase or describe a task".to_string()
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                clip_text(placeholder, text_area.width),
+                clip_text(&placeholder, text_area.width),
                 Style::default().fg(app.theme.muted),
             ))),
             text_area,
@@ -459,5 +559,40 @@ pub(super) fn format_attachment_size(bytes: usize) -> String {
         format!("{bytes} B")
     } else {
         format!("{:.1} KiB", bytes as f64 / 1024.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn attachment_overflow_keeps_the_draft_editable_and_truthfully_queues_during_a_run() {
+        let mut app = App::new();
+        app.run
+            .submission_accepted(iteron_protocol::SubmissionId(1), std::time::Instant::now());
+        for index in 0..6 {
+            app.editor
+                .capture_paste(&format!("PRIVATE_PAYLOAD_{index}"))
+                .unwrap();
+        }
+        app.editor.insert_str(" EDITABLE");
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| render_composer(frame, frame.area(), &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Next turn · enter queues"), "{screen}");
+        assert!(screen.contains("more attachments"), "{screen}");
+        assert!(screen.contains("EDITABLE"), "{screen}");
+        assert!(!screen.contains("PRIVATE_PAYLOAD"), "{screen}");
+        assert_eq!(app.editor.chip_count(), 6);
     }
 }

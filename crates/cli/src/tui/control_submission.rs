@@ -311,20 +311,25 @@ pub(super) fn request_drain(
 /// control record, while the shared flag wakes provider/tool waits within their fixed poll bound.
 /// Either surface alone is incomplete (headless clients have only SQ; an executing tool needs the
 /// flag immediately), so every keyboard path calls this one function.
-pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Arc<AtomicBool>) {
+pub(super) fn request_interrupt(
+    app: &mut App,
+    session: &Session,
+    interrupt: &Arc<AtomicBool>,
+) -> bool {
     if !app.run.running() || app.run.force_cancelling() {
-        return;
+        return false;
     }
     if !matches!(session.submit_for_running_turn(Op::Interrupt), Some(Ok(_))) {
         app.note(
             block::NoticeLevel::Err,
             "interrupt was not queued for the active product turn",
         );
-        return;
+        return false;
     }
     interrupt.store(true, Ordering::SeqCst);
     app.run.interrupt_accepted(Instant::now());
     app.status = "interrupting turn…".into();
+    true
 }
 
 /// Escalate an interrupt without inventing an early turn boundary.
@@ -332,9 +337,9 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
 /// `RunEnded` is the sole authority that can return the frontend to idle. Clearing `running` here
 /// used to make the queue driver submit its next prompt while the App Server still owned the old
 /// turn; the server correctly refused that second start, and the frontend had already popped it.
-pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
+pub(super) fn force_cancel_turn(app: &mut App, session: &Session) -> bool {
     if !app.run.running() || !app.run.interrupting() || app.run.force_cancelling() {
-        return;
+        return false;
     }
     // A second gesture targets the same still-running turn regardless of elapsed wall time. The
     // five-second interval is useful for hint/reset presentation, never for withholding the
@@ -347,7 +352,7 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
             block::NoticeLevel::Err,
             "could not request stronger cancellation because the active run is no longer reachable",
         );
-        return;
+        return false;
     }
     app.run.stronger_cancel_accepted();
     app.status = "stronger cancellation requested · awaiting runtime acknowledgement…".into();
@@ -355,6 +360,7 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
         block::NoticeLevel::Warn,
         "stronger cancellation requested; awaiting runtime authority acknowledgement",
     );
+    true
 }
 
 /// Present cancellation as one stack even when a local transcript effect and the agent are live at
@@ -368,22 +374,25 @@ pub(super) fn cancel_local_effect_then_turn(
     if !app.run.running() {
         app.note(
             block::NoticeLevel::Warn,
-            "local transcript effect cancelled",
+            "local transcript effect cancellation requested",
         );
         return;
     }
     let escalated = app.run.interrupting();
-    if escalated {
-        force_cancel_turn(app, session);
+    let accepted = if escalated {
+        force_cancel_turn(app, session)
     } else {
-        request_interrupt(app, session, interrupt);
+        request_interrupt(app, session, interrupt)
+    };
+    if !accepted {
+        return;
     }
     app.note(
         block::NoticeLevel::Warn,
         if escalated {
-            "local transcript effect cancelled; the agent is still running, so stronger agent cancellation was requested too"
+            "local transcript effect cancellation requested; the agent is still running, so stronger agent cancellation was requested too"
         } else {
-            "local transcript effect cancelled; the agent is still running, so cooperative agent cancellation was requested too"
+            "local transcript effect cancellation requested; the agent is still running, so cooperative agent cancellation was requested too"
         },
     );
 }
@@ -422,35 +431,33 @@ pub(super) fn submit_queued_model_input(
     notifier: &mut notification::TerminalNotifier,
     item: PendingInput,
 ) -> Result<(), Box<PendingInput>> {
-    let retry = item.clone();
-    if item.has_attachments() {
-        let text = item.text.trim().to_owned();
-        let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
-        if submit_staged_input(
-            app,
-            session,
-            notifier,
-            text,
-            item.images,
-            item.files,
-            anchor_order,
-            false,
-        ) {
-            Ok(())
-        } else {
-            Err(Box::new(retry))
-        }
+    let mut retry = item.clone();
+    let text = item.text.trim().to_owned();
+    let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
+    if submit_staged_input(
+        app,
+        session,
+        notifier,
+        text,
+        item.images,
+        item.files,
+        anchor_order,
+        false,
+    ) {
+        // Keep the exact owned queue item until Applied. SQ acceptance alone may still be
+        // followed by admission refusal; that path restores it to the manual review shelf.
+        retry.submission_id = app.run.submission_id();
+        app.run
+            .retain_draft_recovery(crate::editor::OwnedComposerDraft {
+                text: retry.text.clone(),
+                images: retry.images.clone(),
+                files: retry.files.clone(),
+                metadata: retry.draft.clone(),
+            });
+        app.input_lanes.retain_submitted(retry);
+        Ok(())
     } else {
-        let text = item.text.trim().to_owned();
-        debug_assert!(!text.is_empty());
-        debug_assert!(slash_command_body(&text).is_none());
-        debug_assert!(!text.starts_with('!'));
-        if submit_turn(app, session, notifier, text.clone()) {
-            app.push_user(text);
-            Ok(())
-        } else {
-            Err(Box::new(retry))
-        }
+        Err(Box::new(retry))
     }
 }
 
@@ -470,14 +477,10 @@ pub(super) fn submit_operation(
     };
     match session.submit_identified(op) {
         Ok(submission_id) => {
-            // The input-ready shell uses the rollout id until the O(1) title lookup completes in
-            // the background. The first accepted prompt may therefore arrive while that opaque
-            // fallback is still visible. Claim it once here; hydration below restores an existing
-            // durable title for resumed runs and leaves this prompt-derived title on new runs.
-            if app.run.retry_text().is_none()
-                && let Some(title) = first_prompt_title.filter(|title| !title.is_empty())
-            {
-                app.session_name = title;
+            // Only an untitled conversation adopts its first accepted prompt. A cleared retry
+            // slot says nothing about whether a resumed or manually named title may be replaced.
+            if let Some(title) = first_prompt_title {
+                super::session_presentation::apply_prompt_title(&mut app.session_name, &title);
             }
             notifier.begin_run();
             app.run.submission_accepted(submission_id, Instant::now());

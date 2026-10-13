@@ -162,10 +162,9 @@ impl App {
 
     pub(super) fn observe_tool_arguments(&mut self, id: &str, args: serde_json::Value) {
         let args = ui_safe_json(&args);
+        self.tools.observe_arguments(id, args.clone());
         if let Some(block) = self.tools.revealed_block(id) {
             self.history.observe_tool_arguments(block, args);
-        } else {
-            self.tools.observe_arguments(id, args);
         }
     }
 

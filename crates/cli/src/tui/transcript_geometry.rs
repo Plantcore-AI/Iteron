@@ -22,11 +22,24 @@ pub(super) struct GeometryContext<'a> {
 pub(super) struct ReadingAnchor {
     block_id: u64,
     row_in_block: usize,
+    content: Option<ContentAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContentAnchor {
+    revision: u64,
+    fingerprint: u64,
+    characters: usize,
 }
 
 struct CachedBlock {
     revision: u64,
     rendered: render::RenderedLines,
+    /// Prefix counts exclude whitespace, so soft-wrap trimming and prompt padding cannot move
+    /// the content position. The fingerprint rejects layouts that also change visible content
+    /// (for example a responsive table or a collapsed diff excerpt).
+    content_starts: Box<[usize]>,
+    content_fingerprint: u64,
     charge: usize,
 }
 
@@ -40,6 +53,7 @@ pub(super) struct TranscriptGeometry {
     /// These identities belong to the previous geometry, so eviction/insertion in the records
     /// cannot rebind a reader's old row to a different block before the next layout.
     block_ids: Vec<u64>,
+    conversation_started: bool,
 }
 
 impl TranscriptGeometry {
@@ -48,6 +62,7 @@ impl TranscriptGeometry {
         self.cache_bytes = 0;
         self.index = transcript_layout::HeightIndex::default();
         self.block_ids.clear();
+        self.conversation_started = false;
     }
     pub(super) fn forget(&mut self, ids: &HashSet<u64>) {
         let mut removed = 0usize;
@@ -79,20 +94,55 @@ impl TranscriptGeometry {
         } else {
             row.saturating_sub(self.index.row_start(entry_index))
         };
+        let content = self.cache.get(&block_id).and_then(|cached| {
+            cached
+                .content_starts
+                .get(row_in_block)
+                .map(|characters| ContentAnchor {
+                    revision: cached.revision,
+                    fingerprint: cached.content_fingerprint,
+                    characters: *characters,
+                })
+        });
         Some(ReadingAnchor {
             block_id,
             row_in_block,
+            content,
         })
     }
-    /// Reflow retains the exact block, with the old rendered-row offset clamped to its new size.
-    /// It does not claim character-level mapping when wrapping changes.
+    /// Keep the first visible content character on screen after reflow. Changed content, shaped
+    /// layouts with different visible text, and uncached blocks retain the bounded row fallback.
     pub(super) fn resolve_anchor(&self, anchor: ReadingAnchor) -> Option<usize> {
         let block_index = self
             .block_ids
             .iter()
             .position(|id| *id == anchor.block_id)?;
         let (start, rows) = self.index.block_rows(block_index)?;
-        Some(start.saturating_add(anchor.row_in_block.min(rows.saturating_sub(1))))
+        let content_row = anchor.content.and_then(|content| {
+            let cached = self.cache.get(&anchor.block_id)?;
+            if cached.revision != content.revision
+                || cached.content_fingerprint != content.fingerprint
+            {
+                return None;
+            }
+            if cached.content_starts.get(anchor.row_in_block) == Some(&content.characters) {
+                // Preserve exact blank-line placement when this row did not reflow.
+                return Some(anchor.row_in_block);
+            }
+            Some(
+                cached
+                    .content_starts
+                    .partition_point(|start| *start <= content.characters)
+                    .saturating_sub(1),
+            )
+        });
+        Some(
+            start.saturating_add(
+                content_row
+                    .unwrap_or(anchor.row_in_block)
+                    .min(rows.saturating_sub(1)),
+            ),
+        )
     }
     /// Render only a changed suffix and retain finite cache bytes. A settled block that exceeds
     /// admission still contributes real geometry and is rendered on demand if it is visible.
@@ -116,7 +166,26 @@ impl TranscriptGeometry {
             self.cache_width = width;
             self.cache_theme_epoch = theme_epoch;
         }
-        let full_rebuild = !self.index.matches(width, theme_epoch, region_block);
+        let conversation_started = if dirty_from.is_some() || self.block_ids.is_empty() {
+            blocks.iter().any(|block| {
+                matches!(
+                    block.kind,
+                    block::BlockKind::User(_)
+                        | block::BlockKind::Assistant(_)
+                        | block::BlockKind::Tool(_)
+                        | block::BlockKind::Thinking { .. }
+                )
+            })
+        } else {
+            self.conversation_started
+        };
+        let full_rebuild = !self.index.matches(width, theme_epoch, region_block)
+            || self.conversation_started != conversation_started;
+        self.conversation_started = conversation_started;
+        let visible = |block: &block::Block| {
+            Some(block.id) != region_block
+                && !(conversation_started && matches!(block.kind, block::BlockKind::Welcome { .. }))
+        };
         let Some(first) = full_rebuild.then_some(0).or(dirty_from) else {
             return false;
         };
@@ -125,10 +194,10 @@ impl TranscriptGeometry {
         let mut previous = blocks[..first]
             .iter()
             .rev()
-            .find(|block| Some(block.id) != region_block)
+            .find(|block| visible(block))
             .map(|block| &block.kind);
         for (block_index, block) in blocks.iter().enumerate().skip(first) {
-            if Some(block.id) == region_block {
+            if !visible(block) {
                 continue;
             }
             if let Some(previous) = previous {
@@ -154,13 +223,17 @@ impl TranscriptGeometry {
             }
             let rendered = block.render_with_hyperlinks(width, theme, spin, hyperlinks);
             let rows = rendered.lines.len();
-            let charge = rendered_charge(&rendered);
+            let charge =
+                rendered_charge(&rendered).saturating_add(rows.saturating_mul(size_of::<usize>()));
             if block.cacheable() && charge <= MAX_CACHE_BYTES.saturating_sub(self.cache_bytes) {
+                let (content_starts, content_fingerprint) = index_content(&rendered);
                 self.cache.insert(
                     block.id,
                     CachedBlock {
                         revision: block.revision,
                         rendered,
+                        content_starts,
+                        content_fingerprint,
                         charge,
                     },
                 );
@@ -197,6 +270,29 @@ impl TranscriptGeometry {
     pub(super) fn cache_width(&self) -> u16 {
         self.cache_width
     }
+}
+
+/// Built once alongside a newly admitted render, never during frame-time anchor capture. Its
+/// exact allocation is included in the same 16 MiB cache quota as rows and hyperlink regions.
+fn index_content(rendered: &render::RenderedLines) -> (Box<[usize]>, u64) {
+    let mut starts = Vec::with_capacity(rendered.lines.len());
+    let mut characters = 0usize;
+    // A local presentation fingerprint, not an integrity or authorization decision.
+    let mut fingerprint = 0xcbf29ce484222325u64;
+    for line in &rendered.lines {
+        starts.push(characters);
+        for character in line
+            .spans
+            .iter()
+            .flat_map(|span| span.content.chars())
+            .filter(|character| !character.is_whitespace())
+        {
+            characters = characters.saturating_add(1);
+            fingerprint ^= u64::from(u32::from(character));
+            fingerprint = fingerprint.wrapping_mul(0x100000001b3);
+        }
+    }
+    (starts.into_boxed_slice(), fingerprint)
 }
 
 fn rendered_charge(rendered: &render::RenderedLines) -> usize {
@@ -251,6 +347,112 @@ mod tests {
                 region_block: None,
             },
         );
+    }
+
+    #[test]
+    fn compact_transcript_landing_disappears_from_geometry_on_first_turn() {
+        let mut blocks = vec![Arc::new(block::Block::new(
+            0,
+            block::BlockKind::Welcome {
+                tagline: "Start here".into(),
+            },
+        ))];
+        let mut owner = TranscriptGeometry::default();
+        prepare(&mut owner, &blocks, 80);
+        assert_eq!(owner.layout().block_rows(0), Some((0, 3)));
+        blocks.push(Arc::new(block::Block::new(
+            1,
+            block::BlockKind::User("hello".into()),
+        )));
+        owner.prepare(
+            &blocks,
+            Some(1),
+            GeometryContext {
+                width: 80,
+                theme_epoch: 0,
+                theme: &theme::Theme::dark(),
+                spin: 0,
+                hyperlinks: &super::hyperlink::Policy::disabled(),
+                region_block: None,
+            },
+        );
+        assert!(owner.layout().block_rows(0).is_none());
+        assert_eq!(owner.layout().block_rows(1), Some((0, 1)));
+        assert_eq!(owner.layout().total_rows(), 1);
+        assert_eq!(owner.reading_anchor(0).unwrap().block_id, 1);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "presentation does not delete semantic history"
+        );
+        blocks.truncate(1);
+        prepare(&mut owner, &blocks, 40);
+        assert_eq!(owner.layout().block_rows(0), Some((0, 3)));
+    }
+
+    #[test]
+    fn compact_transcript_resize_keeps_the_same_cjk_content_visible() {
+        let text = (0..500)
+            .map(|offset| char::from_u32(0x4e00 + offset).unwrap())
+            .collect::<String>();
+        for kind in [
+            block::BlockKind::User(text.clone()),
+            block::BlockKind::Assistant(crate::markdown::MarkdownDoc::parse(&text)),
+        ] {
+            let blocks = vec![Arc::new(block::Block::new(10, kind))];
+            let mut owner = TranscriptGeometry::default();
+            prepare(&mut owner, &blocks, 82);
+            let old_row = 4;
+            let anchor = owner.reading_anchor(old_row).unwrap();
+            assert!(anchor.content.is_some());
+            let first_character = owner.rendered(10).unwrap().lines[old_row]
+                .spans
+                .iter()
+                .flat_map(|span| span.content.chars())
+                .find(|character| !character.is_whitespace())
+                .unwrap();
+            for width in [26, 132] {
+                prepare(&mut owner, &blocks, width);
+                let row = owner.resolve_anchor(anchor).unwrap();
+                let visible = owner.rendered(10).unwrap().lines[row]
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                assert!(
+                    visible.contains(first_character),
+                    "original reading character must remain visible at {width}: {visible}"
+                );
+                assert_ne!(
+                    row, old_row,
+                    "width changes the row that contains those words"
+                );
+                assert!(owner.cache_bytes <= MAX_CACHE_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_transcript_resize_falls_back_for_changed_or_uncached_content() {
+        let mut blocks = vec![Arc::new(block::Block::new(
+            10,
+            block::BlockKind::User("long paragraph words ".repeat(100)),
+        ))];
+        let mut owner = TranscriptGeometry::default();
+        prepare(&mut owner, &blocks, 80);
+        let anchor = owner.reading_anchor(4).unwrap();
+        Arc::make_mut(&mut blocks[0]).touch();
+        prepare(&mut owner, &blocks, 25);
+        assert_eq!(
+            owner.resolve_anchor(anchor),
+            Some(4),
+            "a changed revision uses the row fallback"
+        );
+        owner.forget(&HashSet::from([10]));
+        let uncached = owner.reading_anchor(4).unwrap();
+        assert!(uncached.content.is_none());
+        prepare(&mut owner, &blocks, 100);
+        assert_eq!(owner.resolve_anchor(uncached), Some(4));
     }
 
     #[test]
