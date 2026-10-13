@@ -2,7 +2,9 @@
 use super::{App, Session, block, kv};
 use iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1;
 use iteron_protocol::client_final_evidence::description;
-use iteron_protocol::final_evidence::HostFinalEvidenceV1;
+use iteron_protocol::final_evidence::{
+    HostConfiguredCheckV1, HostFinalCorrectionV1, HostFinalEvidenceV1,
+};
 use iteron_protocol::{RunId, Seq};
 use serde::Deserialize as _;
 
@@ -48,6 +50,70 @@ pub(super) fn apply(app: &mut App, session: &Session, fact: HostFinalEvidenceV1)
     render(app, &fact);
 }
 fn render(app: &mut App, fact: &HostFinalEvidenceV1) {
+    let mut observations = Vec::new();
+    match fact.configured_check {
+        HostConfiguredCheckV1::Passed => observations.push("Configured check passed.".into()),
+        HostConfiguredCheckV1::Failed => {
+            observations.push("Configured check failed; review its output.".into());
+        }
+        HostConfiguredCheckV1::Unknown if fact.configured_check_source_seq.is_some() => {
+            observations.push("Configured check outcome is unconfirmed; review its output.".into());
+        }
+        HostConfiguredCheckV1::NotObserved | HostConfiguredCheckV1::Unknown => {}
+    }
+    if fact.observed_tool_failures > 0 {
+        observations.push(format!(
+            "{} tool {} failed; review the tool output.",
+            fact.observed_tool_failures,
+            if fact.observed_tool_failures == 1 {
+                "call"
+            } else {
+                "calls"
+            },
+        ));
+    }
+    if !fact.effects_known {
+        observations
+            .push("Tool effects are unconfirmed; inspect affected work before retrying.".into());
+    }
+    if fact.correction == Some(HostFinalCorrectionV1::ConfiguredCheckFailed)
+        && fact.configured_check != HostConfiguredCheckV1::Failed
+    {
+        observations.push("Configured check failed; review its output.".into());
+    }
+    if !observations.is_empty() {
+        let level = if fact.configured_check == HostConfiguredCheckV1::Passed
+            && fact.observed_tool_failures == 0
+            && fact.effects_known
+            && fact.correction != Some(HostFinalCorrectionV1::ConfiguredCheckFailed)
+        {
+            block::NoticeLevel::Info
+        } else {
+            block::NoticeLevel::Warn
+        };
+        app.note(level, observations.join(" "));
+    }
+}
+
+pub(super) fn details(app: &mut App, session: &Session) {
+    let Some(scope) = session.client.thread_snapshot_v1() else {
+        return;
+    };
+    let actual = session
+        .client
+        .host_final_evidence_v1(HostFinalEvidenceReadV1 {
+            thread_id: scope.thread_id,
+            run_id: scope.run_id,
+        });
+    if let Some(fact) = actual
+        .get("evidence")
+        .and_then(|value| serde_json::from_value::<HostFinalEvidenceV1>(value.clone()).ok())
+    {
+        render_details(app, &fact);
+    }
+}
+
+fn render_details(app: &mut App, fact: &HostFinalEvidenceV1) {
     app.panel(
         "◇",
         "Completion checks",
@@ -89,6 +155,27 @@ pub(super) fn remote(
     tenant: &iteron_protocol::TenantId,
     run: &RunId,
 ) {
+    remote_read(app, value, thread, tenant, run, false);
+}
+
+pub(super) fn remote_details(
+    app: &mut App,
+    value: &serde_json::Value,
+    thread: &iteron_protocol::SessionId,
+    tenant: &iteron_protocol::TenantId,
+    run: &RunId,
+) {
+    remote_read(app, value, thread, tenant, run, true);
+}
+
+fn remote_read(
+    app: &mut App,
+    value: &serde_json::Value,
+    thread: &iteron_protocol::SessionId,
+    tenant: &iteron_protocol::TenantId,
+    run: &RunId,
+    detailed: bool,
+) {
     if value["type"] != "host_final_evidence_v1"
         || value["thread_id"] != thread.0
         || value["run_id"] != run.0
@@ -114,7 +201,6 @@ pub(super) fn remote(
     {
         return;
     }
-    use iteron_protocol::final_evidence::HostConfiguredCheckV1;
     if matches!(
         fact.configured_check,
         HostConfiguredCheckV1::Passed | HostConfiguredCheckV1::Failed
@@ -124,7 +210,9 @@ pub(super) fn remote(
     {
         return;
     }
-    if app.final_evidence.admit(&fact) {
+    if detailed {
+        render_details(app, &fact);
+    } else if app.final_evidence.admit(&fact) {
         render(app, &fact);
     }
 }
@@ -194,8 +282,8 @@ mod tests {
             observed_native_file_changes: 0,
             native_change_source_seq: None,
             work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
-            configured_check: HostConfiguredCheckV1::NotObserved,
-            configured_check_source_seq: None,
+            configured_check: HostConfiguredCheckV1::Passed,
+            configured_check_source_seq: Some(Seq(12)),
             effects_known: true,
             write_capable_effect_admitted: false,
             coverage: HostFinalCoverageV1::LiveInvocation,
@@ -225,14 +313,15 @@ mod tests {
         remote(&mut app, &value, &thread, &tenant, &run);
         assert_eq!(app.history.blocks().len(), initial_history.len() + 1);
         let text = app.history.blocks().last().unwrap().to_text();
-        assert!(text.contains("unverified"));
+        assert!(text.contains("Configured check passed."));
+        assert!(!text.contains("Completion checks"));
         assert!(!text.contains("suite passed"));
         assert!(!app.run.running());
         remote(&mut app, &value, &thread, &tenant, &run);
         assert_eq!(app.history.blocks().len(), initial_history.len() + 1);
     }
     #[test]
-    fn changed_native_receipts_render_positive_work_without_suite_or_current_workspace_claims() {
+    fn successful_native_work_is_quiet_until_explicit_evidence_read() {
         let mut app = App::new();
         let initial_history = app
             .history
@@ -276,6 +365,7 @@ mod tests {
                 _ => serde_json::json!(0),
             };
             remote(&mut app, &forged, &thread, &tenant, &run);
+            remote_details(&mut app, &forged, &thread, &tenant, &run);
             assert_eq!(
                 app.history
                     .blocks()
@@ -286,6 +376,8 @@ mod tests {
             );
         }
         remote(&mut app, &value, &thread, &tenant, &run);
+        assert_eq!(app.history.blocks().len(), initial_history.len());
+        remote_details(&mut app, &value, &thread, &tenant, &run);
         let semantic = app.history.blocks().last().unwrap().to_text();
         assert!(semantic.contains("Native changes committed"));
         assert!(semantic.contains("observed native file commits"));
@@ -308,5 +400,125 @@ mod tests {
         assert!(rendered.contains("Native changes committed"));
         assert!(rendered.contains("unverified"));
         assert!(!rendered.contains("suite passed"));
+        remote_details(&mut app, &value, &thread, &tenant, &run);
+        assert_eq!(app.history.blocks().len(), initial_history.len() + 2);
+    }
+
+    fn greeting_fact() -> HostFinalEvidenceV1 {
+        HostFinalEvidenceV1 {
+            tenant: TenantId::default(),
+            run_id: RunId("greeting".into()),
+            first_turn: TurnId(0),
+            final_turn: TurnId(0),
+            source_seq: Seq(8),
+            observed_tool_completions: 0,
+            observed_tool_failures: 0,
+            observed_native_file_changes: 0,
+            native_change_source_seq: None,
+            work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
+            configured_check: HostConfiguredCheckV1::NotObserved,
+            configured_check_source_seq: None,
+            effects_known: true,
+            write_capable_effect_admitted: false,
+            coverage: HostFinalCoverageV1::LiveInvocation,
+            workspace_diff_inspected: false,
+            test_suite_identity_verified: false,
+            correction: None,
+        }
+    }
+
+    fn terminal_text(app: &mut App) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| crate::tui::draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn greeting_and_successful_tools_add_no_completion_chrome() {
+        let mut app = App::new();
+        app.stream_text("Hi! How can I help?");
+        app.flush_text();
+        let before = app.history.blocks().len();
+        let screen = terminal_text(&mut app);
+        let mut fact = greeting_fact();
+        render(&mut app, &fact);
+        let thread = iteron_protocol::SessionId("thread".into());
+        let value = serde_json::json!({"type":"host_final_evidence_v1","thread_id":thread,"run_id":fact.run_id,"evidence":fact,"source":"actual_host_receipt","historical_recovery":false});
+        remote(&mut app, &value, &thread, &fact.tenant, &fact.run_id);
+        assert_eq!(app.history.blocks().len(), before);
+        assert_eq!(terminal_text(&mut app), screen);
+        assert!(screen.contains("Hi! How can I help?"));
+        assert!(!screen.contains("Completion checks"));
+        assert!(!app.run.running());
+
+        fact.observed_tool_completions = 1;
+        render(&mut app, &fact);
+        assert_eq!(app.history.blocks().len(), before);
+        assert_eq!(terminal_text(&mut app), screen);
+
+        fact.correction = Some(HostFinalCorrectionV1::TestSuccessUnverified);
+        fact.source_seq = Seq(9);
+        render(&mut app, &fact);
+        let value = serde_json::json!({"type":"host_final_evidence_v1","thread_id":thread,"run_id":fact.run_id,"evidence":fact,"source":"actual_host_receipt","historical_recovery":false});
+        remote(&mut app, &value, &thread, &fact.tenant, &fact.run_id);
+        assert_eq!(app.history.blocks().len(), before);
+        assert_eq!(terminal_text(&mut app), screen);
+    }
+
+    #[test]
+    fn failures_and_unknown_effects_remain_concise_and_visible() {
+        for (check, effects_known, expected) in [
+            (
+                HostConfiguredCheckV1::Failed,
+                true,
+                "Configured check failed",
+            ),
+            (
+                HostConfiguredCheckV1::Unknown,
+                false,
+                "Tool effects are unconfirmed",
+            ),
+        ] {
+            let mut app = App::new();
+            let before = app.history.blocks().len();
+            let mut fact = greeting_fact();
+            fact.observed_tool_completions = 1;
+            fact.observed_tool_failures = 1;
+            fact.configured_check = check;
+            fact.configured_check_source_seq = Some(Seq(5));
+            fact.effects_known = effects_known;
+            fact.write_capable_effect_admitted = true;
+            render(&mut app, &fact);
+            assert_eq!(app.history.blocks().len(), before + 1);
+            let last = app.history.blocks().last().unwrap();
+            assert!(matches!(
+                last.kind,
+                block::BlockKind::Notice {
+                    level: block::NoticeLevel::Warn,
+                    ..
+                }
+            ));
+            let semantic = last.to_text();
+            assert!(semantic.contains(expected));
+            assert!(semantic.contains("1 tool call failed"));
+            let screen = terminal_text(&mut app);
+            // A warning may wrap between words; the terminal buffer includes the next row's
+            // gutter and padding. Still require the complete visible phrase after whitespace.
+            let visible = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                visible.contains(expected),
+                "expected {expected:?}: {visible}"
+            );
+            assert!(!screen.contains("Completion checks"));
+            assert!(!screen.contains("test-suite identity"));
+            assert!(!app.run.running());
+        }
     }
 }

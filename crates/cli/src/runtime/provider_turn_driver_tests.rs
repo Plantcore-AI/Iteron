@@ -22,6 +22,7 @@ struct ObservedProvider {
     stream_failure_once: bool,
     tool_round: bool,
     follow_up: bool,
+    cache_creation_unreported: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ObservedProvider {
@@ -142,7 +143,16 @@ impl Provider for ObservedProvider {
                 text: "driver journey complete".into(),
             }],
             stop_reason: StopReason::EndTurn,
-            usage: UsageReport::complete(Usage::default()),
+            usage: if self.cache_creation_unreported {
+                UsageReport::CacheCreationUnreported(Usage {
+                    input: 100,
+                    output: 10,
+                    thinking: 5,
+                    ..Usage::default()
+                })
+            } else {
+                UsageReport::complete(Usage::default())
+            },
         })
     }
 }
@@ -392,4 +402,46 @@ async fn coding_run_returns_the_actual_tool_transcript_to_a_follow_up_without_re
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn consecutive_no_tool_submissions_keep_the_live_writer_after_unreported_cache_usage() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let provider = Arc::new(ObservedProvider {
+        cache_creation_unreported: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "consecutive-no-tool-submissions");
+    std::fs::set_permissions(&owner.workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
+    owner.set_last_success_route_path(Some(owner.runtime_state_dir.join("last-route.json")));
+    assert!(owner.advisory_maintenance_port().is_some());
+    assert_eq!(owner.run("hi").await.unwrap(), Outcome::Done);
+    assert!(!owner.record_failed);
+    assert!(owner.transcript_state.working().is_some());
+    assert_eq!(owner.follow_up("hi").await.unwrap(), Outcome::Done);
+    assert!(!owner.record_failed);
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 2);
+    assert_eq!(owner.ledger.tool_calls, 0);
+    owner.finish_advisory_maintenance_for_test().await.unwrap();
+    let path = owner.rollout.path().to_owned();
+    let workspace = owner.workspace.clone();
+    drop(owner);
+    let events = iteron_record::replay(&path).unwrap();
+    let turns = events
+        .iter()
+        .filter_map(|event| {
+            matches!(&event.kind, EventKind::Done { outcome } if outcome == "Done")
+                .then_some(event.turn)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(turns.len(), 2);
+    assert!(turns[1].0 > turns[0].0);
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider")).count(), 2);
+    let journal = iteron_kernel::effects::EffectJournal::replay(&events).unwrap();
+    assert!(journal.pending().is_empty());
+    assert_eq!(journal.unknown_count(), 0);
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::Message { message } | EventKind::MessageV2 { message, .. }
+        if message.role == iteron_protocol::Role::User && message.content.iter().any(|block| matches!(block, Block::Text { text } if text == "hi")))).count(), 2);
+    std::fs::remove_dir_all(workspace).unwrap();
 }

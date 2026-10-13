@@ -777,8 +777,8 @@ pub(super) fn apply_transcript_effect_event(
                 }
                 app.panel("+", "project initialization", rows);
             }
-            (_, Some(app_server::ControlReply::RefusedWithOrigin { refusal, .. })) => {
-                super::refusal::show(app, &refusal)
+            (_, Some(app_server::ControlReply::RefusedWithOrigin { message, refusal })) => {
+                super::refusal::show_with_detail(app, &refusal, &message)
             }
             (kind, Some(app_server::ControlReply::Refused(reason))) => {
                 let action = kind.label();

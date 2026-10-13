@@ -20,32 +20,39 @@ pub(super) fn origin_label(origin: RefusalOriginV1) -> &'static str {
     }
 }
 pub(super) fn show(app: &mut App, refusal: &HostRefusalV1) {
-    let mut rows = vec![
-        kv("source", origin_label(refusal.origin())),
-        block::PanelRow::Note(refusal.summary().into()),
-        kv(
-            "effects",
-            match refusal.effects {
-                iteron_protocol::refusal::RefusalEffectStateV1::NotDispatched => "not dispatched",
-                iteron_protocol::refusal::RefusalEffectStateV1::Settled => "settled",
-                iteron_protocol::refusal::RefusalEffectStateV1::Unknown => "unconfirmed",
-                iteron_protocol::refusal::RefusalEffectStateV1::Unavailable => "unavailable",
-            },
-        ),
-        kv("retry", retry_guidance(refusal.effects)),
-        kv("next step", next_step(refusal)),
-    ];
-    if let Some(source) = &refusal.source {
-        rows.push(kv(
-            "supporting record",
-            &format!(
-                "{} seq {}",
-                super::ui_safe_text(&source.run_id.0),
-                source.sequence.0
-            ),
-        ));
+    show_with_detail(app, refusal, "");
+}
+
+pub(super) fn show_with_detail(app: &mut App, refusal: &HostRefusalV1, detail: &str) {
+    // Only the closed record classifier can supply a more precise host cause. Arbitrary remote
+    // prose cannot replace the reason or name a different authority.
+    let record_detail = refusal.reason == RefusalReasonV1::DurableRecordUnavailable
+        && crate::runtime::KernelError::is_public_record_failure(detail);
+    let mut text = format!(
+        "Operation refused ({}): {}",
+        origin_label(refusal.origin()),
+        if record_detail {
+            detail
+        } else {
+            refusal.summary()
+        },
+    );
+    if !text.ends_with('.') {
+        text.push('.');
     }
-    app.panel("!", "Operation refused", rows);
+    match refusal.effects {
+        RefusalEffectStateV1::NotDispatched => {}
+        RefusalEffectStateV1::Settled => text.push_str(" Inspect the result before repeating."),
+        RefusalEffectStateV1::Unknown => {
+            text.push_str(" Effects are unconfirmed; do not repeat.");
+        }
+        RefusalEffectStateV1::Unavailable => text.push_str(" Retry safety is unavailable."),
+    }
+    if !record_detail {
+        text.push(' ');
+        text.push_str(next_step(refusal));
+    }
+    app.note(block::NoticeLevel::Warn, text);
 }
 fn retry_guidance(effects: RefusalEffectStateV1) -> &'static str {
     match effects {
@@ -196,12 +203,85 @@ mod tests {
         assert!(unknown.contains("/activity"));
         assert!(!unknown.contains("new request after fixing"));
         assert!(!app.run.running());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 20)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::draw(frame, &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("unconfirmed"));
+        assert!(screen.contains("/activity"));
         refusal.effects = RefusalEffectStateV1::NotDispatched;
         show(&mut app, &refusal);
         let known = app.history.blocks().last().unwrap().to_text();
-        assert!(known.contains("not dispatched"));
-        assert!(known.contains("new request after fixing"));
         assert!(known.contains("choose a permitted operation"));
+        assert!(!known.contains("supporting record"));
+        assert!(!known.contains("do not repeat"));
+        assert!(matches!(
+            app.history.blocks().last().unwrap().kind,
+            block::BlockKind::Notice {
+                level: block::NoticeLevel::Warn,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ordinary_refusal_is_compact_and_closed_record_detail_keeps_the_recovery_step() {
+        let mut app = App::new();
+        let before = app.history.blocks().len();
+        let mut refusal = HostRefusalV1::unscoped(RefusalReasonV1::DurableRecordUnavailable);
+        refusal.effects = RefusalEffectStateV1::NotDispatched;
+        let detail =
+            crate::runtime::KernelError::Record(iteron_record::RecordError::WriterPoisoned)
+                .public_summary();
+        show_with_detail(&mut app, &refusal, &detail);
+        assert_eq!(app.history.blocks().len(), before + 1);
+        let text = app.history.blocks().last().unwrap().to_text();
+        assert!(text.contains("durable record"));
+        assert!(text.contains("[writer_poisoned]"));
+        assert!(text.contains("close and recover this run"));
+        assert!(!text.contains("supporting record"));
+        assert!(!text.contains("next step"));
+        assert!(!text.contains("record health"));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 20)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::draw(frame, &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("[writer_poisoned]"));
+        assert!(screen.contains("recover"));
+        assert!(screen.contains("reopening"));
+        assert!(!screen.contains("supporting record"));
+        assert!(!app.run.running());
+
+        show_with_detail(
+            &mut app,
+            &refusal,
+            "administrator denied private/record.json",
+        );
+        let opaque = app.history.blocks().last().unwrap().to_text();
+        assert!(opaque.contains(refusal.summary()));
+        assert!(!opaque.contains("administrator"));
+        assert!(!opaque.contains("private/record.json"));
+        refusal.reason = RefusalReasonV1::PermissionDenied;
+        show_with_detail(&mut app, &refusal, &detail);
+        let mismatched = app.history.blocks().last().unwrap().to_text();
+        assert!(mismatched.contains("host permission policy"));
+        assert!(!mismatched.contains("writer_poisoned"));
     }
     #[test]
     fn labels_keep_user_admin_and_sandbox_distinct() {

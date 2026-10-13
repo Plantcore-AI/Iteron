@@ -93,6 +93,7 @@ enum Kind {
     },
     FinalEvidence {
         run: iteron_protocol::RunId,
+        detailed: bool,
     },
     Sessions {
         run: iteron_protocol::RunId,
@@ -187,8 +188,8 @@ impl View {
     fn inputs_request(&mut self) -> Result<()> {
         self.queue(json!({"type":"mcp_inputs_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"command":{"action":"read"}}}),Kind::Inputs)
     }
-    fn final_request(&mut self) -> Result<()> {
-        self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone()})
+    fn final_request(&mut self, detailed: bool) -> Result<()> {
+        self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone(),detailed})
     }
     fn settings_request(&mut self, show: bool) -> Result<()> {
         self.queue(
@@ -374,7 +375,7 @@ impl View {
                     return Ok(false);
                 }
                 "/evidence" => {
-                    self.final_request()?;
+                    self.final_request(true)?;
                     app.editor.clear();
                     return Ok(false);
                 }
@@ -763,9 +764,14 @@ impl View {
                     show_reply(app, &reply);
                 }
             }
-            Kind::FinalEvidence { run } => {
+            Kind::FinalEvidence { run, detailed } => {
                 if run == self.service.current_run_id {
-                    super::final_evidence::remote(
+                    let render = if detailed {
+                        super::final_evidence::remote_details
+                    } else {
+                        super::final_evidence::remote
+                    };
+                    render(
                         app,
                         &reply,
                         &self.service.scope.thread_id,
@@ -1071,7 +1077,11 @@ fn show_reply(app: &mut App, reply: &Value) {
     if let Ok(refusal) =
         serde_json::from_value::<iteron_protocol::refusal::HostRefusalV1>(reply["refusal"].clone())
     {
-        super::refusal::show(app, &refusal);
+        super::refusal::show_with_detail(
+            app,
+            &refusal,
+            reply["message"].as_str().unwrap_or_default(),
+        );
         return;
     }
     if reply["type"] == "activity_center_v1" {
@@ -1318,7 +1328,7 @@ pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Re
             },
             _=tick.tick()=>{
                 if view.pending.as_ref().is_some_and(|request|Instant::now()>request.deadline){bail!("remote reply timed out; command delivery/continuation is unconfirmed");}
-                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request()?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+                if view.pending.is_none()&&view.queued.is_empty(){if view.final_needed{view.final_request(false)?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
             },
         }
     }
@@ -1426,6 +1436,51 @@ mod tests {
         assert_eq!(wire["type"], "operator_status");
         assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
     }
+    #[test]
+    fn explicit_evidence_request_retains_detail_after_automatic_observation() {
+        let mut app = App::new();
+        let before = app.history.blocks().len();
+        let mut view = view();
+        let reply = json!({
+            "type": "host_final_evidence_v1",
+            "thread_id": view.service.scope.thread_id,
+            "run_id": view.service.current_run_id,
+            "source": "actual_host_receipt", "historical_recovery": false,
+            "evidence": {
+                "tenant": view.service.scope.tenant,
+                "run_id": view.service.current_run_id,
+                "first_turn": 0, "final_turn": 0, "source_seq": 8,
+                "observed_tool_completions": 0, "observed_tool_failures": 0,
+                "configured_check": "not_observed", "configured_check_source_seq": null,
+                "effects_known": true, "write_capable_effect_admitted": false,
+                "coverage": "live_invocation", "workspace_diff_inspected": false,
+                "test_suite_identity_verified": false, "correction": null
+            }
+        });
+        for (expected, detailed) in [false, true, true].into_iter().enumerate() {
+            if detailed {
+                app.editor.insert_str("/evidence");
+                view.submit(&mut app).unwrap();
+            } else {
+                view.final_request(false).unwrap();
+            }
+            let (_, kind) = view.queued.pop_front().unwrap();
+            view.pending = Some(Request {
+                id: 1,
+                kind,
+                deadline: Instant::now() + REPLY_DEADLINE,
+            });
+            view.reply(&mut app, 1, reply.clone()).unwrap();
+            assert_eq!(app.history.blocks().len(), before + expected);
+            if detailed {
+                let text = app.history.blocks().last().unwrap().to_text();
+                assert!(text.contains("Completion checks"));
+                assert!(text.contains("tool completions"));
+            }
+        }
+        assert!(!app.run.running());
+    }
+
     #[test]
     fn settings_request_keeps_current_run_and_late_reply_cannot_apply_to_new_run() {
         let mut app = App::new();
