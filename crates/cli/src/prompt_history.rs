@@ -402,9 +402,68 @@ pub(crate) struct Writer {
     task: Option<std::thread::JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FinishStatus {
+    Saved,
+    Skipped,
+    Deadline,
+    SaveFailed,
+    Unavailable,
+}
+
+impl FinishStatus {
+    pub(crate) fn warning(self) -> Option<&'static str> {
+        match self {
+            Self::Saved | Self::Skipped => None,
+            Self::Deadline => Some(
+                "prompt history save was not confirmed within two seconds; recent input may be unavailable next time",
+            ),
+            Self::SaveFailed => {
+                Some("prompt history could not be saved; recent input may be unavailable next time")
+            }
+            Self::Unavailable => Some(
+                "prompt history writer was unavailable; recent input may be unavailable next time",
+            ),
+        }
+    }
+}
+
 enum WriterCommand {
     Save(State, RunId),
-    Finish(State, RunId, std::sync::mpsc::SyncSender<bool>),
+    Finish(
+        State,
+        RunId,
+        std::time::Instant,
+        std::sync::mpsc::SyncSender<FinishStatus>,
+    ),
+}
+
+// A background journal append may briefly own the same content-store lock. Retrying only Busy
+// preserves hard failures (revocation, corruption, permissions) and the existing shutdown deadline.
+fn finish_save(
+    store: &Store,
+    state: State,
+    active_run: &RunId,
+    deadline: std::time::Instant,
+) -> FinishStatus {
+    loop {
+        match store.save(state.clone(), active_run) {
+            Ok(()) => return FinishStatus::Saved,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<iteron_record::ContentStoreError>(),
+                    Some(iteron_record::ContentStoreError::Busy)
+                ) =>
+            {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return FinishStatus::Deadline;
+                }
+                std::thread::park_timeout(remaining.min(std::time::Duration::from_millis(5)));
+            }
+            Err(_) => return FinishStatus::SaveFailed,
+        }
+    }
 }
 
 impl Writer {
@@ -430,8 +489,13 @@ impl Writer {
                                     state = next;
                                     active_run = next_run;
                                 }
-                                Ok(WriterCommand::Finish(next, next_run, acknowledged)) => {
-                                    let stored = store.save(next, &next_run).is_ok();
+                                Ok(WriterCommand::Finish(
+                                    next,
+                                    next_run,
+                                    deadline,
+                                    acknowledged,
+                                )) => {
+                                    let stored = finish_save(&store, next, &next_run, deadline);
                                     let _ = acknowledged.try_send(stored);
                                     return;
                                 }
@@ -446,8 +510,8 @@ impl Writer {
                             }
                         }
                     }
-                    WriterCommand::Finish(state, active_run, acknowledged) => {
-                        let stored = store.save(state, &active_run).is_ok();
+                    WriterCommand::Finish(state, active_run, deadline, acknowledged) => {
+                        let stored = finish_save(&store, state, &active_run, deadline);
                         let _ = acknowledged.try_send(stored);
                         break;
                     }
@@ -467,11 +531,11 @@ impl Writer {
     }
 
     /// Request one final coalesced snapshot without allowing slow storage to hold terminal restore
-    /// indefinitely. `false` reports storage refusal or unobserved completion; an unsettled worker
-    /// is detached, never force-killed. Acknowledgment alone cannot turn a failed save into success.
-    pub(crate) fn finish_bounded(mut self, state: State, active_run: RunId) -> bool {
+    /// indefinitely. Failures and missing acknowledgment remain distinct. An unsettled worker is
+    /// detached, never force-killed; process exit does not promise it will finish in the background.
+    pub(crate) fn finish_status(mut self, state: State, active_run: RunId) -> FinishStatus {
         let Some(sender) = self.sender.take() else {
-            return true;
+            return FinishStatus::Skipped;
         };
         let (acknowledged, ack) = std::sync::mpsc::sync_channel(1);
         let deadline = std::time::Instant::now()
@@ -483,30 +547,44 @@ impl Writer {
                 FINISH_DEADLINE,
             )
             .min(FINISH_DEADLINE);
-        let mut command = WriterCommand::Finish(state, active_run, acknowledged);
+        let mut command = WriterCommand::Finish(state, active_run, deadline, acknowledged);
         loop {
             match sender.try_send(command) {
                 Ok(()) => break,
                 Err(std::sync::mpsc::TrySendError::Full(returned)) => {
                     if std::time::Instant::now() >= deadline {
                         drop(sender);
-                        return false;
+                        return FinishStatus::Deadline;
                     }
                     command = returned;
                     std::thread::park_timeout(std::time::Duration::from_millis(5));
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    return FinishStatus::Unavailable;
+                }
             }
         }
         drop(sender);
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let observed = ack.recv_timeout(remaining).ok();
-        if observed.is_some()
+        let observed = ack.recv_timeout(remaining);
+        if observed.is_ok()
             && let Some(task) = self.task.take()
         {
             let _ = task.join();
         }
-        observed == Some(true)
+        match observed {
+            Ok(status) => status,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => FinishStatus::Deadline,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => FinishStatus::Unavailable,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_bounded(self, state: State, active_run: RunId) -> bool {
+        matches!(
+            self.finish_status(state, active_run),
+            FinishStatus::Saved | FinishStatus::Skipped
+        )
     }
 }
 
@@ -778,6 +856,65 @@ mod tests {
         let loaded = store.load(&source_run("writer")).unwrap();
         assert_eq!(loaded.history, vec!["first", "second"]);
         assert_eq!(loaded.draft.as_deref(), Some("final 多行\ndraft"));
+    }
+
+    #[test]
+    fn normal_exit_distinguishes_storage_failure_and_unavailable_writer() {
+        let home = scratch("writer-refusal-home");
+        let repo = scratch("writer-refusal-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        // A directory in the manifest's place is a hard failure, not a slow background save.
+        fs::create_dir_all(store.path()).unwrap();
+        let status = Writer::new(Some(store)).unwrap().finish_status(
+            State::new(vec!["hello".into()], None),
+            source_run("refusal"),
+        );
+        assert_eq!(status, FinishStatus::SaveFailed);
+        assert!(!status.warning().unwrap().contains("background"));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let writer = Writer {
+            sender: Some(sender),
+            task: None,
+        };
+        assert_eq!(
+            writer.finish_status(State::default(), source_run("closed")),
+            FinishStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn consecutive_identical_prompts_flush_and_restore_with_live_record_owner() {
+        let home = scratch("writer-identical-home");
+        let repo = scratch("writer-identical-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run = source_run("identical");
+        append_prompt(&runs, &repo, &run, "hi");
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(vec!["hi".into()], Some("hi".into())), &run)
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Message {
+                    message: Message::user_text("hi"),
+                },
+            })
+            .unwrap();
+        let status = Writer::new(Some(store.clone())).unwrap().finish_status(
+            State::new(vec!["hi".into(), "hi".into()], None),
+            run.clone(),
+        );
+        assert_eq!(status, FinishStatus::Saved);
+        assert_eq!(store.load(&run).unwrap().history, ["hi", "hi"]);
+        drop(rollout);
     }
 
     #[test]

@@ -141,11 +141,7 @@ impl KernelSpecialExecution<'_> {
                         DirectChildInvocation {
                             turn,
                             index,
-                            task: call
-                                .input
-                                .get("task")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or(""),
+                            input: &call.input,
                         },
                         &mut self.journal,
                         &mut self.control,

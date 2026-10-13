@@ -280,6 +280,7 @@
 /crates/provider/src/governor_snapshot.rs @fr0m-scratch
 /crates/provider/src/lib.rs @fr0m-scratch
 /crates/provider/src/openai.rs @fr0m-scratch
+/crates/provider/src/openai_reasoning_tests.rs @fr0m-scratch
 /crates/provider/src/output_ceiling.rs @fr0m-scratch
 /crates/provider/src/recording_transport.rs @fr0m-scratch
 /crates/provider/src/request_capture.rs @fr0m-scratch

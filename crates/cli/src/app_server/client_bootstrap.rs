@@ -2,7 +2,7 @@
 //! record paths, a prompt-history Store constructor, or permission to choose source-run lineage.
 use super::product_contract::ContractReader;
 use crate::config::PromptHistoryMode;
-use crate::prompt_history::{self, State, Store, Writer};
+use crate::prompt_history::{self, FinishStatus, State, Store, Writer};
 use crate::runtime::Agent;
 use iteron_protocol::{RunId, SessionId};
 use std::path::PathBuf;
@@ -216,17 +216,25 @@ impl PromptHistoryWriterPort {
     }
     /// The source identity comes from the installed host projection, including actual adoption.
     /// Storage's existing bounded finish keeps a blocked writer detached and reports shutdown debt.
-    pub(crate) fn finish_bounded(mut self, state: State) -> bool {
+    pub(crate) fn finish_status(mut self, state: State) -> FinishStatus {
         let Some(writer) = self.writer.take() else {
-            return true;
+            return FinishStatus::Skipped;
         };
         if !admissible(&state) {
-            return false;
+            return FinishStatus::Unavailable;
         }
         let Some(scope) = self.reader.as_ref().and_then(ContractReader::snapshot) else {
-            return false;
+            return FinishStatus::Unavailable;
         };
-        writer.finish_bounded(state, scope.run_id)
+        writer.finish_status(state, scope.run_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_bounded(self, state: State) -> bool {
+        matches!(
+            self.finish_status(state),
+            FinishStatus::Saved | FinishStatus::Skipped
+        )
     }
 }
 

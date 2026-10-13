@@ -562,18 +562,25 @@ impl KernelSpawner {
     pub(super) fn build_direct_child(
         &self,
         identity: &direct::DirectChildIdentity,
+        agent_type: Option<&str>,
     ) -> Result<Agent, String> {
-        let call = AgentCall {
-            prompt: String::new(),
-            label: None,
-            phase: None,
-            model: None,
-            effort: Some(identity.effort),
-            agent_type: Some("generic".into()),
-            schema: None,
-            cancel: Default::default(),
-        };
+        let call = direct::profile_call(agent_type, identity.effort);
         self.build_child_in_mode(&call, 0, None, false, None, Some(identity))
+    }
+
+    /// Refuse invalid or authority-widening profiles before consuming a child admission. The
+    /// catalog and native policy source are immutable for both this check and construction.
+    pub(super) fn validate_direct_child_profile(
+        &self,
+        identity: &direct::DirectChildIdentity,
+        agent_type: Option<&str>,
+    ) -> Result<(), String> {
+        let call = direct::profile_call(agent_type, identity.effort);
+        let definition = agent_profile::resolve_definition(&self.cx, &call)?;
+        if definition.is_isolated_writer() {
+            return Err("direct investigator cannot request isolated writer authority".into());
+        }
+        Ok(())
     }
     fn build_child_in(
         &self,
@@ -610,8 +617,10 @@ impl KernelSpawner {
             .map_err(|error| safe_agent_refusal(error.public_reason()))?;
 
         let profile = match direct {
+            // Direct effort belongs to the host's pinned subagent-effort owner. Selecting a
+            // profile narrows its tools; it does not replace that owner with Workflow effort.
             Some(identity) => agent_profile::ResolvedAgentProfile {
-                definition: iteron_agents::AgentDef::generic(),
+                definition: agent_profile::resolve_definition(cx, call)?,
                 effort: identity.effort,
             },
             None => agent_profile::resolve(cx, call)?,
@@ -2305,6 +2314,80 @@ pub(super) mod tests {
         let expected_tag = expected.execution_tag();
         assert_eq!(tag, Some(expected_tag.as_str()));
         drop(child);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_profile_narrows_tools_without_mutating_siblings() {
+        let root = scratch("direct-profile");
+        let catalog = discovered_catalog(&root);
+        let expected = catalog.get("reviewer").unwrap().execution_tag();
+        let spawner = KernelSpawner::new(context(&root, catalog));
+        let catalog_before = spawner.cx.agent_catalog.execution_digest();
+        std::fs::write(root.join("repo/evidence.txt"), "source evidence").unwrap();
+        let identity = |run: &str| direct::DirectChildIdentity {
+            run: iteron_protocol::RunId(run.into()),
+            directory: root.join("runs/subagents"),
+            depth: 1,
+            effort: spawner.cx.execution_policy.subagent_effort,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            diagnostics: Default::default(),
+        };
+        let generic = spawner
+            .build_direct_child(&identity("generic-direct"), None)
+            .unwrap();
+        spawner
+            .validate_direct_child_profile(&identity("narrow-direct"), Some("reviewer"))
+            .unwrap();
+        let narrow = spawner
+            .build_direct_child(&identity("narrow-direct"), Some("reviewer"))
+            .unwrap();
+        assert_eq!(
+            narrow
+                .registry
+                .specs()
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read_file"]
+        );
+        assert!(
+            generic
+                .registry
+                .specs()
+                .iter()
+                .any(|spec| spec.name == "list_dir")
+        );
+        assert_eq!(spawner.cx.agent_catalog.execution_digest(), catalog_before);
+        assert_eq!(narrow.budget.max_consecutive_tool_errors, 1);
+        assert_eq!(narrow.effort, spawner.cx.execution_policy.subagent_effort);
+        assert!(!narrow.authority_ceiling.contains(Capability::CodeExecuting));
+        let allowed = narrow
+            .registry
+            .run(iteron_protocol::ToolUse {
+                id: "allowed-read".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({"path":"evidence.txt"}),
+            })
+            .await;
+        assert!(!allowed.is_error, "{}", allowed.content);
+        assert!(allowed.content.contains("source evidence"));
+        let refused = narrow
+            .registry
+            .run(iteron_protocol::ToolUse {
+                id: "unadvertised-list".into(),
+                name: "list_dir".into(),
+                input: serde_json::json!({"path":"."}),
+            })
+            .await;
+        assert!(
+            refused.is_error,
+            "the allowlist must be enforced, not just advertised"
+        );
+        assert!(iteron_record::replay(narrow.rollout.path()).unwrap().iter().any(|event| matches!(
+            &event.kind, EventKind::RunStart { agent_definition_tag: Some(tag), .. } if tag == &expected
+        )));
+        drop((generic, narrow));
         std::fs::remove_dir_all(root).unwrap();
     }
 

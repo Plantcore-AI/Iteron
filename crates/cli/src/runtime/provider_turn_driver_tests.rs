@@ -1,6 +1,7 @@
 //! Actual Agent→driver→observed-provider→physical-WAL fault journeys. No fabricated terminal or
 //! copied phase state is supplied to the driver.
 use crate::runtime::{Agent, DurableAppendFault, KernelError, Outcome, gate_integration_tests};
+use iteron_protocol::turn_publication::TurnPublicationFactV1;
 use iteron_protocol::{Block, Budget, EventKind, RunId, StopReason, TenantId, ToolUse, Usage};
 use iteron_provider::request_capture::{ProviderRequestObserver, ProviderWireRequest};
 use iteron_provider::{
@@ -28,6 +29,9 @@ struct ObservedProvider {
 impl Provider for ObservedProvider {
     fn provider_instance_id(&self) -> Option<&str> {
         Some("driver-fixture")
+    }
+    fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+        Some(4096)
     }
     fn physical_output_token_ceiling(
         &self,
@@ -338,7 +342,17 @@ async fn exhausted_semantic_recovery_preserves_exact_observed_prefix_before_erro
         Err(KernelError::Provider(ProviderError::Http(_)))
     ));
     assert_eq!(provider.sent.load(Ordering::SeqCst), 1);
+    assert!(!owner.effect_journal.parent_settlement_known());
+    let facts = owner.recovered_turn_publications_v1().unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(
+        facts[0].fact,
+        TurnPublicationFactV1::finalized(&Outcome::HarnessError).unwrap()
+    );
     let path = owner.rollout.path().to_owned();
+    let workspace = owner.workspace.clone();
+    let run_id = owner.rollout.run_id().clone();
+    owner.finish_advisory_maintenance_for_test().await.unwrap();
     drop(owner);
     let events = iteron_record::replay(&path).unwrap();
     let prefix = events
@@ -359,6 +373,259 @@ async fn exhausted_semantic_recovery_preserves_exact_observed_prefix_before_erro
             .iter()
             .any(|event| matches!(&event.kind, EventKind::TurnEnd { .. }))
     );
+    let terminals = events
+        .iter()
+        .filter(|event| matches!(&event.kind, EventKind::Done { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert!(matches!(&terminals[0].kind, EventKind::Done { outcome } if outcome == "HarnessError"));
+    assert_eq!(facts[0].source_seq, terminals[0].seq.0);
+    assert_eq!(facts[0].turn_id, terminals[0].turn);
+    let policy = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::PolicyOutcome { evidence }
+                if evidence.scope == iteron_protocol::PolicyOutcomeScope::Turn =>
+            {
+                Some(evidence)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(policy.len(), 1);
+    assert_eq!(
+        policy[0].harness_error_code.as_deref(),
+        Some("provider_error")
+    );
+    let reopened = Agent::new(
+        provider.clone(),
+        Registry::read_only(&workspace).unwrap(),
+        Rollout::open_existing(
+            &workspace.join(".iteron/runs"),
+            &run_id,
+            TenantId::default(),
+        )
+        .unwrap(),
+        "fixture-model".into(),
+        "driver fixture".into(),
+        Budget::default(),
+    );
+    assert_eq!(reopened.recovered_turn_publications_v1().unwrap(), facts);
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 1);
+    reopened
+        .finish_advisory_maintenance_for_test()
+        .await
+        .unwrap();
+    drop(reopened);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
+async fn priced_stream_failure_keeps_budget_closed_after_failed_terminal() {
+    let provider = Arc::new(ObservedProvider {
+        stream_failure_once: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "driver-priced-response-failure");
+    owner.budget.max_usd = Some(1.0);
+    let fixture_key = [42; 32];
+    let card = iteron_obs::sign_rate_card(
+        iteron_protocol::RateCard {
+            version: iteron_protocol::PricingVersion::V1,
+            route: iteron_protocol::PricingRoute {
+                provider_id: "driver-fixture".into(),
+                model_id: "fixture-model".into(),
+                catalog_digest: format!("sha256:{}", "a".repeat(64)),
+                capability_digest: format!("sha256:{}", "b".repeat(64)),
+            },
+            provenance: "driver-fixture@v1".into(),
+            issued_at_unix_secs: 1,
+            expires_at_unix_secs: u64::MAX,
+            rates: iteron_protocol::TokenRateCard {
+                input_microusd_per_million: 1_000_000,
+                output_microusd_per_million: 2_000_000,
+                cache_creation_microusd_per_million: 1_250_000,
+                cache_read_microusd_per_million: 100_000,
+                thinking_microusd_per_million: 3_000_000,
+            },
+        },
+        "driver-pricing-fixture",
+        fixture_key,
+    )
+    .unwrap();
+    owner.set_pricing_port(Arc::new(
+        iteron_obs::HmacPricingAuthority::new(vec![(
+            card,
+            iteron_obs::HmacPricingKey::from_bytes(fixture_key),
+        )])
+        .unwrap(),
+    ));
+    assert!(owner.bind_selected_rate_card().unwrap());
+    assert!(matches!(
+        owner.run("complete the fixture").await,
+        Err(KernelError::UnpricedUsdCeiling)
+    ));
+    assert!(owner.usd_budget_exhausted());
+    assert!(!owner.effect_journal.parent_settlement_known());
+    let facts = owner.recovered_turn_publications_v1().unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(
+        facts[0].fact,
+        TurnPublicationFactV1::finalized(&Outcome::HarnessError).unwrap()
+    );
+    assert!(matches!(
+        owner.run("must remain quarantined").await,
+        Err(KernelError::UnpricedUsdCeiling)
+    ));
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(owner.recovered_turn_publications_v1().unwrap(), facts);
+    let events = iteron_record::replay(owner.rollout.path()).unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectUnknown { tool, .. } if tool == "provider")).count(), 1);
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::TurnEnd { .. } | EventKind::EffectDone { .. }
+    )));
+    let workspace = owner.workspace.clone();
+    owner.finish_advisory_maintenance_for_test().await.unwrap();
+    drop(owner);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
+async fn failed_provider_terminal_append_refusal_retains_unknown_without_inventing_done() {
+    let provider = Arc::new(ObservedProvider {
+        stream_failure_once: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "driver-response-terminal-refusal");
+    owner.retry_policy.max_attempts = 1;
+    owner.fail_next_durable_append = Some(DurableAppendFault::RunTerminal);
+    assert!(matches!(
+        owner.run("complete the fixture").await,
+        Err(KernelError::Record(_))
+    ));
+    assert!(owner.record_failed);
+    assert!(!owner.effect_journal.parent_settlement_known());
+    assert!(owner.recovered_turn_publications_v1().unwrap().is_empty());
+    let events = iteron_record::replay(owner.rollout.path()).unwrap();
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectUnknown { tool, .. } if tool == "provider")).count(), 1);
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::Done { .. } | EventKind::TurnEnd { .. }
+    )));
+    let workspace = owner.workspace.clone();
+    drop(owner);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
+async fn resident_stream_failure_releases_input_and_accepts_one_explicit_follow_up() {
+    use crate::app_server::{AppServerHandle, Attached, ServerEvent, attach};
+    use crate::runtime::UiEvent;
+    use iteron_protocol::{ActivityDetailCode, Op};
+    use std::time::Duration;
+
+    let provider = Arc::new(ObservedProvider {
+        stream_failure_once: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "resident-stream-failure");
+    owner.retry_policy.max_attempts = 1;
+    let workspace = owner.workspace.clone();
+    let path = owner.rollout.path().to_owned();
+    let Attached { handle, task, .. } = attach(owner, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        control,
+        ..
+    } = handle;
+    for (index, prompt) in ["complete the fixture", "answer this new explicit prompt"]
+        .into_iter()
+        .enumerate()
+    {
+        // The second dispatch requires a new operator submission after the first terminal.
+        assert_eq!(provider.sent.load(Ordering::SeqCst), index);
+        client
+            .submit(Op::UserInput {
+                text: prompt.into(),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut summary = None;
+            let mut finalized = Vec::new();
+            let mut provider_turn_ends = 0;
+            loop {
+                match events
+                    .recv()
+                    .await
+                    .expect("resident session stays open")
+                    .into_current()
+                    .unwrap()
+                {
+                    ServerEvent::TurnPublication(event)
+                        if matches!(event.fact, TurnPublicationFactV1::TurnFinalized { .. }) =>
+                    {
+                        finalized.push(event)
+                    }
+                    ServerEvent::Ui(UiEvent::TurnEnd { .. }) => provider_turn_ends += 1,
+                    ServerEvent::RunEnded {
+                        summary: terminal, ..
+                    } => {
+                        assert!(summary.is_none(), "one runtime release per submission");
+                        summary = Some(terminal);
+                    }
+                    ServerEvent::Activity(activity)
+                        if activity.detail_code == Some(ActivityDetailCode::InputReady) =>
+                    {
+                        let summary = summary.expect("input becomes ready only after RunEnded");
+                        let expected = if index == 0 {
+                            Outcome::HarnessError
+                        } else {
+                            Outcome::Done
+                        };
+                        assert_eq!(summary.terminal.outcome(), expected);
+                        assert_eq!(summary.error.is_some(), index == 0);
+                        assert_eq!(finalized.len(), 1);
+                        assert_eq!(
+                            finalized[0].fact,
+                            TurnPublicationFactV1::finalized(&expected).unwrap()
+                        );
+                        assert_eq!(
+                            provider_turn_ends, index,
+                            "a disconnected provider never supplies invented usage"
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("failed response settles and releases the resident input within a bounded wait");
+        assert_eq!(provider.sent.load(Ordering::SeqCst), index + 1);
+    }
+    drop(control);
+    drop(client);
+    drop(events);
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("resident session shuts down after its clients close")
+        .unwrap();
+    let events = iteron_record::replay(&path).unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider")).count(), 2);
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectDone { tool, .. } if tool == "provider")).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectUnknown { tool, .. } if tool == "provider")).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::Done { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 2);
+    std::fs::remove_dir_all(workspace).unwrap();
 }
 
 #[tokio::test]

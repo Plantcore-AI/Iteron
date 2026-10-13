@@ -351,7 +351,81 @@ impl KernelError {
                     "context materialization exceeds the {limit}-byte protocol grant limit; reduce the configured context grant size"
                 )
             }
+            Self::ContextResolution(reason)
+                if reason == "context selection was not admitted as read-only" =>
+            {
+                "context selection was refused by read-only capability policy; review the configured context strategy".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "context observation is invalid"
+                        | "context decision is invalid"
+                        | "context slot version is unsupported"
+                        | "unsupported context slot version"
+                ) =>
+            {
+                "context selection returned an incompatible observation or decision; review the configured context strategy version".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "context decision attributes its request to another slot"
+                        | "context decision changed the caller request identity"
+                        | "context decision widened the caller's byte or trust ceiling"
+                        | "context decision changed or exceeded the bounded task query"
+                        | "context decision selected outside the gathered observation"
+                ) =>
+            {
+                "context selection exceeded the admitted request, source, or trust boundary; review the configured context strategy".into()
+            }
+            Self::ContextResolution(reason) if reason == "too many context selectors" => {
+                "context selection exceeds the selector-count limit; select fewer context sources".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "too many memory keys in one selector" | "memory key must be 1..=256 bytes"
+                ) =>
+            {
+                "context memory selection exceeds the key count or byte limit; select fewer or shorter memory keys".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "selector root must be 1..=4096 bytes"
+                        | "context selector root must stay workspace-relative"
+                ) =>
+            {
+                "context outline selection has an invalid root; use a bounded workspace-relative path".into()
+            }
+            Self::ContextResolution(reason)
+                if reason == "context port requires an explicit absolute workspace" =>
+            {
+                "context materialization has no absolute workspace; select a workspace before submitting".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "too many context segments"
+                        | "granted context bytes exceed the bound the request declared"
+                ) =>
+            {
+                "context materialization exceeds the selected segment or byte limit; select fewer context sources or reduce their size".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "grant does not answer this request"
+                        | "granted bytes under-report the segments, so the bound is unenforceable"
+                        | "a segment exceeds the trust ceiling the request declared"
+                ) =>
+            {
+                "context materialization violated its request, byte-accounting, or trust boundary; review the configured context port".into()
+            }
             Self::ContextResolution(_) => {
+                // Hook and replacement-port errors can contain private paths or task text.
+                // Only closed, known owner reasons above are safe to classify publicly.
                 "context selection or materialization failed closed".into()
             }
             Self::SensitiveModelContext => {
@@ -587,5 +661,101 @@ mod context_resolution_message_tests {
         let opaque =
             KernelError::ContextResolution("private/path/secret-token".into()).public_summary();
         assert_eq!(opaque, "context selection or materialization failed closed");
+    }
+
+    #[test]
+    fn context_refusals_identify_selection_or_materialization_without_echoing_input() {
+        for (reason, component, action) in [
+            (
+                "context decision selected outside the gathered observation",
+                "context selection",
+                "review the configured context strategy",
+            ),
+            (
+                "too many memory keys in one selector",
+                "context memory selection",
+                "select fewer or shorter memory keys",
+            ),
+            (
+                "context selector root must stay workspace-relative",
+                "context outline selection",
+                "workspace-relative path",
+            ),
+            (
+                "granted context bytes exceed the bound the request declared",
+                "context materialization",
+                "reduce their size",
+            ),
+        ] {
+            let summary = KernelError::ContextResolution(reason.into()).public_summary();
+            assert!(
+                summary.contains(component) && summary.contains(action),
+                "{summary}"
+            );
+            let injected = KernelError::ContextResolution(format!("{reason}: private-task-text"))
+                .public_summary();
+            assert_eq!(
+                injected,
+                "context selection or materialization failed closed"
+            );
+        }
+    }
+
+    #[test]
+    fn large_unicode_submission_uses_bounded_selection_without_changing_the_submission() {
+        let task = format!(
+            "initial-path-hint\n{}\nlatest-question",
+            "分析".repeat(14_000)
+        );
+        let original = task.clone();
+        let resolved = crate::runtime::strategy_runtime::resolve_live_context(
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
+            &iteron_ctx::PortStub::new(vec![]),
+            crate::runtime::strategy_runtime::LiveContextRequest {
+                workspace: std::path::Path::new("/synthetic-context"),
+                home_dir: None,
+                dependency_skill_dirs: &[],
+                turn: iteron_protocol::TurnId(6),
+                task: &task,
+                memory_benchmark_scope: None,
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
+            },
+        )
+        .expect("a large submission must not overflow the separate relevance query");
+        assert_eq!(
+            task, original,
+            "selection must not replace the submitted text"
+        );
+        assert!(resolved.policy_observation.task.len() <= 65_536);
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .starts_with("initial-path-hint")
+        );
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .ends_with("latest-question")
+        );
+        assert_eq!(resolved.policy_plan.task, resolved.policy_observation.task);
+
+        // TaskContext is measured in tokens; it is independent of the selection query's bytes.
+        let mut policy = iteron_ctx::ContextBudgetPolicy::for_usable_window(1_208_192, 8_192, 0);
+        policy.task_context_tokens = 120_000;
+        let violation = policy
+            .admit_components(&iteron_ctx::ContextComponentUsage {
+                task_context_tokens: 120_001,
+                ..Default::default()
+            })
+            .unwrap_err();
+        let summary = KernelError::ContextBudget(violation.to_string()).public_summary();
+        assert!(
+            summary.contains("TaskContext") && summary.contains("120000"),
+            "{summary}"
+        );
+        assert!(!summary.contains("selection"));
     }
 }

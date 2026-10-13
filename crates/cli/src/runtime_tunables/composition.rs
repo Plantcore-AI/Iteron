@@ -577,7 +577,7 @@ mod tests {
     use crate::config::{ProviderConfig, ProviderGovernorConfig, ProviderModelCapabilities};
     use iteron_protocol::{Capability, TenantId};
 
-    fn fixture_provider() -> ProviderConfig {
+    fn fixture_provider(context_window_tokens: Option<u64>) -> ProviderConfig {
         ProviderConfig {
             id: "composition-fixture".into(),
             display_name: Some("composition fixture".into()),
@@ -597,7 +597,7 @@ mod tests {
                     // Compatible gateways often omit this optional catalog field. Fresh
                     // composition uses the bounded compaction fallback instead of making the CLI
                     // unusable before its first request.
-                    context_window_tokens: None,
+                    context_window_tokens,
                     image_input: Some(true),
                     routing_objectives: None,
                     data_policy: None,
@@ -636,8 +636,55 @@ mod tests {
 
     #[test]
     fn fresh_composition_executes_owner_and_getter_seals_before_returning() {
+        assert_fresh_composition(None, 8_192);
+    }
+
+    #[test]
+    fn missing_output_cap_uses_one_installed_fallback_for_request_and_context() {
+        const CHILD: &str = "ITERON_TEST_OUTPUT_FALLBACK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Parameter installation is process-global and immutable. Isolate the real
+            // installation instead of letting this test change concurrent test defaults.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime_tunables::composition::tests::missing_output_cap_uses_one_installed_fallback_for_request_and_context",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated output fallback regression failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        iteron_tunables::install_param_overrides([(
+            "cli.runtime_tunables.core_facts.default_request_output_tokens".into(),
+            iteron_tunables::ResolutionValue::Integer { value: 32_768 },
+        )])
+        .unwrap();
+        assert_fresh_composition(Some(262_144), 32_768);
+        assert_eq!(
+            super::super::core_facts::default_request_output_tokens(Some(4_096)),
+            4_096,
+            "a smaller physical capability still narrows the installed request default"
+        );
+        assert_eq!(
+            super::super::core_facts::default_request_output_tokens(Some(65_536)),
+            32_768,
+            "a larger physical maximum must not silently widen a request"
+        );
+    }
+
+    fn assert_fresh_composition(context_window: Option<u64>, expected_output: u32) {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let directory = ProviderDirectory::inspect_local(&[fixture_provider()]).unwrap();
+        let directory =
+            ProviderDirectory::inspect_local(&[fixture_provider(context_window)]).unwrap();
         let selection = directory
             .resolve_model("composition-fixture:fixture-model", None)
             .unwrap();
@@ -648,9 +695,10 @@ mod tests {
             "the production composition oracle exercises the image-capable custom route"
         );
         assert_eq!(
-            model_capabilities.context_window_tokens, None,
-            "the production composition oracle exercises the unknown-window fallback"
+            model_capabilities.context_window_tokens, context_window,
+            "the composition oracle preserves the exact declared or unknown window"
         );
+        assert_eq!(model_capabilities.max_output_tokens, None);
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
         let entry = directory.entry(&selection.provider_id).unwrap();
         let api_root = entry.instance.api_root().as_str().to_owned();
@@ -663,7 +711,9 @@ mod tests {
         // The explicit aggregate ceiling must admit the now-default medium child effort.
         // An undersized ceiling is rejected by the separate external-constraint tests.
         let budget = Budget {
-            max_tokens: Some(u64::from(Effort::Medium.thinking_budget())),
+            max_tokens: Some(u64::from(
+                Effort::Medium.thinking_budget().max(expected_output),
+            )),
             ..Budget::default()
         };
         let compaction = iteron_ctx::CompactionPolicy::default();
@@ -781,6 +831,17 @@ mod tests {
         });
 
         assert_eq!(fresh.settings.effort, Effort::Medium);
+        assert_eq!(fresh.settings.request_output_cap, Some(expected_output));
+        assert_eq!(
+            fresh.settings.context_budget.output_reserve_tokens, expected_output,
+            "request admission and component allocation use the same resolved reserve"
+        );
+        if let Some(window) = context_window {
+            assert_eq!(
+                fresh.settings.context_budget.transcript_tokens as u64,
+                (window - u64::from(expected_output)) / 4
+            );
+        }
         assert_eq!(
             fresh.settings.task_context_budget_source,
             super::super::effective_core::TaskContextBudgetSource::DefaultDerived,
@@ -1071,10 +1132,7 @@ mod tests {
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
         assert_eq!(fresh.settings.budget.max_turns, 10);
-        assert_eq!(
-            fresh.settings.budget.max_tokens,
-            Some(u64::from(Effort::Medium.thinking_budget()))
-        );
+        assert_eq!(fresh.settings.budget.max_tokens, budget.max_tokens);
         assert_eq!(fresh.settings.context_budget.multimodal_tokens, 1_024);
         assert!(
             fresh.settings.model_context_window.is_some(),
@@ -1143,6 +1201,11 @@ mod tests {
         let (resumed_core, _, _) =
             super::super::effective_runtime::consume_registered_getters(&view)
                 .expect("the real fresh decoders execute");
+        assert_eq!(resumed_core.request_output_cap, Some(expected_output));
+        assert_eq!(
+            resumed_core.context_budget.output_reserve_tokens,
+            expected_output
+        );
         assert_eq!(
             resumed_core.task_context_budget_source,
             super::super::effective_core::TaskContextBudgetSource::DefaultDerived,

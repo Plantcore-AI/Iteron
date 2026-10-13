@@ -188,7 +188,12 @@ impl ControllerEngineChildren {
         }
         Ok(receipts)
     }
-    pub(super) async fn direct(&self, prompt: String, node: u64) -> AgentOutcome {
+    pub(super) async fn direct(
+        &self,
+        prompt: String,
+        node: u64,
+        agent_type: Option<&str>,
+    ) -> AgentOutcome {
         self.execute(
             AgentCall {
                 prompt,
@@ -196,7 +201,7 @@ impl ControllerEngineChildren {
                 phase: None,
                 model: None,
                 effort: None,
-                agent_type: Some("generic".into()),
+                agent_type: agent_type.map(str::to_owned),
                 schema: None,
                 cancel: Default::default(),
             },

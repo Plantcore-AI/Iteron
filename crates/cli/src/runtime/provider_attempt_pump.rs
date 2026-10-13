@@ -88,7 +88,7 @@ impl ProviderAttemptPump {
     }
 
     pub(super) fn settle(
-        self,
+        mut self,
         route: &mut ProviderRouteTurn,
         mut journal: ProviderAttemptJournal<'_>,
         events: &ProviderRouteEvents,
@@ -118,7 +118,13 @@ impl ProviderAttemptPump {
             extension
                 .observe_physical_attempt(turn, &accounting)
                 .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
-            journal.commit_usd(turn, &accounting)?;
+            if let Err(error) = journal.commit_usd(turn, &accounting) {
+                // The physical terminal is already durable. Carry its accounting refusal through
+                // ordinary response cleanup so eager tools, retained output and the failed turn
+                // settle. The monetary owner keeps its unknown charge and forbids another send.
+                monetary_followup_safe = false;
+                self.result = Err(error);
+            }
             journal.measure_broker(started);
             usage_evidence = ProviderLogicalUsageEvidence::Single(receipt);
         }

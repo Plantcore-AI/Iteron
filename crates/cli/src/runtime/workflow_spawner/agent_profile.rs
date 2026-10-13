@@ -8,10 +8,10 @@ pub(super) struct ResolvedAgentProfile {
     pub definition: AgentDef,
     pub effort: Effort,
 }
-pub(super) fn resolve(
+pub(super) fn resolve_definition(
     cx: &KernelSpawnerContext,
     call: &AgentCall,
-) -> Result<ResolvedAgentProfile, String> {
+) -> Result<AgentDef, String> {
     if cx.tunables_pin.is_none() {
         return Err("child runtime tunables were not pinned".into());
     }
@@ -79,6 +79,14 @@ pub(super) fn resolve(
             return Err("agent definition model has no admitted native role route".into());
         }
     }
+    Ok(definition)
+}
+
+pub(super) fn resolve(
+    cx: &KernelSpawnerContext,
+    call: &AgentCall,
+) -> Result<ResolvedAgentProfile, String> {
+    let definition = resolve_definition(cx, call)?;
     let effort = cx
         .execution_policy
         .admit_child_effort(call.effort, &cx.effort_policy)

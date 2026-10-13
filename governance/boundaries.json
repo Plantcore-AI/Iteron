@@ -880,6 +880,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/provider/src/openai_reasoning_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/provider/src/responses.rs"
         },
         {

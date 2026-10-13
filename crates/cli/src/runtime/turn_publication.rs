@@ -210,6 +210,35 @@ fn recover(
 }
 
 impl Agent {
+    /// A settled response failure ends this invocation, even when the provider's physical effect
+    /// remains unknown. Preserve that evidence and the original error; only the existing durable
+    /// finalizer may publish the failed turn. No provider usage or successful answer is inferred.
+    pub(super) async fn finish_failed_provider_response(
+        &mut self,
+        turn: TurnId,
+        error: KernelError,
+    ) -> Result<Outcome, KernelError> {
+        // A failed evidence writer cannot be repaired by trying another append. Its failure is
+        // authoritative, including when the response failed while aborting an eager tool.
+        if matches!(
+            &error,
+            KernelError::Record(_) | KernelError::PolicyEvidence(_)
+        ) {
+            return Err(error);
+        }
+        if let Some(outcome) = self.collect_and_finish_requested_control(turn).await? {
+            return Ok(outcome);
+        }
+        self.append_policy_turn_outcome(
+            turn,
+            iteron_protocol::PolicyTerminalOutcome::Failed,
+            self.terminal_record.verifier(),
+            Some(super::policy_evidence::policy_harness_error_code(&error)),
+        )?;
+        self.finish(turn, Outcome::HarnessError).await?;
+        Err(error)
+    }
+
     /// Recent facts from the retained record projection. No IO or unbounded historical fold is
     /// performed on completion/read; constructor/adoption recovery preserves physical scope.
     pub(crate) fn recovered_turn_publications_v1(

@@ -150,6 +150,7 @@ impl OpenAiCompat {
                 self.error_profile,
                 &self.route_scope,
                 input_images,
+                !req.tools.is_empty(),
             )?);
         }
         let mut b = serde_json::json!({
@@ -397,6 +398,7 @@ fn msg_to_openai(
     error_profile: ErrorProfile,
     route_scope: &str,
     input_images: &[iteron_protocol::ImageContent],
+    request_has_tools: bool,
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_chat_route_scope(route_scope)?;
     crate::tool_image::validate_message(m)?;
@@ -469,11 +471,12 @@ fn msg_to_openai(
             if !tool_calls.is_empty() {
                 msg["tool_calls"] = serde_json::json!(tool_calls);
             }
-            // DeepSeek explicitly requires reasoning_content to be replayed in a tool loop; GLM
-            // and Fireworks use the same field. It is provider-private continuation data, not the
-            // portable Thinking projection. Only an exact instance scope + format match may be
-            // interpreted, preventing transcripts switched between providers from leaking it.
-            if !tool_calls.is_empty()
+            // DeepSeek requires every prior assistant's reasoning when the current request
+            // advertises tools, including final answers that made no tool call. GLM/Fireworks
+            // keep their existing tool-call continuation behavior. Only exact route + format
+            // state is replayable; portable Thinking blocks are never continuation evidence.
+            if (!tool_calls.is_empty()
+                || (error_profile == ErrorProfile::DeepSeek && request_has_tools))
                 && preserves_reasoning_content(error_profile)
                 && let Some(reasoning) = matching_reasoning_content(m, route_scope)?
             {
@@ -1374,7 +1377,9 @@ impl Provider for OpenAiCompat {
         };
         let mut blocks: Vec<Block> = Vec::new();
         if !thinking.is_empty() {
-            if preserves_reasoning_content(self.error_profile) && !tool_uses.is_empty() {
+            if preserves_reasoning_content(self.error_profile)
+                && (self.error_profile == ErrorProfile::DeepSeek || !tool_uses.is_empty())
+            {
                 blocks.push(Block::ProviderState(reasoning_provider_state(
                     &self.route_scope,
                     &thinking,
@@ -1406,13 +1411,23 @@ impl Provider for OpenAiCompat {
 }
 
 #[cfg(test)]
+#[path = "openai_reasoning_tests.rs"]
+mod reasoning_replay_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn actual_tool_pixels_are_a_labeled_companion_after_text_tool_result() {
         let message = crate::tool_image::message_fixture();
         let image = crate::tool_image::fixture();
-        let out = super::msg_to_openai(&message, crate::ErrorProfile::OpenAi, "image-fixture", &[])
-            .unwrap();
+        let out = super::msg_to_openai(
+            &message,
+            crate::ErrorProfile::OpenAi,
+            "image-fixture",
+            &[],
+            false,
+        )
+        .unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "vision-call");
@@ -1432,8 +1447,14 @@ mod tests {
         };
         observation.tool_use_id = "another-call".into();
         assert!(
-            super::msg_to_openai(&forged, crate::ErrorProfile::OpenAi, "image-fixture", &[])
-                .is_err()
+            super::msg_to_openai(
+                &forged,
+                crate::ErrorProfile::OpenAi,
+                "image-fixture",
+                &[],
+                false
+            )
+            .is_err()
         );
     }
     use super::*;
@@ -1451,7 +1472,7 @@ mod tests {
                 input: serde_json::json!({"path":"a.rs"}),
             })],
         };
-        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[]).unwrap();
+        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[], false).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "read_file");
         assert_eq!(out[0]["tool_calls"][0]["id"], "c1");
@@ -1469,7 +1490,7 @@ mod tests {
                 latency_ms: 0,
             })],
         };
-        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[]).unwrap();
+        let out = msg_to_openai(&m, ErrorProfile::OpenAi, TEST_SCOPE, &[], false).unwrap();
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "c1");
     }
@@ -1554,7 +1575,7 @@ mod tests {
             ErrorProfile::Glm,
             ErrorProfile::Fireworks,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();
             assert_eq!(mapped[0]["reasoning_content"], "private provider reasoning");
         }
         for profile in [
@@ -1562,12 +1583,18 @@ mod tests {
             ErrorProfile::MiniMax,
             ErrorProfile::CustomConservative,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();
             assert!(mapped[0].get("reasoning_content").is_none());
         }
 
-        let cross_route =
-            msg_to_openai(&message, ErrorProfile::DeepSeek, "other-instance", &[]).unwrap();
+        let cross_route = msg_to_openai(
+            &message,
+            ErrorProfile::DeepSeek,
+            "other-instance",
+            &[],
+            false,
+        )
+        .unwrap();
         assert!(cross_route[0].get("reasoning_content").is_none());
     }
 
@@ -1591,7 +1618,7 @@ mod tests {
             ErrorProfile::Glm,
             ErrorProfile::Fireworks,
         ] {
-            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[]).unwrap();
+            let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();
             assert!(mapped[0].get("reasoning_content").is_none());
         }
     }
@@ -1616,9 +1643,15 @@ mod tests {
                 }),
             ],
         };
-        assert!(msg_to_openai(&malformed, ErrorProfile::DeepSeek, TEST_SCOPE, &[]).is_err());
-        let portable =
-            msg_to_openai(&malformed, ErrorProfile::DeepSeek, "other-instance", &[]).unwrap();
+        assert!(msg_to_openai(&malformed, ErrorProfile::DeepSeek, TEST_SCOPE, &[], false).is_err());
+        let portable = msg_to_openai(
+            &malformed,
+            ErrorProfile::DeepSeek,
+            "other-instance",
+            &[],
+            false,
+        )
+        .unwrap();
         assert!(portable[0].get("reasoning_content").is_none());
 
         let oversized = "x".repeat(MAX_REASONING_STATE_PAYLOAD_BYTES + 1);
@@ -1637,7 +1670,7 @@ mod tests {
                 }),
             ],
         };
-        assert!(msg_to_openai(&oversized, ErrorProfile::DeepSeek, TEST_SCOPE, &[]).is_err());
+        assert!(msg_to_openai(&oversized, ErrorProfile::DeepSeek, TEST_SCOPE, &[], false).is_err());
     }
 
     #[test]

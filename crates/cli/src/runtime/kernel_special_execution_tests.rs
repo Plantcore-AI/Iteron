@@ -11,7 +11,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-struct Answer(Arc<AtomicUsize>);
+struct Answer(Arc<AtomicUsize>, bool);
 #[async_trait::async_trait]
 impl Provider for Answer {
     fn provider_instance_id(&self) -> Option<&str> {
@@ -19,10 +19,20 @@ impl Provider for Answer {
     }
     async fn turn(
         &self,
-        _: &TurnRequest,
+        request: &TurnRequest,
         _: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         self.0.fetch_add(1, Ordering::SeqCst);
+        if self.1 {
+            assert_eq!(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["read_file"]
+            );
+        }
         Ok(TurnResult {
             blocks: vec![Block::Text {
                 text: "actual child report".into(),
@@ -37,6 +47,9 @@ impl Provider for Answer {
     }
 }
 fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
+    host_with_profile(label, false)
+}
+fn host_with_profile(label: &str, narrow: bool) -> (Agent, Arc<AtomicUsize>) {
     let workspace = gate_integration_tests::temp_ws(label);
     let calls = Arc::new(AtomicUsize::new(0));
     let rollout = iteron_record::Rollout::open(
@@ -46,7 +59,7 @@ fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
     )
     .unwrap();
     let mut host = Agent::new(
-        Arc::new(Answer(calls.clone())),
+        Arc::new(Answer(calls.clone(), narrow)),
         iteron_tools::Registry::coding_agent_for_tests(&workspace).unwrap(),
         rollout,
         "fixture-model".into(),
@@ -54,6 +67,17 @@ fn host(label: &str) -> (Agent, Arc<AtomicUsize>) {
         Budget::default(),
     );
     host.workspace = workspace;
+    if narrow {
+        let home = host.workspace.join("operator-home");
+        std::fs::create_dir_all(home.join(".iteron/agents")).unwrap();
+        std::fs::write(home.join(".iteron/agents/file-reader.md"),
+            "---\nname: file-reader\ndescription: Read one file\ntools: [read_file]\n---\nRead the requested file and report its content.\n").unwrap();
+        host.pin_agent_catalog(iteron_agents::AgentCatalog::discover(
+            &home,
+            &host.workspace,
+        ))
+        .unwrap();
+    }
     host.provider_selection.fixture_selection(
         Some(crate::runtime::provider_selection::SelectedRoute {
             route: iteron_protocol::PricingRoute {
@@ -183,6 +207,73 @@ async fn actual_direct_constructor_keeps_native_identity_accounting_and_low_trus
     }
     assert!(before.child_accounting_complete());
 }
+
+#[tokio::test]
+async fn direct_profile_selection_reaches_the_actual_provider_catalog() {
+    let (mut host, calls) = host_with_profile("kernel-direct-profile-selected", true);
+    let result = execute(
+        &mut host,
+        KernelSpecialKind::Direct,
+        &ToolUse {
+            id: "selected-profile".into(),
+            name: iteron_tools::DISPATCH_AGENT.into(),
+            input: serde_json::json!({"task":"read the fixture", "agent_type":"file-reader"}),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(result.content, "actual child report");
+    assert_eq!(result.trust, Trust::Untrusted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.session_spawn_ledger.admitted(), 1);
+    assert!(host.parent_effects_known());
+}
+
+#[tokio::test]
+async fn direct_profile_refusals_do_not_admit_children() {
+    for (index, profile) in [
+        serde_json::json!("missing-profile"),
+        serde_json::json!("isolated-writer"),
+        serde_json::json!("reviewer/escape"),
+        serde_json::json!("ghp_AbCdEf1234567890AbCdEf1234567890\n\u{1b}[2J"),
+        serde_json::json!(null),
+        serde_json::json!(["read_file"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (mut host, calls) = host(&format!("kernel-direct-profile-refusal-{index}"));
+        let admitted = host.session_spawn_ledger.admitted();
+        let result = execute(
+            &mut host,
+            KernelSpecialKind::Direct,
+            &ToolUse {
+                id: "refused-profile".into(),
+                name: iteron_tools::DISPATCH_AGENT.into(),
+                input: serde_json::json!({"task":"read the fixture", "agent_type":profile}),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.len() <= 512);
+        assert!(!result.content.chars().any(char::is_control));
+        assert!(!result.content.contains("AbCdEf1234567890"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.session_spawn_ledger.admitted(), admitted);
+        assert!(
+            !iteron_record::replay(host.rollout.path())
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    &event.kind,
+                    EventKind::SubagentSpawned { .. } | EventKind::SubagentFinishedV2 { .. }
+                ))
+        );
+        assert!(host.parent_effects_known());
+    }
+}
 #[tokio::test]
 async fn actual_plan_inspection_has_one_native_terminal_and_no_provider_io() {
     let (mut host, calls) = host("kernel-plan-owner");
@@ -311,7 +402,7 @@ async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission
             crate::runtime::direct_child_execution::DirectChildInvocation {
                 turn: TurnId(1),
                 index: 0,
-                task: "read",
+                input: &call.input,
             },
             &mut journal,
             &mut control,

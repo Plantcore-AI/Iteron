@@ -58,7 +58,7 @@ fn route(id: &'static str, cache: bool) -> Arc<CaptureRoute> {
     })
 }
 
-fn agent_for_route(ws: &std::path::Path, source: Arc<CaptureRoute>) -> Agent {
+fn agent_for_route(ws: &std::path::Path, source: Arc<dyn Provider>) -> Agent {
     let rollout = Rollout::open(
         &ws.join(".iteron/runs"),
         &iteron_protocol::RunId("route-cache-hint".into()),
@@ -189,6 +189,47 @@ fn resumed_controls_can_install_without_rewriting_the_cache_preference() {
     assert!(!agent.provider_cache_system_enabled());
     drop(agent);
     std::fs::remove_dir_all(ws).ok();
+}
+
+#[test]
+fn unavailable_resident_route_omits_rolling_without_erasing_required_controls() {
+    let ws = super::gate_integration_tests::temp_ws("unavailable-resident-cache-hint");
+    let directory = crate::providers::ProviderDirectory::inspect_local(&[]).unwrap();
+    let provider = directory.unavailable_provider("synthetic-anthropic-route", "catalog pending");
+    let mut controls = ProviderRequestControls::default();
+    controls.prompt_cache.breakpoint = CacheBreakpoint::Rolling;
+
+    // Resident startup validates this same physical placeholder before the picker opens.
+    let capabilities = provider.control_capabilities();
+    capabilities
+        .validate(&capabilities.adapt_optional_cache_breakpoint(controls))
+        .expect("optional Rolling must not make an unavailable route prevent startup");
+    let mut agent = agent_for_route(&ws, provider.clone());
+    agent.set_provider_controls(controls).unwrap();
+    assert_eq!(agent.provider_controls, controls);
+    assert_eq!(
+        agent
+            .provider_controls_for(provider.as_ref())
+            .prompt_cache
+            .breakpoint,
+        CacheBreakpoint::None
+    );
+    assert!(!agent.provider_cache_system_enabled());
+
+    controls.prompt_cache.ttl_seconds = 300;
+    assert!(matches!(
+        agent.set_provider_controls(controls),
+        Err(KernelError::ProviderControl(_))
+    ));
+    assert_eq!(agent.provider_controls.prompt_cache.ttl_seconds, 0);
+    assert!(
+        !iteron_record::replay(agent.rollout.path())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
+    );
+    drop(agent);
+    std::fs::remove_dir_all(ws).unwrap();
 }
 
 #[test]

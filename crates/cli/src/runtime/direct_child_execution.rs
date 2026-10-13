@@ -49,7 +49,7 @@ pub(super) struct DirectChildExecution {
 pub(super) struct DirectChildInvocation<'a> {
     pub(super) turn: TurnId,
     pub(super) index: usize,
-    pub(super) task: &'a str,
+    pub(super) input: &'a serde_json::Value,
 }
 impl DirectChildExecution {
     pub(super) async fn run(
@@ -60,7 +60,22 @@ impl DirectChildExecution {
         events: &StreamToolEvents,
         mut hooks: super::hook_execution::HookExecutionScope<'_>,
     ) -> Result<super::kernel_child_accounting::KernelChildCompletion, KernelError> {
-        let DirectChildInvocation { turn, index, task } = invocation;
+        let DirectChildInvocation { turn, index, input } = invocation;
+        let task = input
+            .get("task")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let agent_type = match input.get("agent_type") {
+            None => None,
+            Some(serde_json::Value::String(name)) => Some(name.as_str()),
+            Some(_) => {
+                return Ok(
+                    super::kernel_child_accounting::KernelChildCompletion::no_child(Err(
+                        "agent_type must name an existing read-only agent profile".into(),
+                    )),
+                );
+            }
+        };
         if let DirectChildWork::Refused(reason) = &self.work {
             return Ok(
                 super::kernel_child_accounting::KernelChildCompletion::no_child(
@@ -95,14 +110,23 @@ impl DirectChildExecution {
             }
             DirectChildWork::Native { context, identity } => {
                 let run = identity.run.clone();
-                if context.session_spawn_ledger.admit().is_err() {
+                let spawn_ledger = context.session_spawn_ledger.clone();
+                let spawner = KernelSpawner::new(*context);
+                if let Err(reason) = spawner.validate_direct_child_profile(&identity, agent_type) {
+                    return Ok(
+                        super::kernel_child_accounting::KernelChildCompletion::no_child(Err(
+                            reason,
+                        )),
+                    );
+                }
+                if spawn_ledger.admit().is_err() {
                     return Ok(
                         super::kernel_child_accounting::KernelChildCompletion::no_child(Err(
                             "subagent was not started: session spawn allowance exhausted".into(),
                         )),
                     );
                 }
-                let mut child = match KernelSpawner::new(*context).build_direct_child(&identity) {
+                let mut child = match spawner.build_direct_child(&identity, agent_type) {
                     Ok(child) => child,
                     Err(reason) => {
                         return Ok(
@@ -185,7 +209,7 @@ impl DirectChildExecution {
                 .ok_or(KernelError::ContextResolution(
                     "direct child index overflow".into(),
                 ))?;
-            let mut execution = Box::pin(children.direct(prompt, node));
+            let mut execution = Box::pin(children.direct(prompt, node, agent_type));
             let outcome = loop {
                 match tokio::time::timeout(execution_control_poll(), &mut execution).await {
                     Ok(outcome) => break outcome,

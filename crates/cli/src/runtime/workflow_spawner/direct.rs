@@ -11,3 +11,16 @@ pub(in crate::runtime) struct DirectChildIdentity {
     pub(in crate::runtime) deadline: Instant,
     pub(in crate::runtime) diagnostics: DiagnosticEmitter,
 }
+
+pub(super) fn profile_call(agent_type: Option<&str>, effort: Effort) -> iteron_workflow::AgentCall {
+    iteron_workflow::AgentCall {
+        prompt: String::new(),
+        label: None,
+        phase: None,
+        model: None,
+        effort: Some(effort),
+        agent_type: agent_type.map(str::to_owned),
+        schema: None,
+        cancel: Default::default(),
+    }
+}

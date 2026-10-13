@@ -237,19 +237,27 @@ impl Agent {
                 }
                 CodingRunWork::ResponseRecovery => {
                     let (journal, scope) = self.provider_response_ports(turn);
-                    if let Some(failure) = run.recover_response(journal, scope).await? {
+                    let failure = match run.recover_response(journal, scope).await {
+                        Ok(failure) => failure,
+                        Err(error) => {
+                            return self.finish_failed_provider_response(turn, error).await;
+                        }
+                    };
+                    if let Some(failure) = failure {
                         if failure.observe_physical_usage {
                             self.emit_plantcore_turn_usage(turn)?;
                         }
-                        if let Some(outcome) =
-                            self.collect_and_finish_requested_control(turn).await?
-                        {
-                            return Ok(outcome);
-                        }
                         if let Some(terminal) = failure.terminal {
+                            if let Some(outcome) =
+                                self.collect_and_finish_requested_control(turn).await?
+                            {
+                                return Ok(outcome);
+                            }
                             return self.finish(turn, terminal).await;
                         }
-                        return Err(failure.error);
+                        return self
+                            .finish_failed_provider_response(turn, failure.error)
+                            .await;
                     }
                 }
                 CodingRunWork::Usage => {

@@ -1861,11 +1861,15 @@ fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
                           concise summary. Use for wide search or multi-file investigation to \
                           keep your own context clean. The subagent cannot edit or run code; you \
                           remain the only writer. Give it a specific question and the output you \
-                          want."
+                          want. Optionally select an existing agent_type whose configured tools \
+                          further restrict the child's read-only toolset."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
-                "properties":{"task":{"type":"string","description":"the investigation question + desired output"}},
+                "properties":{
+                    "task":{"type":"string","description":"the investigation question + desired output"},
+                    "agent_type":{"type":"string","description":"Optional existing agent profile name; its tools allowlist narrows the read-only child tools (for example a profile configured with tools: [read_file]). Defaults to generic. Unknown or disallowed profiles are refused."}
+                },
                 "required":["task"]
             }),
             // Effecting so it is not early-dispatched; the kernel intercepts by name before the

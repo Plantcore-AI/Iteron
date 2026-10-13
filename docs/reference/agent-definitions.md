@@ -34,8 +34,10 @@ grammar before catalog lookup. Unknown or duplicate frontmatter keys are errors.
 - Omitting both keeps the complete read-only registry.
 
 An agent definition cannot grant edit, process, shell, web-egress, workflow, or delegation tools.
-Every child also receives a read-only capability ceiling, no executable lifecycle hooks, and no
-permission bypass. The former special `agentType: "writer"` behavior is not supported.
+Every investigator child receives a read-only capability ceiling. Trusted
+operator hooks and permission posture are inherited from the parent; selecting
+an agent definition cannot widen that ceiling. The former special
+`agentType: "writer"` behavior is not supported.
 
 The optional budget fields may only narrow the built-in child ceiling: at most 30 turns, 300 wall
 seconds, and 3 consecutive tool errors. `maxTokens` and a finite non-negative `maxUsd` add further
@@ -54,6 +56,26 @@ provider effect is opened. Refusal reasons are credential-redacted, terminal-saf
 at most 512 bytes and never quote the caller's raw agent or model metadata. Each admitted child
 records a SHA-256 content identity covering its
 name, system prompt, tool filter, model policy, budget, and trust tier in session genesis.
+
+The direct `dispatch_agent` tool accepts the optional `agent_type` field. For a
+single-file reader, create `.iteron/agents/file-reader.md` before starting the
+session:
+
+```markdown
+---
+name: file-reader
+description: Reads the one requested file.
+tools: [read_file]
+---
+Read the exact requested path and report the relevant content or the actual error.
+```
+
+Then call `dispatch_agent` with
+`{"task":"Read src/example.rs and summarize its exports","agent_type":"file-reader"}`.
+The allowlist is enforced during execution as well as in the advertised tools.
+Omitting `agent_type` keeps the generic read-only child. Invalid profiles are
+refused before child admission. A restricted toolset does not establish that a
+model completed the requested investigation; inspect its returned outcome.
 
 The diagnostic `ITERON_WORKFLOW_SPAWNER=provider` fallback does not interpret this catalog. It
 supports only the built-in `generic` agent on the exact parent model; named definitions and model

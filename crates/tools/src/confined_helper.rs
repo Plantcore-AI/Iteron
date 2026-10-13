@@ -941,10 +941,14 @@ mod descriptor_tests {
         let result = registry
             .run(call(
                 "write_file",
-                json!({"path": "review.py", "content": "reviewed\n"}),
+                json!({"path": root.0.join("review.py"), "content": "reviewed\n"}),
             ))
             .await;
         assert!(!result.is_error, "{}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("review.py")).unwrap(),
+            "reviewed\n"
+        );
         let result = registry
             .run(call(
                 "write_file",
@@ -952,5 +956,31 @@ mod descriptor_tests {
             ))
             .await;
         assert!(result.is_error);
+        assert!(registry.confine_execution_handle().load(Ordering::Relaxed));
+        assert!(native_write_confinement_notice().is_some());
+
+        // The fallback must keep inherited path authority as well as workspace confinement.
+        let mut scoped = crate::Registry::coding_agent(&root.0).unwrap();
+        scoped
+            .set_inherited_write_scope(vec!["allowed".into()])
+            .unwrap();
+        let result = scoped
+            .run(call(
+                "write_file",
+                json!({"path": "allowed/file", "content": "allowed"}),
+            ))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let result = scoped
+            .run(call(
+                "write_file",
+                json!({"path": "review.py", "content": "denied"}),
+            ))
+            .await;
+        assert!(result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("review.py")).unwrap(),
+            "reviewed\n"
+        );
     }
 }

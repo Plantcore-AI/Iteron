@@ -900,12 +900,12 @@ pub async fn run(
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    let history_flushed = if force_quit_requested {
+    let history_status = if force_quit_requested {
         let _ = history_writer.schedule(app.editor.persistence_state());
         drop(history_writer);
-        true
+        crate::prompt_history::FinishStatus::Skipped
     } else {
-        history_writer.finish_bounded(app.editor.persistence_state())
+        history_writer.finish_status(app.editor.persistence_state())
     };
     if let Some(exit_code) = termination_exit {
         drop(session);
@@ -916,10 +916,8 @@ pub async fn run(
         // this resolves immediately, so the wait exists exactly when it is earning something.
         let stopped = wait_for_server_shutdown(&mut server_task).await;
         restore_terminal(&guard.keyboard_restorer());
-        if !history_flushed {
-            eprintln!(
-                "prompt history is still finalizing in the background; shutdown did not wait past its two-second storage deadline"
-            );
+        if let Some(warning) = history_status.warning() {
+            eprintln!("{warning}");
         }
         report_stopped_workflows(&stopped);
         std::process::exit(exit_code);
@@ -937,10 +935,8 @@ pub async fn run(
     // The terminal modes go back to normal BEFORE this prints. A run the operator was never told
     // about is the failure this report exists to prevent, so cleanup and reporting stay ordered.
     drop(guard);
-    if !history_flushed {
-        eprintln!(
-            "prompt history is still finalizing in the background; terminal shutdown did not wait past its two-second storage deadline"
-        );
+    if let Some(warning) = history_status.warning() {
+        eprintln!("{warning}");
     }
     report_stopped_workflows(&stopped);
     tui_result
