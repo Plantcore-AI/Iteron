@@ -147,7 +147,7 @@ impl OpenAiCompat {
             };
             messages.extend(msg_to_openai(
                 m,
-                self.error_profile,
+                ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref()),
                 &self.route_scope,
                 input_images,
                 !req.tools.is_empty(),
@@ -384,22 +384,73 @@ fn supports_thinking_toggle(error_profile: ErrorProfile, model_id: &str) -> bool
     }
 }
 
-fn preserves_reasoning_content(error_profile: ErrorProfile) -> bool {
-    matches!(
-        error_profile,
-        ErrorProfile::DeepSeek | ErrorProfile::Glm | ErrorProfile::Fireworks
-    )
+#[derive(Clone, Copy)]
+enum ChatReasoningReplay {
+    None,
+    ToolCalls,
+    ToolRequests,
+    All,
+}
+
+impl From<ErrorProfile> for ChatReasoningReplay {
+    fn from(profile: ErrorProfile) -> Self {
+        match profile {
+            ErrorProfile::DeepSeek => Self::ToolRequests,
+            ErrorProfile::Glm | ErrorProfile::Fireworks => Self::ToolCalls,
+            ErrorProfile::MiniMax => Self::All,
+            _ => Self::None,
+        }
+    }
+}
+
+impl ChatReasoningReplay {
+    fn for_route(profile: ErrorProfile, root: Option<&ApiRoot>) -> Self {
+        // These direct APIs require the returned reasoning_content in later assistant
+        // messages. Match complete API roots, never model names or hostname suffixes:
+        // a Kimi/MiniMax model served by an unknown gateway grants no such wire contract.
+        // https://platform.kimi.ai/docs/guide/use-thinking-models
+        // https://platform.minimax.io/docs/api-reference/text-openai-api
+        match root.map(ApiRoot::as_str) {
+            Some(
+                "https://api.moonshot.ai/v1"
+                | "https://api.moonshot.cn/v1"
+                | "https://api.minimax.io/v1"
+                | "https://api.minimax.cn/v1"
+                | "https://api.minimaxi.com/v1",
+            ) => Self::All,
+            _ => profile.into(),
+        }
+    }
+
+    fn replays(self, has_tool_calls: bool, request_has_tools: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::ToolCalls => has_tool_calls,
+            Self::ToolRequests => has_tool_calls || request_has_tools,
+            Self::All => true,
+        }
+    }
+
+    fn retains(self, has_tool_calls: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::ToolCalls => has_tool_calls,
+            // A later request may advertise tools even if this answer made no tool call.
+            Self::ToolRequests | Self::All => true,
+        }
+    }
 }
 
 /// One iteron message -> one or more OpenAI messages. Tool results become `role:"tool"` messages;
 /// an assistant message with tool_use becomes an assistant message with `tool_calls`.
 fn msg_to_openai(
     m: &iteron_protocol::Message,
-    error_profile: ErrorProfile,
+    reasoning_replay: impl Into<ChatReasoningReplay>,
     route_scope: &str,
     input_images: &[iteron_protocol::ImageContent],
     request_has_tools: bool,
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
+    let reasoning_replay = reasoning_replay.into();
     validate_chat_route_scope(route_scope)?;
     crate::tool_image::validate_message(m)?;
     match m.role {
@@ -471,13 +522,9 @@ fn msg_to_openai(
             if !tool_calls.is_empty() {
                 msg["tool_calls"] = serde_json::json!(tool_calls);
             }
-            // DeepSeek requires every prior assistant's reasoning when the current request
-            // advertises tools, including final answers that made no tool call. GLM/Fireworks
-            // keep their existing tool-call continuation behavior. Only exact route + format
-            // state is replayable; portable Thinking blocks are never continuation evidence.
-            if (!tool_calls.is_empty()
-                || (error_profile == ErrorProfile::DeepSeek && request_has_tools))
-                && preserves_reasoning_content(error_profile)
+            // Only exact route + format state is replayable. Portable Thinking blocks are a
+            // UI projection, never evidence authorizing continuation on any provider route.
+            if reasoning_replay.replays(!tool_calls.is_empty(), request_has_tools)
                 && let Some(reasoning) = matching_reasoning_content(m, route_scope)?
             {
                 msg["reasoning_content"] = serde_json::json!(reasoning);
@@ -1377,8 +1424,8 @@ impl Provider for OpenAiCompat {
         };
         let mut blocks: Vec<Block> = Vec::new();
         if !thinking.is_empty() {
-            if preserves_reasoning_content(self.error_profile)
-                && (self.error_profile == ErrorProfile::DeepSeek || !tool_uses.is_empty())
+            if ChatReasoningReplay::for_route(self.error_profile, self.api_root.as_ref())
+                .retains(!tool_uses.is_empty())
             {
                 blocks.push(Block::ProviderState(reasoning_provider_state(
                     &self.route_scope,
@@ -1573,16 +1620,13 @@ mod tests {
         for profile in [
             ErrorProfile::DeepSeek,
             ErrorProfile::Glm,
+            ErrorProfile::MiniMax,
             ErrorProfile::Fireworks,
         ] {
             let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();
             assert_eq!(mapped[0]["reasoning_content"], "private provider reasoning");
         }
-        for profile in [
-            ErrorProfile::OpenAi,
-            ErrorProfile::MiniMax,
-            ErrorProfile::CustomConservative,
-        ] {
+        for profile in [ErrorProfile::OpenAi, ErrorProfile::CustomConservative] {
             let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();
             assert!(mapped[0].get("reasoning_content").is_none());
         }
@@ -1616,6 +1660,7 @@ mod tests {
         for profile in [
             ErrorProfile::DeepSeek,
             ErrorProfile::Glm,
+            ErrorProfile::MiniMax,
             ErrorProfile::Fireworks,
         ] {
             let mapped = msg_to_openai(&message, profile, TEST_SCOPE, &[], false).unwrap();

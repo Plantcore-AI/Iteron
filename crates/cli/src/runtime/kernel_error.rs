@@ -383,6 +383,11 @@ impl KernelError {
                 "context selection exceeds the selector-count limit; select fewer context sources".into()
             }
             Self::ContextResolution(reason)
+                if reason == "context outline depth exceeds the local traversal bound" =>
+            {
+                "context outline selection exceeds the traversal-depth limit; reduce the selected outline depth".into()
+            }
+            Self::ContextResolution(reason)
                 if matches!(
                     reason.as_str(),
                     "too many memory keys in one selector" | "memory key must be 1..=256 bytes"

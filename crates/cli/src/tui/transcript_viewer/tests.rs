@@ -842,3 +842,31 @@ fn effect_keys_still_wait_for_the_index() {
         "an export quotes a snapshot revision, so it must not be served from a stale index"
     );
 }
+
+#[test]
+fn released_mouse_reports_cannot_scroll_the_open_transcript_viewer() {
+    use crate::tui::{App, input_dispatch, mouse_capture};
+    use crossterm::event::{MouseEvent, MouseEventKind};
+
+    let mut app = App::new();
+    app.editor.insert_str("keep the draft");
+    app.transcript_viewer.open("", &[], 0);
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 3,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    };
+    input_dispatch::dispatch_mouse(&mut app, wheel);
+    assert_eq!(app.transcript_viewer.scroll, 3);
+
+    app.mouse_capture = mouse_capture::State::Released;
+    input_dispatch::dispatch_mouse(&mut app, wheel);
+    assert_eq!(app.transcript_viewer.scroll, 3);
+    assert_eq!(app.editor.text(), "keep the draft");
+    assert!(app.viewport.follows_tail());
+
+    app.mouse_capture = mouse_capture::State::Captured;
+    input_dispatch::dispatch_mouse(&mut app, wheel);
+    assert_eq!(app.transcript_viewer.scroll, 6);
+}

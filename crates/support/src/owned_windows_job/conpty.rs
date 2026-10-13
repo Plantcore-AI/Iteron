@@ -22,7 +22,6 @@ use std::pin::Pin;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 use windows_sys::Win32::System::Threading::{GetProcessIdOfThread, ResumeThread};

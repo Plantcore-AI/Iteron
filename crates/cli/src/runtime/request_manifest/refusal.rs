@@ -1,4 +1,5 @@
-//! Closed, content-free refusal diagnostics. Release stderr and admission semantics are unchanged.
+//! Closed, content-free refusal diagnostics. Terminal rendering belongs to the client; the
+//! returned refusal remains authoritative even when debug diagnostics are redirected to a log.
 use crate::artifacts::ArtifactStoreError;
 use iteron_provider::request_capture::RequestCaptureError;
 
@@ -30,7 +31,14 @@ pub(super) fn refused(
 ) -> RequestCaptureError {
     let (stage, code) = labels(stage, cause);
     #[cfg(debug_assertions)]
-    eprintln!("request observation refused: stage={stage} code={code}");
+    {
+        use std::io::IsTerminal as _;
+        // A raw stderr write can overwrite the active TUI composer. The returned error already
+        // follows the ordinary client error path; keep extra diagnostics only in redirected logs.
+        if !std::io::stderr().is_terminal() {
+            eprintln!("request observation refused: stage={stage} code={code}");
+        }
+    }
     #[cfg(not(debug_assertions))]
     let _ = (stage, code);
     mapped

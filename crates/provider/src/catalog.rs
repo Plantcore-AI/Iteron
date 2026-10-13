@@ -244,6 +244,7 @@ const OPENAI_ROOT: &str = "https://api.openai.com/v1";
 const DEEPSEEK_ROOT: &str = "https://api.deepseek.com";
 const DEEPSEEK_V1_ROOT: &str = "https://api.deepseek.com/v1";
 const MINIMAX_ROOT: &str = "https://api.minimax.io/v1";
+const MINIMAX_MAINLAND_ROOT: &str = "https://api.minimax.cn/v1";
 const MINIMAX_LEGACY_ROOT: &str = "https://api.minimaxi.com/v1";
 
 /// Transport/protocol adapter selected for one provider instance.
@@ -1056,7 +1057,7 @@ fn default_error_profile(adapter: AdapterKind, api_root: &ApiRoot) -> ErrorProfi
         OPENAI_ROOT if adapter == AdapterKind::OpenAiResponses => ErrorProfile::OpenAi,
         DEEPSEEK_ROOT | DEEPSEEK_V1_ROOT => ErrorProfile::DeepSeek,
         GLM_STANDARD_ROOT | GLM_CODING_ROOT | GLM_ANTHROPIC_ROOT => ErrorProfile::Glm,
-        MINIMAX_ROOT | MINIMAX_LEGACY_ROOT => ErrorProfile::MiniMax,
+        MINIMAX_ROOT | MINIMAX_MAINLAND_ROOT | MINIMAX_LEGACY_ROOT => ErrorProfile::MiniMax,
         FIREWORKS_INFERENCE_ROOT => ErrorProfile::Fireworks,
         _ => ErrorProfile::CustomConservative,
     }
@@ -2606,7 +2607,7 @@ mod tests {
             }
         );
 
-        for root in [MINIMAX_ROOT, MINIMAX_LEGACY_ROOT] {
+        for root in [MINIMAX_ROOT, MINIMAX_MAINLAND_ROOT, MINIMAX_LEGACY_ROOT] {
             let minimax = ProviderInstance::new(
                 "minimax",
                 "MiniMax",

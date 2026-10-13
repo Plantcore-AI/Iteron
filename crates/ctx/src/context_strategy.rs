@@ -87,6 +87,44 @@ impl ContextSlotObservation {
         }
     }
 
+    fn request(&self, slot: &SlotId) -> Result<ContextRequest, &'static str> {
+        if self.version != CONTEXT_SLOT_VERSION {
+            return Err("unsupported context slot version");
+        }
+        if self.task.len() > max_context_task_bytes() {
+            return Err("context task exceeds its local observation bound");
+        }
+        if self.include_outline && self.depth > max_context_outline_depth() {
+            return Err("context outline depth exceeds the local traversal bound");
+        }
+        let mut request = ContextRequest::new(self.request_id, slot.clone(), self.max_bytes);
+        request.trust_ceiling = self.trust_ceiling;
+        if self.include_outline {
+            request = request.with_selector(ContextSelector::RepoOutline {
+                root: self.root.clone(),
+                depth: self.depth,
+            });
+        }
+        for &scope in &self.instruction_scopes {
+            request = request.with_selector(ContextSelector::Instructions { scope });
+        }
+        if !self.memory_keys.is_empty() {
+            request = request.with_selector(ContextSelector::MemoryKeys {
+                keys: self.memory_keys.clone(),
+            });
+        }
+        if self.transcript_turns > 0 {
+            request = request.with_selector(ContextSelector::Transcript {
+                last_n_turns: self.transcript_turns,
+            });
+        }
+        if self.include_environment {
+            request = request.with_selector(ContextSelector::EnvironmentFacts);
+        }
+        request.validate()?;
+        Ok(request)
+    }
+
     /// Project a submission into the bounded relevance query seen by the context slot and its
     /// memory/skill selectors. The submission itself remains intact in the conversation and
     /// provider request. Retain both ends so a large attached history cannot hide the latest ask
@@ -167,9 +205,9 @@ impl ContextStrategy {
         input: &ContextSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<ContextPlan, &'static str> {
-        if input.task.len() > max_context_task_bytes() {
-            return Err("context task exceeds its local observation bound");
-        }
+        // Preserve invalid-input reasons before the trait turns them into an authority-free
+        // Unknown outcome. A malformed request is distinct from a capability refusal.
+        input.request(slot.slot())?;
         let payload = serde_json::to_value(input).map_err(|_| "context observation is invalid")?;
         let observation = SlotObservation {
             slot: slot.slot().clone(),
@@ -207,40 +245,7 @@ impl ContextStrategy {
     }
 
     fn decide_typed(&self, input: ContextSlotObservation) -> Result<ContextPlan, &'static str> {
-        if input.version != CONTEXT_SLOT_VERSION {
-            return Err("unsupported context slot version");
-        }
-        if input.task.len() > max_context_task_bytes() {
-            return Err("context task exceeds its local observation bound");
-        }
-        if input.depth > max_context_outline_depth() {
-            return Err("context outline depth exceeds the local traversal bound");
-        }
-        let mut request = ContextRequest::new(input.request_id, self.slot.clone(), input.max_bytes);
-        request.trust_ceiling = input.trust_ceiling;
-        if input.include_outline {
-            request = request.with_selector(ContextSelector::RepoOutline {
-                root: input.root,
-                depth: input.depth,
-            });
-        }
-        for scope in input.instruction_scopes {
-            request = request.with_selector(ContextSelector::Instructions { scope });
-        }
-        if !input.memory_keys.is_empty() {
-            request = request.with_selector(ContextSelector::MemoryKeys {
-                keys: input.memory_keys,
-            });
-        }
-        if input.transcript_turns > 0 {
-            request = request.with_selector(ContextSelector::Transcript {
-                last_n_turns: input.transcript_turns,
-            });
-        }
-        if input.include_environment {
-            request = request.with_selector(ContextSelector::EnvironmentFacts);
-        }
-        request.validate()?;
+        let request = input.request(&self.slot)?;
         Ok(ContextPlan {
             request,
             recall_memory: input.recall_memory,
@@ -331,7 +336,7 @@ mod tests {
         input.version = CONTEXT_SLOT_VERSION + 1;
         assert_eq!(
             strategy.select(&input, CapabilitySet::only(Capability::ReadOnly)),
-            Err("context selection was not admitted as read-only")
+            Err("unsupported context slot version")
         );
     }
 
@@ -340,6 +345,45 @@ mod tests {
         let strategy = ContextStrategy::default();
         let input = ContextSlotObservation::baseline(RequestId(9), "task");
         assert!(strategy.select(&input, CapabilitySet::none()).is_err());
+    }
+
+    #[test]
+    fn malformed_observation_reports_its_bound_before_capability_admission() {
+        let strategy = ContextStrategy::default();
+        let mut input = ContextSlotObservation::baseline(RequestId(9), "task");
+        input.max_bytes = u32::MAX;
+        assert_eq!(
+            strategy.select(&input, CapabilitySet::only(Capability::ReadOnly)),
+            Err("requested context bytes exceed the protocol ceiling"),
+        );
+        input.max_bytes = 1_024;
+        input.memory_keys = vec![String::new()];
+        assert_eq!(
+            strategy.select(&input, CapabilitySet::only(Capability::ReadOnly)),
+            Err("memory key must be 1..=256 bytes"),
+        );
+    }
+
+    #[test]
+    fn unused_outline_depth_cannot_refuse_a_memory_and_skill_only_request() {
+        let strategy = ContextStrategy::default();
+        let mut input = ContextSlotObservation::baseline(RequestId(9), "task");
+        input.depth = u8::MAX;
+        input.include_outline = false;
+        let plan = strategy
+            .select(&input, CapabilitySet::only(Capability::ReadOnly))
+            .unwrap();
+        assert!(
+            plan.request
+                .selectors
+                .iter()
+                .all(|selector| !matches!(selector, ContextSelector::RepoOutline { .. }))
+        );
+        input.include_outline = true;
+        assert_eq!(
+            strategy.select(&input, CapabilitySet::only(Capability::ReadOnly)),
+            Err("context outline depth exceeds the local traversal bound"),
+        );
     }
 
     #[test]

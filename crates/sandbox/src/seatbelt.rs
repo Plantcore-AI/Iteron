@@ -12,6 +12,7 @@
 
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -504,6 +505,7 @@ fn render_profile(conf: &Confinement, home_rules: &HomeRules) -> Result<String, 
 
 #[async_trait::async_trait]
 impl Sandbox for Seatbelt {
+    #[cfg(unix)]
     async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
         if conf.unconfined {
             return crate::run_direct(command, conf).await;
@@ -554,6 +556,15 @@ impl Sandbox for Seatbelt {
             SandboxError::Spawn("child stderr was not piped".into())
         })?;
         crate::collect_child_output(child, stdout, stderr, conf).await
+    }
+
+    #[cfg(not(unix))]
+    async fn run(&self, command: &str, conf: &Confinement) -> Result<RunOutput, SandboxError> {
+        if conf.unconfined {
+            crate::run_direct(command, conf).await
+        } else {
+            Err(SandboxError::Unsupported)
+        }
     }
 }
 

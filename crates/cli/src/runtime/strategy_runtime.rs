@@ -71,6 +71,9 @@ pub(crate) fn resolve_live_context(
             memory_strategy,
         )
         .map_err(|error| error.to_string())?;
+    // A replacement port crosses the same boundary as the built-in adapter. Validate its
+    // original grant before benchmark filtering can hide an invalid segment or byte count.
+    grant.validate_for(&plan.request).map_err(str::to_owned)?;
     let mut benchmark_memory_rejections = 0u32;
     if request.memory_benchmark_scope.is_some() {
         grant.segments.retain(|segment| {
@@ -125,6 +128,67 @@ fn all_tool_capabilities() -> CapabilitySet {
 mod tests {
     use super::*;
     use iteron_protocol::context::{ContextSegment, ContextSource};
+
+    #[test]
+    fn replacement_port_grants_are_validated_before_benchmark_filtering() {
+        struct InvalidPort(u8);
+        impl ContextPort for InvalidPort {
+            fn resolve(
+                &self,
+                plan: &iteron_ctx::ContextPlan,
+                _input: &ContextPortInput,
+            ) -> Result<iteron_protocol::context::ContextGrant, iteron_ctx::ContextPortError>
+            {
+                let mut grant = iteron_protocol::context::ContextGrant {
+                    request_id: plan.request.request_id,
+                    bytes: 6,
+                    segments: vec![ContextSegment {
+                        text: "memory".into(),
+                        trust: Trust::Workspace,
+                        source: ContextSource::Memory,
+                    }],
+                };
+                match self.0 {
+                    0 => grant.request_id = RequestId(u64::MAX),
+                    1 => grant.bytes = 0,
+                    2 => grant.segments[0].trust = Trust::Trusted,
+                    3 => grant.bytes = plan.request.max_bytes + 1,
+                    _ => unreachable!(),
+                }
+                Ok(grant)
+            }
+        }
+        for (case, expected) in [
+            "grant does not answer this request",
+            "granted bytes under-report the segments, so the bound is unenforceable",
+            "a segment exceeds the trust ceiling the request declared",
+            "granted context bytes exceed the bound the request declared",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for benchmark in [None, Some([7; 32])] {
+                let result = resolve_live_context(
+                    &iteron_ctx::ContextStrategy::default(),
+                    &iteron_ctx::MemoryRecallStrategy::default(),
+                    &InvalidPort(case as u8),
+                    LiveContextRequest {
+                        workspace: Path::new("/synthetic-context"),
+                        home_dir: None,
+                        dependency_skill_dirs: &[],
+                        turn: TurnId(6),
+                        task: "inspect",
+                        memory_benchmark_scope: benchmark,
+                        materialization: iteron_ctx::ContextMaterializationPolicy {
+                            max_bytes: 1_024,
+                            ..Default::default()
+                        },
+                    },
+                );
+                assert_eq!(result.err().as_deref(), Some(expected));
+            }
+        }
+    }
 
     #[test]
     fn benchmark_scope_strips_memory_even_from_a_replacement_context_port() {

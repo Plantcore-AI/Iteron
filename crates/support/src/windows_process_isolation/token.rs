@@ -6,11 +6,11 @@ use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHand
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Security::{
-    EqualSid, GetTokenInformation, PSID, SE_GROUP_ENABLED, SID_AND_ATTRIBUTES,
-    TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
-    TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-    TokenIsLessPrivilegedAppContainer,
+    EqualSid, GetTokenInformation, PSID, SID_AND_ATTRIBUTES, TOKEN_APPCONTAINER_INFORMATION,
+    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities,
+    TokenIsAppContainer, TokenIsLessPrivilegedAppContainer,
 };
+use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 use windows_sys::Win32::System::Threading::OpenProcessToken;
 
 pub(super) fn verify(profile: &Profile, process: BorrowedHandle<'_>) -> io::Result<()> {
@@ -92,7 +92,7 @@ fn verify_capabilities(profile: &Profile, token: &OwnedHandle) -> io::Result<()>
             !matched[*index]
                 && unsafe { EqualSid(entry.Sid, (*expected.Capabilities.add(*index)).Sid) } != 0
         });
-        if entry.Attributes & SE_GROUP_ENABLED == 0 || index.is_none() {
+        if entry.Attributes & (SE_GROUP_ENABLED as u32) == 0 || index.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "actual Windows process capability was not requested or is disabled",

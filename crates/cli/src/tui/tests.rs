@@ -2040,13 +2040,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "returned by kernel",
-                "already queued"
-            ],
+            vec!["returned by kernel", "already queued"],
             "only positively unadmitted input may enter the automatic queue"
         );
-        assert_eq!(app.input_lanes.held().front().unwrap().text, "preview missing from reclaim report");
+        assert_eq!(
+            app.input_lanes.held().front().unwrap().text,
+            "preview missing from reclaim report"
+        );
     }
 
     #[test]
@@ -2568,7 +2568,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("notes.md"), "{screen}");
         assert!(screen.contains("inspect"), "{screen}");
         let rows = screen.lines().collect::<Vec<_>>();
-        let image_row = rows.iter().position(|row| row.contains("image #1")).unwrap();
+        let image_row = rows
+            .iter()
+            .position(|row| row.contains("image #1"))
+            .unwrap();
         let file_row = rows
             .iter()
             .position(|row| row.contains("[file] notes.md"))
@@ -2753,6 +2756,34 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn unknown_config_warning_stays_above_the_composer_after_resize() {
+        let (_, warnings) = crate::config::FileConfig::parse_with_warnings(
+            r#"{"schema_version":2,"otel":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 1);
+        let mut app = App::new();
+        for warning in warnings {
+            app.note(block::NoticeLevel::Info, warning);
+        }
+        for width in [120, 48] {
+            let screen = render_text(&mut app, width, 24);
+            let rows: Vec<_> = screen.lines().collect();
+            let warning = rows
+                .iter()
+                .position(|line| line.contains("unknown top-level"));
+            let composer = rows.iter().position(|line| line.contains("ask about this"));
+            assert!(
+                warning.is_some(),
+                "config warning must remain visible: {screen}"
+            );
+            assert!(composer.is_some(), "composer must remain visible: {screen}");
+            assert!(warning.unwrap() < composer.unwrap(), "{screen}");
+            assert!(!rows[composer.unwrap()].contains("otel"), "{screen}");
+        }
+    }
+
+    #[test]
     fn app_mouse_is_default_and_ctrl_t_selection_state_is_truthful() {
         let mut app = App::new();
         let rendered = render_text(&mut app, 240, 14);
@@ -2860,7 +2891,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.route.provider_id = "anthropic".into();
             app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
-            assert!(screen.contains("iteron"), "compact wordmark at {width}x{height}");
+            assert!(
+                screen.contains("iteron"),
+                "compact wordmark at {width}x{height}"
+            );
             assert!(screen.contains('›'), "composer at {width}x{height}");
             assert!(
                 screen.contains("commands"),
@@ -4385,7 +4419,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(wide.contains("iteron"), "compact wordmark present: {wide:?}");
+        assert!(
+            wide.contains("iteron"),
+            "compact wordmark present: {wide:?}"
+        );
         assert!(
             wide.contains("Build, explore, and ship"),
             "tagline present: {wide:?}"
@@ -4424,7 +4461,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             ));
         }
         let tail = render_text(&mut app, 40, 12);
-        assert!(!tail.contains("Build, explore"), "welcome leaves the conversation");
+        assert!(
+            !tail.contains("Build, explore"),
+            "welcome leaves the conversation"
+        );
         assert_eq!(
             app.history
                 .blocks()
@@ -6117,7 +6157,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
-        assert!(app.editor.has_submission(), "transport receipt preserves the draft until admission");
+        assert!(
+            app.editor.has_submission(),
+            "transport receipt preserves the draft until admission"
+        );
         apply_server_event(
             &mut app,
             &mut session,
@@ -6232,7 +6275,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
-        assert!(!app.editor.has_submission(), "Applied consumes the unchanged draft");
+        assert!(
+            !app.editor.has_submission(),
+            "Applied consumes the unchanged draft"
+        );
         assert_eq!(
             app.history
                 .blocks()
@@ -6291,7 +6337,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
-        assert!(app.editor.has_submission(), "transport receipt preserves the draft until admission");
+        assert!(
+            app.editor.has_submission(),
+            "transport receipt preserves the draft until admission"
+        );
         apply_server_event(
             &mut app,
             &mut session,

@@ -54,10 +54,11 @@ const CONSOLE_MODE_RESTORED: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_RESTORED=";
 const CONSOLE_MODE_EVIDENCE_PATH_ENV: &str = "ITERON_CONSOLE_MODE_EVIDENCE_PATH";
 const COOKED_INPUT_MODE_MASK: u32 = 0x0001 | 0x0002 | 0x0004;
 const RAW_MODE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a drop may wait for the reader thread. It is short on purpose: by the time this
-/// matters the test has already failed, and the only question left is whether the failure gets
-/// reported or replaced by a step timeout.
-const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound the caller's entire cleanup, including process and pseudoconsole teardown. A platform
+/// close that does not return leaves cleanup unknown; it must not hang the test runner.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const CHILD_STOP_TIMEOUT_MS: u32 = 1_000;
+const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 const WRAPPER_CONTROL_ENV: &[&str] = &[
@@ -75,6 +76,10 @@ const WRAPPER_CONTROL_ENV: &[&str] = &[
 unsafe extern "system" {
     #[link_name = "GetConsoleMode"]
     fn get_console_mode(console: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    #[link_name = "WaitForSingleObject"]
+    fn wait_for_single_object(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+    #[link_name = "TerminateProcess"]
+    fn terminate_process(handle: *mut std::ffi::c_void, exit_code: u32) -> i32;
 }
 
 struct ConsoleInput {
@@ -431,6 +436,8 @@ struct ConPty {
     chunks: Receiver<Vec<u8>>,
     reader_thread: Option<JoinHandle<()>>,
     reader_closed: bool,
+    cleanup: Option<Receiver<bool>>,
+    cleanup_wait_done: bool,
     parser: vt100::Parser,
     capture: Vec<u8>,
     cursor_queries_answered: usize,
@@ -570,12 +577,22 @@ impl ConPty {
         let (sender, chunks) = mpsc::channel();
         let reader_thread = thread::spawn(move || {
             let mut buffer = [0_u8; 8 * 1024];
+            let mut sender = Some(sender);
+            let mut forwarded = 0usize;
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(read) => {
-                        if sender.send(buffer[..read].to_vec()).is_err() {
-                            break;
+                        if let Some(output) = sender.as_ref() {
+                            forwarded = forwarded.saturating_add(read);
+                            // Forward one overflowing chunk so the ordinary capture assertion
+                            // fails. Further bytes are drained without allocating or retaining
+                            // them. Teardown must keep reading even after the receiver is gone:
+                            // ClosePseudoConsole may be waiting to emit its final output frame.
+                            let disconnected = output.send(buffer[..read].to_vec()).is_err();
+                            if disconnected || forwarded > MAX_CAPTURE_BYTES {
+                                sender = None;
+                            }
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -591,6 +608,8 @@ impl ConPty {
             chunks,
             reader_thread: Some(reader_thread),
             reader_closed: false,
+            cleanup: None,
+            cleanup_wait_done: false,
             parser: vt100::Parser::new(rows, cols, 0),
             capture: Vec::new(),
             cursor_queries_answered: 0,
@@ -608,7 +627,9 @@ impl ConPty {
         while self.cursor_queries_answered < cursor_query_count {
             self.cursor_queries_answered += 1;
             let (row, column) = self.parser.screen().cursor_position();
-            self.send(format!("\x1b[{};{}R", row + 1, column + 1).as_bytes());
+            if self.writer.is_some() {
+                self.send(format!("\x1b[{};{}R", row + 1, column + 1).as_bytes());
+            }
         }
     }
 
@@ -702,6 +723,9 @@ impl ConPty {
                 .try_wait()
                 .expect("poll ConPTY child")
             {
+                // Retire the owned handle as soon as exit is observed. Cleanup must never turn
+                // a historical numeric PID back into authority to signal another process.
+                drop(self.child.take());
                 self.drain_ready();
                 return status;
             }
@@ -713,19 +737,77 @@ impl ConPty {
         );
     }
 
+    fn begin_cleanup(&mut self) {
+        if self.cleanup.is_some() || self.cleanup_wait_done {
+            return;
+        }
+        let child = self.child.take();
+        let writer = self.writer.take();
+        let slave = self.slave.take();
+        let master = self.master.take();
+        let reader = self.reader_thread.take();
+        let (finished, completion) = mpsc::channel();
+        self.cleanup = Some(completion);
+        thread::spawn(move || {
+            let child_stopped = child
+                .as_ref()
+                .is_none_or(|child| stop_owned_wrapper(child.as_ref()));
+            drop(child);
+            drop(writer);
+            drop(slave);
+            // portable-pty 0.9.0 closes its owned HPCON on the final master/slave drop.
+            // Windows closes the attached client tree too, including our same-console Iteron
+            // grandchild. Never enumerate a host or kill by a retired process ID.
+            // https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session
+            // ClosePseudoConsole can block, so it belongs on this worker while the dedicated
+            // reader keeps draining. The caller reports unknown if this worker cannot finish.
+            drop(master);
+            let reader_stopped = reader.is_none_or(|reader| {
+                let deadline = Instant::now() + READER_JOIN_TIMEOUT;
+                while !reader.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                reader.is_finished() && reader.join().is_ok()
+            });
+            let _ = finished.send(child_stopped && reader_stopped);
+        });
+    }
+
     fn close_and_drain(&mut self) {
-        drop(self.writer.take());
-        drop(self.slave.take());
-        drop(self.master.take());
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !self.reader_closed && Instant::now() < deadline {
+        self.begin_cleanup();
+        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+        while Instant::now() < deadline {
             let _ = self.pump_once(Duration::from_millis(25));
             self.drain_ready();
+            match self.cleanup.as_ref().expect("cleanup started").try_recv() {
+                Ok(complete) => {
+                    self.cleanup_wait_done = true;
+                    self.cleanup = None;
+                    // Completion follows reader join; drain once more so an EOF racing the
+                    // preceding poll is observed before asserting the terminal evidence.
+                    self.drain_ready();
+                    assert!(
+                        complete,
+                        "owned ConPTY cleanup did not confirm process/reader exit"
+                    );
+                    assert!(self.reader_closed, "ConPTY reader did not reach EOF");
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.cleanup_wait_done = true;
+                    self.cleanup = None;
+                    panic!("ConPTY cleanup worker failed; cleanup unknown")
+                }
+                Err(TryRecvError::Empty) => {
+                    if self.reader_closed {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
         }
-        assert!(self.reader_closed, "ConPTY reader did not reach EOF");
-        if let Some(reader) = self.reader_thread.take() {
-            reader.join().expect("join ConPTY reader");
-        }
+        self.cleanup_wait_done = true;
+        self.cleanup = None;
+        panic!("ConPTY cleanup did not complete before the deadline; cleanup unknown");
     }
 
     fn assert_console_input_mode_restored(&self, expect_raw_observation: bool) {
@@ -784,53 +866,45 @@ impl ConPty {
     }
 }
 
-impl Drop for ConPty {
-    fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            // `kill` signals the wrapper and nothing below it. The wrapper launches the real
-            // binary as a grandchild inside this same pseudoconsole, so signalling only the
-            // wrapper leaves that grandchild holding the ConPTY write handle open. The reader
-            // below then blocks forever — `read` returns 0 only once every writer is gone — and
-            // the abandoned process keeps its console host spinning on a core. A failing
-            // assertion would stop reporting the failure and hang the whole test binary
-            // instead. Take the console's process tree down before waiting on anything.
-            if let Some(pid) = child.process_id() {
-                let _ = Command::new("taskkill")
-                    .args(["/T", "/F", "/PID", &pid.to_string()])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+/// Signal only the process object still owned by this Child. A zero-time handle wait must prove
+/// it live; unavailable evidence never becomes permission to kill a numeric PID. Avoid
+/// portable-pty's Windows try_wait (which maps GetExitCodeProcess failure to None) and its
+/// unbounded wait. TerminateProcess is asynchronous; the subsequent handle wait is finite.
+fn stop_owned_wrapper(child: &dyn Child) -> bool {
+    let Some(handle) = child.as_raw_handle() else {
+        return false;
+    };
+    // SAFETY: the Child retains this process handle throughout both waits and termination.
+    // It is never closed, substituted, or reconstructed from a process identifier here.
+    unsafe {
+        match wait_for_single_object(handle, 0) {
+            0 => true,
+            0x102 => {
+                let _ = terminate_process(handle, 1);
+                wait_for_single_object(handle, CHILD_STOP_TIMEOUT_MS) == 0
             }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        drop(self.writer.take());
-        drop(self.slave.take());
-        drop(self.master.take());
-        if let Some(reader) = self.reader_thread.take() {
-            // Bounded. `read` returns 0 only once every writer is gone, and the pseudoconsole host
-            // is a child of *this* process rather than of the wrapper, so the tree kill above does
-            // not necessarily reach it -- a `conhost --headless` was measured on the self-hosted
-            // runner sitting at 100% of a core with no client under it, still holding the write
-            // end. A reader thread left behind in a process that is about to exit costs nothing; a
-            // join with no deadline costs the whole job and replaces a reported assertion failure
-            // with a step timeout.
-            let (finished, joined) = mpsc::channel();
-            thread::spawn(move || {
-                let _ = reader.join();
-                let _ = finished.send(());
-            });
-            let _ = joined.recv_timeout(READER_JOIN_TIMEOUT);
+            _ => false,
         }
     }
 }
 
-/// Terminate the `conhost --headless` processes this test process owns.
-///
-/// Deliberately narrow: it matches only console hosts whose parent is this process, so a host
-/// belonging to another job on the same machine is left alone. Shelling out keeps this to the
-/// same mechanism the wrapper kill above already uses, rather than introducing process
-/// enumeration through a new dependency for a path that only runs while a test is failing.
+impl Drop for ConPty {
+    fn drop(&mut self) {
+        if self.cleanup_wait_done {
+            return;
+        }
+        self.begin_cleanup();
+        let confirmed = self
+            .cleanup
+            .take()
+            .is_some_and(|completion| completion.recv_timeout(CLEANUP_TIMEOUT) == Ok(true));
+        if !confirmed {
+            eprintln!("ConPTY teardown incomplete; owned process/console cleanup is unknown");
+        }
+    }
+}
+
+/// Copy one explicitly allowed host variable into the otherwise empty fixture environment.
 fn copy_host_variable(command: &mut CommandBuilder, name: &str) {
     if let Some(value) = std::env::var_os(name) {
         command.env(name, value);

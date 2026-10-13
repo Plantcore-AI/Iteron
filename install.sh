@@ -58,9 +58,10 @@ iteron_linux_preflight() {
     done
 
     if [ -z "$iteron_bwrap" ]; then
-        iteron_warn 'code execution (bash/build/test) will refuse to run: bubblewrap is not installed'
+        iteron_warn 'Linux --confine code execution (bash/build/test) is unavailable: bubblewrap is not installed'
         cat <<'EOF' >&2
-Install it, then re-run `iteron`:
+The default unconfined mode does not require bubblewrap. To use `iteron --confine`,
+install bubblewrap with the appropriate package manager:
   Debian/Ubuntu:  sudo apt-get install -y bubblewrap
   Fedora/RHEL:    sudo dnf install -y bubblewrap
   Alpine:         sudo apk add bubblewrap
@@ -75,10 +76,11 @@ EOF
         return 0
     fi
 
-    iteron_warn "code execution (bash/build/test) will refuse to run: $iteron_bwrap cannot create the required namespaces"
+    iteron_warn "Linux --confine code execution (bash/build/test) is unavailable: $iteron_bwrap cannot create the required namespaces"
     cat <<EOF >&2
-This is the Ubuntu 24.04 unprivileged-user-namespace restriction. Grant it to this
-one binary rather than disabling the system-wide control:
+The default unconfined mode is unaffected. To use --confine, check the namespace
+failure first. On Ubuntu 24.04, an AppArmor user-namespace restriction can cause
+this failure; if that restriction is confirmed, grant access to this one binary:
   sudo apt-get install -y apparmor apparmor-utils
   printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile iteron-bwrap $iteron_bwrap flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/iteron-bwrap >/dev/null
   sudo apparmor_parser --replace /etc/apparmor.d/iteron-bwrap

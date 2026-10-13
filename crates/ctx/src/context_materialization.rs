@@ -31,6 +31,7 @@ pub(crate) struct AuditedGrantBuilder<'a> {
     bytes: usize,
     next_ordinal: u32,
     retained_material_bytes: usize,
+    max_segments: usize,
 }
 
 impl<'a> AuditedGrantBuilder<'a> {
@@ -42,6 +43,11 @@ impl<'a> AuditedGrantBuilder<'a> {
             bytes: 0,
             next_ordinal: 0,
             retained_material_bytes: 0,
+            max_segments: iteron_tunables::param_integer(
+                "protocol.context.max_context_segments",
+                MAX_CONTEXT_SEGMENTS,
+            )
+            .min(MAX_CONTEXT_SEGMENTS),
         }
     }
 
@@ -71,7 +77,7 @@ impl<'a> AuditedGrantBuilder<'a> {
         let ordinal = self.next_ordinal;
         self.next_ordinal = self.next_ordinal.saturating_add(1);
         let bytes_before = text.len();
-        let admitted = if self.segments.len() == MAX_CONTEXT_SEGMENTS {
+        let admitted = if self.segments.len() >= self.max_segments {
             String::new()
         } else {
             bounded_text(text, self.remaining_bytes())
@@ -228,5 +234,34 @@ mod tests {
         assert_eq!(audit.segments[0].bytes_after, 32);
         assert_eq!(audit.segments[1].decision, ContextDecision::Rejected);
         assert_eq!(audit.segments[1].bytes_after, 0);
+    }
+
+    #[test]
+    fn smaller_segment_ceiling_rejects_excess_material_without_invalidating_the_grant() {
+        for ceiling in [0, 1, 2, MAX_CONTEXT_SEGMENTS] {
+            let request = request(4_096);
+            let mut builder = AuditedGrantBuilder::new(&request);
+            // Installed parameters are immutable and process-wide. Exercise the captured
+            // ceiling directly without changing other concurrently running tests.
+            builder.max_segments = ceiling;
+            for ordinal in 0..=ceiling {
+                builder.push(
+                    format!("turn-{ordinal}\n"),
+                    Trust::Workspace,
+                    ContextSource::Transcript,
+                );
+            }
+            let (grant, audit) = builder.finish();
+            grant.validate_for(&request).unwrap();
+            assert_eq!(grant.segments.len(), ceiling);
+            assert_eq!(
+                audit.segments.last().unwrap().decision,
+                ContextDecision::Rejected
+            );
+            assert_eq!(audit.segments.last().unwrap().bytes_after, 0);
+            for (ordinal, segment) in grant.segments.iter().enumerate() {
+                assert_eq!(segment.text, format!("turn-{ordinal}\n"));
+            }
+        }
     }
 }

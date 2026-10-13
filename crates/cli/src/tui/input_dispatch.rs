@@ -41,6 +41,41 @@ pub(super) struct InputContext<'a, B: ratatui::backend::Backend> {
     pub(super) resize_due: &'a mut Option<Instant>,
 }
 
+/// Mouse reports can already be queued when Ctrl-T returns ownership to the terminal.
+/// Check ownership before any modal route so native selection cannot move its own text.
+pub(super) fn dispatch_mouse(app: &mut App, event: crossterm::event::MouseEvent) {
+    if !app.mouse_capture.is_captured() {
+        return;
+    }
+    if app.transcript_viewer.is_open() {
+        match event.kind {
+            MouseEventKind::ScrollUp => app.transcript_viewer.scroll_up(3),
+            MouseEventKind::ScrollDown => app.transcript_viewer.scroll_down(3),
+            _ => {}
+        }
+        return;
+    }
+    if app.workflows_panel.is_open() {
+        return;
+    }
+    // App mouse moves only this session's transcript; prompt history is keyboard-only.
+    match event.kind {
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
+        MouseEventKind::Down(MouseButton::Left)
+            if event.row >= app.view_top && event.row < app.view_top.saturating_add(app.view_h) =>
+        {
+            let index = usize::from(event.row - app.view_top);
+            if let Some(&block_index) = app.row_map.get(index)
+                && block_index != usize::MAX
+            {
+                app.toggle_fold(block_index);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) async fn dispatch<B: ratatui::backend::Backend>(
     context: InputContext<'_, B>,
     input_event: CEvent,
@@ -102,33 +137,7 @@ where
         // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
         // rather than letting each pasted newline submit a partial line (review HIGH).
         CEvent::Paste(pasted) => handle_composer_paste(app, repo, &pasted),
-        CEvent::Mouse(m) if app.transcript_viewer.is_open() => match m.kind {
-            MouseEventKind::ScrollUp => app.transcript_viewer.scroll_up(3),
-            MouseEventKind::ScrollDown => app.transcript_viewer.scroll_down(3),
-            _ => {}
-        },
-        CEvent::Mouse(_) if app.workflows_panel.is_open() => {}
-        // In app-mouse mode, wheel/trackpad input moves only this session's transcript;
-        // prompt-history navigation remains a keyboard-only editor action. A left click
-        // folds the transcript card under the pointer.
-        CEvent::Mouse(m) if app.mouse_capture.is_captured() => match m.kind {
-            MouseEventKind::ScrollUp => app.scroll_up(3),
-            MouseEventKind::ScrollDown => app.scroll_down(3),
-            MouseEventKind::Down(MouseButton::Left)
-                if m.row >= app.view_top && m.row < app.view_top.saturating_add(app.view_h) =>
-            {
-                let index = usize::from(m.row - app.view_top);
-                if let Some(&block_index) = app.row_map.get(index)
-                    && block_index != usize::MAX
-                {
-                    app.toggle_fold(block_index);
-                }
-            }
-            _ => {}
-        },
-        // A report can already be queued when Ctrl-T releases capture. Ignore it so native
-        // selection mode cannot mutate transcript or composer state.
-        CEvent::Mouse(_) => {}
+        CEvent::Mouse(event) => dispatch_mouse(app, event),
         CEvent::Key(k) => {
             if k.kind == KeyEventKind::Release
                 || (k.kind == KeyEventKind::Repeat

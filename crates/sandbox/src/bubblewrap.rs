@@ -19,6 +19,7 @@
 use crate::{Confinement, RunOutput, Sandbox, SandboxError};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Stdio;
 
 mod capability;
@@ -79,6 +80,7 @@ impl Bubblewrap {
         tokio::task::spawn_blocking(usable_bwrap).await.ok()?
     }
 
+    #[cfg(unix)]
     async fn run_inner(
         &self,
         command: &str,
@@ -149,6 +151,20 @@ impl Bubblewrap {
             SandboxError::Spawn("child stderr was not piped".into())
         })?;
         crate::collect_child_output(child, stdout, stderr, conf).await
+    }
+
+    #[cfg(not(unix))]
+    async fn run_inner(
+        &self,
+        command: &str,
+        conf: &Confinement,
+        _pre_sanitization_env: &[(&str, &str)],
+    ) -> Result<RunOutput, SandboxError> {
+        if conf.unconfined {
+            crate::run_direct(command, conf).await
+        } else {
+            Err(SandboxError::Unsupported)
+        }
     }
 
     #[cfg(all(test, target_os = "linux"))]

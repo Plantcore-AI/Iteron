@@ -8,11 +8,12 @@ use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    CreateWellKnownSid, EqualSid, FreeSid, PSID, SE_GROUP_ENABLED, SECURITY_CAPABILITIES,
-    SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, WELL_KNOWN_SID_TYPE, WinCapabilityInternetClientSid,
+    CreateWellKnownSid, EqualSid, FreeSid, PSID, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE,
+    SID_AND_ATTRIBUTES, WELL_KNOWN_SID_TYPE, WinCapabilityInternetClientSid,
     WinCapabilityPrivateNetworkClientServerSid,
 };
 use windows_sys::Win32::System::Com::CoCreateGuid;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 
 pub(super) struct Profile {
     name: Vec<u16>,
@@ -44,7 +45,7 @@ impl Profile {
             .iter_mut()
             .map(|sid| SID_AND_ATTRIBUTES {
                 Sid: sid.as_mut_ptr().cast(),
-                Attributes: SE_GROUP_ENABLED,
+                Attributes: SE_GROUP_ENABLED as u32,
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
