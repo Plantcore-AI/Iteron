@@ -84,7 +84,9 @@ as the completed document.
 
 The session title stays at the top. Conversation content occupies the middle;
 the composer, contextual shortcuts and one status row stay at the bottom.
-Starting a conversation removes the welcome content without moving the composer.
+The welcome screen retains the original character-art logo, with a compact wordmark
+on narrow terminals. Starting a conversation removes the welcome content without
+moving the composer.
 The default status shows the current route, effort and permission mode, plus
 active work or warnings. `/status`, `/cost` and `/context` show detailed metrics.
 

@@ -1092,10 +1092,93 @@ fn braille_frame(spin: usize) -> &'static str {
     braille_spinner()[spin % braille_spinner().len()]
 }
 
-/// A quiet product signature that leaves the composer close to the task.
+const BRAND_ICON_WIDTH: u16 = 16;
+
+/// One terminal row of the public Plantcore icon: a fixed canvas prefix followed by its layered
+/// planes. Color, rather than texture, distinguishes overlap on normal terminals.
+fn brand_icon_row(width: u16, prefix: &str, parts: &[(&str, Color)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(
+        width.saturating_sub(iteron_tunables::param_integer(
+            "cli.block.brand_icon_width",
+            BRAND_ICON_WIDTH,
+        )) as usize
+            / 2,
+    ))];
+    spans.push(Span::raw(prefix.to_string()));
+    spans.extend(parts.iter().map(|(shape, color)| {
+        Span::styled(
+            (*shape).to_string(),
+            Style::default().fg(*color).add_modifier(Modifier::BOLD),
+        )
+    }));
+    Line::from(spans)
+}
+
+/// Reproduce the public Plantcore icon's three overlapping planes in a compact 16×5 terminal grid.
+/// This is intentionally a character adaptation, not a raster asset embedded in the binary.
+fn plantcore_icon(width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        brand_icon_row(width, "         ", &[("▄", theme.brand_back)]),
+        brand_icon_row(
+            width,
+            "      ",
+            &[("▄██", theme.brand_mid), ("█████", theme.brand_back)],
+        ),
+        brand_icon_row(
+            width,
+            "    ",
+            &[
+                ("▄██", theme.brand_front),
+                ("███", theme.brand_mid),
+                ("██████", theme.brand_back),
+            ],
+        ),
+        brand_icon_row(
+            width,
+            "  ",
+            &[
+                ("▄█", theme.brand_mid),
+                ("███████", theme.brand_front),
+                ("█████", theme.brand_back),
+            ],
+        ),
+        brand_icon_row(
+            width,
+            "",
+            &[
+                ("██", theme.brand_mid),
+                ("████████", theme.brand_front),
+                ("██████", theme.brand_back),
+            ],
+        ),
+    ]
+}
+
+/// Preserve the terminal artwork on the welcome surface; the composer stays docked below it.
 fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::default()];
+    }
+    if width >= 28 {
+        let mut rows = plantcore_icon(width, theme);
+        for (text, color, min_width) in [
+            (tagline, theme.muted, 28),
+            ("/help  shortcuts    /sessions  resume", theme.faint, 40),
+        ] {
+            if width < min_width {
+                continue;
+            }
+            for mut row in wrap_spans(
+                &[Span::styled(text.to_owned(), Style::default().fg(color))],
+                width,
+            ) {
+                let padding = width.saturating_sub(line_width(&row)) / 2;
+                row.spans
+                    .insert(0, Span::raw(" ".repeat(usize::from(padding))));
+                rows.push(row);
+            }
+        }
+        return rows;
     }
     let mut rows = vec![Line::from(Span::styled(
         "iteron"
@@ -1943,10 +2026,14 @@ mod tests {
             }
         }
         let wide = welcome.render(80, &Theme::dark(), 0);
-        assert_eq!(wide.len(), 3);
+        assert_eq!(wide.len(), 7);
         let text = plain(wide);
-        assert!(text.contains("iteron") && text.contains("/help") && text.contains("/sessions"));
-        assert!(!text.contains('█'));
+        assert!(text.contains("/help") && text.contains("/sessions"));
+        assert!(text.contains("████████████████"));
+        for theme in [Theme::dark(), Theme::light(), Theme::mono()] {
+            assert!(plain(welcome.render(28, &theme, 0)).contains("████████████████"));
+        }
+        assert!(plain(welcome.render(20, &Theme::mono(), 0)).contains("iteron"));
     }
 
     #[test]
