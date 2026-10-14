@@ -181,8 +181,22 @@ pub(super) fn compare_critical_functions(
         if loaded.contains_key(path) {
             continue;
         }
-        let base = base_view.parse_file(path)?;
-        let current = candidate_view.parse_file(path)?;
+        let (base, current) = if path == "crates/cli/src/runtime.rs" {
+            (
+                super::super::frontend_owner::runtime_scope(base_view)?,
+                super::super::frontend_owner::runtime_scope(candidate_view)?,
+            )
+        } else if path == "crates/cli/src/output.rs" {
+            (
+                super::super::machine_owner::scope(base_view)?,
+                super::super::machine_owner::scope(candidate_view)?,
+            )
+        } else {
+            (
+                base_view.parse_file(path)?,
+                candidate_view.parse_file(path)?,
+            )
+        };
         loaded.insert(path, (base, current));
     }
 
@@ -468,9 +482,9 @@ fn scope_drift_with_import_mode(
     if imports(base) != imports(current) {
         return Some(ScopeDrift::Import);
     }
-    // An attribute-free `mod image_input;` cannot affect a frozen item that never names
-    // `image_input`. Attributed declarations remain unconditional ScopeBindings, so macro-use and
-    // conditional module sources are still compared even in this name-filtered path.
+    // A module with only built-in name-preserving attributes cannot affect a frozen item that
+    // never names it. Referenced declarations retain the full cfg/path fingerprint; macro-use,
+    // cfg_attr, procedural attributes and nonliteral paths remain unconditional bindings.
     if retain(module_bindings(base), false) != retain(module_bindings(current), false) {
         return Some(ScopeDrift::Module);
     }
@@ -525,8 +539,12 @@ fn frozen_identifiers(
 }
 
 fn path_has_frozen_executable(path: &str) -> bool {
-    FREE_FUNCTIONS.iter().any(|group| group.path == path)
-        || METHODS.iter().any(|group| group.path == path)
+    FREE_FUNCTIONS
+        .iter()
+        .any(|group| group.path == path && !group.names.is_empty())
+        || METHODS
+            .iter()
+            .any(|group| group.path == path && !group.names.is_empty())
 }
 
 fn named_type<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::Item> {
@@ -1053,12 +1071,125 @@ mod tests {
         assert_eq!(bound(0), Some(BTreeSet::from(["b".to_owned()])));
         assert_eq!(bound(1), Some(BTreeSet::from(["d".to_owned()])));
         // `self` in a group binds the parent segment, not the literal `self`.
+        assert_eq!(bound(2), Some(BTreeSet::from(["e".to_owned()])));
+        assert_eq!(bound(3), Some(BTreeSet::from(["f".to_owned()])));
+        assert_eq!(bound(4), None, "a glob binds unknowable names");
+        assert_eq!(bound(5), Some(BTreeSet::from(["h".to_owned()])));
+    }
+
+    #[test]
+    fn named_type_imports_compare_actual_origins_independently_of_grouping() {
+        let base: syn::File = syn::parse_quote! {
+            use iteron_protocol::{Capability, Phase, SubmissionId, UnrelatedTrait};
+        };
+        let split: syn::File = syn::parse_quote! {
+            use iteron_protocol::Capability;
+            use iteron_protocol::{SubmissionId, Phase, UnrelatedTrait};
+        };
+        let extracted: syn::File = syn::parse_quote! {
+            use iteron_protocol::{Capability, Phase, SubmissionId};
+        };
+        let types = referenced("pub struct Frozen(Capability, Phase, SubmissionId);");
+        assert_eq!(scope_drift(&base, &split, Some(&types)), None);
+        assert_eq!(scope_drift(&base, &extracted, Some(&types)), None);
+        // Executable/whole-file freezes still retain every import, including a trait that
+        // changes implicit method resolution without appearing in the frozen function tokens.
         assert_eq!(
-            bound(2),
-            Some(BTreeSet::from(["e".to_owned(), "f".to_owned()]))
+            scope_drift_with_import_mode(&base, &split, Some(&types), true),
+            None
         );
-        assert_eq!(bound(3), None, "a glob binds unknowable names");
-        assert_eq!(bound(4), Some(BTreeSet::from(["h".to_owned()])));
+        assert_eq!(
+            scope_drift_with_import_mode(&base, &extracted, Some(&types), true),
+            Some(ScopeDrift::Import)
+        );
+        assert_eq!(
+            scope_drift(&base, &extracted, None),
+            Some(ScopeDrift::Import)
+        );
+    }
+
+    #[test]
+    fn named_import_decomposition_preserves_self_alias_absolute_path_and_attributes() {
+        let base: syn::File = syn::parse_quote! {
+            #[cfg(feature = "known")]
+            pub(crate) use ::a::b::{self, C as Alias};
+            use a::d::{self as D, E};
+        };
+        let current: syn::File = syn::parse_quote! {
+            #[cfg(feature = "known")]
+            pub(crate) use ::a::b;
+            #[cfg(feature = "known")]
+            pub(crate) use ::a::b::C as Alias;
+            use a::d as D;
+            use a::d::E;
+        };
+        assert_eq!(scope_drift(&base, &current, None), None);
+        let redirected: syn::File = syn::parse_quote! {
+            #[cfg(feature = "known")]
+            pub(crate) use ::a::b;
+            #[cfg(feature = "known")]
+            pub(crate) use ::a::evil::C as Alias;
+            use a::d as D;
+            use a::d::E;
+        };
+        assert_eq!(
+            scope_drift(&base, &redirected, Some(&referenced("Alias"))),
+            Some(ScopeDrift::Import)
+        );
+    }
+
+    #[test]
+    fn redirected_conditional_unknown_or_anonymous_imports_cannot_hide_in_a_group() {
+        let base: syn::File = syn::parse_quote! {
+            use iteron_protocol::{Capability, Phase};
+        };
+        let names = referenced("pub struct Frozen(Capability);");
+        for current in [
+            "use evil::Capability; use iteron_protocol::Phase;",
+            "use evil::Other as Capability; use iteron_protocol::Phase;",
+            "#[cfg(test)] use iteron_protocol::{Capability, Phase};",
+            "use iteron_protocol::{Capability, Phase}; use evil::*;",
+            "use iteron_protocol::{Capability, Phase}; use evil::Trait as _;",
+            "use iteron_protocol::{Capability, Phase}; #[macro_use] use evil::Unused;",
+            "use iteron_protocol::{Capability, Phase}; #[cfg_attr(any(), allow(dead_code))] use evil::Unused;",
+            "use iteron_protocol::{Capability, Phase}; #[procedural] use evil::Unused;",
+        ] {
+            assert_eq!(
+                scope_drift(&base, &syn::parse_file(current).unwrap(), Some(&names)),
+                Some(ScopeDrift::Import),
+                "{current}"
+            );
+        }
+        for unknown in [
+            "use a::{Trait as _, Unrelated};",
+            "use a::{*, Unrelated};",
+            "#[cfg_attr(any(), allow(dead_code))] use a::{Named, Unrelated};",
+        ] {
+            let unknown: syn::File = syn::parse_file(unknown).unwrap();
+            let bindings = import_bindings(&unknown);
+            assert_eq!(bindings.len(), 1, "unknown grouped imports remain whole");
+            assert!(bindings[0].names.is_none());
+        }
+    }
+
+    #[test]
+    fn expanded_named_binding_pressure_preserves_whole_unconditional_import() {
+        let predicate = "x".repeat(1_048_576);
+        let source = format!("#[cfg(feature = \"{predicate}\")] use a::{{First, Second, Third}};");
+        let file = syn::parse_file(&source).unwrap();
+        let bindings = import_bindings(&file);
+        assert_eq!(bindings.len(), 1);
+        assert!(bindings[0].names.is_none());
+        let unchanged = syn::parse_file(&source).unwrap();
+        assert_eq!(
+            scope_drift(&file, &unchanged, Some(&referenced("Unrelated"))),
+            None
+        );
+        let changed = syn::parse_file(&source.replace("Second", "Other")).unwrap();
+        assert_eq!(
+            scope_drift(&file, &changed, Some(&referenced("Unrelated"))),
+            Some(ScopeDrift::Import)
+        );
     }
 
     #[test]
@@ -1082,6 +1213,54 @@ mod tests {
             ),
             Some(ScopeDrift::Import)
         );
+    }
+
+    #[test]
+    fn literal_module_paths_preserve_names_without_allowing_frozen_redirects() {
+        let base: syn::File = syn::parse_quote! {
+            mod output;
+            mod recording_provider;
+        };
+        let extracted: syn::File = syn::parse_quote! {
+            mod output;
+            #[cfg(feature = "legacy-plantcore")]
+            mod recording_provider;
+            #[cfg(not(feature = "legacy-plantcore"))]
+            #[path = "recording_provider_disabled.rs"]
+            mod recording_provider;
+        };
+        let output_names = referenced("fn frozen() { output::emit(); }");
+        assert_eq!(
+            scope_drift_with_import_mode(&base, &extracted, Some(&output_names), true),
+            None
+        );
+        assert_eq!(
+            scope_drift(&base, &extracted, Some(&referenced("recording_provider"))),
+            Some(ScopeDrift::Module)
+        );
+        assert_eq!(
+            scope_drift(&base, &extracted, None),
+            Some(ScopeDrift::Module)
+        );
+        for redirect in [
+            "#[path = \"other.rs\"] mod output; mod recording_provider;",
+            "mod output; #[macro_use] mod recording_provider;",
+            "mod output; #[cfg_attr(any(), path = \"other.rs\")] mod recording_provider;",
+            "mod output; #[path = include_str!(\"other.rs\")] mod recording_provider;",
+            "mod output; #[path = \"\"] mod recording_provider;",
+            "mod output; #[procedural] mod recording_provider;",
+        ] {
+            assert_eq!(
+                scope_drift_with_import_mode(
+                    &base,
+                    &syn::parse_file(redirect).unwrap(),
+                    Some(&output_names),
+                    true,
+                ),
+                Some(ScopeDrift::Module),
+                "{redirect}"
+            );
+        }
     }
 
     #[test]

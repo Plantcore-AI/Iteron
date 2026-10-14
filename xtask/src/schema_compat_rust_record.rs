@@ -283,7 +283,7 @@ mod tests {
         let tool_source =
             read_bounded(root, "crates/protocol/src/tool.rs", MAX_SOURCE_BYTES).unwrap();
         let tool_text = std::str::from_utf8(&tool_source).unwrap();
-        let newtypes = BTreeMap::from([
+        let mut newtypes = BTreeMap::from([
             (
                 "ProviderState".to_owned(),
                 named_struct_fields(block_text, "pub struct ProviderState {").unwrap(),
@@ -297,9 +297,19 @@ mod tests {
                 named_struct_fields(tool_text, "pub struct ToolResult {").unwrap(),
             ),
         ]);
+        let image_source =
+            read_bounded(root, "crates/protocol/src/tool_image.rs", MAX_SOURCE_BYTES).unwrap();
+        newtypes.insert(
+            "ToolImageObservationV1".into(),
+            named_struct_fields(
+                std::str::from_utf8(&image_source).unwrap(),
+                "pub struct ToolImageObservationV1 {",
+            )
+            .unwrap(),
+        );
         let blocks =
             tagged_enum_fields(&block_source, BLOCK_SIGNATURE, "type", 0, &newtypes).unwrap();
-        assert_eq!(blocks.len(), 5);
+        assert_eq!(blocks.len(), 6);
         assert_eq!(
             blocks["provider_state"],
             BTreeSet::from([

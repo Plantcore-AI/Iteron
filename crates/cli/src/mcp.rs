@@ -1,7 +1,9 @@
 //! Trusted-user MCP composition and registry wiring.
 
+mod captured_result;
 pub(crate) mod commands;
 pub(crate) mod credential_store;
+use captured_result::mcp_captured_tool_execution;
 mod oauth_http;
 mod oauth_login;
 mod session;
@@ -747,10 +749,10 @@ pub(crate) fn register_mcp_tool(
     })?;
     let attribution = iteron_tools::McpEffectAttribution::new(server_name, bare.to_string());
     let bare = bare.to_string();
-    registry.register_mcp_effect(spec, attribution, move |call, _root, dispatch_clock| {
+    registry.register_mcp_effect_captured(spec, attribution, move |call, _root, dispatch_clock| {
         let client = client.clone();
         let bare = bare.clone();
-        iteron_tools::effectfut::box_it(async move {
+        iteron_tools::capturedfut::box_it(async move {
             let clock = dispatch_clock.clone();
             let outcome = client
                 .call_tool_outcome_observed_with_progress(
@@ -760,7 +762,7 @@ pub(crate) fn register_mcp_tool(
                     move || clock.mark_dispatched(),
                 )
                 .await;
-            mcp_tool_execution(call.id, outcome)
+            mcp_captured_tool_execution(call.id, outcome)
         })
     })
 }

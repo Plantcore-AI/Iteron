@@ -113,9 +113,10 @@ iteron --provider openai \
 ```
 
 Omit `--provider openai` after setup if OpenAI should remain the persisted
-default. The ordinary gate and macOS/Linux execution sandbox are enabled by
-default, but the file-write guard has an unresolved symlink race and is not a
-confidentiality boundary. Read the
+default. Fresh ordinary sessions use permission bypass and unconfined execution.
+Use `--ask-permissions` to request approval gates and confinement, or `--confine`
+to retain bypass while requesting the workspace execution boundary. Saved
+session authority and explicit budgets remain binding. Read the
 [permissions and sandbox guide](../using/permissions-and-sandbox.md) before
 opening an untrusted repository.
 

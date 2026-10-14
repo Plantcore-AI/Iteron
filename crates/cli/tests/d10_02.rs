@@ -11,8 +11,8 @@
 //! process actually ran.
 //!
 //!   * base (bug): the `!` parser spawns `bash` directly, bypassing the gate — `BROKER-42` appears.
-//!   * fixed:      `run_bash_inline` consults the capability broker, gets a `Deny` verdict for Plan
-//!     mode, refuses the spawn, and renders the denial inside the ordinary Bash audit card.
+//!   * fixed: the scoped host captures actual Agent policy, gets a `Deny` verdict for Plan mode,
+//!     refuses dispatch, and renders its NotStarted result inside the ordinary Bash card.
 //!
 //! A brand-new session must never let a read-only posture be punched through by the operator escape
 //! hatch, so this asserts BOTH the leak is absent AND the broker's denial is visible.
@@ -268,8 +268,8 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
         STEP_TIMEOUT,
         |screen| {
             screen.contains("BROKER-42")
-                || (screen.contains("plan mode denies code execution")
-                    && screen.contains("blocked command"))
+                || (screen.contains("actual host permission policy refuses this command")
+                    && screen.contains("[exit -1]"))
         },
     );
 
@@ -280,7 +280,9 @@ fn operator_bang_shell_is_gated_by_the_capability_broker_in_plan_mode() {
          `BROKER-42`: the inline shell spawned a process outside the capability broker.\n{screen}"
     );
     assert!(
-        screen.contains("plan mode denies code execution") && screen.contains("blocked command"),
+        screen.contains("actual host permission policy refuses this command")
+            && screen.contains("[exit -1]")
+            && screen.contains("BROKER-$((21+21))"),
         "expected the capability broker to refuse the operator shell in Plan mode with a visible \
          denial, but no block notice was shown.\n{screen}"
     );

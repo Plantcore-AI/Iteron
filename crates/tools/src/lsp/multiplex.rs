@@ -2,11 +2,11 @@
 
 use super::LspToolError;
 use super::wire::{safe_server_request_result, validate_server_request_id, write_value};
+use iteron_sandbox::{ConfinedProcessInput, ConfinedProcessOutput};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::BufReader;
-use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore, oneshot};
 
 const DEFAULT_CONCURRENT_REQUESTS: usize = 8;
@@ -29,7 +29,7 @@ fn max_interleaved_messages() -> usize {
     .clamp(1, MAX_INTERLEAVED_MESSAGES)
 }
 
-type Writer = Arc<AsyncMutex<Option<ChildStdin>>>;
+type Writer = Arc<AsyncMutex<Option<ConfinedProcessInput>>>;
 type Pending = Arc<Mutex<HashMap<u32, oneshot::Sender<Result<Value, LspToolError>>>>>;
 
 pub(super) struct ResponseRouter {
@@ -42,7 +42,7 @@ pub(super) struct ResponseRouter {
 }
 
 impl ResponseRouter {
-    pub(super) fn spawn(stdout: ChildStdout, writer: Writer) -> Self {
+    pub(super) fn spawn(stdout: ConfinedProcessOutput, writer: Writer) -> Self {
         Self::spawn_reader(BufReader::new(stdout), writer)
     }
 

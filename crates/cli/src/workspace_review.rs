@@ -2,7 +2,9 @@
 //! and checkpoint restore previews.
 
 use iteron_changeset::{ChangeSet, Inventory, Presence, Preview, Scope, Status, Unrecorded};
-use iteron_protocol::{Event, EventKind, RunId, Seq};
+use iteron_protocol::Seq;
+#[cfg(test)]
+use iteron_protocol::{Event, EventKind, RunId};
 use iteron_record::Snapshot;
 use std::path::Path;
 
@@ -161,6 +163,7 @@ pub(crate) async fn observe(workspace: &Path) -> Result<Review, String> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn checkpoint_at_or_before(
     events: &[Event],
     run: &RunId,

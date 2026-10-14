@@ -345,6 +345,7 @@ fn alternatives_make_only_narrower_typed_decisions() {
                 framed_bytes: 16,
                 trust: Trust::Trusted,
                 modified_unix_secs: None,
+                confidence_ppm: 1_000_000,
             },
             iteron_ctx::MemoryCandidate {
                 slug: "beta".into(),
@@ -352,6 +353,7 @@ fn alternatives_make_only_narrower_typed_decisions() {
                 framed_bytes: 16,
                 trust: Trust::Trusted,
                 modified_unix_secs: None,
+                confidence_ppm: 1_000_000,
             },
         ],
         recall_bytes: 1_024,

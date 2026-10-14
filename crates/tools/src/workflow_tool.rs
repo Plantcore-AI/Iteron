@@ -18,11 +18,8 @@
 //! direct `Registry::run_effect` in a test). The CLI `iteron workflow run/list/resume/watch` remains
 //! the standalone, streaming entry point.
 
-use crate::{Registry, ToolError, boxfut, err_result, ok_result};
+use crate::{Registry, ToolError, WORKFLOW_TOOL, boxfut, err_result, ok_result};
 use iteron_protocol::{Capability, Purity, ToolSpec};
-
-/// The tool name the kernel intercepts for workflow launches (parallels [`crate::DISPATCH_AGENT`]).
-pub const WORKFLOW_TOOL: &str = "Workflow";
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     registry.push_tool(

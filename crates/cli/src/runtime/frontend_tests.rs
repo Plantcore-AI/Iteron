@@ -15,10 +15,14 @@ fn oversized_stream_delta_is_split_into_v7_safe_utf8_events_without_data_loss() 
         let UiEvent::Text(fragment) = &event else {
             panic!("stream splitter must preserve the event kind")
         };
-        assert!(fragment.len() <= crate::output::max_stream_ui_delta_bytes());
+        assert!(fragment.len() <= crate::machine_projection::max_stream_ui_delta_bytes());
         reassembled.push_str(fragment);
-        crate::output::stream_event_for_schema(event, &mut turn, crate::output::V7_SCHEMA_VERSION)
-            .expect("every emitted fragment fits one canonical v7 logical object");
+        crate::machine_projection::stream_event_for_schema(
+            event,
+            &mut turn,
+            crate::machine_projection::V7_SCHEMA_VERSION,
+        )
+        .expect("every emitted fragment fits one canonical v7 logical object");
     }
     assert_eq!(reassembled, original);
 }
@@ -166,4 +170,67 @@ fn a_single_event_larger_than_the_shared_budget_is_exactly_refused() {
         "RunEnded reconciles the final Done projection"
     );
     assert_eq!(health.ui_bytes.used(), 0);
+}
+
+#[test]
+fn confirmed_final_evidence_refusal_does_not_poison_the_run_or_leak_queue_bytes() {
+    use iteron_protocol::final_evidence::{
+        HostConfiguredCheckV1, HostFinalCoverageV1, HostFinalEvidenceV1,
+    };
+    let fact = HostFinalEvidenceV1 {
+        tenant: iteron_protocol::TenantId::default(),
+        run_id: iteron_protocol::RunId("retained-run".into()),
+        first_turn: iteron_protocol::TurnId(0),
+        final_turn: iteron_protocol::TurnId(0),
+        source_seq: iteron_protocol::Seq(9),
+        observed_tool_completions: 0,
+        observed_tool_failures: 0,
+        observed_native_file_changes: 0,
+        native_change_source_seq: None,
+        work_state: iteron_protocol::final_evidence::HostFinalWorkStateV1::Unverified,
+        configured_check: HostConfiguredCheckV1::NotObserved,
+        configured_check_source_seq: None,
+        effects_known: true,
+        write_capable_effect_admitted: false,
+        coverage: HostFinalCoverageV1::LiveInvocation,
+        workspace_diff_inspected: false,
+        test_suite_identity_verified: false,
+        correction: None,
+    };
+    // Real byte admission refuses the observation while the independently retained host
+    // receipt remains unchanged. This presentation-only refusal must not alter Done.
+    let health = FrontendChannelHealth {
+        ui_bytes: std::sync::Arc::new(FrontendUiByteBudget::new(1)),
+        ..FrontendChannelHealth::default()
+    };
+    health.ui_bytes.enable();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::HostFinalEvidence(fact.clone())));
+    assert!(!health.take_structural_refusal());
+    assert_eq!(health.ui_bytes.used(), 0);
+    assert_eq!(fact.source_seq, iteron_protocol::Seq(9));
+    drop(rx);
+    let health = FrontendChannelHealth::default();
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::HostFinalEvidence(fact)));
+    assert!(!health.take_structural_refusal());
+}
+
+#[test]
+fn native_refusal_presentation_failure_does_not_change_the_run_or_authority() {
+    use iteron_protocol::refusal::{HostRefusalV1, RefusalReasonV1};
+    let refusal = HostRefusalV1::unscoped(RefusalReasonV1::SandboxUnavailable);
+    let health = FrontendChannelHealth {
+        ui_bytes: std::sync::Arc::new(FrontendUiByteBudget::new(1)),
+        ..FrontendChannelHealth::default()
+    };
+    health.ui_bytes.enable();
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::Refusal(refusal.clone())));
+    assert!(!health.take_structural_refusal());
+    assert_eq!(health.ui_bytes.used(), 0);
+    assert!(refusal.source.is_none());
+    drop(rx);
+    let health = FrontendChannelHealth::default();
+    assert!(!health.try_send_runtime(&tx, RuntimeFrontendEvent::Refusal(refusal)));
+    assert!(!health.take_structural_refusal());
 }

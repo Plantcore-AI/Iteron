@@ -25,12 +25,7 @@ fn add_governor_constraints(
     input: &ProviderProcessFactsInput<'_>,
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
-    let role_routes = super::super::execution_policy::admitted_role_model_routes(
-        input.agent_catalog,
-        &input.selection.provider_id,
-        &input.selection.model_id,
-    )
-    .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
+    let role_routes = super::admitted_role_routes(input)?;
     let role_routes = map(role_routes
         .into_iter()
         .map(|(role, route)| (role, en(&route))));

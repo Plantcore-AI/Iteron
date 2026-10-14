@@ -3,6 +3,7 @@ use super::*;
 impl Agent {
     pub(super) fn run_time_remaining(&self) -> Option<Duration> {
         self.run_deadline
+            .current()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
@@ -14,7 +15,9 @@ impl Agent {
         let local = now
             .checked_add(Duration::from_secs(child_budget.max_wall_secs))
             .unwrap_or(now);
-        self.run_deadline.map_or(local, |parent| parent.min(local))
+        self.run_deadline
+            .current()
+            .map_or(local, |parent| parent.min(local))
     }
 
     pub(super) fn run_deadline_exhausted(&self) -> bool {
@@ -23,23 +26,60 @@ impl Agent {
     }
 
     pub(super) fn usd_budget_exhausted(&self) -> bool {
-        self.usd_budget
-            .as_ref()
-            .is_some_and(|budget| budget.exhausted())
+        self.usd_budget.as_ref().is_some_and(|budget| {
+            budget.exhausted()
+                && !(budget.ceiling_microusd() == 0
+                    && budget.can_fund_verified_zero_cost()
+                    && self.has_verified_zero_price())
+        })
+    }
+
+    fn has_verified_zero_price(&self) -> bool {
+        let (Some(selected), Some(card), Some(port)) = (
+            self.provider_selection.selected(),
+            self.provider_selection.card(),
+            self.provider_selection.pricing_port(),
+        ) else {
+            return false;
+        };
+        let now = self.pricing_now();
+        let rates = card.rate_card.rates;
+        // A zero monetary wallet can fund only an authenticated, currently bound free route.
+        // Unknown ancestry, a stale/foreign card, and every nonzero tariff remain exhausted.
+        selected.route == card.rate_card.route
+            && self
+                .provider_selection
+                .validate_live(&self.provider, &self.model)
+                .is_ok()
+            && now >= card.rate_card.issued_at_unix_secs
+            && now < card.rate_card.expires_at_unix_secs
+            && port.verify_rate_card(card).is_ok()
+            && [
+                rates.input_microusd_per_million,
+                rates.output_microusd_per_million,
+                rates.cache_creation_microusd_per_million,
+                rates.cache_read_microusd_per_million,
+                rates.thinking_microusd_per_million,
+            ]
+            .into_iter()
+            .all(|rate| rate == 0)
     }
 
     pub(super) fn token_budget_exhausted(&self) -> bool {
         self.budget.max_tokens.is_some_and(|ceiling| {
             // A dispatched response without authoritative usage cannot prove that any positive
             // remainder exists, so the optional hard ceiling fails closed.
-            self.ledger.provider_attempts > self.ledger.turns
+            !self.ledger.child_accounting_complete()
+                || self.ledger.provider_attempts > self.ledger.turns
                 || ledger_tokens(&self.ledger) >= ceiling
         })
     }
 
     pub(super) fn remaining_provider_tokens(&self) -> Option<u64> {
         self.budget.max_tokens.map(|ceiling| {
-            if self.ledger.provider_attempts > self.ledger.turns {
+            if !self.ledger.child_accounting_complete()
+                || self.ledger.provider_attempts > self.ledger.turns
+            {
                 0
             } else {
                 ceiling.saturating_sub(ledger_tokens(&self.ledger))
@@ -67,6 +107,14 @@ impl Agent {
         &mut self,
     ) -> Result<Option<&'static str>, KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        if !self.ledger.child_accounting_complete()
+            && (self.budget.max_turns != Budget::UNLIMITED_TURNS
+                || self.budget.max_tokens.is_some())
+        {
+            return Err(KernelError::ContextResolution(
+                "child accounting is unavailable for finite budget admission".into(),
+            ));
+        }
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
         if self
@@ -86,7 +134,13 @@ impl Agent {
     }
 
     pub(super) fn remaining_inference_turns(&self) -> u32 {
-        self.budget.remaining_turns(self.ledger.provider_attempts)
+        if !self.ledger.child_accounting_complete()
+            && self.budget.max_turns != Budget::UNLIMITED_TURNS
+        {
+            0
+        } else {
+            self.budget.remaining_turns(self.ledger.provider_attempts)
+        }
     }
 
     /// The turn ceiling and what has already been charged against it, read as one pair so a
@@ -146,7 +200,7 @@ impl Agent {
 
     /// Install the resident safe-point command channel without enabling human approval prompts.
     pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
-        self.approvals_rx = Some(rx);
+        self.inbox.bind_receiver(rx);
     }
 
     /// Bind the product/user-facing epoch before starting its runtime future, then clear it at
@@ -155,7 +209,7 @@ impl Agent {
         &mut self,
         id: Option<iteron_protocol::product_contract::ProductTurnId>,
     ) {
-        self.active_product_turn_id = id;
+        self.inbox.bind_product_turn(id);
     }
 
     /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block
@@ -165,6 +219,56 @@ impl Agent {
         self.set_inbound_control(rx);
     }
 
+    pub(crate) fn admit_operator_shell(&self, command: &str) -> bool {
+        let call = iteron_protocol::ToolUse {
+            id: "host-operator-shell".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command":command}),
+        };
+        self.admit_operator_tool_call(&call)
+    }
+
+    /// Actual authenticated operator intent, consumed only by host-native scoped factories.
+    pub(crate) fn admit_operator_tool_call(&self, call: &iteron_protocol::ToolUse) -> bool {
+        let Some(effects) = self.registry.operation_effects(call) else {
+            return false;
+        };
+        let decision = super::permission_policy::evaluate_operation(
+            &call.name,
+            &effects,
+            super::permission_policy::OperationPolicy {
+                mode: self.permission_mode,
+                rules: &self.permission_rules,
+                bypass: self.bypass_permissions,
+                task_ceiling: self.authority_ceiling,
+                policy_capabilities: self.policy_capabilities,
+                governing_trust: iteron_protocol::Trust::Trusted,
+                authority: self.operator_authority(),
+            },
+        );
+        // The authenticated operator submitted this exact command. Explicit per-class/alias
+        // denies and immutable ceilings still win; no model approval or new verifier is added.
+        decision.verdict != iteron_protocol::Verdict::Deny
+            && !decision.ceiling_blocks
+            && !decision.taint_blocks
+    }
+
+    pub(crate) fn operator_selected_model_default(&self) -> Option<(String, String)> {
+        self.provider_selection
+            .validate_live(&self.provider, &self.model)
+            .ok()?;
+        let selected = self.provider_selection.selected()?;
+        Some((
+            selected.route.provider_id.clone(),
+            selected.route.model_id.clone(),
+        ))
+    }
+
+    /// Read only the host's credential-variable deny-list. Values are never inspected.
+    pub(crate) fn operator_child_environment_names(&self) -> &[String] {
+        &self.sensitive_env_names
+    }
+
     /// Install trusted provider credential-variable names without ever inspecting their values.
     /// Child agents and the strong verification oracle inherit this deny-list.
     pub fn set_sensitive_env_names(&mut self, mut names: Vec<String>) {
@@ -172,5 +276,24 @@ impl Agent {
         names.dedup();
         self.hooks.set_sensitive_env_names(names.clone());
         self.sensitive_env_names = names;
+    }
+}
+
+/// The session turn ceiling beside the attempts already charged against it (`/budget`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnBudgetState {
+    pub max_turns: u32,
+    /// Cumulative admitted provider attempts, including every subagent charged to this parent.
+    pub used: u32,
+}
+
+impl TurnBudgetState {
+    /// Attempts still admissible before the next submission stops immediately.
+    pub fn remaining(&self) -> u32 {
+        if self.max_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            self.max_turns.saturating_sub(self.used)
+        }
     }
 }

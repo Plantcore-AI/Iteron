@@ -13,7 +13,7 @@ struct AppliedPinnedRuntime {
     execution: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
     verification_feedback: iteron_verify::VerificationFeedbackTailPolicy,
     content: crate::runtime_tunables::effective_content::EffectiveContentIdentities,
-    app_server_queue: crate::app_server::AppServerQueuePolicy,
+    app_server_queue: crate::queue_policy::FrontendQueuePolicy,
     binary_media: crate::image_input::BinaryMediaInspectionPolicy,
     multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
     effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy,
@@ -129,7 +129,21 @@ impl Agent {
         let force_cancel_seam = registry
             .process_control()
             .and_then(super::force_cancel::ForceCancelSeam::for_process_control);
+        let turn_publications =
+            super::turn_publication::TurnPublicationOwner::for_rollout(&rollout);
+        let cohort_replay_checked = rollout.is_empty();
         Agent {
+            task_plan: super::task_plan::TaskPlanOwner::default(),
+            advisory_maintenance: std::sync::Mutex::new(None),
+            persistent_agents: None,
+            cohort_installation: None,
+            cohort_replay_checked,
+            persistent_mailbox: None,
+            client_inventory: None,
+            plugin_management: None,
+            ordinary_extensions: None,
+            last_assistant_source: None,
+            turn_publications,
             provider,
             registry,
             tool_output_spill: None,
@@ -139,14 +153,12 @@ impl Agent {
             ledger: Ledger::new(),
             budget,
             model,
-            selected_route: None,
-            selected_provider: None,
+            provider_selection: super::provider_selection::ProviderSelectionOwner::default(),
             last_rate_limit: None,
             provider_controls: iteron_provider::ProviderRequestControls::default(),
             provider_governor: None,
             fallback_provider_routes: Vec::new(),
-            pricing_port: None,
-            pricing: None,
+
             usd_budget,
             usd_budget_persisted_microusd: None,
             projection_attribution: None,
@@ -161,10 +173,8 @@ impl Agent {
             compaction: CompactionPolicy::default(),
             compaction_failure_policy:
                 crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal,
-            compaction_failed_closed: false,
+            compaction_state: super::compaction_journal::CompactionStateOwner::default(),
             compaction_summary_prompt: None,
-            compacted_in_run: false,
-            last_compaction_turn: None,
             context_estimator,
             token_calibration,
             token_estimate_baselines: std::collections::VecDeque::new(),
@@ -173,43 +183,36 @@ impl Agent {
             advertised_tool_specs_cache: None,
             context_budget_policy,
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
-            context_source_evidence: Vec::new(),
+            context_source_evidence:
+                super::request_context_evidence::RequestContextEvidenceOwner::default(),
             input_file_evidence: None,
             input_image_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),
             memory_traces: iteron_ctx::MemoryTraceStore::default(),
-            session_memory_visibility: std::collections::VecDeque::new(),
+            session_memory_visibility:
+                super::memory_request_exposure::MemoryVisibilityOwner::default(),
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             verify_preconfined: false,
-            verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
+            verification_state: super::verification_state::VerificationStateOwner::default(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
-            app_server_queue_policy: crate::app_server::AppServerQueuePolicy::owner(),
+            app_server_queue_policy: crate::queue_policy::FrontendQueuePolicy::owner(),
             binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy::owner(),
             multimodal_decode_envelope: crate::image_input::multimodal_decode_envelope(),
             effective_content: None,
-            verification_quarantine: std::collections::BTreeMap::new(),
-            verification_quarantine_restored: false,
-            latest_workspace_checkpoint: None,
-            last_workspace_checkpoint_turn: None,
-            turn_mutated_workspace: false,
+            workspace_checkpoints: workspace_checkpoint::WorkspaceCheckpointOwner::default(),
             turn_orchestration_requested: false,
-            verification_rollback_point: None,
             bypass_permissions: false,
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
             pricing_now_unix_secs: None,
-            resumed: None,
-            working_set: None,
+            transcript_state: super::session_transcript::SessionTranscriptOwner::default(),
             committed_provider_run_notices: std::collections::BTreeSet::new(),
-            verify_attempts: 0,
-            drain_requested: false,
-            drain: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            owns_drain: true,
+            verification_tasks: bounded_verify::VerificationTaskRegistry::new(),
             #[cfg(test)]
             verify_oracle: None,
             #[cfg(test)]
@@ -217,19 +220,16 @@ impl Agent {
             diagnostics: DiagnosticEmitter::default(),
             record_failed: false,
             recording_harness_error_armed: false,
-            effect_admissions: effect_admission::EffectAdmissions::default(),
-            live_unresolved_effects: 0,
-            recovery_effect_replay_required: true,
-            interrupt: None,
-            interrupt_requested: false,
-            force_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            force_cancel_requested: false,
+            effect_journal: super::effect_journal_owner::EffectJournalOwner::default(),
+            control: super::session_control::SessionControlState::default(),
+            inbox: super::session_inbox::SessionSubmissionInbox::default(),
             force_cancel_seam,
             max_tool_concurrency: iteron_tunables::param_integer(
                 "cli.runtime.default_max_tool_concurrency",
                 DEFAULT_MAX_TOOL_CONCURRENCY,
             ),
             pure_overlap_enabled: iteron_tools::Registry::pure_overlap_owner(),
+            #[cfg(feature = "legacy-plantcore")]
             plantcore: super::plantcore::PlantcoreRuntime::default(),
             pure_tool_concurrency: iteron_tunables::param_integer(
                 "cli.runtime.default_max_tool_concurrency",
@@ -248,27 +248,18 @@ impl Agent {
             runtime_policy_provenance: runtime_policy_overlay::RuntimePolicyProvenance::default(),
             memory_workspace: None,
             memory_benchmark_scope: None,
-            context_strategy: compiled_policy_bundle.slots().context.clone(),
-            tool_policy: compiled_policy_bundle.slots().tool_policy.clone(),
-            memory_strategy: compiled_policy_bundle.slots().memory.clone(),
-            router: compiled_policy_bundle.slots().router.clone(),
-            planner: compiled_policy_bundle.slots().planner.clone(),
-            collaboration: compiled_policy_bundle.slots().collaboration.clone(),
-            scheduler: compiled_policy_bundle.slots().scheduler.clone(),
+
             retry_policy: iteron_sched::BackoffPolicy::default(),
-            verifier: compiled_policy_bundle.slots().verifier.clone(),
-            model_router: compiled_policy_bundle.slots().model_router.clone(),
+
             context_port: std::sync::Arc::new(iteron_ctx::DefaultContextPort),
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: std::sync::Arc::new(iteron_agents::AgentCatalog::builtin_only()),
             agent_catalog_pinned: false,
-            boot_bundle: compiled_policy_bundle.boot_bundle(),
+
             compiled_policy_bundle,
             policy_evidence: None,
-            policy_turn_cost_baseline: None,
-            policy_turn_counter_baseline: None,
-            policy_verifier_outcome: iteron_protocol::PolicyVerifierOutcome::NotRun,
+            terminal_record: terminal_record::TerminalRecordOwner::default(),
             tunables_pin: None,
             injected: None,
             injected_trust: None,
@@ -280,12 +271,9 @@ impl Agent {
             permission_rules: PermissionRules::new(),
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
-            approvals_rx: None,
-            active_product_turn_id: None,
             interactive_approvals: false,
-            pending_steers: std::collections::VecDeque::new(),
             approval_seq: 0,
-            orchestrating: false,
+            orchestrating: super::orchestration_lifetime::OrchestrationLifetime::default(),
             delegation_depth: 0,
             side_conversations_opened: 0,
             failed_actions: super::failed_action_cache::FailedActionCache::default(),
@@ -293,7 +281,7 @@ impl Agent {
             hooks_runtime_installed: false,
             hook_effect_journal: None,
             telemetry: None,
-            run_deadline: None,
+            run_deadline: super::execution_deadline::ExecutionDeadlineOwner::default(),
             tunables_profile: None,
         }
     }
@@ -346,7 +334,9 @@ impl Agent {
         agent.tool_output_spill = Some(applied.tool_output_spill);
         agent.context_estimator.pin_policy(applied.token_estimator);
         agent.execution_policy = applied.execution;
-        agent.verification_policy.feedback = applied.verification_feedback;
+        agent
+            .verification_state
+            .apply_feedback(applied.verification_feedback)?;
         agent.effective_content = Some(applied.content);
         agent.app_server_queue_policy = applied.app_server_queue;
         agent.binary_media_policy = applied.binary_media;
@@ -474,9 +464,37 @@ impl Agent {
                     reason: "contains an invalid executable agent definition",
                 })?;
         }
+        Self::configure_dispatch_profiles(&mut self.registry, &catalog);
         self.agent_catalog = std::sync::Arc::new(catalog);
         self.agent_catalog_pinned = true;
         Ok(())
+    }
+
+    /// Project metadata before fresh execution facts are sealed; pinning repeats this idempotently
+    /// after checkpoint identity validation, including resume and controller-child construction.
+    pub(crate) fn configure_dispatch_profiles(
+        registry: &mut Registry,
+        catalog: &iteron_agents::AgentCatalog,
+    ) {
+        let mut direct_profiles = catalog.defs().iter().filter(|def| {
+            !def.is_isolated_writer()
+                && def.validate().is_ok()
+                && iteron_record::redact::scrub(&def.name) == def.name
+        });
+        let profiles = direct_profiles
+            .by_ref()
+            .take(iteron_tools::MAX_DISPATCH_AGENT_PROFILES)
+            .map(|def| iteron_tools::DispatchAgentProfile {
+                name: def.name.clone(),
+                description: iteron_record::redact::scrub(&def.description)
+                    .chars()
+                    .filter(|ch| !crate::semantic_text::is_unsafe_display_char(*ch))
+                    .take(160)
+                    .collect(),
+                tools: def.tools.narrow(),
+            })
+            .collect::<Vec<_>>();
+        registry.set_dispatch_agent_profiles(&profiles, direct_profiles.next().is_some());
     }
 
     pub fn agent_catalog_digest(&self) -> String {
@@ -504,7 +522,8 @@ impl Agent {
         self.tool_output_spill = Some(applied.tool_output_spill);
         self.context_estimator.pin_policy(applied.token_estimator);
         self.execution_policy = applied.execution;
-        self.verification_policy.feedback = applied.verification_feedback;
+        self.verification_state
+            .apply_feedback(applied.verification_feedback)?;
         self.effective_content = Some(applied.content);
         self.app_server_queue_policy = applied.app_server_queue;
         self.binary_media_policy = applied.binary_media;
@@ -526,7 +545,7 @@ impl Agent {
             .ok_or(KernelError::TunablesNotResolved)
     }
 
-    pub(crate) const fn app_server_queue_policy(&self) -> crate::app_server::AppServerQueuePolicy {
+    pub(crate) const fn app_server_queue_policy(&self) -> crate::queue_policy::FrontendQueuePolicy {
         self.app_server_queue_policy
     }
 
@@ -660,6 +679,7 @@ impl Agent {
                 Ok(changed)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))
@@ -703,6 +723,7 @@ impl Agent {
                 Ok(changed)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))

@@ -5,6 +5,7 @@
 //! `ToolEnd` mutates its ORIGINATING card by id, never by a `Vec` position that eviction would shift
 //! (R2).
 
+mod diff;
 mod links;
 mod workflow_run;
 
@@ -26,9 +27,6 @@ use std::time::{Duration, Instant};
 /// Key-column width for a panel with no `KeyValue` rows at all. Zero, so a panel of plain lines
 /// gets no phantom indent.
 const EMPTY_KEY_COLUMN_WIDTH: usize = 0;
-/// Line number assumed when a hunk header carries no range. The `from_replacement` header
-/// (`@@ {path} @@`) has none, and its change is numbered sequentially from the top of the file.
-const HUNK_DEFAULT_START_LINE: u32 = 1;
 
 /// The spinner, shared by tool cards and the status line (unified — was duplicated at two different
 /// frame counts against the same counter, a latent drift bug). These are Claude Code's OWN macOS
@@ -272,8 +270,7 @@ pub enum BlockKind {
         title: String,
         rows: Vec<PanelRow>,
     },
-    /// The one-time terminal-native iteron pet landing. It is ordinary scrollable transcript content,
-    /// not persistent chrome, a window, or a full-screen splash.
+    /// Compact startup identity and shortcuts, hidden by geometry after conversation begins.
     Welcome {
         tagline: String,
     },
@@ -318,10 +315,18 @@ impl Block {
             BlockKind::Assistant(doc) => format!("### iteron\n{}", doc.to_text()),
             BlockKind::Thinking { text, .. } => format!("<thinking>\n{text}\n</thinking>\n"),
             BlockKind::Tool(c) => {
-                let mut s = format!("$ {} {}\n", c.name, humanize_args(&c.name, &c.args));
-                if !c.output.trim().is_empty() {
+                let mut s = format!("$ {} {}\n", c.name, c.args);
+                s.push_str(&format!("status: {}", tool_status_label(c)));
+                if let Some(code) = c.exit_code {
+                    s.push_str(&format!(" · exit {code}"));
+                }
+                s.push('\n');
+                if !c.output.is_empty() {
                     s.push_str(&c.output);
                     s.push('\n');
+                }
+                if let Some(diff) = &c.diff {
+                    s.push_str(&Block::new(0, BlockKind::Diff(diff.clone())).to_text());
                 }
                 s
             }
@@ -333,6 +338,9 @@ impl Block {
                     card.class,
                     workflow_status_label(card.status)
                 );
+                if let Some(reason) = &card.reason {
+                    s.push_str(&format!("reason: {reason}\n"));
+                }
                 for task in &card.tasks {
                     s.push_str(&format!(
                         "- [{}] {} — {}",
@@ -395,6 +403,8 @@ impl Block {
             BlockKind::Diff(d) => {
                 let mut s = format!("--- {} (+{} -{})\n", d.path, d.adds, d.dels);
                 for h in &d.hunks {
+                    s.push_str(&h.header);
+                    s.push('\n');
                     for l in &h.lines {
                         let m = match l.tag {
                             DiffTag::Add => '+',
@@ -439,16 +449,13 @@ impl Block {
                 if width == 0 {
                     return vec![Line::default()];
                 }
-                // A submitted prompt is one quiet full-width gray band with vertical breathing
-                // space, following the history-cell treatment used by the reference coding agents.
-                // Mono keeps the same ownership surface through reverse video without inventing a
-                // color. Assistant prose remains open, so history is distinguishable at a glance.
+                // A compact full-width prompt surface distinguishes user input from assistant
+                // prose. Turn spacing belongs to geometry, so short messages use one row.
                 let surface = if theme.mono {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
                     Style::default().fg(theme.user_fg).bg(theme.user_bg)
                 };
-                let breathing = Line::from(Span::styled(" ".repeat(width as usize), surface));
                 if width < 3 {
                     let marker: String = "› ".chars().take(width as usize).collect();
                     let marker_style = surface.patch(
@@ -456,11 +463,7 @@ impl Block {
                             .fg(theme.role_user)
                             .add_modifier(Modifier::BOLD),
                     );
-                    return vec![
-                        breathing.clone(),
-                        Line::from(Span::styled(marker, marker_style)),
-                        breathing,
-                    ];
+                    return vec![Line::from(Span::styled(marker, marker_style))];
                 }
                 let content = vec![Span::styled(
                     text.clone(),
@@ -484,8 +487,6 @@ impl Block {
                         span.style = surface.patch(span.style);
                     }
                 }
-                rows.insert(0, breathing.clone());
-                rows.push(breathing);
                 rows
             }
             BlockKind::Assistant(doc) => render_assistant_doc(doc, width, theme),
@@ -501,7 +502,7 @@ impl Block {
                 detail,
                 open,
             } => render_error(title, detail, *open, width, theme),
-            BlockKind::Diff(d) => render_diff(d, width, theme),
+            BlockKind::Diff(d) => diff::render(d, width, theme, diff::DiffPresentation::Standalone),
             BlockKind::Panel { title, rows, .. } => render_panel(title, rows, width, theme),
             BlockKind::Welcome { tagline } => render_welcome(tagline, width, theme),
         }
@@ -622,11 +623,6 @@ pub fn gap_before(prev: &BlockKind, next: &BlockKind) -> u16 {
     if prev_toolish && next_toolish {
         return 0;
     }
-    // User history owns a tinted breathing row above and below, so one external row is enough.
-    // An assistant answer following dense tool activity still gets the larger voice-change gap.
-    if matches!(next, Assistant(_)) && prev_toolish {
-        return 2;
-    }
     1
 }
 
@@ -640,6 +636,9 @@ fn marker_wrap(
     width: u16,
 ) -> Vec<Line<'static>> {
     let mw = marker.chars().map(crate::tui::char_width).sum::<u16>();
+    if width <= mw {
+        return wrap_spans(content, width);
+    }
     let rows = wrap_spans(content, width.saturating_sub(mw));
     let indent = " ".repeat(mw as usize);
     rows.into_iter()
@@ -660,6 +659,9 @@ fn marker_wrap(
 /// nested body/continuation rows aligned under the connector column (col 5) or a panel row (col 2).
 fn indent_wrap(indent: &str, content: &[Span], width: u16) -> Vec<Line<'static>> {
     let iw = indent.chars().map(crate::tui::char_width).sum::<u16>();
+    if width <= iw {
+        return wrap_spans(content, width);
+    }
     let rows = wrap_spans(content, width.saturating_sub(iw));
     rows.into_iter()
         .map(|mut l| {
@@ -679,6 +681,12 @@ fn connector_lines(lines: &[Vec<Span>], width: u16, theme: &Theme) -> Vec<Line<'
         .chars()
         .map(crate::tui::char_width)
         .sum::<u16>();
+    if width <= iw {
+        return lines
+            .iter()
+            .flat_map(|spans| wrap_spans(spans, width))
+            .collect();
+    }
     let indent = " ".repeat(iw as usize);
     for (li, spans) in lines.iter().enumerate() {
         // width measured via char_width (not byte .len()) — one shared width table everywhere (findings 9).
@@ -1146,64 +1154,60 @@ fn plantcore_icon(width: u16, theme: &Theme) -> Vec<Line<'static>> {
     ]
 }
 
-/// A terminal-native startup signature that scrolls away with the conversation. Wide terminals use
-/// the Plantcore icon adaptation; narrow terminals keep the established transcript marker grammar.
+/// Preserve the terminal artwork on the welcome surface; the composer stays docked below it.
 fn render_welcome(tagline: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![Line::default()];
     }
-    if width < 16 {
-        let compact = [
-            Span::styled("<", Style::default().fg(theme.muted)),
-            Span::styled(
-                "iteron",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(">", Style::default().fg(theme.muted)),
-        ];
-        return vec![
-            wrap_spans(&compact, width)
-                .into_iter()
-                .next()
-                .unwrap_or_default(),
-        ];
-    }
-
     if width >= 28 {
-        let mut out = plantcore_icon(width, theme);
-        // `one_line` appends an ellipsis when truncated, so reserve its final cell.
-        let tagline = one_line(tagline, width.saturating_sub(1) as usize);
-        let tagline_width = tagline.chars().count() as u16;
-        let pad = width.saturating_sub(tagline_width) / 2;
-        out.push(Line::from(vec![
-            Span::raw(" ".repeat(pad as usize)),
-            Span::styled(tagline, Style::default().fg(theme.muted)),
-        ]));
-        out
-    } else {
-        let mut out = marker_wrap(
-            &format!("{} ", primary_marker()),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
+        let mut rows = plantcore_icon(width, theme);
+        for (text, color, min_width) in [
+            (tagline, theme.muted, 28),
+            ("/help  shortcuts    /sessions  resume", theme.faint, 40),
+        ] {
+            if width < min_width {
+                continue;
+            }
+            for mut row in wrap_spans(
+                &[Span::styled(text.to_owned(), Style::default().fg(color))],
+                width,
+            ) {
+                let padding = width.saturating_sub(line_width(&row)) / 2;
+                row.spans
+                    .insert(0, Span::raw(" ".repeat(usize::from(padding))));
+                rows.push(row);
+            }
+        }
+        return rows;
+    }
+    let mut rows = vec![Line::from(Span::styled(
+        "iteron"
+            .chars()
+            .take(usize::from(width))
+            .collect::<String>(),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    if width >= 16 {
+        rows.extend(wrap_spans(
             &[Span::styled(
-                "iteron",
-                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+                tagline.to_owned(),
+                Style::default().fg(theme.muted),
             )],
             width,
-        );
-        out.extend(connector_lines(
-            &[vec![Span::styled(
-                tagline.to_string(),
-                Style::default().fg(theme.muted),
-            )]],
-            width,
-            theme,
         ));
-        out
     }
+    if width >= 40 {
+        rows.extend(wrap_spans(
+            &[Span::styled(
+                "/help  shortcuts    /sessions  resume",
+                Style::default().fg(theme.faint),
+            )],
+            width,
+        ));
+    }
+    rows
 }
 
 fn render_panel(title: &str, rows: &[PanelRow], width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -1380,12 +1384,17 @@ fn mcp_op(name: &str) -> Option<String> {
 
 /// Humanize a tool's args into a short label (path / command / pattern), never raw JSON.
 fn humanize_args(name: &str, args: &serde_json::Value) -> String {
-    // MCP tools: the arg is the OPERATION token (Notion(search) / Notion(patch-page)), not the JSON
-    // payload — so the read/write surface is legible at a glance (findings 8).
-    if let Some(op) = mcp_op(name) {
-        return op;
-    }
     let get = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    // Keep the operation and an observed target visible without dumping argument JSON.
+    if let Some(op) = mcp_op(name) {
+        return match get("path")
+            .or_else(|| get("file_path"))
+            .or_else(|| get("url"))
+        {
+            Some(target) => format!("{op} {}", one_line(&target, 80)),
+            None => op,
+        };
+    }
     if let Some(cmd) = get("command").or_else(|| get("cmd")) {
         return one_line(&cmd, 80);
     }
@@ -1426,8 +1435,7 @@ fn one_line(s: &str, max: usize) -> String {
     }
 }
 
-/// A read-only lookup whose success is uninteresting — rendered as ONE dim line (progressive
-/// disclosure): only diffs / real output / errors earn a full card (ref-teardown).
+/// Read-only lookups keep a concise success summary until explicitly expanded.
 fn is_trivial_tool(name: &str) -> bool {
     matches!(
         name,
@@ -1464,6 +1472,12 @@ fn result_summary(card: &ToolCard, verb: &str) -> Option<String> {
     if card.status == ToolStatus::Running {
         return None;
     }
+    if card.status == ToolStatus::Err || card.exit_code.is_some_and(|code| code != 0) {
+        return Some(match card.exit_code.filter(|code| *code != 0) {
+            Some(code) => format!("exited {code}"),
+            None => "failed".into(),
+        });
+    }
     if let Some(d) = &card.diff {
         let file = d.path.rsplit(['/', '\\']).next().unwrap_or(&d.path);
         // A from-empty write is not an edit: `Wrote main.rs (12 lines)`, never `Updated … with 12
@@ -1480,16 +1494,10 @@ fn result_summary(card: &ToolCard, verb: &str) -> Option<String> {
             plural(d.dels as usize, "removal")
         ));
     }
-    if card.exit_code.is_some_and(|c| c != 0) {
-        return Some(format!("exited {}", card.exit_code.unwrap_or_default()));
-    }
     let body = body_lines(card);
-    if card.status == ToolStatus::Err && body.is_empty() {
-        return Some("failed".into());
-    }
     Some(match verb {
         // count-shaped tools: the count IS the result (reserve the count here — findings 1).
-        "Read" => format!("Read {}", plural(body.len(), "line")),
+        "Read" => format!("Read {}", plural(card.output.lines().count(), "line")),
         "Search" | "List" => plural(body.len(), "match"),
         // generic tool: hoist the first output line onto the connector (the tail renders below).
         _ if body.is_empty() => "done".into(),
@@ -1595,6 +1603,15 @@ fn tool_tail_window(
     (head, tail)
 }
 
+pub(crate) fn tool_status_label(card: &ToolCard) -> &'static str {
+    match card.status {
+        ToolStatus::Running => "running",
+        _ if card.exit_code.is_some_and(|code| code != 0) => "failed",
+        ToolStatus::Ok => "done",
+        ToolStatus::Err => "failed",
+    }
+}
+
 fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<Line<'static>> {
     let verb = verb_for(&card.name);
     let bad_exit = card.exit_code.is_some_and(|c| c != 0);
@@ -1625,6 +1642,15 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
         ));
         title_spans.push(Span::styled(")", Style::default().fg(theme.faint)));
     }
+    if card.status != ToolStatus::Running {
+        title_spans.push(Span::styled(
+            match card.exit_code.filter(|code| *code != 0) {
+                Some(code) => format!(" · failed · exit {code}"),
+                None => format!(" · {}", tool_status_label(card)),
+            },
+            Style::default().fg(if errored { theme.error } else { theme.muted }),
+        ));
+    }
     // elapsed shows only for slow tools (≥1s) — a millisecond column on every fast tool is noise CC
     // omits. `muted`, not `faint`, so a real duration stays scannable (findings).
     if card.status != ToolStatus::Running
@@ -1646,9 +1672,58 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
     );
 
     // While running the spinner marker is the whole liveness signal — no `⎿ running…` line (findings 7).
-    let Some(summary) = result_summary(card, &verb) else {
+    let Some(mut summary) = result_summary(card, &verb) else {
         return out;
     };
+    if card.open {
+        // Expanded cards render the complete retained command/output, including blank lines and
+        // embedded diffs. The compact summary must never replace original content.
+        if let Some(command) = card
+            .args
+            .get("command")
+            .or_else(|| card.args.get("cmd"))
+            .and_then(serde_json::Value::as_str)
+            && (command.contains('\n') || command.chars().count() > 80)
+        {
+            let lines = command
+                .lines()
+                .map(|line| {
+                    crate::semantic_text::spans(line, crate::semantic_text::Tone::Body, theme)
+                })
+                .collect::<Vec<_>>();
+            out.extend(connector_lines(&lines, width, theme));
+        }
+        if !card.output.is_empty() {
+            let tone = if errored {
+                crate::semantic_text::Tone::Error
+            } else {
+                crate::semantic_text::Tone::Body
+            };
+            let lines = card
+                .output
+                .lines()
+                .map(|line| crate::semantic_text::spans(line, tone, theme))
+                .collect::<Vec<_>>();
+            out.extend(connector_lines(&lines, width, theme));
+        }
+        if let Some(diff) = &card.diff {
+            out.extend(diff::render(
+                diff,
+                width,
+                theme,
+                diff::DiffPresentation::ToolResult,
+            ));
+        }
+        return out;
+    }
+    if !card.output.is_empty()
+        && ((is_trivial_tool(&card.name) && !errored && card.diff.is_none())
+            || body_lines(card)
+                .first()
+                .is_some_and(|line| line.chars().count() > 80))
+    {
+        summary.push_str(" · ctrl+o to expand");
+    }
 
     // The ok result summary is `muted` (not `faint`) — it is the line the eye lands on, so it must be
     // legible, not dimmer than the body preview (findings 2). Errors stay red.
@@ -1663,21 +1738,91 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
         theme,
     ));
 
+    for notice in card
+        .output
+        .lines()
+        .filter(|line| {
+            line.starts_with("[tool input omitted")
+                || line.starts_with("[tool output omitted")
+                || line.starts_with("[tool outcome unknown")
+        })
+        .take(3)
+    {
+        out.extend(connector_lines(
+            &[crate::semantic_text::spans(
+                notice,
+                crate::semantic_text::Tone::Muted,
+                theme,
+            )],
+            width,
+            theme,
+        ));
+    }
+
     // Trivial read-only success: just the primary line + the one-line `⎿` count summary, no body (§4).
-    if is_trivial_tool(&card.name) && card.status == ToolStatus::Ok && card.diff.is_none() {
+    if is_trivial_tool(&card.name) && !errored && card.diff.is_none() {
         return out;
     }
 
     if let Some(diff) = &card.diff {
-        // Diff body hangs further in, under the connector column. `false` = suppress the `@@` hunk
-        // header (a git machine tell) for an INLINE edit result — findings 2.
-        out.extend(render_diff_body(diff, width, theme, false));
+        if errored && !card.output.trim().is_empty() {
+            let rows = card
+                .output
+                .lines()
+                .flat_map(|line| {
+                    indent_wrap(
+                        "     ",
+                        &crate::semantic_text::spans(
+                            line,
+                            crate::semantic_text::Tone::Error,
+                            theme,
+                        ),
+                        width,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (head, tail) = tool_tail_window(&rows, 5, usize::MAX);
+            out.extend(rows[..head].iter().cloned());
+            if head + tail < rows.len() {
+                out.extend(indent_wrap(
+                    "     ",
+                    &[Span::styled(
+                        "… error details · ctrl+o to expand",
+                        Style::default().fg(theme.error),
+                    )],
+                    width,
+                ));
+            }
+            out.extend(rows[rows.len() - tail..].iter().cloned());
+        }
+        // The diff owner renders nested code rows for a tool result. The standalone
+        // path/counts and hunk headers belong only to the explicit diff viewer.
+        let rows = diff::render(diff, width, theme, diff::DiffPresentation::ToolResult);
+        let budget = 12;
+        if rows.len() <= budget {
+            out.extend(rows);
+        } else {
+            let head = 6;
+            let tail = budget - head - 1;
+            out.extend(rows[..head].iter().cloned());
+            out.extend(indent_wrap(
+                "     ",
+                &[Span::styled(
+                    format!(
+                        "… {} diff rows · ctrl+o to expand",
+                        rows.len() - head - tail
+                    ),
+                    Style::default().fg(theme.muted),
+                )],
+                width,
+            ));
+            out.extend(rows[rows.len() - tail..].iter().cloned());
+        }
     } else {
-        // Command/tool output TAIL: the first non-empty line is already hoisted onto the connector
-        // (findings 1), so render lines[1..]. On a bad exit the summary is `exited N` (not output), so
-        // the whole body is the tail. Collapsible at col 5.
+        // Successful tools hoist the first output line. Failures keep every output line eligible
+        // for the bounded preview, because their summary is status rather than output.
         let body = body_lines(card);
-        let tail: &[&str] = if bad_exit {
+        let tail: &[&str] = if errored {
             &body
         } else {
             body.get(1..).unwrap_or(&[])
@@ -1698,12 +1843,15 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
                     )
                 })
                 .collect();
-            if card.open {
-                out.extend(rendered.iter().cloned());
-            } else {
+            {
                 // Budget by CONTENT, not by pane width — see `tool_tail_budget_rows()`. An unknown
                 // tool gets the smaller budget (opencode `index.tsx:1811-1813`).
-                let budget = if is_unknown_tool(&card.name) {
+                let budget = if !errored
+                    && matches!(card.name.as_str(), "bash" | "shell" | "run")
+                    && rendered.len() > 3
+                {
+                    3
+                } else if is_unknown_tool(&card.name) {
                     tool_tail_budget_rows_unknown()
                 } else {
                     tool_tail_budget_rows()
@@ -1731,342 +1879,31 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
     out
 }
 
-/// Standalone diff block (`/diff`, git_diff): a primary `⏺ path  +adds -dels` header + the body.
-fn render_diff(diff: &FileDiff, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let head = vec![
-        Span::styled(
-            diff.path.clone(),
-            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  +{}", diff.adds),
-            Style::default().fg(theme.added),
-        ),
-        Span::styled(
-            format!(" -{}", diff.dels),
-            Style::default().fg(theme.removed),
-        ),
-    ];
-    // The diff header earns an ACCENT marker (a diff is a
-    // rich viewer, not washed-out chrome). A standalone `/diff` KEEPS the `@@` hunk header (it's a
-    // genuine viewer), unlike an inline edit result which suppresses it (findings 2).
-    let mut out = marker_wrap(
-        &format!("{} ", primary_marker()),
-        Style::default().fg(theme.accent),
-        &head,
-        width,
-    );
-    out.extend(render_diff_body(diff, width, theme, true));
-    out
-}
-
-/// Parse a hunk header's starting line numbers. Unified headers read `@@ -old[,n] +new[,m] @@`; the
-/// `from_replacement` header (`@@ {path} @@`) has no ranges, so both default to 1 (sequential
-/// numbering from the top of the change). Never panics on a malformed header.
-fn hunk_start(header: &str) -> (u32, u32) {
-    let mut old = iteron_tunables::param_integer(
-        "cli.block.hunk_default_start_line",
-        HUNK_DEFAULT_START_LINE,
-    );
-    let mut new = iteron_tunables::param_integer(
-        "cli.block.hunk_default_start_line",
-        HUNK_DEFAULT_START_LINE,
-    );
-    for tok in header.split_whitespace() {
-        if let Some(n) = tok.strip_prefix('-') {
-            old = n.split(',').next().and_then(|x| x.parse().ok()).unwrap_or(
-                iteron_tunables::param_integer(
-                    "cli.block.hunk_default_start_line",
-                    HUNK_DEFAULT_START_LINE,
-                ),
-            );
-        } else if let Some(n) = tok.strip_prefix('+') {
-            new = n.split(',').next().and_then(|x| x.parse().ok()).unwrap_or(
-                iteron_tunables::param_integer(
-                    "cli.block.hunk_default_start_line",
-                    HUNK_DEFAULT_START_LINE,
-                ),
-            );
-        }
-    }
-    (old, new)
-}
-
-/// The lexer language hint for a file path — normally its extension, passed straight to the
-/// highlighter (its `spec_for` matches `rs`/`py`/`ts`/… directly). `None` → no highlighting at all,
-/// which is the deliberate answer whenever we cannot NAME the language.
-///
-/// Extensionless build/config files are named, not suffixed, so a basename table is consulted
-/// FIRST: `Makefile`, `Dockerfile` and friends otherwise reach the extension split, find nothing,
-/// and render plain. Only names the highlighter actually has a `LangSpec` for are mapped; the rest
-/// (`Justfile`, `CMakeLists.txt`, the ignore files) map to `None` on purpose — a plain render beats
-/// a plausible-looking wrong lexer.
-fn lang_for_path(path: &str) -> Option<&str> {
-    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    match base {
-        "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
-        "Dockerfile" | "Containerfile" => return Some("dockerfile"),
-        "Cargo.lock" => return Some("toml"),
-        // `just`, `cmake` and the gitignore grammar have no LangSpec — do not guess a near neighbor.
-        "Justfile" | "justfile" | "CMakeLists.txt" | ".gitignore" | ".dockerignore" => return None,
-        _ => {}
-    }
-    base.rsplit('.')
-        .next()
-        .filter(|e| !e.is_empty() && *e != base)
-}
-
-/// The diff hunks: a dim `@@` header, then each row = a right-aligned `old│new` line-number gutter
-/// (the biggest missing diff cue), a single dim sign cell, and the code text — SYNTAX-HIGHLIGHTED, not
-/// flat-colored. Add/del is encoded ONCE by the edge-to-edge background tint + the sign; the code keeps
-/// its syntax foreground (like delta/GitHub — TUI v3 §5, review R1/R2). Context rows carry no tint.
-/// Rows hang at col 5 (under the connector) so the body reads as nested result.
-fn render_diff_body(
-    diff: &FileDiff,
-    width: u16,
-    theme: &Theme,
-    show_header: bool,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let indent = "     "; // col 5, under the connector
-    let lang = lang_for_path(&diff.path);
-
-    // Pre-pass: the widest line number in the whole diff → the gutter column width.
-    let mut max_no = 1u32;
-    for h in &diff.hunks {
-        let (mut o, mut n) = hunk_start(&h.header);
-        for dl in &h.lines {
-            match dl.tag {
-                DiffTag::Add => {
-                    max_no = max_no.max(n);
-                    n += 1;
-                }
-                DiffTag::Del => {
-                    max_no = max_no.max(o);
-                    o += 1;
-                }
-                DiffTag::Ctx => {
-                    max_no = max_no.max(o.max(n));
-                    o += 1;
-                    n += 1;
-                }
-            }
-        }
-    }
-    let gw = max_no.to_string().len();
-    let blank = " ".repeat(gw);
-    let gutter_style = Style::default().fg(theme.faint);
-
-    // The twin `old│new ` + `sign ` gutter's display width — code hangs under this column (findings 5).
-    let gutter_w = 2 * gw + 4; // og(gw) │(1) "ng "(gw+1) "sign "(2)
-    let indent_w = indent.chars().count(); // 5, the col-5 connector indent
-
-    for (hi, h) in diff.hunks.iter().enumerate() {
-        if show_header {
-            // A standalone `/diff` keeps the `@@ …` hunk header (a genuine viewer — findings 2).
-            out.extend(indent_wrap(
-                indent,
-                &[Span::styled(h.header.clone(), gutter_style)],
-                width,
-            ));
-        } else if hi > 0 {
-            // Inline edit result: SUPPRESS the `@@` git tell; a blank row separates successive hunks.
-            out.push(Line::from(""));
-        }
-        let (mut o, mut n) = hunk_start(&h.header);
-        let mut st = crate::highlight::LexState::new();
-        for dl in &h.lines {
-            let (sign, bg, og, ng, changed) = match dl.tag {
-                DiffTag::Add => (
-                    "+",
-                    Some(theme.added_bg),
-                    blank.clone(),
-                    format!("{n:>gw$}"),
-                    theme.added,
-                ),
-                DiffTag::Del => (
-                    "-",
-                    Some(theme.removed_bg),
-                    format!("{o:>gw$}"),
-                    blank.clone(),
-                    theme.removed,
-                ),
-                DiffTag::Ctx => (
-                    " ",
-                    None,
-                    format!("{o:>gw$}"),
-                    format!("{n:>gw$}"),
-                    theme.faint,
-                ),
-            };
-            match dl.tag {
-                DiffTag::Add => n += 1,
-                DiffTag::Del => o += 1,
-                DiffTag::Ctx => {
-                    o += 1;
-                    n += 1;
-                }
-            }
-            // add/del is carried PRIMARILY by the sign + the changed-side line number in green/red
-            // (delta/Claude Code style), with the row tint as a supporting band. Coloring the sign and
-            // number is the load-bearing cue — the dark-theme tint alone (~10/channel off the bg) is too
-            // subtle to read, which made the whole card look flat (findings). Context stays faint.
-            let sign_style = Style::default().fg(changed);
-            let old_style = Style::default().fg(if dl.tag == DiffTag::Del {
-                changed
-            } else {
-                theme.faint
-            });
-            let new_style = Style::default().fg(if dl.tag == DiffTag::Add {
-                changed
-            } else {
-                theme.faint
-            });
-            // Expand tabs to spaces BEFORE highlight/wrap: `char_width('\t') == 1` here but the terminal
-            // draws a tab as a jump to the next stop, so a tab-indented diff would misalign and its
-            // row tint would truncate short of the real right edge (findings 7).
-            let expanded = expand_tabs(&dl.text);
-            let code_spans = crate::highlight::code_spans(lang, &expanded, &mut st, theme);
-            let gutter_spans = || {
-                vec![
-                    Span::styled(og.clone(), old_style),
-                    Span::styled("│".to_string(), gutter_style),
-                    Span::styled(format!("{ng} "), new_style),
-                    Span::styled(format!("{sign} "), sign_style),
-                ]
-            };
-            let code_col = (indent_w + gutter_w) as u16;
-            let mut rows: Vec<Line<'static>> = if code_col < width {
-                // HANGING INDENT (findings 5): the gutter (`old│new sign `) prefixes row 0 only; a
-                // wrapped continuation gets that gutter width in (faint) spaces so the code stays
-                // left-aligned under the code column, never under the line-number gutter. Wrap the CODE
-                // at width − code column.
-                wrap_spans(&code_spans, width - code_col)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ri, mut cr)| {
-                        let mut spans: Vec<Span<'static>> = vec![Span::raw(indent.to_string())];
-                        if ri == 0 {
-                            spans.extend(gutter_spans());
-                        } else {
-                            spans.push(Span::styled(" ".repeat(gutter_w), gutter_style));
-                        }
-                        spans.append(&mut cr.spans);
-                        Line::from(spans)
-                    })
-                    .collect()
-            } else {
-                // Pathologically narrow terminal (the gutter alone won't fit a code column): fall back to
-                // wrapping gutter+code together so the composed row still respects `<= width` (the
-                // pre-wrap→scroll-unit invariant). No hanging indent is possible here anyway.
-                let mut spans = gutter_spans();
-                spans.extend(code_spans);
-                indent_wrap(indent, &spans, width)
-            };
-            if !theme.mono
-                && let Some(bg) = bg
-            {
-                for row in &mut rows {
-                    let w = line_width(row);
-                    if w < width {
-                        row.spans.push(Span::raw(" ".repeat((width - w) as usize)));
-                    }
-                    // skip the col-5 connector indent (first span) so the left margin stays neutral;
-                    // the tint then runs edge-to-edge from the gutter across the row.
-                    for s in row.spans.iter_mut().skip(1) {
-                        if s.style.bg.is_none() {
-                            s.style = s.style.bg(bg);
-                        }
-                    }
-                }
-            }
-            out.extend(rows);
-        }
-    }
-    out
-}
-
-/// Body rows of a COLLAPSED reasoning block. ONE — opencode `index.tsx:1589-1590` keeps reasoning to
-/// a single line, for the stated reason that a single line makes the layout never jump. Reasoning
-/// streams token by token, so any budget above 1 re-lays the transcript on every chunk.
-fn thinking_closed_rows() -> usize {
-    iteron_tunables::param_usize("cli.block.thinking_closed_rows", 1)
-}
-
-/// Characters of that one line — a teaser: enough to recognize the thought, short enough to stay a
-/// single row on any ordinary pane. It is a CHARACTER cap, not a cell cap, so on a pane narrower than
-/// ~66 columns the teaser can wrap to two rows; that height is still CONSTANT as reasoning streams,
-/// which is the property being bought.
-fn thinking_closed_chars() -> usize {
-    iteron_tunables::param_usize("cli.block.thinking_closed_chars", 60)
-}
-
-/// The first sentence of `line` if it ends within `max` characters, else the first `max` characters.
-/// Sentence-first (rather than a hard cut) so the collapsed reasoning row reads as a thought, not as
-/// a severed clause. `more_after` lets the caller declare that further lines exist even when this one
-/// fits, so the `…` is honest about the whole block. Counted in CHARACTERS, never bytes.
-fn first_sentence_or(line: &str, max: usize, more_after: bool) -> String {
-    let line = line.trim();
-    let total = line.chars().count();
-    let sentence_end = line
-        .chars()
-        .take(max)
-        .position(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'));
-    let (take, elided) = match sentence_end {
-        // A complete sentence that IS the whole reasoning keeps its terminator; one with more behind
-        // it drops the terminator so the elision reads `…`, not `.…`.
-        Some(i) if total == i + 1 && !more_after => (i + 1, false),
-        Some(i) => (i, true),
-        None => (max.min(total), more_after || total > max),
-    };
-    let head: String = line.chars().take(take).collect();
-    if elided {
-        format!("{}…", head.trim_end())
-    } else {
-        head
-    }
-}
-
+/// Reasoning starts as one stable row. Its complete retained text remains available by expansion.
 fn render_thinking(text: &str, open: bool, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    // Thinking is an ordinary machine block: the ⏺/● primary marker (faint), a lowercase `thinking…`
-    // header (TUI v3 §1/§10 — ✻ is reserved for the spinner), and the body on the ONE `  ⎿  `
-    // connector grid at col 5, like every other nested content. No "(N lines)".
-    let hdr = Style::default()
+    let style = Style::default()
         .fg(theme.muted)
         .add_modifier(Modifier::ITALIC);
     let mut out = marker_wrap(
         &format!("{} ", primary_marker()),
         Style::default().fg(theme.muted),
-        &[Span::styled("thinking…", hdr)],
+        &[Span::styled(
+            if open {
+                "thinking"
+            } else {
+                "thinking · ctrl+o to expand"
+            },
+            style,
+        )],
         width,
     );
-    let muted_italic = Style::default()
-        .fg(theme.muted)
-        .add_modifier(Modifier::ITALIC);
-    // CLOSED: exactly ONE body row — a teaser of the first sentence (`thinking_closed_rows()`). The
-    // old `min(3)` grew from 1 to 2 to 3 rows as the reasoning streamed, so the whole transcript
-    // below it moved twice per thought. A `… N more` row is deliberately NOT added here: it would
-    // make the collapsed form two rows and reintroduce the same jump when the count appears. The
-    // trailing `…` is the affordance; `ctrl+o` still expands.
-    let body: Vec<Vec<Span<'static>>> = if open {
-        lines
-            .iter()
-            .map(|l| vec![Span::styled((*l).to_string(), muted_italic)])
-            .collect()
-    } else {
-        let teaser = first_sentence_or(
-            lines.first().copied().unwrap_or_default(),
-            thinking_closed_chars(),
-            lines.len() > thinking_closed_rows(),
-        );
-        if teaser.is_empty() {
-            Vec::new()
-        } else {
-            vec![vec![Span::styled(teaser, muted_italic)]]
-        }
-    };
-    out.extend(connector_lines(&body, width, theme));
+    if open {
+        let lines = text
+            .lines()
+            .map(|line| vec![Span::styled(line.to_owned(), style)])
+            .collect::<Vec<_>>();
+        out.extend(connector_lines(&lines, width, theme));
+    }
     out
 }
 
@@ -2106,24 +1943,6 @@ fn render_error(
     out
 }
 
-/// Expand `\t` to spaces on a 4-cell tab grid (the width `char_width` reports for the resulting
-/// spaces matches what the terminal draws — a raw `\t` does not). Used before diff highlight/wrap.
-fn expand_tabs(s: &str) -> String {
-    let mut out = String::new();
-    let mut col = 0usize;
-    for c in s.chars() {
-        if c == '\t' {
-            let n = 4 - (col % 4);
-            out.push_str(&" ".repeat(n));
-            col += n;
-        } else {
-            out.push(c);
-            col += crate::tui::char_width(c) as usize;
-        }
-    }
-    out
-}
-
 fn fmt_dur(d: Duration) -> String {
     let ms = d.as_millis();
     if ms < 1000 {
@@ -2137,25 +1956,6 @@ fn fmt_dur(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::render::line_width;
-
-    #[test]
-    fn lang_for_path_reads_named_files_not_just_extensions() {
-        // Extensionless build files are NAMED, so the basename table runs before the extension split.
-        assert_eq!(lang_for_path("Makefile"), Some("make"));
-        assert_eq!(lang_for_path("sub/dir/GNUmakefile"), Some("make"));
-        assert_eq!(lang_for_path("docker/Dockerfile"), Some("dockerfile"));
-        assert_eq!(lang_for_path("Containerfile"), Some("dockerfile"));
-        assert_eq!(lang_for_path("Cargo.lock"), Some("toml"));
-        // Named, but with no LangSpec behind the name: plain, never a near-neighbor guess.
-        assert_eq!(lang_for_path("justfile"), None);
-        assert_eq!(lang_for_path("CMakeLists.txt"), None);
-        assert_eq!(lang_for_path(".gitignore"), None);
-        // Extensions still win everywhere else.
-        assert_eq!(lang_for_path("crates/cli/src/block.rs"), Some("rs"));
-        assert_eq!(lang_for_path("a/b.py"), Some("py"));
-        assert_eq!(lang_for_path("README"), None);
-        assert_eq!(lang_for_path("dir.d/README"), None);
-    }
 
     fn card(name: &str, args: serde_json::Value, status: ToolStatus, output: &str) -> Block {
         Block::new(
@@ -2206,63 +2006,170 @@ mod tests {
     }
 
     #[test]
-    fn welcome_plantcore_icon_is_responsive_layered_and_cell_bounded() {
+    fn compact_transcript_welcome_is_responsive_and_cell_bounded() {
         let welcome = Block::new(
             0,
             BlockKind::Welcome {
                 tagline: "type a task, or /help for shortcuts".into(),
             },
         );
-
         for theme in [Theme::dark(), Theme::light(), Theme::mono()] {
             for width in 0u16..=200 {
                 let rows = welcome.render(width, &theme, 0);
-                assert!(!rows.is_empty(), "welcome has a row at width {width}");
-                for row in &rows {
-                    assert!(
-                        line_width(row) <= width,
-                        "welcome row exceeded width {width}: {row:?}"
-                    );
-                    assert!(
-                        row.spans.iter().all(|span| span.style.bg.is_none()),
-                        "welcome never paints a background"
-                    );
-                }
+                assert!(!rows.is_empty());
+                assert!(rows.iter().all(|row| line_width(row) <= width));
+                assert!(
+                    rows.iter()
+                        .flat_map(|row| &row.spans)
+                        .all(|span| span.style.bg.is_none())
+                );
             }
         }
-
-        let theme = Theme::dark();
-        let compact = plain(welcome.render(20, &theme, 0));
-        assert!(compact.contains("iteron"));
-        assert!(!compact.contains("(o)"));
-        let wide = welcome.render(80, &theme, 0);
-        assert_eq!(wide.len(), 6);
-        let wide_text = plain(wide.clone());
-        assert!(
-            wide_text.contains("▄██"),
-            "Plantcore icon planes: {wide_text:?}"
-        );
-        assert!(wide_text.contains("shortcuts"));
-
-        let rendered = welcome.render(80, &theme, 0);
-        let icon_spans = rendered
-            .iter()
-            .take(5)
-            .flat_map(|line| line.spans.iter())
-            .collect::<Vec<_>>();
-        for plane in [theme.brand_back, theme.brand_mid, theme.brand_front] {
-            assert!(
-                icon_spans.iter().any(|span| span.style.fg == Some(plane)),
-                "each public Plantcore icon plane keeps its brand token"
-            );
+        let wide = welcome.render(80, &Theme::dark(), 0);
+        assert_eq!(wide.len(), 7);
+        let text = plain(wide);
+        assert!(text.contains("/help") && text.contains("/sessions"));
+        assert!(text.contains("████████████████"));
+        for theme in [Theme::dark(), Theme::light(), Theme::mono()] {
+            assert!(plain(welcome.render(28, &theme, 0)).contains("████████████████"));
         }
-        assert!(
-            icon_spans
-                .iter()
-                .filter(|span| span.style.fg.is_some())
-                .all(|span| span.style.add_modifier.contains(Modifier::BOLD)),
-            "icon cells remain dense at terminal scale"
+        assert!(plain(welcome.render(20, &Theme::mono(), 0)).contains("iteron"));
+    }
+
+    #[test]
+    fn compact_transcript_tool_expansion_preserves_reads_commands_and_diffs() {
+        let theme = Theme::mono();
+        let mut read = card(
+            "read_file",
+            serde_json::json!({"path":"src/例.rs"}),
+            ToolStatus::Ok,
+            "first\n\nlast",
         );
+        let closed = plain(read.render(80, &theme, 0));
+        assert!(closed.contains("done") && closed.contains("ctrl+o"));
+        assert!(!closed.contains("first"));
+        let BlockKind::Tool(read_card) = &mut read.kind else {
+            unreachable!()
+        };
+        read_card.open = true;
+        let open = row_texts(&read, 80, &theme);
+        assert!(open.iter().any(|row| row.contains("first")));
+        assert!(open.iter().any(|row| row.trim().is_empty()));
+        assert!(open.iter().any(|row| row.contains("last")));
+        assert!(read.to_text().contains("first\n\nlast"));
+
+        let failed = card(
+            "read_file",
+            serde_json::json!({"path":"missing.rs"}),
+            ToolStatus::Err,
+            "permission denied\ncheck access",
+        );
+        let failure = plain(failed.render(80, &theme, 0));
+        assert!(failure.contains("failed") && failure.contains("permission denied"));
+        assert!(!failure.contains("Read 2 lines"));
+
+        let command = format!("printf '{}'\nprintf done", "中文".repeat(60));
+        let mut tool = card(
+            "bash",
+            serde_json::json!({"command":command}),
+            ToolStatus::Ok,
+            "first\nlast",
+        );
+        let BlockKind::Tool(tool_card) = &mut tool.kind else {
+            unreachable!()
+        };
+        tool_card.open = true;
+        tool_card.diff = Some(FileDiff::from_replacement("src/例.rs", "old", "new"));
+        let export = tool.to_text();
+        assert!(
+            export.contains("printf done") && export.contains("-old") && export.contains("+new")
+        );
+        let expanded = plain(tool.render(40, &theme, 0));
+        assert!(
+            expanded.contains("printf done")
+                && expanded.contains("first")
+                && expanded.contains("last")
+        );
+        assert!(expanded.contains("old") && expanded.contains("new"));
+    }
+
+    #[test]
+    fn compact_transcript_success_output_and_diff_have_bounded_previews() {
+        let theme = Theme::dark();
+        let output = (0..50)
+            .map(|row| format!("output {row:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut tool = card(
+            "bash",
+            serde_json::json!({"command":"build"}),
+            ToolStatus::Ok,
+            &output,
+        );
+        let closed = tool.render(80, &theme, 0);
+        assert!(closed.len() <= 5);
+        let text = plain(closed);
+        assert!(
+            text.contains("output 00") && text.contains("output 49") && text.contains("ctrl+o")
+        );
+        assert!(!text.contains("output 25"));
+        let BlockKind::Tool(card) = &mut tool.kind else {
+            unreachable!()
+        };
+        card.open = true;
+        assert!(plain(tool.render(80, &theme, 0)).contains("output 25"));
+
+        let mut edit = card_diff(
+            "edit",
+            FileDiff::from_replacement(
+                "src/file.rs",
+                &output,
+                &output.replace("output", "changed"),
+            ),
+        );
+        let closed = edit.render(80, &theme, 0);
+        assert!(closed.len() <= 14);
+        assert!(plain(closed).contains("diff rows · ctrl+o"));
+        let BlockKind::Tool(card) = &mut edit.kind else {
+            unreachable!()
+        };
+        card.open = true;
+        assert!(plain(edit.render(80, &theme, 0)).contains("changed 25"));
+        assert!(edit.to_text().contains("+changed 25"));
+    }
+
+    #[test]
+    fn compact_transcript_multiline_cjk_prompt_and_failure_reach_terminal_cells() {
+        use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+        let theme = Theme::mono();
+        let user = Block::new(1, BlockKind::User("检查 中文\nsecond line".into()));
+        let user_rows = user.render(24, &theme, 0);
+        assert_eq!(user_rows.len(), 2);
+        let failure = card(
+            "read_file",
+            serde_json::json!({"path":"配置.rs"}),
+            ToolStatus::Err,
+            "permission denied",
+        );
+        let rows = user_rows
+            .into_iter()
+            .chain(failure.render(24, &theme, 0))
+            .collect::<Vec<_>>();
+        assert!(rows.iter().all(|row| line_width(row) <= 24));
+        let mut terminal = Terminal::new(TestBackend::new(24, 12)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(rows.clone()), frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("检查") && compact.contains("secondline"));
+        assert!(compact.contains("failed") && compact.contains("permissiondenied"));
+        assert!(!compact.contains("Read1line"));
     }
 
     #[test]
@@ -2660,8 +2567,8 @@ mod tests {
             .collect();
         assert_eq!(
             heights,
-            vec![2, 2, 2],
-            "header + exactly ONE body row at every streamed length: {heights:?}"
+            vec![1, 1, 1],
+            "collapsed reasoning remains one row at every streamed length: {heights:?}"
         );
 
         let grown = Block::new(
@@ -2678,8 +2585,8 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            text.contains("I should read the parser first…"),
-            "the one line is the first sentence, elided: {text:?}"
+            text.contains("thinking") && text.contains("ctrl+o") && !text.contains("parser"),
+            "reasoning stays behind an explicit expansion affordance: {text:?}"
         );
         assert!(
             !text.contains("lexer"),
@@ -2757,7 +2664,7 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_tool_shows_a_fixed_head_and_tail_not_a_width_ladder() {
+    fn collapsed_tool_failure_keeps_a_fixed_head_and_tail() {
         // The budget is CONTENT-shaped, not window-shaped: 5 rows (codex `exec_cell/render.rs:695-700`
         // shows 5 lines of command output), rendered as first 2 · elision · last 2 so the operator can
         // see that a command started AND how it ended. The replaced `width<60 →1 / <100 →2 / else 3`
@@ -2770,23 +2677,23 @@ mod tests {
         let b = card(
             "bash",
             serde_json::json!({"command": "ls"}),
-            ToolStatus::Ok,
+            ToolStatus::Err,
             &out,
         );
         let rows = tail_rows(&b, 80, &theme);
         let joined = rows.join("\n");
-        // `row 00` is hoisted onto the connector, so the tail is rows 01..=19 (19 rows).
+        // The failure label occupies the connector, so the tail is rows 00..=19 (20 rows).
         assert_eq!(
             rows.len(),
             5,
             "2 head + elision + 2 tail = 5 rows: {joined:?}"
         );
         assert!(
-            rows[0].contains("row 01") && rows[1].contains("row 02"),
+            rows[0].contains("row 00") && rows[1].contains("row 01"),
             "head is the FIRST rows of the tail: {joined:?}"
         );
         assert!(
-            rows[2].contains("… 15 more rows (ctrl+o to expand)"),
+            rows[2].contains("… 16 more rows (ctrl+o to expand)"),
             "the elision line sits BETWEEN head and tail and counts what is hidden: {joined:?}"
         );
         assert!(
@@ -2838,7 +2745,7 @@ mod tests {
         let known = card(
             "bash",
             serde_json::json!({"command": "ls"}),
-            ToolStatus::Ok,
+            ToolStatus::Err,
             &out,
         );
         let unknown = card(
@@ -3268,8 +3175,8 @@ mod tests {
         assert!(!assistant.starts_with("CORE  "));
         let ub = Block::new(8, BlockKind::User("do the thing".into()));
         let user_rows = ub.render(80, &theme, 0);
-        assert_eq!(user_rows.len(), 3, "padding + prompt + padding");
-        assert_eq!(user_rows[1].spans[0].content, "› ");
+        assert_eq!(user_rows.len(), 1, "one compact prompt row");
+        assert_eq!(user_rows[0].spans[0].content, "› ");
         assert!(!plain(user_rows.clone()).contains("YOU"));
         assert!(user_rows.iter().all(|row| line_width(row) == 80));
         assert!(
@@ -3297,7 +3204,7 @@ mod tests {
                 Theme::high_contrast(),
             ] {
                 let rows = user.render(width, &theme, 0);
-                assert!(rows.len() > 3, "long prompt wraps at {width} cells");
+                assert!(rows.len() > 1, "long prompt wraps at {width} cells");
                 assert!(rows.iter().all(|row| line_width(row) == width));
                 assert!(
                     rows.iter()
@@ -3305,16 +3212,8 @@ mod tests {
                         .all(|span| span.style.bg == Some(theme.user_bg)),
                     "marker, body, continuation, padding, and right fill share one gray surface"
                 );
-                assert!(
-                    rows.first()
-                        .is_some_and(|row| plain(vec![row.clone()]).trim().is_empty())
-                );
-                assert!(
-                    rows.last()
-                        .is_some_and(|row| plain(vec![row.clone()]).trim().is_empty())
-                );
-                assert_eq!(rows[1].spans[0].content, "› ");
-                for row in rows.iter().skip(2).take(rows.len().saturating_sub(3)) {
+                assert_eq!(rows[0].spans[0].content, "› ");
+                for row in rows.iter().skip(1) {
                     assert_eq!(row.spans[0].content, "  ");
                 }
                 let text = plain(rows);
@@ -3339,8 +3238,8 @@ mod tests {
             assert!(mono.iter().flat_map(|row| row.spans.iter()).all(|span| {
                 span.style.bg.is_none() && span.style.add_modifier.contains(Modifier::REVERSED)
             }));
-            assert_eq!(mono[1].spans[0].content, "› ");
-            assert!(mono[1].spans[0].style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(mono[0].spans[0].content, "› ");
+            assert!(mono[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
             let text = plain(mono);
             assert!(text.contains("BEGIN") && text.contains("END"));
         }

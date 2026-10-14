@@ -1,10 +1,12 @@
 //! Pure/ReadOnly tools: read_file, list_dir, grep. These are the tools the scheduler may
 //! dispatch early (at content_block_stop) because they have no observable effect.
 
+use crate::repository_ignore::RepositoryWalk;
 use crate::{
     ObservationToolPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root,
 };
 use iteron_protocol::{Capability, Purity, ToolSpec};
+use sha2::{Digest as _, Sha256};
 use std::{
     cmp::Reverse,
     path::{Component, Path, PathBuf},
@@ -483,7 +485,8 @@ fn positive_integer(input: &serde_json::Value, field: &str) -> Result<Option<u64
 async fn read_numbered_file(
     path: &Path,
     window: ReadWindow,
-    policy: crate::ReadFilePolicy,
+    mut policy: crate::ReadFilePolicy,
+    include_sha256: bool,
 ) -> std::io::Result<String> {
     let file = tokio::fs::File::open(path).await?;
     let metadata = file.metadata().await?;
@@ -517,6 +520,33 @@ async fn read_numbered_file(
             return Ok("(binary or non-UTF-8 file, not shown)".into());
         }
     };
+
+    // The witness and rendered window come from these same bounded raw bytes (including BOM
+    // and original newline encoding). It grants no filesystem authority; the writer must still
+    // compare against its own retained snapshot and identity immediately before replacement.
+    // A bare 64-hex word is secret-shaped to the ordinary text scrubber. Keep the computed
+    // digest inside a named lowercase token so live model projection and record replay retain
+    // it without granting an exemption to file contents or changing the writer's preimage check.
+    let witness =
+        include_sha256.then(|| format!("raw_sha256=sha256-{:x}\n", Sha256::digest(&bytes)));
+    if let Some(witness) = &witness {
+        policy.output_max_bytes = policy
+            .output_max_bytes
+            .checked_sub(witness.len())
+            .ok_or_else(|| {
+                std::io::Error::other("read_file output budget cannot fit its SHA-256 witness")
+            })?;
+        if policy.output_max_bytes
+            <= iteron_tunables::param_integer(
+                "tools.fs_tools.truncation_marker_reserve_bytes",
+                TRUNCATION_MARKER_RESERVE_BYTES,
+            )
+        {
+            return Err(std::io::Error::other(
+                "read_file output budget cannot fit content and its SHA-256 witness",
+            ));
+        }
+    }
 
     let mut absolute_line = 0_u64;
     let mut emitted = 0_u64;
@@ -595,17 +625,22 @@ async fn read_numbered_file(
         debug_assert!(output.len() <= policy.output_max_bytes);
     }
 
-    if output.is_empty() {
+    let output = if output.is_empty() {
         if absolute_line == 0 {
-            Ok("(empty file)".into())
+            "(empty file)".into()
         } else {
-            Ok(format!(
-                "(no lines in requested range; file has {absolute_line} lines)"
-            ))
+            format!("(no lines in requested range; file has {absolute_line} lines)")
         }
     } else {
-        Ok(output)
-    }
+        output
+    };
+    Ok(match witness {
+        Some(mut witness) => {
+            witness.push_str(&output);
+            witness
+        }
+        None => output,
+    })
 }
 
 /// Append a truncation marker without letting the marker itself violate the pinned byte ceiling.
@@ -645,7 +680,12 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                  (default 1); `limit` is the optional number of lines. Output is capped at \
                  {} bytes by the canonical default; the effective source/output ceilings are \
                  pinned in the run checkpoint. Binary, unsupported-encoding, and oversized files \
-                 are not injected. Truncation reports the next offset to read.",
+                 are not injected. Truncation reports the next offset to read. \
+                 Set include_sha256=true to obtain the SHA-256 of the full observed raw file \
+                 bytes for a deliberate write_file replacement. The header is \
+                 raw_sha256=sha256-<64 lowercase hex digits>; pass only those 64 digits as \
+                 write_file.expected_sha256. The rendered window may still be partial, \
+                 so preserve changes outside it.",
                 ObservationToolPolicy::default().read_file.output_max_bytes,
             ),
             input_schema: serde_json::json!({
@@ -664,6 +704,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                         "type":"integer",
                         "minimum":1,
                         "description":"optional maximum number of lines to return; the pinned runtime output-byte cap still applies"
+                    },
+                    "include_sha256":{
+                        "type":"boolean",
+                        "description":"include raw_sha256=sha256-<64 lowercase hex digits> for the full bounded raw file bytes, including BOM/newlines; pass only the 64 digits to write_file expected_sha256; false by default"
                     }
                 },
                 "required":["path"]
@@ -688,9 +732,14 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     Ok(window) => window,
                     Err(error) => return err_result(id, error),
                 };
+                let include_sha256 = match call.input.get("include_sha256") {
+                    None => false,
+                    Some(serde_json::Value::Bool(value)) => *value,
+                    Some(_) => return err_result(id, "read_file: include_sha256 must be a boolean".into()),
+                };
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
-                    Ok(p) => match read_numbered_file(&p, window, policy.read_file).await {
+                    Ok(p) => match read_numbered_file(&p, window, policy.read_file, include_sha256).await {
                         Ok(content) => {
                             focus.observe(p, &content);
                             ok_result(id, content)
@@ -735,7 +784,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         ToolSpec {
             name: "list_dir".into(),
             description: "List one directory level for fast repository orientation, skipping .git \
-                          and common build/vendor dirs. Directories end in `/`; files are returned \
+                          common build/vendor dirs and repository .gitignore rules. Directories end in `/`; files are returned \
                           one path per line. `path` may be relative to the repo root or an absolute \
                           host path. Set optional `depth` only when a bounded recursive listing is \
                           genuinely useful; prefer `glob` for targeted recursive discovery."
@@ -782,7 +831,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             name: "glob".into(),
             description: "Find files by glob pattern relative to the repo root: `*` matches within a \
                           path segment, `**` matches across segments, `?` matches one char. e.g. \
-                          `src/**/*.rs`, `**/*.toml`. Skips .git/build/vendor dirs. Paths, one per line."
+                          `src/**/*.rs`, `**/*.toml`. Skips .git/build/vendor dirs and repository .gitignore rules. Paths, one per line."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -834,14 +883,8 @@ fn list_directory(
     let mut out = Vec::new();
     let mut output_bytes = 0usize;
     let mut emitted_entries = 0usize;
-    for entry in WalkDir::new(&base)
-        .min_depth(1)
-        .max_depth(depth)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-        .flatten()
-    {
+    let mut walk = RepositoryWalk::new(root, &base, depth)?;
+    while let Some(entry) = walk.next_entry()? {
         if !entry.file_type().is_file() && !entry.file_type().is_dir() {
             continue;
         }
@@ -872,6 +915,19 @@ fn list_directory(
         output_bytes = output_bytes.saturating_add(framed);
         out.push(line);
         emitted_entries = emitted_entries.saturating_add(1);
+    }
+    // Sorting retained, byte-bounded rows avoids WalkDir's unbounded per-directory sort buffer.
+    let marker = if out
+        .last()
+        .is_some_and(|line| line.starts_with("… (truncated"))
+    {
+        out.pop()
+    } else {
+        None
+    };
+    out.sort();
+    if let Some(marker) = marker {
+        out.push(marker);
     }
     Ok(out.join("\n"))
 }
@@ -908,15 +964,12 @@ fn glob_files(
     policy: crate::GlobPolicy,
 ) -> Result<String, String> {
     let base = resolve_in_root(root, relative)?;
+    let mut matcher = GlobPattern::new(pattern)?;
     let mut out = Vec::new();
     let mut output_bytes = 0usize;
     let mut emitted_results = 0usize;
-    for entry in WalkDir::new(&base)
-        .max_depth(policy.max_depth)
-        .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-        .flatten()
-    {
+    let mut walk = RepositoryWalk::new(root, &base, policy.max_depth)?;
+    while let Some(entry) = walk.next_entry()? {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -924,7 +977,7 @@ fn glob_files(
             continue;
         };
         let candidate = relative_to_base.to_string_lossy().replace('\\', "/");
-        if !glob_match(pattern, &candidate) {
+        if !matcher.is_match(&candidate)? {
             continue;
         }
         if emitted_results >= policy.max_results {
@@ -963,35 +1016,86 @@ fn is_ignored(name: &str) -> bool {
     iteron_ctx::source::is_default_pruned_component(name)
 }
 
-/// Match a `/`-separated path against a glob: `?`=one char, `*`=any run WITHIN a segment (never `/`),
-/// `**`=any number of whole segments (incl. zero). Case-sensitive. Recursive backtracking over the
-/// segment list; paths/patterns are short so the worst case is bounded in practice.
-fn glob_match(pattern: &str, path: &str) -> bool {
-    let pat: Vec<&str> = pattern.split('/').collect();
-    let seg: Vec<&str> = path.split('/').collect();
-    seg_match(&pat, &seg)
+/// Glob matching is an observation computation, not an exponential search. The fixed work
+/// envelope is shared by every actual candidate in this call and never grants filesystem scope.
+const MAX_GLOB_PATTERN_BYTES: usize = 4 * 1024;
+const MAX_GLOB_MATCH_STEPS: usize = 64 * 1024 * 1024;
+
+struct GlobPattern<'a> {
+    segments: Vec<&'a str>,
+    remaining: usize,
 }
-fn seg_match(pat: &[&str], seg: &[&str]) -> bool {
-    match pat.split_first() {
-        None => seg.is_empty(),
-        Some((&"**", rest)) => (0..=seg.len()).any(|k| seg_match(rest, &seg[k..])),
-        Some((p, rest)) => !seg.is_empty() && wild_seg(p, seg[0]) && seg_match(rest, &seg[1..]),
-    }
-}
-/// Single-segment wildcard: `*` any run (no `/`), `?` one char, else literal.
-fn wild_seg(pat: &str, s: &str) -> bool {
-    fn go(p: &[char], t: &[char]) -> bool {
-        match p.split_first() {
-            None => t.is_empty(),
-            Some(('*', rest)) => (0..=t.len()).any(|k| go(rest, &t[k..])),
-            Some(('?', rest)) => !t.is_empty() && go(rest, &t[1..]),
-            Some((c, rest)) => !t.is_empty() && t[0] == *c && go(rest, &t[1..]),
+
+impl<'a> GlobPattern<'a> {
+    fn new(pattern: &'a str) -> Result<Self, String> {
+        if pattern.len() > MAX_GLOB_PATTERN_BYTES {
+            return Err("glob: pattern exceeds the fixed 4096-byte matching envelope".into());
         }
+        Ok(Self {
+            segments: pattern.split('/').collect(),
+            remaining: MAX_GLOB_MATCH_STEPS,
+        })
     }
-    go(
-        &pat.chars().collect::<Vec<_>>(),
-        &s.chars().collect::<Vec<_>>(),
-    )
+
+    fn step(&mut self) -> Result<(), String> {
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or("glob: matching work reached its fixed ceiling; narrow the pattern or path")?;
+        Ok(())
+    }
+
+    fn is_match(&mut self, path: &str) -> Result<bool, String> {
+        let parts: Vec<&str> = path.split('/').collect();
+        let mut previous = vec![false; parts.len() + 1];
+        previous[0] = true;
+        for index in 0..self.segments.len() {
+            let pattern = self.segments[index];
+            let mut current = vec![false; parts.len() + 1];
+            if pattern == "**" {
+                current[0] = previous[0];
+                for part in 1..=parts.len() {
+                    self.step()?;
+                    current[part] = previous[part] || current[part - 1];
+                }
+            } else {
+                for part in 1..=parts.len() {
+                    self.step()?;
+                    current[part] =
+                        previous[part - 1] && self.match_segment(pattern, parts[part - 1])?;
+                }
+            }
+            previous = current;
+        }
+        Ok(previous[parts.len()])
+    }
+
+    fn match_segment(&mut self, pattern: &str, part: &str) -> Result<bool, String> {
+        let text: Vec<char> = part.chars().collect();
+        let mut previous = vec![false; text.len() + 1];
+        previous[0] = true;
+        for token in pattern.chars() {
+            let mut current = vec![false; text.len() + 1];
+            current[0] = token == '*' && previous[0];
+            for index in 1..=text.len() {
+                self.step()?;
+                current[index] = match token {
+                    '*' => previous[index] || current[index - 1],
+                    '?' => previous[index - 1],
+                    literal => previous[index - 1] && literal == text[index - 1],
+                };
+            }
+            previous = current;
+        }
+        Ok(previous[text.len()])
+    }
+}
+
+#[cfg(test)]
+fn glob_match(pattern: &str, path: &str) -> bool {
+    GlobPattern::new(pattern)
+        .and_then(|mut matcher| matcher.is_match(path))
+        .unwrap()
 }
 
 /// An on-demand localization fallback: a repo skeleton (declarations only), fit to a token budget.

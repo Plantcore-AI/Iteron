@@ -16,33 +16,10 @@
 //! The catalog is embedded as JSON rather than generated Rust. Thousands of generated items
 //! would be paid for on every build of this crate; the JSON is parsed once, on demand.
 //!
-//! # What "the whole surface" does not include
-//!
-//! Six parameters are exposed and admitted, and a run that sets them still fails. They feed two
-//! families whose production value is bound into the audit skeleton rather than merely consumed
-//! by it:
-//!
-//! * `multimodal_input_admission_decode_envelope` carries a cross-field admission rule, so its
-//!   fields cannot move independently of each other.
-//! * `provider_discovery_account_probe_cache_policy` is bound to a bootstrap fixed authority with
-//!   a per-field value digest and an exact live re-sample on resume.
-//!
-//! Both are literal-defaulted for that reason: the frozen literal is what the resume path proves
-//! the running process still agrees with. Setting a Tier-2 parameter that feeds them changes the
-//! production owner, the comparison fails, and the run is refused -- correctly, because admitting
-//! it would let a checkpoint claim a value the process no longer holds.
-//!
-//! The parameters are:
-//!
-//! ```text
-//! cli.image_input.decode.max_animation_frames        cli.providers.probe_backoff_base_secs
-//! cli.image_input.max_image_file_bytes               cli.providers.probe_backoff_cap_secs
-//! cli.image_input.max_total_image_file_bytes         cli.providers.probe_cache_ttl_secs
-//! ```
-//!
-//! They are listed here rather than left to be discovered by a failing run. Every other
-//! literal-defaulted family that fed a Tier-2 parameter was converted to a derived default in
-//! registry revision 20, which is what made the remaining six worth naming.
+//! Composite image and provider owners validate all supplied parameters together before
+//! installation. Their defaults are sampled from the executable owner; checkpoints pin that
+//! sample. Omitted per-image/backoff defaults narrow to an explicit aggregate/cap, while
+//! contradictory explicit values fail admission without publishing any part of the batch.
 
 use crate::modules::ModuleId;
 use crate::resolution_types::ResolutionValue;
@@ -209,7 +186,8 @@ pub struct Param {
 }
 
 impl Param {
-    /// Whether a profile may carry a value for this parameter. `Structural` never may.
+    /// Whether the catalog class permits assignments. Admission additionally checks the typed
+    /// value and fixed-authority bindings through `admits_value`; `Structural` never permits one.
     pub fn is_settable(&self) -> bool {
         !matches!(self.class, ParamClass::Structural)
     }
@@ -421,6 +399,9 @@ pub enum ParamValueViolation {
     },
     Domain(ParamDomainViolation),
     Shape(&'static str),
+    UnsupportedOverride {
+        family: &'static str,
+    },
 }
 
 impl std::fmt::Display for ParamValueViolation {
@@ -433,6 +414,10 @@ impl std::fmt::Display for ParamValueViolation {
             ),
             Self::Domain(violation) => violation.fmt(formatter),
             Self::Shape(reason) => formatter.write_str(reason),
+            Self::UnsupportedOverride { family } => write!(
+                formatter,
+                "independent override is unsupported: parameter is bound to fixed-authority family `{family}`"
+            ),
         }
     }
 }

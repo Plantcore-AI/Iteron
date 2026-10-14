@@ -32,6 +32,11 @@ pub enum SlashCommand {
     Side,
     Workflows,
     Jobs,
+    Artifacts,
+    Finalization,
+    ActivityCenter,
+    Plugins,
+    Extensions,
     Fork,
     Rewind,
     Resume,
@@ -93,6 +98,11 @@ impl SlashCommand {
             | Self::Sessions
             | Self::Workflows
             | Self::Jobs
+            | Self::Artifacts
+            | Self::Finalization
+            | Self::ActivityCenter
+            | Self::Extensions
+            | Self::Plugins
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -218,7 +228,7 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Sessions,
         name: "sessions",
-        args: "[new|switch|preview|rename|pin|unpin|archive|unarchive|delete]",
+        args: "[new|switch|preview|read|export|rename|pin|unpin|archive|unarchive|delete]",
         help: "browse and manage recorded sessions in this repo",
     },
     Cmd {
@@ -230,14 +240,44 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Workflows,
         name: "workflows",
-        args: "",
-        help: "show workflow and agent progress",
+        args: "[live open|read|replan|pump|interrupt|reconcile ...]",
+        help: "observe workflow progress or control the durable live graph",
     },
     Cmd {
         command: SlashCommand::Jobs,
         name: "jobs",
         args: "[list|attach|refresh|detach|write|eof|stop]",
         help: "inspect and control background process jobs",
+    },
+    Cmd {
+        command: SlashCommand::Artifacts,
+        name: "artifacts",
+        args: "[HASH_PREFIX]",
+        help: "list or open bounded artifacts published by this thread",
+    },
+    Cmd {
+        command: SlashCommand::Extensions,
+        name: "extensions",
+        args: "[read OFFSET|events NAME LIMIT WAIT_MS]",
+        help: "read native SDK routes, text status widgets and lossy lifecycle subscriptions",
+    },
+    Cmd {
+        command: SlashCommand::Plugins,
+        name: "plugins",
+        args: "[list|inspect|disable|enable|priority|rollback|install]",
+        help: "inspect signed plugin sources, conflicts, current dispatch and durable selection",
+    },
+    Cmd {
+        command: SlashCommand::ActivityCenter,
+        name: "activity",
+        args: "[list|attach|stop TYPE ID]",
+        help: "inspect and stop actual processes, agents, workflows, MCP operations and verifiers",
+    },
+    Cmd {
+        command: SlashCommand::Finalization,
+        name: "finalization",
+        args: "",
+        help: "inspect durable answer availability and turn finalization separately",
     },
     Cmd {
         command: SlashCommand::Fork,

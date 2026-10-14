@@ -25,24 +25,32 @@
 //!     returns immediately; [`RunHandle::cancel`] aborts in-flight children, interrupts a sync JS
 //!     loop, flushes the journal, and resolves the run as `stopped`.
 
+#[cfg(feature = "script-workflows")]
 mod bindings;
 mod collaboration;
 mod execution_policy;
+#[cfg(feature = "script-workflows")]
 mod executor;
+#[cfg(feature = "script-workflows")]
 mod host;
 mod quorum;
 mod runtime_identity;
 mod schema_retry;
+mod script_contract;
 
 pub mod cachekey;
 pub mod events;
 pub mod journal;
+pub mod live_scheduler;
+#[cfg(feature = "script-workflows")]
 pub mod meta;
 pub mod schema;
 pub mod spawner;
 pub mod task_dag;
 
-pub use bindings::LIFETIME_CAP;
+/// Aggregate script call ceiling, kept in the common immutable contract for host budget pinning.
+pub const LIFETIME_CAP: usize = 1000;
+pub const SCRIPT_WORKFLOWS_ENABLED: bool = cfg!(feature = "script-workflows");
 pub use cachekey::{agent_id, agent_key};
 pub use collaboration::{
     COLLABORATION_SLOT_VERSION, CollaborationDecision, CollaborationError,
@@ -58,16 +66,27 @@ pub use execution_policy::{
     SpeculativeWinnerEvidence, TaskFailureAction, TaskPrioritySchedulingPolicy, TaskRetryPolicy,
     WriterMergePolicy,
 };
+#[cfg(feature = "script-workflows")]
 pub use host::validate_script;
+pub use script_contract::{Meta, ScriptWorkflowsUnavailable};
+#[cfg(not(feature = "script-workflows"))]
+pub fn validate_script(_: &str) -> anyhow::Result<()> {
+    Err(ScriptWorkflowsUnavailable.into())
+}
+#[cfg(not(feature = "script-workflows"))]
+pub fn extract_meta(_: &str) -> Option<Meta> {
+    None
+}
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
-pub use meta::{CompiledWorkflow, Meta, compile, extract_meta, strip_meta};
+#[cfg(feature = "script-workflows")]
+pub use meta::{CompiledWorkflow, compile, extract_meta, strip_meta};
 pub use quorum::{EarlyStopQuorumPolicy, MAX_EARLY_STOP_QUORUM};
 pub use runtime_identity::{WorkflowGraphRuntimeIdentity, workflow_graph_runtime_identity};
 pub use schema::{RETRY_MAX, SchemaValidator};
 pub use schema_retry::SchemaRetryPolicy;
 pub use spawner::{
     AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentExecutionClass,
-    AgentOutcome, AgentSpawner,
+    AgentInvocationIdentity, AgentOutcome, AgentSpawner,
 };
 
 /// Default visible cleanup deadline advertised by owners of a background workflow run. The
@@ -321,9 +340,11 @@ pub struct WorkflowSubmissionTooLarge {
     pub limit_bytes: usize,
 }
 
+#[cfg(feature = "script-workflows")]
 #[derive(Default)]
 struct JsonByteCounter(usize);
 
+#[cfg(feature = "script-workflows")]
 impl std::io::Write for JsonByteCounter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len());
@@ -397,6 +418,7 @@ impl RunSpec {
         self
     }
 
+    #[cfg(feature = "script-workflows")]
     fn validate_submission_size(&self) -> Result<(), WorkflowSubmissionTooLarge> {
         let script_bytes = self.script.len();
         if script_bytes > WORKFLOW_SUBMISSION_LIMITS.script_bytes {
@@ -503,6 +525,7 @@ impl RunHandle {
 }
 
 /// Resolve this run's journal (append sink + resume source) from the [`RunSpec`].
+#[cfg(feature = "script-workflows")]
 fn build_journal(spec: &RunSpec) -> anyhow::Result<Arc<Journal>> {
     let dir = spec
         .workflows_dir
@@ -542,6 +565,7 @@ impl WorkflowEngine {
     ///
     /// Awaited directly on the caller's multi-thread runtime (drives the `!Send` JS engine via an
     /// internal `LocalSet`); for background execution use [`WorkflowEngine::launch`].
+    #[cfg(feature = "script-workflows")]
     pub async fn execute(
         spec: RunSpec,
         spawner: Arc<dyn AgentSpawner>,
@@ -591,6 +615,19 @@ impl WorkflowEngine {
         .await
     }
 
+    #[cfg(not(feature = "script-workflows"))]
+    pub async fn execute(
+        spec: RunSpec,
+        spawner: Arc<dyn AgentSpawner>,
+        sink: Arc<dyn ProgressSink>,
+    ) -> anyhow::Result<RunReport> {
+        let _ = (spawner, sink);
+        if spec.workflows_dir.is_none() {
+            return Err(WorkflowDurabilityRequired.into());
+        }
+        Err(ScriptWorkflowsUnavailable.into())
+    }
+
     /// Launch a run in the background and return a [`RunHandle`] immediately (mirrors Claude Code's
     /// background Workflow launch). A bounded process-wide executor drives the `!Send` QuickJS
     /// local set; no workflow allocates its own OS thread or Tokio runtime. The handle's shared
@@ -613,6 +650,7 @@ impl WorkflowEngine {
             };
         }
 
+        #[cfg(feature = "script-workflows")]
         executor::submit(executor::ExecutorJob {
             spec,
             spawner,
@@ -620,6 +658,12 @@ impl WorkflowEngine {
             cancel: cancel.clone(),
             result: tx,
         });
+
+        #[cfg(not(feature = "script-workflows"))]
+        {
+            let _ = (spec, spawner, sink);
+            let _ = tx.send(Err(ScriptWorkflowsUnavailable.into()));
+        }
 
         RunHandle {
             run_id,
@@ -629,6 +673,7 @@ impl WorkflowEngine {
     }
 }
 
+#[cfg(feature = "script-workflows")]
 fn run_executor_job(
     spec: RunSpec,
     spawner: Arc<dyn AgentSpawner>,

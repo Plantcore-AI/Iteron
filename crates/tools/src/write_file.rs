@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod preimage;
+pub(crate) use preimage::WritePreimage;
+
 pub(crate) const MAX_FILE_TRANSACTION_BYTES: usize = 4 * 1024 * 1024;
 const MAX_WRITE_BYTES: usize = MAX_FILE_TRANSACTION_BYTES;
 const MAX_PATH_BYTES: usize = 4_096;
@@ -51,6 +54,26 @@ pub(crate) struct ExistingTarget {
 pub(crate) enum TargetSnapshot {
     Missing,
     Existing(ExistingTarget),
+}
+
+impl TargetSnapshot {
+    /// Retain an already-read, verified descriptor snapshot without another planning read. Only
+    /// native writer owners call this; commit still re-inspects the destination before rename.
+    pub(crate) fn existing_from_retained_bytes(
+        metadata: &std::fs::Metadata,
+        bytes: &[u8],
+    ) -> Result<Self, SnapshotError> {
+        if !metadata.is_file() {
+            return Err(SnapshotError::NotRegular);
+        }
+        if metadata.len() != bytes.len() as u64 {
+            return Err(SnapshotError::ChangedDuringRead);
+        }
+        Ok(Self::Existing(ExistingTarget {
+            stamp: metadata_stamp(metadata),
+            digest: Sha256::digest(bytes).into(),
+        }))
+    }
 }
 
 pub(crate) struct ExistingFileSnapshot {
@@ -136,7 +159,7 @@ async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> 
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     let file = options.open(target).await.map_err(SnapshotError::Io)?;
     let opened_before = file.metadata().await.map_err(SnapshotError::Io)?;
     if !opened_before.is_file() || metadata_stamp(&path_before) != metadata_stamp(&opened_before) {
@@ -545,14 +568,18 @@ impl StagedWrite {
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
+    let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
-    registry.push_candidate_change_effect_tool(
+    registry.push_native_change_captured_tool(
         ToolSpec {
             name: "write_file".into(),
             description: "Create or replace one UTF-8 text file in the workspace by default. Missing \
                           parent directories are created. The same-directory replacement is \
                           fsynced, atomic, bounded to 4 MiB, and refused if the destination changes \
-                          while staging. Use this instead of bash for new source/config files. \
+                          while staging. Existing files require expected_sha256 from read_file \
+                          with include_sha256=true; preserve user changes when deliberately \
+                          replacing the whole file. Use edit/apply_patch for targeted changes. \
+                          Use this instead of bash for new source/config files. \
                           Paths and content containing bidi or zero-width controls are refused."
                 .into(),
             input_schema: serde_json::json!({
@@ -565,6 +592,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     "content": {
                         "type": "string",
                         "description": "complete UTF-8 file content, up to 4 MiB"
+                    },
+                    "expected_sha256": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "description": "Required for an existing file: 64-character lowercase SHA-256 of all original raw bytes from read_file(include_sha256=true). Omit only to create a missing file. A mismatch leaves the file unchanged."
                     }
                 },
                 "required": ["path", "content"]
@@ -574,40 +607,37 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let confined = confined.clone();
+            let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
-            crate::effectfut::box_it(async move {
-                if confined.load(Ordering::Relaxed) {
-                    return crate::confined_helper::execute(
+            crate::capturedfut::box_it(async move {
+                if inherited_scope.get().is_some() || confined.load(Ordering::Relaxed) {
+                    return crate::confined_helper::execute_captured(
                         &root,
                         call,
                         test_helper_thread.load(Ordering::Relaxed),
+                        inherited_scope.get().cloned(),
                     )
                     .await;
                 }
                 let id = call.id.clone();
                 let Some(path) = call.input.get("path").and_then(|value| value.as_str()) else {
-                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `path`".into()));
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `path`".into())).into();
                 };
                 let Some(content) = call.input.get("content").and_then(|value| value.as_str())
                 else {
-                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into()));
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into())).into();
                 };
-                crate::ToolExecution::Definite(match write_workspace_file(&root, path, content, false).await {
-                    Ok(()) => ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
-                    Err(error) => err_result(id, error),
-                })
+                let preimage = match WritePreimage::from_input(&call.input) {
+                    Ok(preimage) => preimage,
+                    Err(error) => return crate::ToolExecution::Definite(err_result(id, error)).into(),
+                };
+                match write_workspace_file_captured_with_scope(&root, path, content, false, None, preimage, |_| {}).await {
+                    Ok(file) => crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("wrote {path} ({} bytes)", content.len())), vec![file]),
+                    Err(error) => crate::ToolExecution::Definite(err_result(id, error)).into(),
+                }
             })
         },
     )
-}
-
-pub(crate) async fn write_workspace_file(
-    root: &Path,
-    path: &str,
-    content: &str,
-    confined: bool,
-) -> Result<(), String> {
-    write_workspace_file_with_hook_and_boundary(root, path, content, confined, |_| {}).await
 }
 
 #[cfg(test)]
@@ -623,6 +653,7 @@ where
     write_workspace_file_with_hook_and_boundary(root, path, content, false, before_commit).await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_workspace_file_with_hook_and_boundary<F>(
     root: &Path,
     path: &str,
@@ -630,6 +661,46 @@ pub(crate) async fn write_workspace_file_with_hook_and_boundary<F>(
     confined: bool,
     before_commit: F,
 ) -> Result<(), String>
+where
+    F: FnOnce(&Path),
+{
+    write_workspace_file_with_scope(root, path, content, confined, None, before_commit).await
+}
+
+#[cfg(test)]
+pub(crate) async fn write_workspace_file_with_scope<F>(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    before_commit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path),
+{
+    write_workspace_file_captured_with_scope(
+        root,
+        path,
+        content,
+        confined,
+        scope,
+        WritePreimage::CurrentSnapshot,
+        before_commit,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn write_workspace_file_captured_with_scope<F>(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    preimage: WritePreimage,
+    before_commit: F,
+) -> Result<crate::NativeFileChange, String>
 where
     F: FnOnce(&Path),
 {
@@ -644,7 +715,7 @@ where
         #[cfg(unix)]
         {
             let target = std::sync::Arc::new(
-                crate::confined_fs::ConfinedTarget::open(root, &initial_target, true)
+                crate::confined_fs::ConfinedTarget::open_scoped(root, &initial_target, true, scope)
                     .map_err(|error| format!("bind {path}: {error}"))?,
             );
             let captured =
@@ -656,12 +727,19 @@ where
                     "write_file refused: content would not change target bytes: {path}"
                 ));
             }
+            preimage.validate(&captured.state, path)?;
             let staged = StagedWrite::prepare_confined(&initial_target, content.as_bytes(), target)
                 .await
                 .map_err(|error| format!("stage {path}: {error}"))?;
+            let before =
+                matches!(captured.state, TargetSnapshot::Existing(_)).then_some(captured.bytes);
             before_commit(&initial_target);
             return match staged.commit_if_unchanged(&captured.state).await {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok(crate::NativeFileChange::committed(
+                    initial_target,
+                    before,
+                    content.as_bytes().to_vec(),
+                )),
                 Err(GuardedCommitFailure::Changed) => Err(file_changed_json("write_file", path)),
                 Err(GuardedCommitFailure::Inspect(error)) => {
                     Err(format!("inspect {path} before commit: {error}"))
@@ -702,6 +780,8 @@ where
             "write_file refused: content would not change target bytes: {path}"
         ));
     }
+    preimage.validate(&captured.state, path)?;
+    let before = matches!(captured.state, TargetSnapshot::Existing(_)).then_some(captured.bytes);
     let expected = captured.state;
     let staged =
         StagedWrite::prepare_with_boundary(&target, content.as_bytes(), confined.then_some(root))
@@ -709,7 +789,11 @@ where
             .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
     match staged.commit_if_unchanged(&expected).await {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(crate::NativeFileChange::committed(
+            target,
+            before,
+            content.as_bytes().to_vec(),
+        )),
         Err(GuardedCommitFailure::Changed) => Err(file_changed_json("write_file", path)),
         Err(GuardedCommitFailure::Inspect(error)) => {
             Err(format!("inspect {path} before commit: {error}"))
@@ -785,18 +869,6 @@ fn reject_dangling_target_symlink(root: &Path, requested_path: &str) -> Result<(
         ));
     }
     Ok(())
-}
-
-pub(crate) async fn atomic_replace_with_boundary(
-    target: &Path,
-    content: &[u8],
-    confined_root: Option<&Path>,
-) -> io::Result<()> {
-    StagedWrite::prepare_with_boundary(target, content, confined_root)
-        .await?
-        .commit()
-        .await
-        .map_err(|failure| failure.error)
 }
 
 async fn allocate_temporary(parent: &Path) -> io::Result<(PathBuf, tokio::fs::File)> {

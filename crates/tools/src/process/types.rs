@@ -20,6 +20,7 @@ pub struct ProcessHealth {
 #[derive(Debug)]
 pub(crate) enum ActionError {
     Definite(String),
+    Refused(iteron_protocol::refusal::RefusalReasonV1, String),
     Unknown(String),
 }
 

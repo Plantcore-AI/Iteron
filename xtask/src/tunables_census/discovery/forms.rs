@@ -204,43 +204,233 @@ pub(super) fn source_invariant_disposition(
     let value = value.to_ascii_lowercase();
     let invariant = |kind, rationale| SourceInvariantDisposition { kind, rationale };
 
-    if identity.contains("crates/cli/src/mcp/commands.rs")
-        && identity.contains("mcpserverconfig")
-        && identity.contains("field::transport")
-    {
-        return Some(invariant(
-            InvariantKind::Authority,
-            "the mutually exclusive URL and stdio command inputs select their fixed MCP transport",
-        ));
-    }
-    if identity.contains("crates/mcp/src/supervisor/config.rs")
-        && identity.contains("mcplaunchconfig::new")
-        && (identity.contains("field::advertises_elicitation")
-            || identity.contains("field::advertises::elicitation"))
-    {
-        return Some(invariant(
-            InvariantKind::Authority,
-            "a fresh MCP launch cannot advertise elicitation until its owner explicitly enables that capability",
-        ));
-    }
-    if identity.contains("crates/mcp/src/supervisor/config.rs")
-        && identity.contains("mcplaunchconfig::new")
-        && (identity.contains("field::protocol_mode") || identity.contains("field::protocol::mode"))
-    {
-        return Some(invariant(
-            InvariantKind::WireCompatibility,
-            "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
-        ));
-    }
-    if (identity.contains("crates/cli/src/app_server/plantcore.rs")
-        || identity.contains("cli.app.server.plantcore"))
-        && identity.contains("plantcoreadmission::disabled")
-        && identity.contains("field::state")
-    {
-        return Some(invariant(
+    // These actual constructors initialize facts, admitted phases, versions or resource
+    // accounting. Match the complete declaration, constructed type/field and literal, including
+    // its exact serialized census ID when revalidating a generated row. No nearby strategy
+    // field, other owner or changed literal inherits this disposition.
+    let exact = |path: &str, owner: &str, symbol: &str, expected: &str| {
+        value == expected.to_ascii_lowercase()
+            && inline_identity_matches(&identity, path, owner, symbol)
+    };
+    for (path, owner, symbol, expected, kind, rationale) in [
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "PlantcoreAdmission::disabled",
+            "inline::Self::field::state",
+            "State :: Disabled",
             InvariantKind::Authority,
             "the ordinary-client constructor fixes PlantCore admission off and cannot grant bootstrap authority",
-        ));
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "McpLaunchConfig::new",
+            "inline::Self::field::advertises_elicitation",
+            "false",
+            InvariantKind::Authority,
+            "a fresh MCP launch cannot advertise elicitation until its owner explicitly enables that capability",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "McpLaunchConfig::new",
+            "inline::Self::field::protocol_mode",
+            "crate :: McpProtocolMode :: Stateful",
+            InvariantKind::WireCompatibility,
+            "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "MemBudget::fit_content_bytes",
+            "inline::Self::field::index_bytes",
+            "0",
+            InvariantKind::HardBudget,
+            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "MemBudget::fit_content_bytes",
+            "inline::Self::field::recall_bytes",
+            "0",
+            InvariantKind::HardBudget,
+            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "FrontendQueuePolicy::owner",
+            "inline::Self::new::argument_3",
+            "CosmeticOverflow :: Coalesce",
+            InvariantKind::NonValueStructural,
+            "the fixed queue owner coalesces only cosmetic projections; restoring its pinned checkpoint is not a strategy setter",
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "FrontendQueuePolicy::owner",
+            "inline::Self::new::argument_4",
+            "AuthoritativeOverflow :: Wait",
+            InvariantKind::Durability,
+            "the fixed queue owner retains authoritative events through backpressure; restoring its pinned checkpoint grants no replacement or drop authority",
+        ),
+        (
+            "crates/cli/src/app_server/session_factory.rs",
+            "SessionFactory::verified",
+            "inline::ReplayReadLimits::field::events",
+            "100_000",
+            InvariantKind::HardBudget,
+            "verified session adoption has an owner-fixed aggregate event ceiling before retaining history",
+        ),
+        (
+            "crates/cli/src/runtime/budget_control.rs",
+            "Agent::admit_operator_tool_call",
+            "inline::super::permission_policy::OperationPolicy::field::governing_trust",
+            "iteron_protocol :: Trust :: Trusted",
+            InvariantKind::Authority,
+            "only this authenticated host-operator admission treats the exact operator command as trusted; capability and named deny gates still apply",
+        ),
+        (
+            "crates/cli/src/runtime/invocation_admission.rs",
+            "InvocationAdmissionSession<'_>::prepare",
+            "inline::InvocationAdmission::field::phase",
+            "AdmissionPhase :: Prepared",
+            InvariantKind::NonValueStructural,
+            "the admitted invocation starts in its privately consumed Prepared phase, not a selectable execution stage",
+        ),
+        (
+            "crates/cli/src/runtime/memory_activation.rs",
+            "MemoryActivation::resolve",
+            "inline::MemoryReferenceAdmissionV1::field::version",
+            "1",
+            InvariantKind::WireCompatibility,
+            "the validated memory reference admission uses its actual V1 wire version",
+        ),
+        (
+            "crates/cli/src/runtime/permission_policy.rs",
+            "evaluate_operation",
+            "inline::OperationAdmission::field::verdict",
+            "Verdict :: Auto",
+            InvariantKind::Authority,
+            "Auto initializes the permission reduction before every required class, named deny, taint and ceiling gate is evaluated",
+        ),
+        (
+            "crates/cli/src/runtime/persistent_agents/input_admission.rs",
+            "LiveAgentMailbox::source_admission",
+            "inline::AgentInputAdmissionV1::field::version",
+            "1",
+            InvariantKind::WireCompatibility,
+            "the provenance-validated agent input admission uses its actual V1 wire version",
+        ),
+        (
+            "crates/cli/src/runtime/pricing.rs",
+            "SharedUsdBudget::from_microusd",
+            "inline::Self::field::depth",
+            "0",
+            InvariantKind::Authority,
+            "a monetary root has no ancestor; only actual child construction advances the bounded parent-chain depth",
+        ),
+        (
+            "crates/cli/src/runtime/request_admission.rs",
+            "RequestAdmission<'a>::from_bound",
+            "inline::Self::field::phase",
+            "AdmissionPhase :: Prepared",
+            InvariantKind::NonValueStructural,
+            "a retained request starts in its privately consumed Prepared phase before validation and dispatch",
+        ),
+        (
+            "crates/cli/src/runtime/workspace_rewind.rs",
+            "Agent::admit_workspace_rewind",
+            "inline::OperationPolicy::field::governing_trust",
+            "Trust :: Trusted",
+            InvariantKind::Authority,
+            "the authenticated host-operator rewind keeps its real trust classification under all permission and capability ceilings",
+        ),
+        (
+            "crates/cli/src/tui/persistent_agents.rs",
+            "parse",
+            "inline::AgentBudgetV1::field::turns",
+            "1",
+            InvariantKind::HardBudget,
+            "the compact TUI spawn shortcut admits at most one child provider turn; explicit typed operator budgets remain separate bounded inputs",
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ContextBudgetPolicy::for_usable_window",
+            "inline::Self::field::task_context_elastic",
+            "false",
+            InvariantKind::Authority,
+            "a fresh context allocation cannot borrow task capacity until the host proves default checkpoint provenance",
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ContextBudgetPolicy::for_usable_window",
+            "inline::Self::field::transcript_elastic",
+            "false",
+            InvariantKind::Authority,
+            "a fresh context allocation cannot borrow transcript capacity until the host proves default checkpoint provenance",
+        ),
+        (
+            "crates/obs/src/pricing/physical_replay.rs",
+            "PhysicalPricingReplay::observe",
+            "inline::Admission::field::closed",
+            "false",
+            InvariantKind::Replay,
+            "a verified physical intent is open until its matching actual terminal is replayed",
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "ReplayReadLimits::budget",
+            "inline::ReplayReadBudget::field::physical",
+            "0",
+            InvariantKind::HardBudget,
+            "the admitted replay physical-byte counter starts at zero and charges each actual line before parsing",
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "ReplayReadLimits::budget",
+            "inline::ReplayReadBudget::field::hydrated",
+            "0",
+            InvariantKind::HardBudget,
+            "the admitted aggregate replay hydration counter starts at zero and charges real line and CAS bytes",
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "ReplayReadLimits::budget",
+            "inline::ReplayReadBudget::field::events",
+            "0",
+            InvariantKind::HardBudget,
+            "the admitted replay event counter starts at zero and charges every real retained event",
+        ),
+        (
+            "crates/record/src/session/bounded_reindex.rs",
+            "session::bounded_reindex",
+            "inline::ReplayReadLimits::field::events",
+            "16_384",
+            InvariantKind::HardBudget,
+            "physical index repair has a fixed per-run replay event envelope before publishing any replacement",
+        ),
+    ] {
+        if exact(path, owner, symbol, expected) {
+            return Some(invariant(kind, rationale));
+        }
+    }
+
+    // The same exact field is initialized in two mutually exclusive input arms. Preserve each
+    // source occurrence and its actual transport literal, including ordinal 2 on the stdio arm.
+    for (expected, ordinal) in [
+        ("McpTransportConfig :: Http", 1),
+        ("McpTransportConfig :: Stdio", 2),
+    ] {
+        if value == expected.to_ascii_lowercase()
+            && inline_identity_matches_at(
+                &identity,
+                "crates/cli/src/mcp/commands.rs",
+                "add",
+                "inline::McpServerConfig::field::transport",
+                ordinal,
+            )
+        {
+            return Some(invariant(
+                InvariantKind::Authority,
+                "the mutually exclusive URL and stdio command inputs select their fixed MCP transport",
+            ));
+        }
     }
     if (identity.contains("crates/cli/src/machine_contract.rs")
         || identity.contains("cli.machine.contract"))
@@ -261,22 +451,13 @@ pub(super) fn source_invariant_disposition(
             "the zero pre-paint network budget is a host-owned latency ceiling, not a trainable provider policy",
         ));
     }
-    if identity.contains("crates/record/src/session.rs")
+    if (identity.contains("crates/record/src/session.rs")
+        || identity.contains("crates/record/src/session/index.rs"))
         && identity.contains("sessiondeltahardlimits")
     {
         return Some(invariant(
             InvariantKind::Durability,
             "the session-delta hard envelope bounds crash recovery and index compaction",
-        ));
-    }
-    if identity.contains("crates/ctx/src/memory.rs")
-        && identity.contains("membudget::fit_content_bytes")
-        && (identity.contains("index_bytes") || identity.contains("recall_bytes"))
-        && value == "0"
-    {
-        return Some(invariant(
-            InvariantKind::HardBudget,
-            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
         ));
     }
     if ((identity.contains("crates/tools/src/process/supervisor.rs")
@@ -658,6 +839,34 @@ pub(super) fn source_invariant_disposition(
     None
 }
 
+/// The source collector and generated-row validator use different selector representations.
+/// Match exactly those two forms for one declaration, without prefix/suffix or ordinal aliases.
+pub(super) fn inline_identity_matches(
+    identity: &str,
+    path: &str,
+    owner: &str,
+    symbol: &str,
+) -> bool {
+    inline_identity_matches_at(identity, path, owner, symbol, 1)
+}
+
+fn inline_identity_matches_at(
+    identity: &str,
+    path: &str,
+    owner: &str,
+    symbol: &str,
+    ordinal: usize,
+) -> bool {
+    let Some(krate) = path.split('/').nth(1) else {
+        return false;
+    };
+    identity.eq_ignore_ascii_case(&format!("{path}::{owner}::{symbol}"))
+        || identity.eq_ignore_ascii_case(&format!(
+            "{path}::{owner}::{}",
+            stable_id(krate, path, &format!("{owner}.{symbol}.{ordinal}"))
+        ))
+}
+
 pub(super) fn public_proof_kind(
     attrs: &[syn::Attribute],
     name: &str,
@@ -700,6 +909,9 @@ pub(super) fn manifest_kind(name: &str) -> Option<CensusCandidateKind> {
 }
 
 pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
+    // Only these existing declarations moved. Preserve their external identities without
+    // replacing actual owner/use-site provenance or giving new source forms historical aliases.
+    let (relative, symbol) = original_source_form(relative, symbol);
     let module = relative
         .rsplit_once("/src/")
         .map(|(_, tail)| tail)
@@ -719,6 +931,46 @@ pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+fn original_source_form<'a>(relative: &'a str, symbol: &'a str) -> (&'a str, &'a str) {
+    match relative {
+        "crates/record/src/session/model.rs"
+            if symbol.starts_with("SessionMeta.")
+                || symbol.starts_with("SessionAncestryReceipt.") =>
+        {
+            ("crates/record/src/session.rs", symbol)
+        }
+        "crates/record/src/session/index.rs" if symbol.starts_with("SessionDeltaRef.") => {
+            ("crates/record/src/session.rs", symbol)
+        }
+        "crates/record/src/session/index.rs"
+            if symbol == "session::index.inline::SessionDeltaHardLimits::field::rows.1" =>
+        {
+            (
+                "crates/record/src/session.rs",
+                "session.inline::SessionDeltaHardLimits::field::rows.1",
+            )
+        }
+        "crates/ctx/src/memory/selection.rs"
+            if symbol.starts_with("MemoryCandidate.")
+                || symbol.starts_with("MemorySlotObservation.") =>
+        {
+            ("crates/ctx/src/memory.rs", symbol)
+        }
+        "crates/provider/src/catalog/discovery.rs"
+            if symbol.starts_with("FireworksModel.")
+                || symbol.starts_with("FireworksDeployedModel.") =>
+        {
+            ("crates/provider/src/catalog.rs", symbol)
+        }
+        "crates/provider/src/catalog/health.rs"
+            if symbol == "ProviderHealthStore::new.parameter::max_entries.1" =>
+        {
+            ("crates/provider/src/catalog.rs", symbol)
+        }
+        _ => (relative, symbol),
+    }
 }
 
 pub(super) fn is_policy_context(context: &str) -> bool {

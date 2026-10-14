@@ -8,6 +8,7 @@
 //! JSON, not TOML, to avoid a dependency (serde_json is already in the tree — zero-dependency
 //! first). Every field is optional; a missing file is not an error (defaults apply).
 
+pub(crate) mod preferences;
 mod provider_governor;
 mod retry;
 mod schema;
@@ -47,7 +48,9 @@ pub(crate) const MAX_DECLARED_CONTEXT_WINDOW: u64 = 1_000_000_000;
 pub(crate) use provider_governor::{
     ProviderGovernorConfig, ResolvedProviderGovernorConfig, builtin_failover_rules,
 };
-pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
+pub(crate) use retry::{
+    RetryConfig, RetryResolution, load_retry_environment, resolve_retry_policy,
+};
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 pub(crate) use verification::VerificationConfig;
 
@@ -695,6 +698,9 @@ pub struct ProviderModelCapabilities {
     /// Partial triples are unrepresentable and absence means objective routing is unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_objectives: Option<iteron_provider::RouteObjectiveScores>,
+    /// Informational declaration for this exact provider/model, not a native privacy control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_policy: Option<iteron_provider::DataPolicyDeclaration>,
 }
 
 fn default_true() -> bool {
@@ -906,6 +912,11 @@ impl FileConfig {
                             "provider `{}` model_capabilities ids must be non-empty, control-free, and at most 512 bytes",
                             provider.id
                         ));
+                    }
+                    if let Some(policy) = &capabilities.data_policy {
+                        policy.validate().map_err(|reason| {
+                            format!("provider model_capabilities.data_policy: {reason}")
+                        })?;
                     }
                     // A zero window is not "unknown": the admission and compaction paths both
                     // filter it out, so it would read as a working declaration while doing
@@ -2792,6 +2803,64 @@ mod tests {
                 .is_err(),
                 "{rejected} should be rejected by the strict schema"
             );
+        }
+    }
+
+    #[test]
+    fn data_policy_is_a_bounded_declaration_and_survives_config_serialization() {
+        let policy = serde_json::json!({
+            "retention": {"kind":"days", "maximum_days":30},
+            "training_use":"not_used",
+            "processing":{"kind":"regional", "jurisdictions":["US", "DE"]}
+        });
+        let configured = provider_with_capabilities(
+            &serde_json::json!({"k3":{"data_policy":policy}}).to_string(),
+        );
+        configured.validate().unwrap();
+        let serialized = serde_json::to_value(&configured).unwrap();
+        assert_eq!(
+            serialized["providers"][0]["model_capabilities"]["k3"]["data_policy"],
+            policy
+        );
+        let reparsed = FileConfig::parse(&serialized.to_string()).unwrap();
+        assert_eq!(
+            reparsed.providers.as_ref().unwrap()[0].model_capabilities,
+            configured.providers.as_ref().unwrap()[0].model_capabilities
+        );
+
+        let legacy = provider_with_capabilities(r#"{"k3":{"context_window_tokens":1048576}}"#);
+        assert!(
+            serde_json::to_value(legacy).unwrap()["providers"][0]["model_capabilities"]["k3"]
+                .get("data_policy")
+                .is_none()
+        );
+
+        for jurisdictions in [
+            serde_json::json!([]),
+            serde_json::json!(["US", "US"]),
+            serde_json::json!(["US", "de"]),
+            serde_json::json!(["USA"]),
+            serde_json::json!(["US\n"]),
+            serde_json::json!((0..33).map(|_| "US").collect::<Vec<_>>()),
+        ] {
+            let malformed = provider_with_capabilities(&serde_json::json!({
+                "k3":{"data_policy":{"processing":{"kind":"regional", "jurisdictions":jurisdictions}}}
+            }).to_string());
+            assert!(malformed.validate().is_err());
+        }
+        for invalid in [
+            serde_json::json!({"retention":{"kind":"days", "maximum_days":0}}),
+            serde_json::json!({"retention":{"kind":"no_retention", "enforced":true}}),
+            serde_json::json!({"retention":{"kind":"unknown", "enforced":true}}),
+            serde_json::json!({"processing":{"kind":"global", "enforced":true}}),
+            serde_json::json!({"processing":{"kind":"unknown", "enforced":true}}),
+            serde_json::json!({"training_use":"guaranteed"}),
+            serde_json::json!({"privacy_guaranteed":true}),
+        ] {
+            assert!(serde_json::from_value::<FileConfig>(serde_json::json!({"providers":[{
+                "id":"gateway", "adapter":"openai_chat", "api_root":"https://gateway.example/v1",
+                "key_env":"GATEWAY_KEY", "model_capabilities":{"k3":{"data_policy":invalid}}
+            }]})).is_err());
         }
     }
 

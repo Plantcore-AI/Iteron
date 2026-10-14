@@ -1,5 +1,205 @@
 use super::*;
 
+static NEXT_CARGO_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct CargoIdentityFixture(std::path::PathBuf);
+
+impl CargoIdentityFixture {
+    fn current() -> Self {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Self(std::env::temp_dir().join(format!(
+            "iteron-cargo-authority-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_CARGO_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )));
+        std::fs::create_dir(&fixture.0).unwrap();
+        std::fs::copy(source.join("Cargo.toml"), fixture.0.join("Cargo.toml")).unwrap();
+        // These are the real current manifests, not a synthetic graph that drops target/dev edges.
+        for (member, _) in MEMBERS {
+            std::fs::create_dir_all(fixture.0.join(member)).unwrap();
+            std::fs::copy(
+                source.join(member).join("Cargo.toml"),
+                fixture.0.join(member).join("Cargo.toml"),
+            )
+            .unwrap();
+        }
+        fixture
+    }
+
+    fn member(&self, member: &str) -> toml::Value {
+        read_toml(&self.0, &format!("{member}/Cargo.toml")).unwrap()
+    }
+
+    fn write_member(&self, member: &str, manifest: &toml::Value) {
+        std::fs::write(
+            self.0.join(member).join("Cargo.toml"),
+            toml::to_string(manifest).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+impl Drop for CargoIdentityFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn real_sdk_identity_and_existing_internal_fixture_edges_are_admitted_exactly() {
+    let fixture = CargoIdentityFixture::current();
+    let identities = workspace_member_identities(&fixture.0).unwrap();
+    assert!(identities.contains(&("crates/extension-sdk".into(), "iteron-extension-sdk".into(),)));
+    validate_member_identities_and_paths(&fixture.0).unwrap();
+
+    let mut sdk = fixture.member("crates/extension-sdk");
+    sdk["package"]["name"] = "iteron-sdk-replacement".into();
+    fixture.write_member("crates/extension-sdk", &sdk);
+    assert!(validate_member_identities_and_paths(&fixture.0).is_err());
+
+    let mut missing = read_toml(&fixture.0, "Cargo.toml").unwrap();
+    missing["workspace"]["members"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|member| member.as_str() != Some("crates/extension-sdk"));
+    assert!(validate_workspace(&missing).is_err());
+}
+
+#[test]
+fn canonical_added_packages_use_the_actual_iteron_namespace() {
+    validate_added_package_name("crates/newly-added", "iteron-newly-added").unwrap();
+    for rejected in [
+        "core-newly-added",
+        "foreign-newly-added",
+        "iteron-",
+        "iteron-Capitalised",
+        "iteron-double--hyphen",
+        "iteron-under_score",
+        "iteron-trailing-",
+    ] {
+        assert!(validate_added_package_name("crates/newly-added", rejected).is_err());
+    }
+}
+
+#[test]
+fn real_internal_dependency_aliases_and_redirects_are_refused_in_every_cargo_scope() {
+    let fixture = CargoIdentityFixture::current();
+    let original = fixture.member("crates/cli");
+    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        for target_specific in [false, true] {
+            let header = if target_specific {
+                format!("[target.'cfg(windows)'.{kind}]")
+            } else {
+                format!("[{kind}]")
+            };
+            for dependency in [
+                "iteron-protocol = { path = \"../record\" }",
+                "iteron-protocol = { path = \"../protocol/../record\" }",
+                "iteron-protocol = { path = \"../../outside\" }",
+                "iteron-protocol = \"1\"",
+                "iteron-protocol = { path = \"../protocol\", version = \"1\" }",
+                "iteron-protocol = { path = \"../protocol\", git = \"https://example.invalid/replacement\" }",
+                "iteron-protocol = { path = \"../protocol\", optional = true }",
+                "iteron-protocol = { path = \"../protocol\", default-features = false }",
+                "iteron-protocol = { path = \"../protocol\", package = \"iteron-protocol\" }",
+                "unrelated = { path = \"../protocol\", package = \"iteron-protocol\" }",
+                "iteron_protocol = { path = \"../protocol\" }",
+                "iteron_protocol = \"1\"",
+                "unrelated = { version = \"1\", package = \"iteron_protocol\" }",
+                "replacement = { path = \"../../outside\" }",
+                "iteron-unknown = { path = \"../protocol\" }",
+            ] {
+                let modified: toml::Value =
+                    toml::from_str(&format!("{header}\n{dependency}\n")).unwrap();
+                let mut manifest = original.clone();
+                let section = if target_specific { "target" } else { kind };
+                manifest
+                    .as_table_mut()
+                    .unwrap()
+                    .insert(section.into(), modified[section].clone());
+                fixture.write_member("crates/cli", &manifest);
+                assert!(
+                    validate_member_identities_and_paths(&fixture.0).is_err(),
+                    "accepted redirected/aliased actual graph: {header} {dependency}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn existing_fixture_features_cannot_move_into_runtime_build_or_target_dependencies() {
+    let fixture = CargoIdentityFixture::current();
+    for (member, dependency, feature) in [
+        ("crates/extension-sdk", "iteron-tools", "test-helper"),
+        ("crates/cli", "iteron-tools", "test-helper"),
+        ("crates/cli", "iteron-record", "test-fixtures"),
+        ("crates/record", "iteron-tunables", "test-fixtures"),
+    ] {
+        let original = fixture.member(member);
+        let admitted = original["dev-dependencies"][dependency].clone();
+        assert_eq!(admitted["features"][0].as_str(), Some(feature));
+        for header in [
+            "[dependencies]",
+            "[build-dependencies]",
+            "[target.'cfg(windows)'.dev-dependencies]",
+        ] {
+            let mut modified: toml::Value = toml::from_str(&format!(
+                "{header}\n{dependency} = {{ path = \"../tools\" }}\n"
+            ))
+            .unwrap();
+            let section = if header.contains("target") {
+                modified["target"]["cfg(windows)"]["dev-dependencies"][dependency] =
+                    admitted.clone();
+                "target"
+            } else if header.contains("build") {
+                modified["build-dependencies"][dependency] = admitted.clone();
+                "build-dependencies"
+            } else {
+                modified["dependencies"][dependency] = admitted.clone();
+                "dependencies"
+            };
+            let mut manifest = original.clone();
+            manifest
+                .as_table_mut()
+                .unwrap()
+                .insert(section.into(), modified[section].clone());
+            fixture.write_member(member, &manifest);
+            assert!(validate_member_identities_and_paths(&fixture.0).is_err());
+        }
+        for invalid in [
+            toml::Value::String(feature.into()),
+            toml::Value::Array(Vec::new()),
+            toml::Value::Array(vec!["unapproved-fixture".into()]),
+            toml::Value::Array(vec![feature.into(), feature.into()]),
+        ] {
+            let mut manifest = original.clone();
+            manifest["dev-dependencies"][dependency]["features"] = invalid;
+            fixture.write_member(member, &manifest);
+            assert!(validate_member_identities_and_paths(&fixture.0).is_err());
+        }
+        fixture.write_member(member, &original);
+        validate_member_identities_and_paths(&fixture.0).unwrap();
+    }
+}
+
+#[test]
+fn malformed_dependency_scopes_cannot_skip_internal_authority_validation() {
+    for source in [
+        "dependencies = []",
+        "target = []",
+        "[target]\ninvalid = []",
+        "[target.'cfg(windows)']\ndev-dependencies = []",
+    ] {
+        let manifest: toml::Value = toml::from_str(source).unwrap();
+        assert!(dependency_tables(&manifest).is_err(), "{source}");
+    }
+}
+
 #[test]
 fn workspace_members_and_internal_relative_paths_are_exact() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

@@ -13,7 +13,7 @@ pub(crate) fn persist(
     run_id: &str,
     checkpoint: &TunablesCheckpoint,
 ) -> anyhow::Result<()> {
-    if !super::valid_run_id(run_id) {
+    if !super::run_store::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
     let TunablesCheckpoint::V2(snapshot) = checkpoint else {
@@ -36,7 +36,7 @@ pub(crate) fn persist(
         );
     }
 
-    let dir = super::run_dir(workflows_dir, run_id);
+    let dir = super::run_store::run_dir(workflows_dir, run_id);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(TUNABLES_CHECKPOINT_FILE);
     match std::fs::OpenOptions::new()
@@ -65,10 +65,10 @@ pub(crate) fn persist(
 }
 
 pub(crate) fn load(workflows_dir: &Path, run_id: &str) -> anyhow::Result<TunablesCheckpoint> {
-    if !super::valid_run_id(run_id) {
+    if !super::run_store::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
-    let path = super::run_dir(workflows_dir, run_id).join(TUNABLES_CHECKPOINT_FILE);
+    let path = super::run_store::run_dir(workflows_dir, run_id).join(TUNABLES_CHECKPOINT_FILE);
     load_path(&path)
         .map(TunablesCheckpoint::V2)
         .map_err(|error| {

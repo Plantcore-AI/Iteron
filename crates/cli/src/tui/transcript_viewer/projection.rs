@@ -1,7 +1,6 @@
 //! Bounded viewer projection starts from the same semantic blocks as ordinary rendering/export.
 
 use crate::block;
-use serde::Serialize as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_normalization::UnicodeNormalization as _;
 
@@ -205,6 +204,7 @@ struct RawTool<'a> {
     status: &'static str,
     exit_code: Option<i32>,
     output: &'a str,
+    diff: Option<&'a iteron_protocol::FileDiff>,
 }
 
 fn raw_tool_bounded(
@@ -225,7 +225,25 @@ fn raw_tool_bounded(
         },
         exit_code: card.exit_code,
         output: &card.output,
+        diff: card.diff.as_ref(),
     };
+    serialize_bounded(&value, max_bytes, cancelled, true)
+}
+
+pub(super) fn arguments_json(
+    args: &serde_json::Value,
+    max_bytes: usize,
+    cancelled: &AtomicBool,
+) -> Result<(String, bool), ()> {
+    serialize_bounded(args, max_bytes, cancelled, false)
+}
+
+fn serialize_bounded(
+    value: &impl serde::Serialize,
+    max_bytes: usize,
+    cancelled: &AtomicBool,
+    pretty: bool,
+) -> Result<(String, bool), ()> {
     let mut writer = BoundedJsonWriter {
         bytes: Vec::with_capacity(max_bytes.min(iteron_tunables::param_integer(
             "cli.tui.transcript_viewer.projection.projection_reserve_bytes",
@@ -235,7 +253,11 @@ fn raw_tool_bounded(
         cancelled,
         truncated: false,
     };
-    let result = value.serialize(&mut serde_json::Serializer::pretty(&mut writer));
+    let result = if pretty {
+        value.serialize(&mut serde_json::Serializer::pretty(&mut writer))
+    } else {
+        value.serialize(&mut serde_json::Serializer::new(&mut writer))
+    };
     if cancelled.load(Ordering::Relaxed) {
         return Err(());
     }

@@ -737,6 +737,36 @@ jobs:
             validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
             git worktree add --detach "$validator_root" "$compatibility_commit"
           fi
+          if [[ "$previous" == v0.0.26 ]]; then
+            # v0.0.26 assumes the former monolithic machine producer and lacks
+            # the complete additive record corpus. Keep its immutable contract
+            # as the comparison base; use only this exact descendant validator.
+            require_eq "v0.0.26 bridge candidate must be v0.0.27" \
+              "v0.0.27" "$candidate_tag"
+            require_eq "v0.0.26 immutable tag object must match the pin" \
+              "a552d22a59af06376403765edd93d42aed60d8f7" \
+              "$(git rev-parse "refs/tags/$previous")"
+            require_eq "v0.0.26 immutable source must match the pin" \
+              "7ec48721747ab5067679518be9ccfe8455a293b4" "$previous_commit"
+            compatibility_commit=9bf4558eea8490f27fd02df2fbb1d60a52ce6c81
+            compatibility_schema_blob=cb40e87444eef7ceaa7d92cad70320dde7a7524c
+            require_eq "v0.0.26 bridge must name a commit object" \
+              "commit" "$(git cat-file -t "$compatibility_commit")"
+            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
+            git merge-base --is-ancestor \
+              "$compatibility_commit" "${{ steps.metadata.outputs.commit }}"
+            require_eq "v0.0.26 bridge schema policy must match the pinned blob" \
+              "$compatibility_schema_blob" \
+              "$(git rev-parse "$compatibility_commit:governance/schema-compatibility.json")"
+            if ! git diff --quiet \
+              "$compatibility_commit" "${{ steps.metadata.outputs.commit }}" \
+              -- 'xtask/src/schema_compat*' xtask/src/rust_source.rs \
+              xtask/Cargo.toml Cargo.toml Cargo.lock; then
+              fail "v0.0.26 bridge schema validator or compiled dependencies differ from the candidate"
+            fi
+            validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
+            git worktree add --detach "$validator_root" "$compatibility_commit"
+          fi
           validator_target=$RUNNER_TEMP/core-schema-validator-target
           (
             cd "$validator_root"
@@ -1391,6 +1421,32 @@ jobs:
                 --test windows_conpty --target "$target" \
                 native_conpty_rejects_version_skew_before_terminal_takeover \
                 -- --exact
+          fi
+      - name: Verify native process and frontend physical owners
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: 4
+          RUST_TEST_THREADS: 4
+          ITERON_TEST_TIMEOUT_SCALE: 10
+        run: |
+          set -euo pipefail
+          target=${{ matrix.target }}
+          # These tests execute on the selected native host. Version compatibility and a
+          # compiled archive alone do not observe process custody or native filesystem barriers.
+          cargo +"$RUST_VERSION" test --locked -p iteron-sandbox --lib --target "$target"
+          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+            --target "$target" client_effects::
+          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+            --target "$target" app_server::model_preferences::
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            cargo +"$RUST_VERSION" test --locked -p iteron-support \
+              --all-targets --target "$target"
+          else
+            # This physical restart fixture owns a Unix file journal; do not report
+            # an empty cfg-excluded Windows test binary as accounting evidence.
+            cargo +"$RUST_VERSION" test --locked -p iteron-agents \
+              --test persistent_accounting_terminal --target "$target"
           fi
       - name: Generate and normalize the release payload SBOM
         shell: bash

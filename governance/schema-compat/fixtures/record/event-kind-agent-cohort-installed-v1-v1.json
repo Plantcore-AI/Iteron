@@ -1,0 +1,12 @@
+{
+  "installation": {
+    "installed_run": "schema-native-child",
+    "origin": {
+      "config_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "schema-native-child",
+      "tenant": "default",
+      "version": 1
+    }
+  },
+  "kind": "agent_cohort_installed_v1"
+}

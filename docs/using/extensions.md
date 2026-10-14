@@ -21,13 +21,20 @@ the `use_skill` tool.
   stripped.
 - suspicious bidirectional or invisible Unicode is rejected.
 
-Use `/skills` to inspect discovery.
+Use `/skills` to inspect discovery. Same-name sources keep the declared source
+precedence and emit a captured conflict diagnostic; a project skill cannot
+silently replace an operator skill. Effective Skills inventory includes a paged
+diagnostic sidecar whose source field is a path digest. Reasons are bounded,
+credential-scrubbed captured text and may contain operator path information.
 
 ## Lifecycle hooks
 
-Hooks are arbitrary operator commands and therefore load **only** from
-`~/.iteron/config.json`. Supported event keys are `SessionStart`,
-`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+Hooks are arbitrary operator commands. User hooks come from the operator's captured
+`~/.iteron/config.json`; project configuration cannot install executable hooks.
+An explicitly enabled, signature-verified plugin may contribute hooks only after
+its requested capabilities are intersected with the host ceiling. Compatibility
+event keys are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+and `Stop`. Plugins can also bind registered canonical lifecycle events.
 
 ```json
 {
@@ -38,11 +45,20 @@ Hooks are arbitrary operator commands and therefore load **only** from
 }
 ```
 
-A `PreToolUse` hook blocks only with exit code `2`. Spawn failure, timeout, or any
-other exit code is no opinion, so hooks are a best-effort tightening layer rather
-than the load-bearing permission gate. Hooks run with operator authority and see
-live JSON input; a logging hook can capture material that normal rollout
-redaction would hide.
+`PreToolUse` is an admission gate. Every configured handler must return a terminal
+allow decision: exit `0` allows; exit `2`, another failed exit, spawn failure,
+timeout or cancellation denies the action. Other compatibility events are advisory.
+Canonical events have the registry's fixed `observe`, `augment` or `gate` class;
+only a gate can deny admission. Augment output must pass the bounded payload
+schema and cannot grant tools, permissions or budget.
+
+The actual hook owner bounds deadlines and process concurrency, then applies
+outcomes in configured order. Cancellation retains physical cleanup ownership.
+Unmatched durable hook intents remain unknown after a crash; an inventory read
+never authorizes command replay. Hooks use a credential-sanitized helper
+environment but see live JSON input; a logging hook can capture material that
+normal rollout redaction would hide. Arbitrary trusted commands may have their
+own external effects, which the hook driver does not account as zero.
 
 ## MCP servers
 
@@ -144,3 +160,24 @@ rather than exposed with a reduced one.
     Stdio lifecycle recovery and bounded reconnect are supervised. HTTP requests carry effect
     certainty and never retry a possibly-applied tool call. SSE `Last-Event-ID` redelivery is not
     inferred without a server replay contract.
+
+## Effective extension inventory
+
+Compatible clients can read the installed `Plugins`, `Hooks` and `Skills` kinds
+through the public client inventory controls. These are captured facts from the
+existing package, executable-hook and context owners; inspection does not scan
+package trees, load skill bodies or run callbacks.
+
+Package records show verified source, version, declared scope, operator precedence,
+requested capabilities and the actual composed binding capabilities. Those
+capabilities do not replace later operation, task, permission or budget checks.
+Hook records show source class, event, private-command digest, admission class,
+deadline and failure/order/recovery policy. The digest joins a verified package's
+hook binding without exposing its command text. Skill records retain captured
+source/version, trust, path selection and declared tool narrowing; a prefix
+commitment is labeled as a prefix and does not prove a complete lazy body.
+
+Prompt tokens and model requests are not attributed per package, skill or arbitrary
+hook command. The inventory reports these as unavailable, with bounded observed
+metadata sizes where captured. Consult the actual provider/tool ledgers for their
+accounting scope; unavailable costs are not zero.

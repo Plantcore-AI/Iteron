@@ -395,9 +395,11 @@ where
 #[must_use = "an opened effect owes the log a terminal; dropping the ticket makes recovery treat it as unknown"]
 pub struct EffectTicket {
     turn: TurnId,
+    intent_sequence: Seq,
     effect_id: EffectId,
     kind: String,
     provider_route_attempt: Option<iteron_protocol::ProviderRouteAttemptIdentity>,
+    provider_pricing_at_unix_secs: Option<u64>,
     /// When the write-ahead intent became durable. The ticket is the only object that already
     /// survives from admission to terminal, which makes it the correct — and only — carrier for a
     /// measurement of the whole admitted lifetime. Holding it here is what lets ONE seam measure
@@ -410,10 +412,30 @@ pub struct EffectTicket {
 }
 
 impl EffectTicket {
+    /// Turn bound by the durable intent, independent of a caller's current turn counter.
+    pub fn turn(&self) -> TurnId {
+        self.turn
+    }
+
+    /// Exact source returned by the durable log after the intent append succeeded.
+    pub fn intent_sequence(&self) -> Seq {
+        self.intent_sequence
+    }
+
     /// The identity this ticket will settle. Callers that need to name the effect in their own
     /// terminal event (a registry `ToolDone`, say) read it from here rather than re-minting it.
     pub fn effect_id(&self) -> &EffectId {
         &self.effect_id
+    }
+
+    /// Physical route identity authenticated by the durable provider intent.
+    pub fn provider_route_attempt(&self) -> Option<&iteron_protocol::ProviderRouteAttemptIdentity> {
+        self.provider_route_attempt.as_ref()
+    }
+    /// Timestamp checked by the host's actual physical admission and retained in its durable
+    /// provider intent. It is absent for historical/non-provider tickets; no setter exists.
+    pub fn provider_pricing_at_unix_secs(&self) -> Option<u64> {
+        self.provider_pricing_at_unix_secs
     }
 }
 
@@ -529,7 +551,14 @@ where
         workspace,
         provider_route_attempt,
     } = effect;
-    log.append_effect(&Event {
+    let provider_pricing_at_unix_secs = (kind == "provider" && provider_route_attempt.is_some())
+        .then(|| {
+            audit_arguments
+                .get("provider_pricing_at_unix_secs")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .flatten();
+    let intent_sequence = log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
         kind: EventKind::EffectIntent {
@@ -544,9 +573,11 @@ where
     })?;
     Ok(EffectTicket {
         turn,
+        intent_sequence,
         effect_id,
         kind,
         provider_route_attempt,
+        provider_pricing_at_unix_secs,
         // Started AFTER the intent is durable, so the measurement covers the executor and not the
         // fsync that authorised it. A reader comparing effects across runs must not see one class
         // absorb the log's write latency because its intent happened to be larger.
@@ -564,11 +595,26 @@ pub fn settle_effect<L>(
 where
     L: DurableEffectLog,
 {
+    settle_effect_with_sequence(log, ticket, settlement).map(|_| ())
+}
+
+/// Return the sequence produced by the actual confirmed terminal append. This is not a
+/// predicted next position or a tail lookup; all ticket validation precedes the same WAL barrier.
+pub fn settle_effect_with_sequence<L>(
+    log: &mut L,
+    ticket: EffectTicket,
+    settlement: Settlement,
+) -> Result<Seq, BrokerError>
+where
+    L: DurableEffectLog,
+{
     let EffectTicket {
         turn,
+        intent_sequence: _,
         effect_id,
         kind,
         provider_route_attempt,
+        provider_pricing_at_unix_secs: _,
         opened_at,
     } = ticket;
     let expected_id = effect_id.clone();
@@ -627,12 +673,12 @@ where
         provider_route_attempt.as_ref(),
     )
     .map_err(BrokerError::Proposal)?;
-    log.append_effect(&Event {
+    let sequence = log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
         kind: terminal,
     })?;
-    Ok(())
+    Ok(sequence)
 }
 
 /// The registry-effect dispatch sequence, expressed as one instance of the universal

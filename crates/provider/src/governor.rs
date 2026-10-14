@@ -133,6 +133,15 @@ impl ProviderGovernor {
         &self.inner.policy
     }
 
+    /// Read the already-admitted route set without changing counters, quota or circuit state.
+    /// A poisoned owner never lends route authority to a caller.
+    pub fn supports_route(&self, route_id: &str) -> bool {
+        self.inner
+            .routes
+            .lock()
+            .is_ok_and(|routes| routes.contains_key(route_id))
+    }
+
     /// Content-free point-in-time state for status/telemetry. Reading it never changes admission
     /// state; an expired open circuit remains visibly open with zero remaining time until the next
     /// real admission performs the typed half-open transition.

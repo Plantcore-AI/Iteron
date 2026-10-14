@@ -89,7 +89,7 @@ fn the_runtime_service_graph_export_is_fail_closed_and_truthful() {
         .iter()
         .filter(|node| node.disposition == RuntimeServiceDisposition::HostFixedNonOptimization)
         .collect::<Vec<_>>();
-    assert_eq!(host_fixed.len(), 16);
+    assert_eq!(host_fixed.len(), 17);
     assert!(host_fixed.iter().all(|node| {
         node.implementation_status == RuntimeServiceImplementationStatus::HostFixed
             && node

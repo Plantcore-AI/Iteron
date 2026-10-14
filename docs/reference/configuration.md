@@ -227,10 +227,14 @@ bounded `models` manifest, and a bounded `model_capabilities` manifest. See
 ### `model_capabilities`
 
 A map from model id to facts no account-scoped API reports. At most 256 entries; each key follows
-the same bound as a `models` id. Two fields are declarable:
+the same bound as a `models` id. The optional fields are:
 
 - `context_window_tokens`: positive integer, at most 1000000000.
 - `image_input`: boolean for this exact route/model pair.
+- `routing_objectives`: a complete normalized triple of `quality_millionths`,
+  `cost_efficiency_millionths`, and `latency_millionths`, each in 0..=1000000.
+- `data_policy`: an informational declaration of retention, training use, and processing region.
+  Omitted facts remain `unknown`.
 
 Iteron cannot discover this. A `GET models` response is not capability evidence, and the
 [static provider metadata](provider-metadata.md) document is a bounded set of official vendor
@@ -245,6 +249,23 @@ evidence remains unknown and an attachment submission fails before either text o
 An official vendor snapshot outranks a declaration for the same route. A declared value is
 recorded with operator provenance rather than a vendor version, so it changes the route's
 capability digest: a signed rate card bound to the previous digest stops matching, by design.
+
+Data policy is scoped to the exact configured provider and model. For example, an operator can
+record a reviewed declaration as:
+
+```json
+{"data_policy":{"retention":{"kind":"days","maximum_days":30},"training_use":"not_used","processing":{"kind":"regional","jurisdictions":["US"]}}}
+```
+
+Retention accepts `unknown`, `no_retention`, or `days` with a positive `maximum_days` up to 65535.
+Training use accepts `unknown`, `not_used`, or `may_be_used`. Processing accepts `unknown`,
+`global`, or `regional` with 1..=32 unique two-letter uppercase jurisdiction identifiers. These
+identifiers record the source's declaration; Iteron does not verify the named jurisdictions.
+Unknown fields are refused. Public model inventories show the declaration, its operator or
+metadata-snapshot provenance, source, version, and capture time when available. A declaration
+does not establish runtime enforcement or enable a provider request control. Changing it changes
+the route capability identity, and old client selection handles must refresh. Displayed source
+URLs omit queries and fragments; the identity still binds the complete captured source.
 
 Prefer this over a 1M-sized `compaction_trigger_tokens`. That knob is global and fixed — setting
 it replaces the window-relative rule for *every* provider, so a value sized for one large-window

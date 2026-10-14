@@ -99,12 +99,7 @@ impl OwnerSnapshot {
                 .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?,
         );
         let lsp_policy = input.registry.lsp_control().map(|control| control.policy());
-        let role_model_routes = super::super::execution_policy::admitted_role_model_routes(
-            input.agent_catalog,
-            &input.selection.provider_id,
-            &input.selection.model_id,
-        )
-        .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
+        let role_model_routes = super::admitted_role_routes(input)?;
         Ok(Self {
             route_attestation_digest_sha256: input.route.attestation_digest_sha256.clone(),
             health: HealthEvidence {

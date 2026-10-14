@@ -235,6 +235,9 @@ fn gate_route_sinks() -> BTreeMap<CallableKey, BTreeSet<usize>> {
         ("brokered_lifecycle_gate_decision", 3, 1),
         ("brokered_child_lifecycle_gate", 4, 1),
         ("run_lifecycle_gate", 4, 1),
+        // Actual HookExecution and the early/AppServer gates use this journaled physical runner.
+        // Its exact call sites and held ticket/journal owners are covered by the effect source gate.
+        ("run_lifecycle_cancellable_journaled", 5, 0),
     ]
     .into_iter()
     .map(|(name, arity, event)| (CallableKey::new(name, arity), BTreeSet::from([event])))
@@ -380,8 +383,22 @@ fn legacy_event_arguments(key: &CallableKey) -> Option<BTreeSet<usize>> {
 }
 
 fn collect_callables(file: &syn::File, callables: &mut Vec<CallableFacts>) {
+    if test_only(&file.attrs) {
+        return;
+    }
     let mut collector = DefinitionVisitor { callables };
     collector.visit_file(file);
+}
+
+// Parameter and lifecycle discovery share the same production cfg semantics. Test entries from
+// the known async test macro are excluded in addition to the shared built-in test predicate.
+fn test_only(attributes: &[syn::Attribute]) -> bool {
+    crate::tunables_params::has_cfg_test(attributes)
+        || attributes.iter().any(|attribute| {
+            attribute.path().segments.len() == 2
+                && attribute.path().segments[0].ident == "tokio"
+                && attribute.path().segments[1].ident == "test"
+        })
 }
 
 struct DefinitionVisitor<'a> {
@@ -389,7 +406,22 @@ struct DefinitionVisitor<'a> {
 }
 
 impl<'ast> syn::visit::Visit<'ast> for DefinitionVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if !test_only(&node.attrs) {
+            syn::visit::visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        if !test_only(&node.attrs) {
+            syn::visit::visit_item_impl(self, node);
+        }
+    }
+
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if test_only(&node.attrs) {
+            return;
+        }
         analyze_callable(
             node.sig.ident.to_string(),
             &node.sig.inputs,
@@ -399,6 +431,9 @@ impl<'ast> syn::visit::Visit<'ast> for DefinitionVisitor<'_> {
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        if test_only(&node.attrs) {
+            return;
+        }
         analyze_callable(
             node.sig.ident.to_string(),
             &node.sig.inputs,
@@ -628,6 +663,14 @@ fn collect_expression_sources(expression: &syn::Expr, sources: &mut Sources) {
         syn::Expr::Cast(cast) => collect_expression_sources(cast.expr.as_ref(), sources),
         syn::Expr::Await(awaited) => collect_expression_sources(awaited.base.as_ref(), sources),
         syn::Expr::Try(tried) => collect_expression_sources(tried.expr.as_ref(), sources),
+        // These standard iterator adapters retain the receiver's values. A take count does not
+        // become an event identifier, and arbitrary method payloads remain opaque.
+        syn::Expr::MethodCall(call)
+            if ((call.method == "iter" || call.method == "into_iter") && call.args.is_empty())
+                || (call.method == "take" && call.args.len() == 1) =>
+        {
+            collect_expression_sources(call.receiver.as_ref(), sources);
+        }
         syn::Expr::Match(matched) => {
             for arm in &matched.arms {
                 collect_expression_sources(arm.body.as_ref(), sources);
@@ -741,6 +784,11 @@ fn split_macro_arguments(tokens: proc_macro2::TokenStream) -> Vec<Sources> {
 }
 
 fn sources_from_tokens(tokens: proc_macro2::TokenStream) -> Sources {
+    // Macro calls still have Rust expression arguments. Use the same value-flow rules as ordinary
+    // calls: an event DTO's log text or a nested parameter lookup is not its lifecycle identifier.
+    if let Ok(expression) = syn::parse2::<syn::Expr>(tokens.clone()) {
+        return sources_of(&expression);
+    }
     let mut sources = Sources::default();
     collect_token_sources(tokens, &mut sources);
     sources
@@ -992,6 +1040,92 @@ mod tests {
         let mut callables = Vec::new();
         collect_callables(&syntax, &mut callables);
         analyze_callables(&callables)
+    }
+
+    #[test]
+    fn fixture_items_cannot_produce_lifecycle_evidence_but_real_feature_arms_remain() {
+        let coverage = source_coverage(
+            r#"
+            #[cfg(test)] mod fixtures {
+                fn fake(emitter: &Emitter) {
+                    emitter.emit("session.not_registered", correlation(), payload());
+                }
+            }
+            #[test] fn test_entry(emitter: &Emitter) {
+                emitter.emit("context.txt", correlation(), payload());
+            }
+            #[cfg(any(feature = "script-workflows", test))]
+            fn real_feature(emitter: &Emitter) {
+                emitter.emit("workflow.agent_started", correlation(), payload());
+            }
+            #[cfg(any(not(windows), test))]
+            fn real_platform(emitter: &Emitter) {
+                emitter.emit("process.started", correlation(), payload());
+            }
+            fn real_unknown(emitter: &Emitter) {
+                emitter.emit("session.real_unknown", correlation(), payload());
+            }
+        "#,
+        );
+        assert!(!coverage.called.contains("session.not_registered"));
+        assert!(!coverage.called.contains("context.txt"));
+        assert!(coverage.called.contains("workflow.agent_started"));
+        assert!(coverage.called.contains("process.started"));
+        assert!(coverage.called.contains("session.real_unknown"));
+    }
+
+    #[test]
+    fn macro_event_payload_cannot_turn_nested_parameter_or_log_text_into_an_event_id() {
+        let coverage = source_coverage(
+            r#"
+            fn owner(sink: &ProgressSink, emitter: &Emitter) {
+                select! {
+                    _ = ready() => sink.emit(ProgressEvent::Log {
+                        message: format!("session.md {}", param_integer("workflow.events.log_burst", 4))
+                    }),
+                    _ = stop() => emitter.emit("workflow.stopped", correlation(), payload()),
+                }
+            }
+        "#,
+        );
+        assert!(!coverage.called.contains("session.md"));
+        assert!(!coverage.called.contains("workflow.events.log_burst"));
+        assert!(coverage.called.contains("workflow.stopped"));
+    }
+
+    #[test]
+    fn bounded_context_gate_iterator_retains_actual_event_values_without_its_count_payload() {
+        let coverage = source_coverage(
+            r#"
+            impl HookExecution {
+                async fn lifecycle(&mut self, event: &str) {
+                    hooks.run_lifecycle_cancellable_journaled(event, context(), None, None, journal()).await;
+                }
+            }
+            async fn owner(hooks: HookExecution, memory: bool) {
+                let gates = [("context.source.discovered", Some(1)), ("memory.query.created", None), ("memory.budget.requested", None)];
+                for (event, magnitude) in gates.into_iter().take(count("workflow.not_an_event")) {
+                    hooks.lifecycle(event).await;
+                }
+                for event in unknown_method("session.not_a_route") {
+                    hooks.lifecycle(event).await;
+                }
+                for event in ["session.unknown_method_bait"].unknown_method("session.not_a_route") {
+                    hooks.lifecycle(event).await;
+                }
+            }
+        "#,
+        );
+        for event in [
+            "context.source.discovered",
+            "memory.query.created",
+            "memory.budget.requested",
+        ] {
+            assert!(coverage.gate_routed.contains(event));
+        }
+        assert!(!coverage.gate_routed.contains("workflow.not_an_event"));
+        assert!(!coverage.gate_routed.contains("session.not_a_route"));
+        assert!(!coverage.gate_routed.contains("session.unknown_method_bait"));
     }
 
     #[test]

@@ -12,6 +12,8 @@ mod cli;
 mod cli_diff;
 #[path = "schema_compat_rust_cli_effort.rs"]
 mod cli_effort;
+#[path = "schema_compat_rust_cli_entry.rs"]
+mod cli_entry;
 #[path = "schema_compat_rust_cli_exact.rs"]
 mod cli_exact;
 #[path = "schema_compat_rust_cli_main.rs"]
@@ -29,10 +31,14 @@ mod cli_parse_tokens;
 mod cli_writer;
 #[path = "schema_compat_rust_cli_writer_ast.rs"]
 mod cli_writer_ast;
+#[path = "schema_compat_rust_frontend_owner.rs"]
+mod frontend_owner;
 #[path = "schema_compat_rust_json.rs"]
 mod json;
 #[path = "schema_compat_rust_kernel.rs"]
 mod kernel;
+#[path = "schema_compat_rust_machine_owner.rs"]
+mod machine_owner;
 #[path = "schema_compat_rust_parse.rs"]
 mod parse;
 #[path = "schema_compat_rust_record.rs"]
@@ -57,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
-const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/cli/src/output.rs";
+const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/cli/src/machine_projection.rs";
 const OP_SOURCE: &str = "crates/protocol/src/lib.rs";
 const OP_SIGNATURE: &str = "pub enum Op {";
 const OP_SURFACE_PREFIX: &str = "protocol.op.";
@@ -280,8 +286,16 @@ fn validate_record_payload_shapes(root: &Path, contract: &Contract) -> Result<()
     ] {
         require_serde_authority(source, signature, SerdeAuthority::Both)?;
     }
+    let image_source = read_bounded(root, "crates/protocol/src/tool_image.rs", MAX_SOURCE_BYTES)?;
+    let image_text =
+        std::str::from_utf8(&image_source).context("tool image source is not UTF-8")?;
+    require_serde_authority(
+        image_text,
+        "pub struct ToolImageObservationV1 {",
+        SerdeAuthority::Both,
+    )?;
     require_serde_authority(block_text, BLOCK_SIGNATURE, SerdeAuthority::Both)?;
-    let block_newtypes = BTreeMap::from([
+    let mut block_newtypes = BTreeMap::from([
         (
             "ProviderState".to_owned(),
             named_struct_fields(block_text, "pub struct ProviderState {")?,
@@ -295,6 +309,10 @@ fn validate_record_payload_shapes(root: &Path, contract: &Contract) -> Result<()
             named_struct_fields(tool_text, "pub struct ToolResult {")?,
         ),
     ]);
+    block_newtypes.insert(
+        "ToolImageObservationV1".into(),
+        named_struct_fields(image_text, "pub struct ToolImageObservationV1 {")?,
+    );
     let blocks = tagged_enum_fields(&block_source, BLOCK_SIGNATURE, "type", 0, &block_newtypes)?;
     validate_record_tagged_family(contract, BLOCK_SURFACE_PREFIX, "type", "Block", blocks)?;
 

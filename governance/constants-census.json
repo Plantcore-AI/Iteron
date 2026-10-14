@@ -3,7 +3,7 @@
     "agents": {
       "bounded": 14,
       "searchable": 18,
-      "structural": 13
+      "structural": 25
     },
     "changeset": {
       "bounded": 5,
@@ -11,14 +11,14 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 219,
-      "searchable": 274,
-      "structural": 231
+      "bounded": 217,
+      "searchable": 264,
+      "structural": 389
     },
     "ctx": {
       "bounded": 53,
       "searchable": 35,
-      "structural": 16
+      "structural": 24
     },
     "eval": {
       "bounded": 41,
@@ -29,6 +29,11 @@
       "bounded": 60,
       "searchable": 11,
       "structural": 49
+    },
+    "extension-sdk": {
+      "bounded": 0,
+      "searchable": 0,
+      "structural": 3
     },
     "kernel": {
       "bounded": 8,
@@ -43,7 +48,7 @@
     "marketplace": {
       "bounded": 15,
       "searchable": 1,
-      "structural": 43
+      "structural": 51
     },
     "mcp": {
       "bounded": 65,
@@ -53,27 +58,27 @@
     "obs": {
       "bounded": 8,
       "searchable": 4,
-      "structural": 17
+      "structural": 19
     },
     "protocol": {
       "bounded": 51,
       "searchable": 1,
-      "structural": 62
+      "structural": 93
     },
     "provider": {
       "bounded": 70,
       "searchable": 33,
-      "structural": 47
+      "structural": 51
     },
     "record": {
       "bounded": 31,
       "searchable": 22,
-      "structural": 52
+      "structural": 68
     },
     "sandbox": {
       "bounded": 6,
       "searchable": 20,
-      "structural": 18
+      "structural": 25
     },
     "sched": {
       "bounded": 0,
@@ -88,17 +93,17 @@
     "support": {
       "bounded": 4,
       "searchable": 0,
-      "structural": 1
+      "structural": 32
     },
     "tools": {
-      "bounded": 130,
-      "searchable": 68,
-      "structural": 22
+      "bounded": 131,
+      "searchable": 67,
+      "structural": 52
     },
     "tunables": {
       "bounded": 18,
       "searchable": 4,
-      "structural": 111
+      "structural": 112
     },
     "verify": {
       "bounded": 7,
@@ -108,11 +113,11 @@
     "workflow": {
       "bounded": 54,
       "searchable": 27,
-      "structural": 15
+      "structural": 30
     }
   },
   "schema_version": 1,
-  "settable": 1479,
-  "structural": 856,
-  "total": 2335
+  "settable": 1467,
+  "structural": 1182,
+  "total": 2649
 }

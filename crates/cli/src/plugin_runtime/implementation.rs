@@ -12,6 +12,8 @@ pub(crate) struct VerifiedImplementationActivation {
     activation: ImplementationActivation,
     activation_sha256: String,
     plugin_governed: bool,
+    dispatch_policy:
+        Option<std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
 }
 
 impl VerifiedImplementationActivation {
@@ -28,7 +30,23 @@ impl VerifiedImplementationActivation {
             activation,
             activation_sha256: candidate.digest_sha256().to_owned(),
             plugin_governed: false,
+            dispatch_policy: None,
         })
+    }
+
+    pub(crate) fn dispatch_policy(
+        &self,
+    ) -> Option<std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>
+    {
+        self.dispatch_policy.clone()
+    }
+    pub(super) fn bind_dispatch_policy(
+        &mut self,
+        policy: Option<
+            std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+        >,
+    ) {
+        self.dispatch_policy = policy;
     }
 
     pub(crate) fn activation(&self) -> &ImplementationActivation {
@@ -52,6 +70,7 @@ impl VerifiedImplementationActivation {
             activation,
             activation_sha256,
             plugin_governed: true,
+            dispatch_policy: None,
         }
     }
 }

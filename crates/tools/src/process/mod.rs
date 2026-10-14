@@ -1,24 +1,27 @@
 //! Bounded persistent-process tools.
 //!
-//! These tools expose a real, session-owned kernel PTY under Linux bubblewrap or macOS Seatbelt.
+//! These tools expose a real, session-owned terminal under the host's execution posture.
+//! Linux/macOS confinement and Windows Job/ConPTY lifetime are distinct capabilities.
 //! Job identity, terminal input, resize, lifecycle, and cleanup all use the same supervisor handle,
 //! so model-facing calls and operator controls cannot drift into separate process tables.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod actor;
 mod output;
 mod policy;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod supervisor;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[path = "supervisor_unsupported.rs"]
 mod supervisor;
 mod types;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
-use crate::{Registry, ToolError, ToolExecution, effectfut};
+use crate::{CapturedToolExecution, Registry, ToolError, ToolExecution, capturedfut};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use serde::Serialize;
 use std::sync::Arc;
@@ -297,6 +300,8 @@ pub struct ProcessControlError {
     pub message: String,
     /// True when dispatch crossed an effect boundary but terminal reconciliation was not proven.
     pub unknown: bool,
+    /// Actual native decision source; opaque strings remain unavailable.
+    pub refusal: Option<iteron_protocol::refusal::RefusalReasonV1>,
 }
 
 impl ProcessControl {
@@ -325,10 +330,17 @@ impl ProcessControl {
             Err(ActionError::Definite(message)) => Err(ProcessControlError {
                 message,
                 unknown: false,
+                refusal: None,
+            }),
+            Err(ActionError::Refused(reason, message)) => Err(ProcessControlError {
+                message,
+                unknown: false,
+                refusal: Some(reason),
             }),
             Err(ActionError::Unknown(message)) => Err(ProcessControlError {
                 message,
                 unknown: true,
+                refusal: None,
             }),
         }
     }
@@ -358,6 +370,7 @@ impl ProcessControl {
                     "wait_ms exceeds the fixed {MAX_STDIN_POLL_MILLISECONDS}ms maximum"
                 ),
                 unknown: false,
+                refusal: None,
             });
         }
         encode_action(
@@ -377,6 +390,7 @@ impl ProcessControl {
             return Err(ProcessControlError {
                 message: "input must be non-empty unless eof is true".into(),
                 unknown: false,
+                refusal: None,
             });
         }
         let max_stdin_bytes = max_stdin_bytes();
@@ -384,6 +398,7 @@ impl ProcessControl {
             return Err(ProcessControlError {
                 message: format!("input exceeds the fixed {max_stdin_bytes}-byte limit"),
                 unknown: false,
+                refusal: None,
             });
         }
         encode_action(self.supervisor.write(job_id, input.into_bytes(), eof).await)
@@ -430,13 +445,16 @@ pub(crate) fn register_with_supervisor(
 
 fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
     let launch_policy = registry.process_launch_policy_handle();
-    registry.register_external_effect(
+    let confine_execution = registry.confine_execution_handle();
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_start".into(),
             description: format!(
-                "Start one confined background process on a real controlling PTY and return a stable \
-                 job ID. Linux uses bubblewrap; macOS uses Seatbelt; unavailable confinement refuses \
-                 before spawn. Session policy selects disabled, one-shot, or persistent lifetime and \
+                "Start one background process on a real controlling PTY and return a stable \
+                 job ID under the host-selected execution posture. Required confinement refuses \
+                 before spawn when its backend is unavailable; Windows unconfined transport uses a \
+                 private Job and ConPTY, which do not isolate filesystem or network access. Session policy selects disabled, \
+                 one-shot, or persistent lifetime and \
                  admits at most {MAX_BACKGROUND_JOBS} jobs; every job is stopped \
                  after {}s and retained output is bounded.",
                 max_job_runtime_secs()
@@ -459,7 +477,8 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
         move |call, root| {
             let supervisor = Arc::clone(&supervisor);
             let launch_policy = Arc::clone(&launch_policy);
-            effectfut::box_it(async move {
+            let confine_execution = Arc::clone(&confine_execution);
+            capturedfut::box_it(async move {
                 let Some(command) = required_string(&call.input, "command") else {
                     return definite_error(call.id, "command must be a non-empty string");
                 };
@@ -500,7 +519,7 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
                 action_result(
                     call.id,
                     supervisor
-                        .start(&root, command, rows, cols, launch_policy)
+                        .start(&root, command, rows, cols, launch_policy, confine_execution.load(std::sync::atomic::Ordering::Relaxed))
                         .await,
                 )
             })
@@ -509,7 +528,7 @@ fn register_start(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
 }
 
 fn register_list(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    registry.register_external_effect(
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_list".into(),
             description: format!(
@@ -524,13 +543,13 @@ fn register_list(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
         },
         move |call, _root| {
             let supervisor = Arc::clone(&supervisor);
-            effectfut::box_it(async move { action_result(call.id, Ok(supervisor.list())) })
+            capturedfut::box_it(async move { action_result(call.id, Ok(supervisor.list())) })
         },
     )
 }
 
 fn register_poll(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    registry.register_external_effect(
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_poll".into(),
             description: format!(
@@ -547,7 +566,7 @@ fn register_poll(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
         },
         move |call, _root| {
             let supervisor = Arc::clone(&supervisor);
-            effectfut::box_it(async move {
+            capturedfut::box_it(async move {
                 let parsed = parse_poll_input(&call.input, supervisor.policy());
                 let result = match parsed {
                     Ok((job_id, stdout_cursor, stderr_cursor, wait_ms)) => {
@@ -564,7 +583,7 @@ fn register_poll(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
 }
 
 fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    registry.register_external_effect(
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_write".into(),
             description: format!(
@@ -592,7 +611,7 @@ fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
         },
         move |call, _root| {
             let supervisor = Arc::clone(&supervisor);
-            effectfut::box_it(async move {
+            capturedfut::box_it(async move {
                 let Some(job_id) = required_string(&call.input, "job_id") else {
                     return definite_error(call.id, "job_id must be a string");
                 };
@@ -631,7 +650,7 @@ fn register_write(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resul
 }
 
 fn register_stop(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    registry.register_external_effect(
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_stop".into(),
             description:
@@ -649,7 +668,7 @@ fn register_stop(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
         },
         move |call, _root| {
             let supervisor = Arc::clone(&supervisor);
-            effectfut::box_it(async move {
+            capturedfut::box_it(async move {
                 let Some(job_id) = required_string(&call.input, "job_id") else {
                     return definite_error(call.id, "job_id must be a string");
                 };
@@ -660,7 +679,7 @@ fn register_stop(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result
 }
 
 fn register_resize(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Result<(), ToolError> {
-    registry.register_external_effect(
+    registry.register_external_effect_captured(
         ToolSpec {
             name: "process_resize".into(),
             description: "Resize a running job's kernel PTY and deliver SIGWINCH through the terminal foreground group.".into(),
@@ -678,7 +697,7 @@ fn register_resize(registry: &mut Registry, supervisor: Arc<Supervisor>) -> Resu
         },
         move |call, _root| {
             let supervisor = Arc::clone(&supervisor);
-            effectfut::box_it(async move {
+            capturedfut::box_it(async move {
                 let Some(job_id) = required_string(&call.input, "job_id") else {
                     return definite_error(call.id, "job_id must be a string");
                 };
@@ -768,15 +787,18 @@ fn required_u16(input: &serde_json::Value, name: &str) -> Result<u16, String> {
 fn action_result<T: Serialize>(
     tool_use_id: String,
     result: Result<T, ActionError>,
-) -> ToolExecution {
+) -> CapturedToolExecution {
     match result {
         Ok(value) => match serde_json::to_string(&value) {
-            Ok(content) => ToolExecution::Definite(tool_result(tool_use_id, content, false)),
+            Ok(content) => ToolExecution::Definite(tool_result(tool_use_id, content, false)).into(),
             Err(error) => definite_error(tool_use_id, format!("serialize process result: {error}")),
         },
         Err(ActionError::Definite(error)) => definite_error(tool_use_id, error),
+        Err(ActionError::Refused(reason, error)) => {
+            definite_error(tool_use_id, error).with_refusal(reason)
+        }
         Err(ActionError::Unknown(error)) => {
-            ToolExecution::Unknown(tool_result(tool_use_id, error, true))
+            ToolExecution::Unknown(tool_result(tool_use_id, error, true)).into()
         }
     }
 }
@@ -789,10 +811,17 @@ fn encode_action<T: Serialize>(
         Err(ActionError::Definite(message)) => Err(ProcessControlError {
             message,
             unknown: false,
+            refusal: None,
+        }),
+        Err(ActionError::Refused(reason, message)) => Err(ProcessControlError {
+            message,
+            unknown: false,
+            refusal: Some(reason),
         }),
         Err(ActionError::Unknown(message)) => Err(ProcessControlError {
             message,
             unknown: true,
+            refusal: None,
         }),
     }
 }
@@ -801,11 +830,12 @@ fn encode_control<T: Serialize>(value: T) -> Result<serde_json::Value, ProcessCo
     serde_json::to_value(value).map_err(|error| ProcessControlError {
         message: format!("serialize process control result: {error}"),
         unknown: false,
+        refusal: None,
     })
 }
 
-fn definite_error(tool_use_id: String, error: impl Into<String>) -> ToolExecution {
-    ToolExecution::Definite(tool_result(tool_use_id, error.into(), true))
+fn definite_error(tool_use_id: String, error: impl Into<String>) -> CapturedToolExecution {
+    ToolExecution::Definite(tool_result(tool_use_id, error.into(), true)).into()
 }
 
 fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResult {
@@ -818,5 +848,27 @@ fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResu
         is_error,
         trust: Trust::Workspace,
         latency_ms: 0,
+    }
+}
+
+#[cfg(test)]
+mod refusal_projection_tests {
+    use super::*;
+    use iteron_protocol::refusal::RefusalReasonV1;
+    #[test]
+    fn native_control_projection_keeps_source_and_does_not_promote_unknown_certainty() {
+        let error = encode_action::<serde_json::Value>(Err(ActionError::Refused(
+            RefusalReasonV1::SandboxUnavailable,
+            "unsupported".into(),
+        )))
+        .unwrap_err();
+        assert!(!error.unknown);
+        assert_eq!(error.refusal, Some(RefusalReasonV1::SandboxUnavailable));
+        let unknown = encode_action::<serde_json::Value>(Err(ActionError::Unknown(
+            "administrator denied".into(),
+        )))
+        .unwrap_err();
+        assert!(unknown.unknown);
+        assert!(unknown.refusal.is_none());
     }
 }

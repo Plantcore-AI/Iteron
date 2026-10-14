@@ -18,15 +18,21 @@ use std::time::{Duration, SystemTime};
 pub mod anthropic;
 pub mod catalog;
 mod controls;
+mod data_policy;
+mod decode;
 mod governor;
 mod governor_policy;
 mod governor_snapshot;
 pub mod openai;
+pub mod output_ceiling;
 mod recording_transport;
+pub mod request_capture;
 pub mod responses;
 pub mod sse;
 mod static_metadata;
+mod tool_image;
 mod usage;
+mod usage_bounds;
 
 pub use anthropic::Anthropic;
 pub use catalog::{
@@ -41,6 +47,11 @@ pub use controls::{
     CacheBreakpoint, CacheScope, ControlError, PromptCacheControl, ProviderControlCapabilities,
     ProviderRequestControls, RequestCompression, ResponseVerbosity, ServiceTier,
 };
+pub use data_policy::{
+    DataPolicyDeclaration, DataPolicyObservation, DataPolicyProvenance, DataProcessing,
+    DataRetention, DataTrainingUse,
+};
+pub use decode::{DecodeCode, DecodeDiagnostic, DecodeField};
 pub use governor::{
     Admission as ProviderAdmission, AdmissionReason, AttemptPermit, CircuitTransition,
     ProviderGovernor,
@@ -59,6 +70,7 @@ pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
 pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
 pub use usage::{UsageIncompleteReason, UsageReport};
+pub use usage_bounds::ProviderUsageBoundSemantics;
 
 /// Maximum bytes retained from any non-success provider response. The response is dropped as
 /// soon as the cap is crossed; provider-controlled error pages can therefore never create an
@@ -355,6 +367,11 @@ pub enum ProviderError {
     /// retry and route failover cannot duplicate accepted model work.
     #[error("provider connection failed before request acceptance")]
     ConnectFailed,
+    /// Proven refusal in the exact body or observation barrier, before polling HTTP send.
+    #[error("physical request observation refused before dispatch")]
+    RequestCaptureRefusedBeforeDispatch,
+    #[error("physical request deadline exhausted before dispatch")]
+    RequestDeadlineBeforeDispatch,
     #[error("provider retry delay exceeded the interactive wait ceiling")]
     RetryAfterTooLong { retry_after_ms: u64, limit_ms: u64 },
     #[error("provider timeout during {stage}")]
@@ -369,6 +386,9 @@ pub enum ProviderError {
     Stream(StreamError),
     #[error("stream decode: {0}")]
     Decode(String),
+    /// Content-free decoder diagnostics for live response parsing.
+    #[error("{0}")]
+    InvalidResponse(DecodeDiagnostic),
     /// A completed, billable provider turn explicitly refused the request. This is a typed
     /// terminal condition, not a malformed response and never a successful completion.
     #[error("provider refused the turn")]
@@ -447,6 +467,7 @@ impl ProviderError {
             ProviderError::RetryAfterTooLong { .. } => RetryDisposition::Never,
             ProviderError::Http(_) | ProviderError::Timeout { .. } => RetryDisposition::Never,
             ProviderError::Decode(_)
+            | ProviderError::InvalidResponse(_)
             | ProviderError::Refusal
             | ProviderError::UnknownStopReason { .. }
             | ProviderError::DeadlineExceeded
@@ -457,6 +478,8 @@ impl ProviderError {
             | ProviderError::Configuration(_)
             | ProviderError::KnownAccountUnavailable { .. }
             | ProviderError::KnownModelUnavailable { .. }
+            | ProviderError::RequestCaptureRefusedBeforeDispatch
+            | ProviderError::RequestDeadlineBeforeDispatch
             | ProviderError::Json(_) => RetryDisposition::Never,
         }
     }
@@ -484,13 +507,22 @@ impl ProviderError {
             ProviderError::ConnectFailed => {
                 "provider connection failed before request acceptance".into()
             }
+            ProviderError::RequestCaptureRefusedBeforeDispatch => {
+                "request observation refused before dispatch".into()
+            }
+            ProviderError::RequestDeadlineBeforeDispatch => {
+                "request deadline exhausted before dispatch".into()
+            }
             ProviderError::RetryAfterTooLong { .. } => {
                 "provider requested a retry delay beyond the interactive wait ceiling".into()
             }
             ProviderError::Timeout { stage } => format!("provider timed out during {stage}"),
-            ProviderError::Decode(_) | ProviderError::Json(_) => {
-                "provider response was invalid".into()
-            }
+            ProviderError::Decode(_)
+            | ProviderError::Json(_)
+            | ProviderError::InvalidResponse(_) => self
+                .decode_diagnostic()
+                .expect("decode variants have diagnostics")
+                .to_string(),
             ProviderError::Refusal => "provider refused the request".into(),
             ProviderError::UnknownStopReason { .. } => {
                 "provider returned an unsupported stop reason".into()
@@ -508,6 +540,25 @@ impl ProviderError {
             ProviderError::KnownModelUnavailable { .. } => {
                 "the selected model is known unavailable".into()
             }
+        }
+    }
+
+    pub fn decode_diagnostic(&self) -> Option<DecodeDiagnostic> {
+        match self {
+            Self::InvalidResponse(diagnostic) => Some(*diagnostic),
+            Self::Decode(_) => Some(DecodeDiagnostic::new(
+                DecodeCode::InvalidResponse,
+                DecodeField::Response,
+            )),
+            Self::Json(error) => Some(DecodeDiagnostic::json(error, DecodeField::Response)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn at_decode_frame(self, frame: u64) -> Self {
+        match self.decode_diagnostic() {
+            Some(diagnostic) => Self::InvalidResponse(diagnostic.at_frame(frame)),
+            None => self,
         }
     }
 }
@@ -844,18 +895,22 @@ pub(crate) fn minimax_base_response_failure_for(
     response_retry_after: Option<Duration>,
     request_id: Option<String>,
 ) -> Result<Option<StreamError>, ProviderError> {
-    let status_code = value
-        .pointer("/base_resp/status_code")
-        .or_else(|| value.pointer("/baseResp/statusCode"));
+    let (status_code, field) = if let Some(code) = value.pointer("/base_resp/status_code") {
+        (Some(code), DecodeField::BaseResponseStatus)
+    } else {
+        (
+            value.pointer("/baseResp/statusCode"),
+            DecodeField::BaseResponseStatusCamel,
+        )
+    };
     let Some(status_code) = status_code else {
         return Ok(None);
     };
-    let code = json_scalar_string(status_code).ok_or_else(|| {
-        ProviderError::Decode("MiniMax base_resp.status_code was not an integer".into())
-    })?;
-    let code_value = code.parse::<i64>().map_err(|_| {
-        ProviderError::Decode("MiniMax base_resp.status_code was not an integer".into())
-    })?;
+    let code = json_scalar_string(status_code)
+        .ok_or_else(|| decode::invalid(DecodeCode::InvalidType, field))?;
+    let code_value = code
+        .parse::<i64>()
+        .map_err(|_| decode::invalid(DecodeCode::InvalidType, field))?;
     if code_value == 0 {
         return Ok(None);
     }
@@ -1532,6 +1587,31 @@ pub trait Provider: Send + Sync {
         ProviderControlCapabilities::default()
     }
 
+    /// Input ceiling of the selected physical model from the adapter's immutable capability
+    /// evidence. A prompt planning/profile window is not this proof. Wrappers must preserve
+    /// exact model and endpoint binding; unknown capability returns None without IO.
+    fn physical_input_token_ceiling(&self, _model: &str) -> Option<u64> {
+        None
+    }
+
+    /// Physical usage normalization for this exact configured adapter. Native partitioned
+    /// evidence must bind an authenticated vendor profile and endpoint; compatibility alone
+    /// cannot reduce the independent conservative reservation. No transport is performed.
+    fn usage_bound_semantics(&self) -> ProviderUsageBoundSemantics {
+        ProviderUsageBoundSemantics::IndependentClasses
+    }
+
+    /// Prove the finite output cap actually serialized by this adapter after effort adaptation.
+    /// This method is pure; None means the adapter cannot attest its wire limit. Hard monetary
+    /// callers must retain an independent verified bound or refuse before dispatch. Wrappers
+    /// must forward the inner result rather than guessing from the semantic request field.
+    fn physical_output_token_ceiling(
+        &self,
+        _budget: output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        Ok(None)
+    }
+
     /// Report the adapter's actual control surface before the request is sent. Implementations
     /// must be conservative for unknown gateways/models; wire compatibility alone is not proof of
     /// effort support.
@@ -1568,6 +1648,22 @@ pub trait Provider: Send + Sync {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError>;
+
+    /// Observe the exact wire request for a host-bound physical attempt. Unsupported adapters
+    /// explicitly report missing evidence; the observer chooses whether admission may continue.
+    async fn turn_observed(
+        &self,
+        req: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
+        if observer.enabled() {
+            observer
+                .unavailable("adapter_wire_capture_unavailable")
+                .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        }
+        self.turn(req, on_item).await
+    }
 }
 
 /// Run one provider turn, but abort the in-flight stream the moment a cooperative interrupt is
@@ -1604,17 +1700,50 @@ pub async fn turn_cancellable_any(
     cancels: &[&std::sync::atomic::AtomicBool],
     poll_interval: Duration,
 ) -> Result<TurnResult, ProviderError> {
+    turn_cancellable_any_inner(provider, request, on_item, None, cancels, poll_interval).await
+}
+
+pub async fn turn_cancellable_any_observed(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    observer: &dyn request_capture::ProviderRequestObserver,
+    cancels: &[&std::sync::atomic::AtomicBool],
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
+    turn_cancellable_any_inner(
+        provider,
+        request,
+        on_item,
+        Some(observer),
+        cancels,
+        poll_interval,
+    )
+    .await
+}
+
+async fn turn_cancellable_any_inner(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    observer: Option<&dyn request_capture::ProviderRequestObserver>,
+    cancels: &[&std::sync::atomic::AtomicBool],
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
     use std::sync::atomic::Ordering;
-    if cancels.is_empty() {
-        return provider.turn(request, on_item).await;
-    }
     // An interrupt that is already pending must not even open the stream.
     if cancels.iter().any(|cancel| cancel.load(Ordering::Relaxed)) {
         return Err(ProviderError::Interrupted);
     }
     // `async_trait` returns a `Pin<Box<dyn Future + Send>>`, which is `Unpin`, so `&mut turn` is
     // itself a `Future` and can be re-polled across loop iterations without an explicit pin.
-    let mut turn = provider.turn(request, on_item);
+    let mut turn = match observer {
+        Some(observer) => provider.turn_observed(request, on_item, observer),
+        None => provider.turn(request, on_item),
+    };
+    if cancels.is_empty() {
+        return turn.await;
+    }
     loop {
         tokio::select! {
             biased;
@@ -1716,6 +1845,39 @@ impl Provider for HealthReportingProvider {
         self.inner.attempt_semantics()
     }
 
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        let inner = self.inner.physical_input_token_ceiling(model);
+        let captured = self
+            .static_metadata_notice
+            .as_ref()
+            .filter(|route| route.model == model)
+            .and_then(|route| {
+                route
+                    .metadata
+                    .route_model_capabilities(&route.api_root, model)
+            })
+            .and_then(|caps| caps.context_window_tokens)
+            .filter(|window| *window > 0);
+        // A host metadata refresh may increase the accepted physical window; it cannot use a
+        // smaller planning value to reduce the adapter's already attested ceiling.
+        match (inner, captured) {
+            (Some(inner), Some(captured)) => Some(inner.max(captured)),
+            (Some(inner), None) => Some(inner),
+            (None, _) => None,
+        }
+    }
+
+    fn usage_bound_semantics(&self) -> ProviderUsageBoundSemantics {
+        self.inner.usage_bound_semantics()
+    }
+
+    fn physical_output_token_ceiling(
+        &self,
+        budget: output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        self.inner.physical_output_token_ceiling(budget)
+    }
+
     fn supports_image_input(&self) -> bool {
         self.image_input_support
             .unwrap_or_else(|| self.inner.supports_image_input())
@@ -1759,6 +1921,16 @@ impl Provider for HealthReportingProvider {
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(request, on_item, &request_capture::DisabledRequestObserver)
+            .await
+    }
+
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         if let Some(availability) = self.health.blocked_account(&self.provider_instance_id) {
             return Err(ProviderError::KnownAccountUnavailable {
                 provider: self.provider_instance_id.clone(),
@@ -1775,7 +1947,7 @@ impl Provider for HealthReportingProvider {
             });
         }
 
-        let result = self.inner.turn(request, on_item).await;
+        let result = self.inner.turn_observed(request, on_item, observer).await;
         match &result {
             Ok(_) => self
                 .health
@@ -1847,6 +2019,9 @@ pub fn cache_bomb_in_prefix(system: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod decode_tests;
+
+#[cfg(test)]
 mod guard_tests {
     use super::*;
     use iteron_protocol::Usage;
@@ -1855,7 +2030,7 @@ mod guard_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn request(model: &str) -> TurnRequest {
+    pub(super) fn request(model: &str) -> TurnRequest {
         TurnRequest {
             model: model.into(),
             system: "stable system".into(),
@@ -1880,7 +2055,7 @@ mod guard_tests {
         assert!(policy.validate().is_ok());
     }
 
-    fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
+    pub(super) fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -2201,7 +2376,9 @@ mod guard_tests {
         let provider = crate::openai::OpenAiCompat::try_new("test-key".into(), Some(root)).unwrap();
         assert!(matches!(
             provider.turn(&request("model"), &mut |_| {}).await,
-            Err(ProviderError::Decode(message)) if message.contains("conflicting usage reports")
+            Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic == DecodeDiagnostic {
+                code: DecodeCode::ConflictingValue, field: DecodeField::Usage, frame: Some(2)
+            }
         ));
         let _wire = server.join().unwrap();
     }

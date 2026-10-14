@@ -452,6 +452,12 @@ mod reconcile_tests {
 mod gate_integration_tests {
     //! Integration tests for the permission-gate wiring: drive one turn with a scripted provider
     //! that requests an effecting `edit`, and assert the gate refuses it under the right posture.
+    use super::context_runtime::{
+        IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON,
+    };
+    use super::hooks::HookEvent;
+    use super::provider_response_recovery::INTERRUPTED_STREAM_MARKER;
+    use super::provider_usage_journal::UNPRICEABLE_CACHE_CREATION_NOTICE;
     use super::*;
 
     /// Pin the registry-driven resolved tunable set onto a test agent.
@@ -690,7 +696,15 @@ mod gate_integration_tests {
             entry_count: u64::try_from(graph.entry_count).unwrap(),
             canonical_bytes: u64::try_from(graph.canonical_bytes).unwrap(),
         };
-        let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(None);
+        let environment_context = agent.environment_context.as_ref().map(|(text, trust)| {
+            iteron_protocol::DurableEnvironmentContext {
+                text: text.clone(),
+                trust: *trust,
+            }
+        });
+        let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(
+            environment_context.as_ref(),
+        );
         let environment_value = iteron_tunables::ResolutionValue::Object {
             fields: [
                 (
@@ -714,7 +728,12 @@ mod gate_integration_tests {
                 (
                     "trust".into(),
                     iteron_tunables::ResolutionValue::Enum {
-                        value: "trusted".into(),
+                        value: match environment.trust {
+                            Trust::Trusted => "trusted",
+                            Trust::Workspace => "workspace",
+                            Trust::Untrusted => "untrusted",
+                        }
+                        .into(),
                     },
                 ),
             ]
@@ -748,6 +767,92 @@ mod gate_integration_tests {
                     &mut evidence.value
                 {
                     *allowed_values = Some([value.clone()].into_iter().collect());
+                }
+            }
+        }
+        // A fixture that explicitly selected a held transport must checkpoint that same child
+        // route, rather than the unrelated provider/model chosen by the record schema sampler.
+        // Unselected fixtures still test the production missing-route refusal unchanged.
+        if let Some(selected) = agent.provider_selection.selected() {
+            let route = &selected.route;
+            let roles = crate::runtime_tunables::execution_policy::admitted_role_model_routes(
+                &agent.agent_catalog,
+                &route.provider_id,
+                &route.model_id,
+            )
+            .unwrap();
+            for (catalog_id, values) in [
+                (
+                    "iteron://tunables/catalogs/agent-roles-v1",
+                    agent
+                        .agent_catalog
+                        .defs()
+                        .iter()
+                        .map(|def| def.name.clone())
+                        .collect::<std::collections::BTreeSet<_>>(),
+                ),
+                (
+                    "iteron://tunables/catalogs/model-routes-v1",
+                    roles
+                        .values()
+                        .cloned()
+                        .chain(std::iter::once(format!(
+                            "{}:{}",
+                            route.provider_id, route.model_id
+                        )))
+                        .collect::<std::collections::BTreeSet<_>>(),
+                ),
+            ] {
+                *input
+                    .runtime
+                    .catalogs
+                    .iter_mut()
+                    .find(|item| item.catalog_id == catalog_id)
+                    .unwrap() =
+                    iteron_tunables::runtime_catalog_snapshot(catalog_id, values).unwrap();
+            }
+            for (family, value) in [
+                (
+                    "per_agent_model",
+                    iteron_tunables::ResolutionValue::Enum {
+                        value: format!("{}:{}", route.provider_id, route.model_id),
+                    },
+                ),
+                (
+                    "role_specific_model_map",
+                    iteron_tunables::ResolutionValue::Map {
+                        entries: roles
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (name, iteron_tunables::ResolutionValue::Enum { value })
+                            })
+                            .collect(),
+                    },
+                ),
+            ] {
+                input
+                    .declared_values
+                    .iter_mut()
+                    .find(|row| row.family == family)
+                    .unwrap()
+                    .value = value.clone();
+                for evidence in input
+                    .constraint_evidence
+                    .iter_mut()
+                    .filter(|row| row.family == family)
+                {
+                    let iteron_tunables::ConstraintValue::Domain {
+                        allowed_values,
+                        preferred,
+                        ..
+                    } = &mut evidence.value
+                    else {
+                        panic!("child model fixture must remain an attested domain");
+                    };
+                    *allowed_values = Some([value.clone()].into_iter().collect());
+                    if preferred.is_some() {
+                        *preferred = Some(value.clone());
+                    }
                 }
             }
         }
@@ -1515,6 +1620,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ScriptedDispatch {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -1552,6 +1660,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ScriptedHookedChild {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             req: &TurnRequest,
@@ -1609,10 +1720,14 @@ mod gate_integration_tests {
     struct ChildToolAfterSignal {
         calls: AtomicUsize,
         started: tokio::sync::Notify,
+        completed_stop: std::sync::Mutex<Option<std::sync::Arc<AtomicBool>>>,
     }
 
     #[async_trait::async_trait]
     impl Provider for ChildToolAfterSignal {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -1628,6 +1743,12 @@ mod gate_integration_tests {
                     input: serde_json::json!({"path":"safe.txt"}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
+                // Raise the already-owned operator signal only in the ready terminal poll.
+                // The physical provider result settles before the next safe point observes it;
+                // cancelling the pending 40 ms call would correctly leave an unknown effect.
+                if let Some(stop) = self.completed_stop.lock().unwrap().as_ref() {
+                    stop.store(true, Ordering::SeqCst);
+                }
                 Ok(TurnResult {
                     blocks: vec![Block::ToolUse(tool)],
                     stop_reason: StopReason::ToolUse,
@@ -1652,6 +1773,9 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for NeverCompletesChild {
+        fn provider_instance_id(&self) -> Option<&str> {
+            Some("test-provider")
+        }
         async fn turn(
             &self,
             _req: &TurnRequest,
@@ -1766,6 +1890,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for CaptureSteering {
+        // Immutable scripted metering: this fixture never reports input above 1;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(1)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 1.
+            Ok(Some(budget.requested_max_tokens.max(1)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2169,6 +2306,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for MeteredProvider {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2206,6 +2356,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for FirstErrorThenDone {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2241,6 +2404,19 @@ mod gate_integration_tests {
 
     #[async_trait::async_trait]
     impl Provider for ReturnedToolWithoutStream {
+        // Immutable scripted metering: this fixture never reports input above 4;
+        // its result generation is independent of the runtime's planning window.
+        fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+            Some(4)
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, ProviderError> {
+            // The script ignores the policy's smaller output value and can still report 6.
+            Ok(Some(budget.requested_max_tokens.max(6)))
+        }
+
         fn provider_instance_id(&self) -> Option<&str> {
             Some("provider-a")
         }
@@ -2655,17 +2831,166 @@ mod gate_integration_tests {
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("core-gate-{tag}-{pid}-{n:x}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        dir.canonicalize().unwrap()
     }
 
     /// Give direct `Agent::new` integration fixtures the same atomic genesis prefix as the CLI.
     /// Replay intentionally rejects a physical seq-0 application event: production always writes
     /// `RunStart` followed by the resolved V2 tunables checkpoint before accepting a submission.
-    fn record_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
+    pub(super) fn record_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
         record_test_genesis_with_tunable_edits(agent, workspace, []);
     }
 
-    fn record_test_genesis_with_tunable_edits(
+    fn stage_direct_fixture_route(agent: &mut Agent) {
+        let provider_id = agent
+            .provider
+            .provider_instance_id()
+            .expect("direct child fixture must identify its actual held transport")
+            .to_owned();
+        let route = PricingRoute {
+            provider_id,
+            model_id: agent.model.clone(),
+            catalog_digest: test_pricing_digests().0,
+            capability_digest: test_pricing_digests().1,
+        };
+        super::provider_selection::ProviderSelectionOwner::validate_selection(
+            &agent.provider,
+            &route,
+        )
+        .unwrap();
+        // Composition-only test seed. No durable dispatch authority is claimed before genesis.
+        agent
+            .provider_selection
+            .fixture_selection(Some(SelectedRoute { route }), agent.provider.clone());
+    }
+
+    fn record_direct_fixture_selection(agent: &mut Agent) {
+        let route = agent.provider_selection.selected().unwrap().route.clone();
+        agent
+            .record_model_selection(
+                route.provider_id,
+                route.model_id,
+                route.catalog_digest,
+                route.capability_digest,
+            )
+            .unwrap();
+        install_test_provider_governor_from_tunables(agent);
+    }
+
+    #[test]
+    fn native_child_context_retains_the_actual_frozen_effort_map_and_its_ceiling() {
+        let workspace = temp_ws("native-child-frozen-effort-map");
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let rollout = Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("native-child-frozen-effort-map".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&workspace).unwrap(),
+            rollout,
+            "model-a".into(),
+            "actual pinned map fixture".into(),
+            Budget::default(),
+        );
+        agent.workspace = workspace.clone();
+        stage_direct_fixture_route(&mut agent);
+        // The labels alone do not prove narrowing: this admitted map gives Low more thinking
+        // than Medium. The existing owner must compare actual mapped tokens, not compiled ones.
+        let thinking_map = iteron_tunables::ResolutionValue::Map {
+            entries: Effort::ALL
+                .into_iter()
+                .map(|effort| {
+                    let value = match effort {
+                        Effort::Low => 256,
+                        Effort::Medium => 137,
+                        other => i64::from(other.thinking_budget()),
+                    };
+                    (
+                        effort.label().to_owned(),
+                        iteron_tunables::ResolutionValue::Integer { value },
+                    )
+                })
+                .collect(),
+        };
+        record_test_genesis_with_tunable_edits(
+            &mut agent,
+            &workspace,
+            [("thinking_map", thinking_map)],
+        );
+        record_direct_fixture_selection(&mut agent);
+        let route = agent.provider_selection.selected().unwrap().route.clone();
+        let context = agent.kernel_spawner_context(&route, "held-effort-policy");
+        assert_eq!(
+            context
+                .tunables_pin
+                .as_ref()
+                .unwrap()
+                .resolution_digest_sha256(),
+            agent
+                .tunables_pin
+                .as_ref()
+                .unwrap()
+                .resolution_digest_sha256()
+        );
+        for effort in Effort::ALL {
+            assert_eq!(
+                context.effort_policy.thinking_budget(effort),
+                agent.effort_policy.thinking_budget(effort)
+            );
+            assert_eq!(
+                context.effort_policy.reasoning(effort),
+                agent.effort_policy.reasoning(effort)
+            );
+            assert_eq!(
+                context.effort_policy.orchestration(effort),
+                agent.effort_policy.orchestration(effort)
+            );
+        }
+        assert_eq!(context.effort_policy.thinking_budget(Effort::Medium), 137);
+        let origin = iteron_agents::AgentEngineOrigin::DirectSubagent {
+            parent: iteron_agents::AgentEngineParentSource {
+                tenant: agent.rollout.tenant().0.clone(),
+                run: agent.rollout.run_id().0.clone(),
+                provider_scope_sha256: agent.provider_scope(),
+            },
+        };
+        let spawner = KernelSpawner::new(context);
+        let allowed = spawner
+            .prepare_engine_execution(
+                &super::persistent_agents::AgentEngineRequest {
+                    profile: Some("generic".into()),
+                    model: None,
+                    effort: Some(Effort::Medium),
+                },
+                origin.clone(),
+            )
+            .unwrap();
+        assert_eq!(allowed.effort, Effort::Medium);
+        let before = std::fs::read(agent.rollout.path()).unwrap();
+        let error = spawner
+            .prepare_engine_execution(
+                &super::persistent_agents::AgentEngineRequest {
+                    profile: Some("generic".into()),
+                    model: None,
+                    effort: Some(Effort::Low),
+                },
+                origin,
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("requested child effort exceeds the pinned per-agent ceiling"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(agent.rollout.path()).unwrap(), before);
+        assert!(provider.requests.lock().unwrap().is_empty());
+        drop(agent);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    pub(super) fn record_test_genesis_with_tunable_edits(
         agent: &mut Agent,
         workspace: &std::path::Path,
         edits: impl IntoIterator<Item = (&'static str, iteron_tunables::ResolutionValue)>,
@@ -2758,14 +3083,16 @@ mod gate_integration_tests {
         }
     }
 
-    fn install_test_provider_governor_from_tunables(agent: &mut Agent) {
+    pub(super) fn install_test_provider_governor_from_tunables(agent: &mut Agent) {
         let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(
             agent.tunables_checkpoint().unwrap(),
             None,
         )
         .expect("the pinned test checkpoint must decode before governor installation")
         .core;
-        let primary_route = format!("{}:{}", effective.provider_id, effective.model_id);
+        // The governor admits the real held route, not the structural sampler's provider/model
+        // label. Selection still crosses the ordinary model-selection journal before IO.
+        let primary_route = agent.governed_route_id();
         let governor = effective.provider_governor;
         agent
             .set_provider_controls(governor.controls)
@@ -2950,15 +3277,17 @@ mod gate_integration_tests {
             .provider_instance_id()
             .unwrap_or("test-provider")
             .to_string();
-        agent.selected_route = Some(SelectedRoute {
-            route: PricingRoute {
-                provider_id,
-                model_id: agent.model.clone(),
-                catalog_digest: String::new(),
-                capability_digest: String::new(),
-            },
-        });
-        agent.selected_provider = Some(agent.provider.clone());
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id,
+                    model_id: agent.model.clone(),
+                    catalog_digest: String::new(),
+                    capability_digest: String::new(),
+                },
+            }),
+            agent.provider.clone(),
+        );
     }
 
     /// Install the same immutable orchestrated policy, selected route, and provider governor that
@@ -2968,7 +3297,12 @@ mod gate_integration_tests {
     fn record_orchestrated_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
         agent.model = "fixture:value-2".into();
         bind_unrecorded_test_route(agent);
-        agent.selected_route.as_mut().unwrap().route.provider_id = "fixture:value-1".into();
+        agent
+            .provider_selection
+            .fixture_selected_mut()
+            .unwrap()
+            .route
+            .provider_id = "fixture:value-1".into();
         record_test_genesis_with_tunable_edits(
             agent,
             workspace,
@@ -3170,8 +3504,7 @@ mod gate_integration_tests {
         ));
         drop(environment_mismatch);
 
-        let mut graph_mismatch = agent_for(&ws);
-        pin_test_tunables(&mut graph_mismatch);
+        let mut graph_mismatch = workflow_seam_agent(&ws);
         let mut identities = graph_mismatch
             .effective_content
             .clone()
@@ -3218,6 +3551,58 @@ mod gate_integration_tests {
         agent
     }
 
+    #[cfg(not(feature = "script-workflows"))]
+    #[test]
+    fn disabled_script_preparation_is_unavailable_before_journal_or_launcher_effects() {
+        struct MustNotLaunch;
+        impl crate::workflow::WorkflowLauncher for MustNotLaunch {
+            fn launch(&self, _: crate::workflow::PreparedWorkflow) -> crate::workflow::Launched {
+                panic!("a disabled script engine must never reach a launcher")
+            }
+        }
+        let ws = temp_ws("workflow-disabled-preparation");
+        std::fs::write(ws.join("seam.mjs"), SEAM_SCRIPT).unwrap();
+        let mut agent = workflow_seam_agent(&ws);
+        agent.set_workflow_launcher(std::sync::Arc::new(MustNotLaunch));
+        let (progress, mut events) = tokio::sync::mpsc::channel(4);
+        agent.set_workflow_progress(progress);
+        let before = std::fs::read(agent.rollout.path()).unwrap();
+        let directory = agent.runtime_state_dir.join("subagents/workflows");
+        assert!(
+            !agent
+                .registry
+                .specs()
+                .iter()
+                .any(|tool| tool.name == iteron_tools::WORKFLOW_TOOL)
+        );
+        for input in [
+            serde_json::json!({"script": SEAM_SCRIPT}),
+            serde_json::json!({"script": SEAM_SCRIPT, "background": true}),
+            serde_json::json!({"scriptPath": "seam.mjs"}),
+        ] {
+            let error = match agent.prepare_workflow(&input) {
+                Ok(_) => panic!("the default profile cannot prepare a JavaScript engine"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains(&iteron_workflow::ScriptWorkflowsUnavailable.to_string()),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(agent.rollout.path()).unwrap(), before);
+            assert!(
+                !directory.exists(),
+                "no run manifest, script cache, or journal may be created"
+            );
+            assert!(
+                events.try_recv().is_err(),
+                "no workflow lifecycle was dispatched"
+            );
+        }
+        drop(agent);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn preparing_a_workflow_admits_and_records_it_before_anything_starts_it() {
         let ws = temp_ws("workflow-prepare");
@@ -3255,6 +3640,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[test]
     fn preparing_a_panel_resume_reuses_the_persisted_identity_and_cache_source() {
         let ws = temp_ws("workflow-panel-resume");
@@ -3294,6 +3680,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn with_no_launcher_installed_a_prepared_run_is_the_engine_run_it_always_was() {
         let ws = temp_ws("workflow-default-launcher");
@@ -3323,6 +3710,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn an_installed_launcher_starts_the_run_instead_of_the_kernel() {
         struct RecordingLauncher {
@@ -3370,6 +3758,7 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_background_request_with_no_owner_runs_in_turn_and_says_it_was_not_granted() {
         let ws = temp_ws("workflow-background-unowned");
@@ -3379,6 +3768,7 @@ mod gate_integration_tests {
         let result = agent
             .launch_workflow(
                 TurnId(0),
+                0,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
@@ -3397,6 +3787,7 @@ mod gate_integration_tests {
 
     /// Generic workflows remain in-turn by default so their evidence is available to the model;
     /// explicit independent work may opt into a session-owned background run.
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_workflow_waits_by_default_and_detaches_only_when_asked_to() {
         #[derive(Clone)]
@@ -3408,6 +3799,9 @@ mod gate_integration_tests {
             ) -> crate::workflow::Launched {
                 self.0
                     .store(prepared.background, std::sync::atomic::Ordering::SeqCst);
+                if !prepared.background {
+                    return crate::workflow::launch_prepared(None, prepared);
+                }
                 crate::workflow::Launched::Detached(crate::workflow::DetachedRun {
                     run_id: prepared.run_id.clone(),
                     name: prepared.name.clone(),
@@ -3422,7 +3816,7 @@ mod gate_integration_tests {
         agent.set_workflow_launcher(std::sync::Arc::new(Recording(asked.clone())));
 
         agent
-            .launch_workflow(TurnId(0), serde_json::json!({ "script": SEAM_SCRIPT }))
+            .launch_workflow(TurnId(0), 0, serde_json::json!({ "script": SEAM_SCRIPT }))
             .await
             .expect("a launch with no `background` key");
         assert!(
@@ -3433,19 +3827,37 @@ mod gate_integration_tests {
         agent
             .launch_workflow(
                 TurnId(0),
+                1,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
             .expect("an explicit in-turn launch");
         assert!(
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "a finite native parent retains its actual whole-turn budget owner"
+        );
+        // Exercise the explicit detachment request with a truthful operator-installed turn
+        // ceiling. This changes only this fixture, through the same durable public transition;
+        // its 30s wall deadline and finite engine call/concurrency ceilings remain installed.
+        agent.set_turn_ceiling(Budget::UNLIMITED_TURNS).unwrap();
+        agent
+            .launch_workflow(
+                TurnId(0),
+                2,
+                serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
+            )
+            .await
+            .expect("the explicit operator scope permits a requested detached launch");
+        assert!(
             asked.load(std::sync::atomic::Ordering::SeqCst),
-            "`background: true` is how a model asks to detach independent work"
+            "`background: true` is how an eligible model call asks to detach independent work"
         );
 
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn a_detached_launch_returns_a_receipt_that_cannot_be_read_as_a_result() {
         struct Detaching;
@@ -3465,11 +3877,16 @@ mod gate_integration_tests {
 
         let ws = temp_ws("workflow-detached-receipt");
         let mut agent = workflow_seam_agent(&ws);
+        // A finite native parent's accounting is turn-owned and cannot detach. Install the
+        // explicit operator ceiling required by this receipt-contract fixture; wall/call caps
+        // are unchanged and the test launcher claims no engine completion.
+        agent.set_turn_ceiling(Budget::UNLIMITED_TURNS).unwrap();
         agent.set_workflow_launcher(std::sync::Arc::new(Detaching));
 
         let receipt = agent
             .launch_workflow(
                 TurnId(0),
+                0,
                 serde_json::json!({ "script": SEAM_SCRIPT, "background": true }),
             )
             .await
@@ -3495,15 +3912,20 @@ mod gate_integration_tests {
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn collect_and_cancel_answer_without_preparing_or_recording_a_run() {
         let ws = temp_ws("workflow-collect-unowned");
         let mut agent = workflow_seam_agent(&ws);
         let workflows_dir = agent.runtime_state_dir.join("subagents").join("workflows");
 
-        for field in ["collect", "cancel"] {
+        for (index, field) in ["collect", "cancel"].into_iter().enumerate() {
             let answer = agent
-                .launch_workflow(TurnId(0), serde_json::json!({ field: "wf-not-here" }))
+                .launch_workflow(
+                    TurnId(0),
+                    index,
+                    serde_json::json!({ field: "wf-not-here" }),
+                )
                 .await
                 .expect("an unknown run is answered, not an error");
             assert!(answer.contains("not owned by this session"), "{answer}");
@@ -3515,16 +3937,60 @@ mod gate_integration_tests {
         let launched = agent
             .launch_workflow(
                 TurnId(0),
+                2,
                 serde_json::json!({ "script": SEAM_SCRIPT, "collect": "  " }),
             )
             .await
             .expect("a blank collect falls through to the launch");
         assert!(launched.contains("Result:"), "{launched}");
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let intents = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::EffectIntent { id, tool, .. } if tool == iteron_tools::WORKFLOW_TOOL => {
+                    Some(id.0.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            intents.len(),
+            3,
+            "each declaration crosses its real admission once"
+        );
+        assert_eq!(
+            intents
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "separate authored calls cannot reuse the same physical ticket"
+        );
+        let completed = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    tool: Some(tool),
+                    ..
+                } if tool == iteron_tools::WORKFLOW_TOOL => Some(result.tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completed,
+            [
+                "fixture-workflow-0",
+                "fixture-workflow-1",
+                "fixture-workflow-2"
+            ]
+        );
 
         drop(agent);
         std::fs::remove_dir_all(ws).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[test]
     fn preparing_a_workflow_refuses_before_it_records_anything() {
         let unbound_ws = temp_ws("workflow-prepare-unbound");
@@ -3755,7 +4221,7 @@ mod gate_integration_tests {
         let ws = temp_ws("structured-kernel-diagnostics");
         let (port, receiver) = diagnostics::bounded_channel();
         let mut agent = agent_for(&ws);
-        agent.set_diagnostic_port(port);
+        agent.set_diagnostic_port(port.clone());
 
         agent.fail_next_durable_append = Some(DurableAppendFault::BestEffort);
         agent.emit(
@@ -3765,6 +4231,11 @@ mod gate_integration_tests {
             },
         );
 
+        // A poisoned writer cannot be reused for a new resume transaction. Reopen the
+        // exact durable journal with a fresh owner, retaining the same diagnostic receiver.
+        drop(agent);
+        let mut agent = agent_for(&ws);
+        agent.set_diagnostic_port(port);
         let masked_secret = "[REDACTED:sk-ant-api03-SuperSecretTokenValue12345]";
         agent
             .set_resume(vec![Message {
@@ -3891,7 +4362,11 @@ mod gate_integration_tests {
         agent.set_ui(ui_tx);
 
         // This case proves the terminal record after the configured recovery budget is spent.
-        agent.set_retry_policy(iteron_sched::BackoffPolicy { base_ms: 1, cap_ms: 1, max_attempts: 1 });
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 1,
+        });
 
         let error = agent
             .run("answer me")
@@ -3920,14 +4395,32 @@ mod gate_integration_tests {
             event,
             UiEvent::Thinking(delta) if delta == "weighing the options"
         )));
-        assert!(
-            !ui_events
+        // Done carries the finalized outcome; it is not itself a successful answer. A failed
+        // provider response must close the UI and durable turn with the same failure label.
+        assert_eq!(
+            ui_events
                 .iter()
-                .any(|event| matches!(event, UiEvent::Done(_))),
-            "a disconnected stream must not display a success terminal"
+                .filter_map(|event| match event {
+                    UiEvent::Done(outcome) => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["HarnessError"],
+            "a disconnected stream must publish one failed terminal and no success terminal"
         );
 
         let events = iteron_record::replay(&runs.join(format!("{}.jsonl", run.0))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::Done { outcome } => Some(outcome.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["HarnessError"],
+            "the physical record must agree with the failed UI terminal"
+        );
         assert_eq!(
             events
                 .iter()
@@ -4301,6 +4794,7 @@ mod gate_integration_tests {
     /// inputs.  Multiple scheduler opportunities are expected (one explicit admission plus one
     /// per provider turn); the invariant is one durable terminal for every minted opportunity,
     /// not one decision per slot for the lifetime of a run.
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn h03_all_exercised_slot_seams_are_durable_unique_and_leave_no_pending_opportunity() {
         let ws = temp_ws("h03-nine-live-slots");
@@ -4610,6 +5104,7 @@ mod gate_integration_tests {
         }
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_bootstrap_fixture() -> iteron_protocol::PlantcoreRunBootstrapV1 {
         let document: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
@@ -5210,31 +5705,46 @@ mod gate_integration_tests {
         let completed = std::sync::Arc::new(AtomicUsize::new(0));
         let observed = completed.clone();
         let mut registry = Registry::coding_agent(&ws).unwrap();
-        registry.register_external(ToolSpec {
-            name: "touch_path".into(),
-            description: "test-only exclusive writer".into(),
-            input_schema: serde_json::json!({"type": "object"}),
-            purity: Purity::Effecting,
-            capability: Capability::ReversibleLocal,
-        }, move |call, _root| {
-            let completed = completed.clone();
-            let journal = journal.clone();
-            iteron_tools::boxfut::box_it(async move {
-                let index = call.input["index"].as_u64().unwrap() as usize;
-                assert_eq!(completed.load(Ordering::SeqCst), index,
-                    "exclusive writes must execute in model order");
-                let events = iteron_record::replay(&journal).unwrap();
-                assert!(events.iter().any(|event| matches!(&event.kind,
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "touch_path".into(),
+                    description: "test-only exclusive writer".into(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::ReversibleLocal,
+                },
+                move |call, _root| {
+                    let completed = completed.clone();
+                    let journal = journal.clone();
+                    iteron_tools::boxfut::box_it(async move {
+                        let index = call.input["index"].as_u64().unwrap() as usize;
+                        assert_eq!(
+                            completed.load(Ordering::SeqCst),
+                            index,
+                            "exclusive writes must execute in model order"
+                        );
+                        let events = iteron_record::replay(&journal).unwrap();
+                        assert!(events.iter().any(|event| matches!(&event.kind,
                     EventKind::EffectIntent { tool_use_id, .. } if tool_use_id == &call.id
                 )), "a write intent must be durable before execution");
-                tokio::task::yield_now().await;
-                completed.store(index + 1, Ordering::SeqCst);
-                ToolResult { tool_use_id: call.id, content: "ok".into(), is_error: false,
-                    trust: Trust::Workspace, latency_ms: 0 }
-            })
-        }).unwrap();
+                        tokio::task::yield_now().await;
+                        completed.store(index + 1, Ordering::SeqCst);
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "ok".into(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
         let mut agent = concurrency_agent(
-            &ws, &run, registry,
+            &ws,
+            &run,
+            registry,
             burst_calls("touch_path", 3, &["a.txt", "a.txt", "b.txt"]),
         );
         agent.permission_mode = PermissionMode::Yolo;
@@ -5251,27 +5761,43 @@ mod gate_integration_tests {
     async fn effecting_calls_without_declared_write_sets_use_parallel_command_policy() {
         let ws = temp_ws("effecting-unknown-write-set");
         let mut registry = Registry::coding_agent(&ws).unwrap();
-        register_rendezvous(&mut registry, "opaque_exec", Purity::Effecting,
-            Capability::CodeExecuting, 2);
+        register_rendezvous(
+            &mut registry,
+            "opaque_exec",
+            Purity::Effecting,
+            Capability::CodeExecuting,
+            2,
+        );
         let run = iteron_protocol::RunId("effecting-unknown-write-set".into());
         let mut agent = concurrency_agent(&ws, &run, registry, burst_calls("opaque_exec", 2, &[]));
         agent.permission_mode = PermissionMode::Yolo;
-        assert_eq!(agent.run("run two opaque effects").await.unwrap(), Outcome::Done);
+        assert_eq!(
+            agent.run("run two opaque effects").await.unwrap(),
+            Outcome::Done
+        );
         assert_eq!(recorded_tool_contents(&ws, &run), vec!["rendezvous"; 2]);
         let events = recorded_events(&ws, &run);
         for ordinal in 0..2 {
             let call_id = format!("opaque_exec-{ordinal}");
-            let (intent_position, effect_id) = events.iter().enumerate().find_map(|(position, event)| {
-                match &event.kind {
-                    EventKind::EffectIntent { id, tool_use_id, .. } if tool_use_id == &call_id =>
-                        Some((position, id)),
+            let (intent_position, effect_id) = events
+                .iter()
+                .enumerate()
+                .find_map(|(position, event)| match &event.kind {
+                    EventKind::EffectIntent {
+                        id, tool_use_id, ..
+                    } if tool_use_id == &call_id => Some((position, id)),
                     _ => None,
-                }
-            }).unwrap();
-            let terminal_position = events.iter().position(|event| matches!(&event.kind,
-                EventKind::ToolDone { effect_id: Some(id), result, .. }
-                    if id == effect_id && result.tool_use_id == call_id
-            )).unwrap();
+                })
+                .unwrap();
+            let terminal_position = events
+                .iter()
+                .position(|event| {
+                    matches!(&event.kind,
+                        EventKind::ToolDone { effect_id: Some(id), result, .. }
+                            if id == effect_id && result.tool_use_id == call_id
+                    )
+                })
+                .unwrap();
             assert!(intent_position < terminal_position);
         }
         std::fs::remove_dir_all(ws).ok();
@@ -5969,7 +6495,7 @@ mod gate_integration_tests {
         assert_eq!(agent.run("first task").await.unwrap(), Outcome::Done);
         let first_turn = agent.seq_turn;
         assert!(
-            agent.working_set.is_some(),
+            agent.transcript_state.working().is_some(),
             "a finished run hands its working set to the next follow-up"
         );
 
@@ -5981,7 +6507,7 @@ mod gate_integration_tests {
             "follow-up must advance the turn id exactly as the replay path does"
         );
         assert!(
-            agent.working_set.is_some(),
+            agent.transcript_state.working().is_some(),
             "and it keeps its own, so a second follow-up is free as well"
         );
 
@@ -6003,7 +6529,7 @@ mod gate_integration_tests {
         // The equivalence that licenses skipping the replay: what this process held is exactly what
         // reading the record back would have rebuilt.
         let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
-        let held = reconcile_transcript(agent.working_set.clone().unwrap());
+        let held = reconcile_transcript(agent.transcript_state.working().clone().unwrap());
         assert_eq!(transcript_shape(&held), transcript_shape(&replayed));
 
         // The record stays the authority wherever a process boundary is crossed: an explicit resume
@@ -6011,7 +6537,7 @@ mod gate_integration_tests {
         agent
             .set_resume(vec![Message::user_text("replayed transcript")])
             .unwrap();
-        assert!(agent.working_set.is_none());
+        assert!(agent.transcript_state.working().is_none());
         assert_eq!(agent.run("third task").await.unwrap(), Outcome::Done);
         let last = provider
             .requests
@@ -6020,7 +6546,13 @@ mod gate_integration_tests {
             .last()
             .map(|request| transcript_shape(&request.messages))
             .unwrap();
-        assert_eq!(last, vec!["User:replayed transcript|\n\n|third task"]);
+        assert_eq!(
+            last,
+            vec![
+                "User:replayed transcript|\n\n[Later conversation message; existing source and trust labels still apply]\n|third task"
+            ],
+            "explicit resume preserves the later message boundary without promoting its trust"
+        );
 
         drop(agent);
         let _ = std::fs::remove_dir_all(ws);
@@ -6274,37 +6806,50 @@ mod gate_integration_tests {
         let image = two_by_one_png();
 
         assert!(
-            resolved_with_max_dimension(1).is_err(),
-            "the registry-literal decoder envelope cannot be narrowed by a fabricated Builtin"
+            resolved_with_max_dimension(8_193).is_err(),
+            "a derived owner cannot exceed the fixed decoder safety ceiling"
         );
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        let owner_rollout = Rollout::open(
-            &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("multimodal-dimension-owner".into()),
-            iteron_protocol::TenantId::default(),
-        )
-        .unwrap();
-        let mut owner = Agent::new(
-            provider.clone(),
-            Registry::read_only(&ws).unwrap(),
-            owner_rollout,
-            "model-a".into(),
-            "sys".into(),
-            Budget::default(),
-        );
-        owner
-            .pin_resolved_tunables(std::sync::Arc::new(
-                resolved_with_max_dimension(8_192)
-                    .expect("the exact physical decoder owner must resolve"),
-            ))
-            .expect("owner checkpoint decode must install family 68");
-        assert!(matches!(
-            owner.admit_input_images(std::slice::from_ref(&image)),
-            Ok(images) if images == std::slice::from_ref(&image)
-        ));
-        assert!(provider.requests.lock().unwrap().is_empty());
-        drop(owner);
+        for (label, max_dimension, accepts_image) in [("lower", 1, false), ("default", 8_192, true)]
+        {
+            let owner_rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
+                &iteron_protocol::RunId(format!("multimodal-dimension-{label}")),
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut owner = Agent::new(
+                provider.clone(),
+                Registry::read_only(&ws).unwrap(),
+                owner_rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget::default(),
+            );
+            owner
+                .pin_resolved_tunables(std::sync::Arc::new(
+                    resolved_with_max_dimension(max_dimension)
+                        .expect("a bounded derived decoder owner must resolve"),
+                ))
+                .expect("owner checkpoint decode must install family 68");
+            assert_eq!(
+                owner.multimodal_decode_envelope.max_dimension,
+                max_dimension as u32
+            );
+            let admitted = owner.admit_input_images(std::slice::from_ref(&image));
+            if accepts_image {
+                assert!(matches!(admitted, Ok(images) if images == std::slice::from_ref(&image)));
+            } else {
+                assert!(matches!(
+                    admitted,
+                    Err(KernelError::InvalidSubmission(
+                        IMAGE_INPUT_INSPECTION_FAILED_REASON
+                    ))
+                ));
+            }
+            assert!(provider.requests.lock().unwrap().is_empty());
+        }
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -6609,7 +7154,7 @@ mod gate_integration_tests {
     fn completed_turn_budget_check_includes_an_expired_wall_deadline() {
         let ws = temp_ws("completed-turn-wall-budget");
         let mut agent = agent_for(&ws);
-        agent.run_deadline = Some(Instant::now());
+        agent.run_deadline.bind_external(Some(Instant::now()));
 
         assert_eq!(
             agent.completed_turn_budget_exhaustion(),
@@ -6803,7 +7348,8 @@ mod gate_integration_tests {
         pin_test_tunables(&mut live);
         live.record_genesis_with_tunables(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
-        live.working_set = Some(vec![Message::user_text("live A transcript")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("live A transcript")]));
         live.ledger.turns = 7;
         live.ledger.provider_attempts = 9;
 
@@ -6856,7 +7402,10 @@ mod gate_integration_tests {
         assert_eq!(live.runtime_policy_overlay(), live_overlay);
         assert_eq!(live.ledger.turns, live_turns);
         assert_eq!(live.ledger.provider_attempts, live_attempts);
-        assert_eq!(live.working_set.as_ref().map(Vec::len), Some(1));
+        assert_eq!(
+            live.transcript_state.working().as_ref().map(Vec::len),
+            Some(1)
+        );
         assert!(
             Rollout::open_existing(&runs, &live_run_id, iteron_protocol::TenantId::default(),)
                 .is_err(),
@@ -6962,6 +7511,117 @@ mod gate_integration_tests {
         ));
 
         drop(child);
+        drop(live);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn fresh_adoption_after_a_real_turn_uses_the_retained_immutable_environment() {
+        let ws = temp_ws("fresh-after-real-environment-turn");
+        let runs = ws.join(".iteron/runs");
+        let mut live = agent_for_run(&ws, "completed-environment-source");
+        live.provider = std::sync::Arc::new(ScriptedDone);
+        live.set_environment_context("captured_at_unix_secs: 11".into(), Trust::Workspace)
+            .unwrap();
+        bind_unrecorded_test_route(&mut live);
+        pin_test_tunables(&mut live);
+        live.record_genesis_with_tunables(ws.display().to_string(), 11, String::new(), None)
+            .unwrap();
+        live.record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+        let expected_checkpoint = live.tunables_checkpoint().unwrap().clone();
+        let expected_environment = live.composition_environment_context.clone().unwrap();
+        assert_eq!(
+            live.run("completed before actual New").await.unwrap(),
+            Outcome::Done
+        );
+        assert!(
+            live.environment_context.is_none(),
+            "the real injection consumes its proposal"
+        );
+        assert_eq!(
+            live.composition_environment_context.as_ref(),
+            Some(&expected_environment)
+        );
+        let original = iteron_record::replay(live.rollout.path()).unwrap();
+        assert!(
+            original
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ContextInjection { .. }))
+        );
+        assert!(
+            original.iter().any(
+                |event| matches!(&event.kind, EventKind::Done { outcome } if outcome == "Done")
+            )
+        );
+        let previous_path = live.rollout.path().to_path_buf();
+        let previous_bytes = std::fs::read(&previous_path).unwrap();
+
+        let target = Rollout::open(
+            &runs,
+            &iteron_protocol::RunId("actual-new-903".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let adopted = live
+            .adopt_fresh_run(target, ws.display().to_string(), 12, None)
+            .unwrap();
+        assert_eq!(adopted.run_id, "actual-new-903");
+        assert_eq!(live.tunables_checkpoint().unwrap(), &expected_checkpoint);
+        let events = iteron_record::replay(live.rollout.path()).unwrap();
+        let EventKind::RunStart {
+            environment: Some(environment),
+            created_at,
+            ..
+        } = &events[0].kind
+        else {
+            panic!("fresh New must retain its admitted environment in physical genesis");
+        };
+        assert_eq!(
+            (environment.text.clone(), environment.trust),
+            expected_environment
+        );
+        assert_eq!(*created_at, 12);
+        assert_eq!(
+            iteron_record::tunables_checkpoint_from_events(&events)
+                .unwrap()
+                .unwrap(),
+            expected_checkpoint
+        );
+        assert_eq!(std::fs::read(&previous_path).unwrap(), previous_bytes);
+
+        for (id, replacement) in [
+            ("missing-frozen-environment", None),
+            (
+                "mismatched-frozen-environment",
+                Some(("another host snapshot".into(), Trust::Workspace)),
+            ),
+        ] {
+            live.composition_environment_context = replacement;
+            let current = live.rollout.run_id().clone();
+            let source_bytes = std::fs::read(live.rollout.path()).unwrap();
+            let target = Rollout::open(
+                &runs,
+                &iteron_protocol::RunId(id.into()),
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let target_path = target.path().to_path_buf();
+            assert!(
+                matches!(live.adopt_fresh_run(target, ws.display().to_string(), 13, None), Err(KernelError::ExecutionPolicy(reason)) if reason == "runtime environment differs from the immutable environment_snapshot identity")
+            );
+            assert_eq!(live.rollout.run_id(), &current);
+            assert_eq!(std::fs::read(live.rollout.path()).unwrap(), source_bytes);
+            assert!(
+                std::fs::read(target_path).unwrap().is_empty(),
+                "identity refuses before target genesis"
+            );
+        }
         drop(live);
         let _ = std::fs::remove_dir_all(ws);
     }
@@ -7093,6 +7753,7 @@ mod gate_integration_tests {
                     crate::app_server::AdoptRun {
                         rollout: target,
                         fresh: true,
+                        created_at: Some(1),
                         route: Box::new(crate::app_server::ModelSelection {
                             provider,
                             provider_id: "provider-a".into(),
@@ -7224,7 +7885,8 @@ mod gate_integration_tests {
         live.ledger.turns = 3;
         live.ledger.provider_attempts = 3;
         live.last_assistant_text = "an answer from the run being left".into();
-        live.working_set = Some(vec![Message::user_text("the transcript being left")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("the transcript being left")]));
         live.failed_actions
             .insert("edit:x".into(), "a failure from the run being left".into());
 
@@ -7253,11 +7915,11 @@ mod gate_integration_tests {
             "the previous run's ledger must not be charged to the adopted run"
         );
         assert_eq!(adopted.turns, 0);
-        assert!(live.working_set.is_none());
+        assert!(live.transcript_state.working().is_none());
         assert!(live.last_assistant_text.is_empty());
         assert!(live.failed_actions.is_empty());
         assert_eq!(
-            live.resumed.as_ref().map(Vec::len),
+            live.transcript_state.restored().as_ref().map(Vec::len),
             Some(2),
             "the next turn continues the adopted transcript"
         );
@@ -7265,9 +7927,9 @@ mod gate_integration_tests {
         // A follow-up stages from the ADOPTED journal. This is the property that makes the
         // adoption real rather than cosmetic: the transcript the next turn continues is read back
         // from the record this session now writes to.
-        live.working_set = None;
+        live.transcript_state.replace_working(None);
         live.stage_follow_up_transcript().await.unwrap();
-        let staged = live.resumed.clone().unwrap();
+        let staged = live.transcript_state.restored().clone().unwrap();
         assert!(
             staged
                 .iter()
@@ -7415,7 +8077,8 @@ mod gate_integration_tests {
         pin_test_tunables(&mut live);
         live.record_genesis_with_tunables(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
-        live.working_set = Some(vec![Message::user_text("the live transcript")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("the live transcript")]));
         let before = live.rollout.path().to_path_buf();
 
         let rollout =
@@ -7431,7 +8094,7 @@ mod gate_integration_tests {
             "a record that cannot be replayed must not move the live session"
         );
         assert_eq!(
-            live.working_set.as_ref().map(Vec::len),
+            live.transcript_state.working().as_ref().map(Vec::len),
             Some(1),
             "a refused adoption must not clear the live transcript"
         );
@@ -7889,22 +8552,38 @@ ant-api03-SuperSecretModelToken12345"
     /// the process. The ceiling has to be movable from inside the session.
     #[tokio::test]
     async fn unlimited_defaults_admit_after_former_parent_and_child_turn_limits() {
-        for (budget, used) in [(Budget::default(), 64), (iteron_agents::subagent_budget_ceiling(), 30)] {
+        for (budget, used) in [
+            (Budget::default(), 64),
+            (iteron_agents::subagent_budget_ceiling(), 30),
+        ] {
             let ws = temp_ws("unlimited-turn-default");
             let provider = std::sync::Arc::new(MeteredProvider {
-                calls: AtomicUsize::new(0), continuation: false,
+                calls: AtomicUsize::new(0),
+                continuation: false,
             });
-            let rollout = Rollout::open(&ws.join(".iteron/runs"),
+            let rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
                 &iteron_protocol::RunId("unlimited-turn-default".into()),
-                iteron_protocol::TenantId::default()).unwrap();
-            let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(),
-                rollout, "model-a".into(), "sys".into(), budget);
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                provider.clone(),
+                Registry::read_only(&ws).unwrap(),
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                budget,
+            );
             agent.workspace = ws.clone();
             // Existing completed work must not cause either former implicit ceiling to reject
             // the next physical request. No counter is reset when unlimited is selected.
             agent.ledger.provider_attempts = used;
             agent.ledger.turns = used;
-            assert_eq!(agent.run("continue existing work").await.unwrap(), Outcome::Done);
+            assert_eq!(
+                agent.run("continue existing work").await.unwrap(),
+                Outcome::Done
+            );
             assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
             assert_eq!(agent.turn_budget().used, used + 1);
             assert_eq!(agent.remaining_inference_turns(), Budget::UNLIMITED_TURNS);
@@ -7918,17 +8597,33 @@ ant-api03-SuperSecretModelToken12345"
     async fn explicit_two_turn_limit_still_stops_before_third_request() {
         let ws = temp_ws("explicit-two-turn-limit");
         let provider = std::sync::Arc::new(MeteredProvider {
-            calls: AtomicUsize::new(0), continuation: false,
+            calls: AtomicUsize::new(0),
+            continuation: false,
         });
-        let rollout = Rollout::open(&ws.join(".iteron/runs"),
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
             &iteron_protocol::RunId("explicit-two-turn-limit".into()),
-            iteron_protocol::TenantId::default()).unwrap();
-        let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(),
-            rollout, "model-a".into(), "sys".into(), Budget { max_turns: 2, ..Budget::default() });
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 2,
+                ..Budget::default()
+            },
+        );
         agent.workspace = ws.clone();
         assert_eq!(agent.run("first").await.unwrap(), Outcome::Done);
         assert_eq!(agent.follow_up("second").await.unwrap(), Outcome::Done);
-        assert_eq!(agent.follow_up("third").await.unwrap(), Outcome::BudgetExhausted("max_turns"));
+        assert_eq!(
+            agent.follow_up("third").await.unwrap(),
+            Outcome::BudgetExhausted("max_turns")
+        );
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
         drop(agent);
         std::fs::remove_dir_all(ws).ok();
@@ -8128,8 +8823,16 @@ ant-api03-SuperSecretModelToken12345"
             )),
             calls: verifier_calls.clone(),
         }));
-        agent.verification_policy.checkpoint.before_verification = false;
-        agent.verification_policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
         record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
@@ -8147,7 +8850,8 @@ ant-api03-SuperSecretModelToken12345"
             "fixed evidence\n"
         );
         let graph_instructions = agent
-            .working_set
+            .transcript_state
+            .working()
             .as_ref()
             .expect("the completed run retains its working set")
             .iter()
@@ -8223,8 +8927,16 @@ ant-api03-SuperSecretModelToken12345"
             )),
             calls: verifier_calls.clone(),
         }));
-        agent.verification_policy.checkpoint.before_verification = false;
-        agent.verification_policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
         record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
@@ -8241,7 +8953,8 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(verifier_calls.load(Ordering::SeqCst), 2);
         assert_eq!(
-            agent.verify_attempts, 1,
+            agent.verification_state.attempts(),
+            1,
             "only TestFailure consumes the bounded candidate-fix allowance"
         );
         assert_eq!(
@@ -8317,7 +9030,8 @@ ant-api03-SuperSecretModelToken12345"
             "const RegistryOwnerKey: &str = \"fixed evidence\";\nfn read_evidence() -> &'static str {\n    RegistryOwnerKey\n}\n"
         );
         let checkpoints = agent
-            .working_set
+            .transcript_state
+            .working()
             .as_ref()
             .expect("the completed run retains its working set")
             .iter()
@@ -8968,9 +9682,7 @@ ant-api03-SuperSecretModelToken12345"
             estimate_request_context("sys", &messages, &[])
         );
 
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::user("x".repeat(4_000)));
+        agent.retain_pending_steer(inbound_control::PendingSteer::user("x".repeat(4_000)));
         assert_eq!(
             agent
                 .admit_pending_steers(TurnId(agent.seq_turn), &mut messages)
@@ -9009,10 +9721,9 @@ ant-api03-SuperSecretModelToken12345"
         agent.injected = Some("stable startup memory snapshot".into());
         let system_before = agent.effective_system();
         let fact = "The release branch is cut only after the smoke suite passes.";
-        agent.pending_steers.push_back(inbound_control::PendingSteer::internal(format!(
-            "{}\nMemory `mem-hot` was added explicitly by the operator and is available in this session. Exact fact:\n{fact}",
-            MEMORY_ADDED_NOTIFICATION_PREFIX
-        )));
+        agent.memory_workspace = Some(ws.clone());
+        let id = iteron_ctx::MemoryStore::at(&ws).add(fact).unwrap();
+        agent.activate_session_memory(&id, fact).unwrap();
         let mut messages = vec![Message::user_text("continue the release work")];
 
         assert_eq!(
@@ -9116,7 +9827,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.permission_mode = PermissionMode::AcceptEdits;
+        stage_direct_fixture_route(&mut agent);
         record_test_genesis(&mut agent, &ws);
+        record_direct_fixture_selection(&mut agent);
 
         assert_eq!(agent.run("investigate only").await.unwrap(), Outcome::Done);
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -9200,12 +9913,15 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.permission_mode = PermissionMode::AcceptEdits;
+        stage_direct_fixture_route(&mut agent);
         record_test_genesis(&mut agent, &ws);
+        record_direct_fixture_selection(&mut agent);
         agent.fail_next_durable_append = Some(DurableAppendFault::SubagentFinished);
 
-        assert_eq!(
-            agent.run("investigate only").await.unwrap(),
-            Outcome::HarnessError
+        let result = agent.run("investigate only").await;
+        assert!(
+            matches!(&result, Err(KernelError::ContextResolution(reason)) if reason.contains("[storage_io]")),
+            "{result:?}"
         );
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
         assert!(!events.iter().any(|event| matches!(
@@ -9289,6 +10005,7 @@ ant-api03-SuperSecretModelToken12345"
             if hooks_enabled {
                 install_test_hooks(&mut agent, &home);
             }
+            stage_direct_fixture_route(&mut agent);
             record_test_genesis_with_tunable_edits(
                 &mut agent,
                 &ws,
@@ -9303,6 +10020,8 @@ ant-api03-SuperSecretModelToken12345"
                     ),
                 ],
             );
+
+            record_direct_fixture_selection(&mut agent);
 
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(60), agent.run("delegate the reads"),)
@@ -9404,6 +10123,7 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         child.workspace = ws.clone();
+        record_test_genesis(&mut child, &ws);
         child.delegation_depth = MAX_DELEGATION_DEPTH;
 
         let error = child
@@ -9448,7 +10168,9 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         interrupt_parent.workspace = interrupt_ws.clone();
+        stage_direct_fixture_route(&mut interrupt_parent);
         record_test_genesis(&mut interrupt_parent, &interrupt_ws);
+        record_direct_fixture_selection(&mut interrupt_parent);
         let interrupt = std::sync::Arc::new(AtomicBool::new(false));
         interrupt_parent.set_interrupt(interrupt.clone());
         let raise_interrupt = async {
@@ -9456,23 +10178,22 @@ ant-api03-SuperSecretModelToken12345"
             interrupt.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
-            interrupt_parent.spawn_subagent("read then stop at the safe point", 0),
+            interrupt_parent.spawn_subagent("cancel the pending physical request", 0),
             raise_interrupt
         );
-        assert!(result.unwrap_err().contains("interrupted at a safe point"));
+        let error = result.unwrap_err();
+        assert!(error.contains("unknown outcome"), "{error}");
         assert_eq!(interrupt_provider.calls.load(Ordering::SeqCst), 1);
         let interrupt_events = iteron_record::replay(interrupt_parent.rollout.path()).unwrap();
+        // This operator signal arrives while the transport future is still pending. The child
+        // must retire it, but cannot claim a completed physical request or a known child terminal.
         assert!(interrupt_events.iter().any(|event| matches!(
-            &event.kind,
-            EventKind::SubagentFinishedV2 {
-                outcome: iteron_protocol::WorkflowChildOutcome::Interrupted,
-                ..
-            }
+            &event.kind, EventKind::EffectUnknown { tool, .. } if tool == "subagent"
         )));
         assert!(
             interrupt_events
                 .iter()
-                .all(|event| { !matches!(&event.kind, EventKind::EffectUnknown { .. }) })
+                .all(|event| !matches!(&event.kind, EventKind::SubagentFinishedV2 { .. }))
         );
         drop(interrupt_parent);
         let _ = std::fs::remove_dir_all(&interrupt_ws);
@@ -9500,6 +10221,7 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         deadline_parent.workspace = deadline_ws.clone();
+        stage_direct_fixture_route(&mut deadline_parent);
         let one_second_child_ceiling = iteron_tunables::ResolutionValue::Object {
             fields: [
                 (
@@ -9541,9 +10263,12 @@ ant-api03-SuperSecretModelToken12345"
                 ("child_ceiling", one_second_child_ceiling),
             ],
         );
+        record_direct_fixture_selection(&mut deadline_parent);
         // The ample parent runway keeps loaded-suite setup out of the assertion. The immutable
         // one-second child ceiling remains the tighter bound and must cancel the pending provider.
-        deadline_parent.run_deadline = Some(Instant::now() + Duration::from_secs(30));
+        deadline_parent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_secs(30)));
         let deadline_result = tokio::time::timeout(
             Duration::from_secs(15),
             deadline_parent.spawn_subagent("never complete", 0),
@@ -9557,16 +10282,17 @@ ant-api03-SuperSecretModelToken12345"
             "unexpected pre-dispatch failure: {deadline_error}"
         );
         assert!(
-            iteron_record::replay(deadline_parent.rollout.path())
-                .unwrap()
+            deadline_error.contains("unknown outcome"),
+            "{deadline_error}"
+        );
+        let deadline_events = iteron_record::replay(deadline_parent.rollout.path()).unwrap();
+        assert!(deadline_events.iter().any(|event| matches!(
+            &event.kind, EventKind::EffectUnknown { tool, .. } if tool == "subagent"
+        )));
+        assert!(
+            deadline_events
                 .iter()
-                .any(|event| matches!(
-                    &event.kind,
-                    EventKind::SubagentFinishedV2 {
-                        outcome: iteron_protocol::WorkflowChildOutcome::Failed,
-                        ..
-                    }
-                ))
+                .all(|event| !matches!(&event.kind, EventKind::SubagentFinishedV2 { .. }))
         );
         drop(deadline_parent);
         let _ = std::fs::remove_dir_all(&deadline_ws);
@@ -9599,17 +10325,15 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         parent.workspace = ws.clone();
+        stage_direct_fixture_route(&mut parent);
         record_test_genesis(&mut parent, &ws);
-        let drain = parent.drain.clone();
-        let request_drain = async {
-            await_signal(&provider.started, "the provider's first turn").await;
-            drain.store(true, Ordering::SeqCst);
-        };
-        let (result, ()) = tokio::join!(
-            parent.spawn_subagent("read then drain at the safe point", 0),
-            request_drain
-        );
-        let error = result.unwrap_err();
+        record_direct_fixture_selection(&mut parent);
+        let drain = parent.control.drain().clone();
+        *provider.completed_stop.lock().unwrap() = Some(drain);
+        let error = parent
+            .spawn_subagent("read then drain at the safe point", 0)
+            .await
+            .unwrap_err();
         assert!(error.contains("drained after a checkpoint"), "{error}");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
@@ -9720,7 +10444,11 @@ ant-api03-SuperSecretModelToken12345"
                 },
             )],
         );
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(64);
         agent.set_ui(ui_tx);
 
@@ -10276,8 +11004,8 @@ ant-api03-SuperSecretModelToken12345"
             .prepare_verification_rollback_point(TurnId(0))
             .expect("operator policy seals the pre-submission checkpoint");
         let checkpoint_seq = agent
-            .verification_rollback_point
-            .as_ref()
+            .verification_state
+            .rollback_snapshot()
             .expect("rollback point is retained")
             .at;
 
@@ -10585,7 +11313,11 @@ ant-api03-SuperSecretModelToken12345"
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
         )));
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
 
         let outcome = agent
             .run("finish only when verification passes")
@@ -10598,7 +11330,7 @@ ant-api03-SuperSecretModelToken12345"
             Outcome::Done,
             "a failing strong oracle must never produce success"
         );
-        assert_eq!(agent.verify_attempts, MAX_VERIFY_ATTEMPTS);
+        assert_eq!(agent.verification_state.attempts(), MAX_VERIFY_ATTEMPTS);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             MAX_VERIFY_ATTEMPTS as usize,
@@ -10646,7 +11378,11 @@ ant-api03-SuperSecretModelToken12345"
             ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
@@ -10655,7 +11391,7 @@ ant-api03-SuperSecretModelToken12345"
         let outcome = agent.run("honor the typed repair ceiling").await.unwrap();
 
         assert_eq!(outcome, Outcome::BudgetExhausted("verify_attempts"));
-        assert_eq!(agent.verify_attempts, 2);
+        assert_eq!(agent.verification_state.attempts(), 2);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             2,
@@ -10696,7 +11432,11 @@ ant-api03-SuperSecretModelToken12345"
             ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
@@ -10708,7 +11448,7 @@ ant-api03-SuperSecretModelToken12345"
             .unwrap();
 
         assert_eq!(outcome, Outcome::HarnessError);
-        assert_eq!(agent.verify_attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -10742,7 +11482,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("exit 1".into());
-        agent.verify_attempts = MAX_VERIFY_ATTEMPTS;
+        agent
+            .verification_state
+            .set_attempts_for_test(MAX_VERIFY_ATTEMPTS);
 
         let outcome = agent
             .run("try to claim done after the ceiling")
@@ -10785,13 +11527,17 @@ ant-api03-SuperSecretModelToken12345"
             ws.clone(),
             "project-check".into(),
         )));
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
 
         let outcome = agent.run("finish only after checks").await.unwrap();
 
         assert_eq!(outcome, Outcome::HarnessError);
         assert_ne!(outcome, Outcome::BudgetExhausted("verify_attempts"));
-        assert_eq!(agent.verify_attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             1,
@@ -10844,13 +11590,21 @@ ant-api03-SuperSecretModelToken12345"
             &ws,
             [("verification_quorum_consensus", single_verifier_consensus())],
         );
-        agent.verification_policy.checkpoint.before_verification = false;
-        agent.verification_policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
 
         let outcome = agent.run("finish only after checks").await.unwrap();
 
         assert_eq!(outcome, Outcome::HarnessError);
-        assert_eq!(agent.verify_attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
         assert!(events.iter().any(|event| {
@@ -10911,7 +11665,9 @@ ant-api03-SuperSecretModelToken12345"
         });
         // A sub-second inherited deadline proves the outer bound does not inherit the sandbox's
         // old whole-second minimum.
-        agent.run_deadline = Some(Instant::now() + Duration::from_millis(60));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_millis(60)));
 
         let began = Instant::now();
         let dispatch = agent.run_bounded_verify(oracle).await;
@@ -10932,7 +11688,7 @@ ant-api03-SuperSecretModelToken12345"
             began.elapsed() < Duration::from_millis(750),
             "a hung oracle must not overrun the absolute deadline by the one-second sandbox granularity"
         );
-        assert_eq!(agent.verify_attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -10954,8 +11710,11 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
-        agent.verification_policy.verifier_timeout_secs = 1;
-        agent.run_deadline = None;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .verifier_timeout_secs = 1;
+        agent.run_deadline.bind_external(None);
         let oracle = std::sync::Arc::new(HangingVerificationOracle {
             started: std::sync::Arc::new(tokio::sync::Notify::new()),
         });
@@ -11012,27 +11771,34 @@ ant-api03-SuperSecretModelToken12345"
             &ws,
             [("verification_quorum_consensus", single_verifier_consensus())],
         );
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
 
-        // This bound covers encrypted journal fsyncs, the 25 ms cancellation poll, and scheduler
-        // contention from the full CLI suite. It remains far below the configured 300-second
-        // verifier timeout, so the test proves cancellation rather than waiting out the oracle
-        // without turning host load into the property under test.
-        let outcome = tokio::time::timeout(Duration::from_secs(20), async {
-            let interrupt_after_start = async {
-                await_signal(&started, "the provider's first turn").await;
-                interrupted.store(true, Ordering::SeqCst);
-            };
-            let (outcome, ()) =
-                tokio::join!(agent.run("finish only after checks"), interrupt_after_start);
-            outcome
-        })
-        .await
-        .expect("verification cancellation must be prompt")
-        .unwrap();
+        // Observe actual oracle entry before measuring cancellation. A run that ends earlier
+        // must report its result immediately instead of waiting for a signal it cannot produce.
+        let outcome = {
+            let run = agent.run("finish only after checks");
+            tokio::pin!(run);
+            tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::select! {
+                    () = started.notified() => {}
+                    outcome = &mut run => panic!("run ended before the hanging oracle started: {outcome:?}"),
+                }
+            })
+            .await
+            .expect("the hanging verification oracle must start within its bounded deadline");
+            interrupted.store(true, Ordering::SeqCst);
+            tokio::time::timeout(Duration::from_secs(20), &mut run)
+                .await
+                .expect("verification cancellation must be prompt after oracle entry")
+                .unwrap()
+        };
 
         assert_eq!(outcome, Outcome::Interrupted);
-        assert_eq!(agent.verify_attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let path = runs.join(format!("{run}.jsonl"));
         let resume_messages = Agent::messages_from_rollout(&path).unwrap();
@@ -11067,11 +11833,15 @@ ant-api03-SuperSecretModelToken12345"
             iteron_verify::VerificationOutcome::Pass,
             "healthy verifier",
         )));
-        resumed.verification_policy.checkpoint.before_verification = false;
+        resumed
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
         resumed.set_resume(resume_messages).unwrap();
 
         assert_eq!(resumed.run("").await.unwrap(), Outcome::Done);
-        assert_eq!(resumed.verify_attempts, 0);
+        assert_eq!(resumed.verification_state.attempts(), 0);
         assert_eq!(resumed_provider.turns.load(Ordering::SeqCst), 1);
         let events = iteron_record::replay(&path).unwrap();
         let terminal_outcomes = events
@@ -11456,7 +12226,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         // Seed a parent/orchestration deadline to prove drive() does not reset it.
-        agent.run_deadline = Some(Instant::now() + Duration::from_millis(20));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_millis(20)));
         let began = Instant::now();
         assert_eq!(
             agent.run("do not hang").await.unwrap(),
@@ -11471,6 +12243,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_wall_deadline_waits_for_an_admitted_provider_turn() {
         let ws = temp_ws("plantcore-run-deadline");
         let rollout = Rollout::open(
@@ -11502,7 +12275,9 @@ ant-api03-SuperSecretModelToken12345"
             .enable_plantcore_runtime(&plantcore_bootstrap_fixture())
             .unwrap();
         agent.seq_turn = 1;
-        agent.run_deadline = Some(Instant::now() + Duration::from_secs(1));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_secs(1)));
 
         let began = Instant::now();
         assert_eq!(
@@ -11710,9 +12485,9 @@ ant-api03-SuperSecretModelToken12345"
             "tool-free-answer-phase",
             std::sync::Arc::new(ScriptedDone),
         );
-        let first_turn = agent.current_turn_id();
+        let first_sequence = agent.rollout.next_sequence();
         let predispatch = agent.terminal_diagnostic_snapshot(
-            first_turn,
+            first_sequence,
             &Err(KernelError::UnknownEffects { count: 1 }),
         );
         assert_eq!(
@@ -11730,7 +12505,7 @@ ant-api03-SuperSecretModelToken12345"
                 .unwrap(),
             Outcome::Done
         );
-        let settled = agent.terminal_diagnostic_snapshot(first_turn, &Ok(Outcome::Done));
+        let settled = agent.terminal_diagnostic_snapshot(first_sequence, &Ok(Outcome::Done));
         assert_eq!(settled.failure_code, None);
         assert_eq!(
             settled.effect_state,
@@ -11738,9 +12513,23 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(
             agent
-                .terminal_diagnostic_snapshot(first_turn, &Ok(Outcome::HarnessError))
+                .terminal_diagnostic_snapshot(first_sequence, &Ok(Outcome::HarnessError))
                 .failure_code,
             Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure)
+        );
+        // A new Product Turn refused before its kernel turn advances cannot inherit the
+        // previous turn's settled provider intent or its physical accounting evidence.
+        let refused = agent.terminal_diagnostic_snapshot(
+            agent.rollout.next_sequence(),
+            &Err(KernelError::InvalidRoute("physical bound unavailable")),
+        );
+        assert_eq!(
+            refused.failure_code,
+            Some(iteron_protocol::PolicyHarnessErrorCode::RouteError)
+        );
+        assert_eq!(
+            refused.effect_state,
+            iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched
         );
         let phases = iteron_record::replay(agent.rollout.path())
             .unwrap()
@@ -11870,7 +12659,11 @@ ant-api03-SuperSecretModelToken12345"
             )),
             calls: calls.clone(),
         }));
-        agent.verification_policy.checkpoint.before_verification = false;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .checkpoint
+            .before_verification = false;
 
         assert_eq!(
             agent
@@ -12320,6 +13113,7 @@ ant-api03-SuperSecretModelToken12345"
                 Trust::Workspace,
             )
             .unwrap();
+        record_test_genesis(&mut agent, &ws);
         agent.fail_next_durable_append = Some(DurableAppendFault::ContextInjection);
         assert!(matches!(
             agent.run("task").await,
@@ -12354,6 +13148,7 @@ ant-api03-SuperSecretModelToken12345"
                 Trust::Workspace,
             )
             .unwrap();
+        record_test_genesis(&mut agent, &ws);
         agent.fail_next_durable_append = Some(DurableAppendFault::ContextInjection);
 
         assert!(matches!(
@@ -12841,10 +13636,14 @@ ant-api03-SuperSecretModelToken12345"
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let mut agent = agent_for(&ws);
         agent.memory_workspace = Some(ws.clone());
-        agent.memory_strategy = std::sync::Arc::new(RefusingMemorySlot {
-            slot: iteron_protocol::slot::SlotId(policy_evidence::MEMORY_SLOT.into()),
-            calls: calls.clone(),
-        });
+        agent.compiled_policy_bundle =
+            std::sync::Arc::new(agent.compiled_policy_bundle.with_fixture_slot(
+                crate::bundle_adapter::CoreSlot::Memory,
+                std::sync::Arc::new(RefusingMemorySlot {
+                    slot: iteron_protocol::slot::SlotId(policy_evidence::MEMORY_SLOT.into()),
+                    calls: calls.clone(),
+                }),
+            ));
         agent.policy_evidence = Some(
             policy_evidence_recorder::PolicyEvidenceRecorder::new(
                 iteron_protocol::RunId("t".into()),
@@ -12975,7 +13774,7 @@ ant-api03-SuperSecretModelToken12345"
             a.memory_workspace = Some(ws.clone());
             a.set_resume(Agent::messages_from_rollout(&path).unwrap())
                 .unwrap();
-            a.run("follow up").await.unwrap();
+            a.run("").await.unwrap();
             // effective_system must carry the ORIGINAL fact, not the changed disk content.
             let eff = a.effective_system();
             assert!(
@@ -13026,12 +13825,13 @@ ant-api03-SuperSecretModelToken12345"
             "the main model receives the first and only turn"
         );
         assert_eq!(requests[0].system, "sys");
-        assert!(
+        assert_eq!(
             requests[0]
                 .tools
                 .iter()
                 .any(|tool| tool.name == iteron_tools::WORKFLOW_TOOL),
-            "Ultracode keeps the generic Workflow tool available to the main model"
+            cfg!(feature = "script-workflows"),
+            "only the explicit script profile advertises the generic Workflow tool"
         );
         drop(requests);
         assert!(
@@ -13100,20 +13900,53 @@ ant-api03-SuperSecretModelToken12345"
             2,
             "the model acts before and after its Workflow result"
         );
+        let result = requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|block| match block {
+                Block::ToolResult(result) if result.tool_use_id == "workflow-1" => Some(result),
+                _ => None,
+            })
+            .expect("the ordinary writer loop returns the exact model-requested tool outcome");
+        #[cfg(feature = "script-workflows")]
         assert!(
-            requests[1].messages.iter().any(|message| {
-                message.content.iter().any(|block| matches!(
-                    block,
-                    Block::ToolResult(result) if result.tool_use_id == "workflow-1" && !result.is_error
-                ))
-            }),
-            "the ordinary writer loop returns the explicit Workflow result to the model"
+            !result.is_error,
+            "the explicit script profile executes its Workflow: {result:?}"
         );
+        #[cfg(not(feature = "script-workflows"))]
+        {
+            assert!(result.is_error, "the disabled tool cannot execute a script");
+            assert!(result.content.contains("unknown tool"), "{result:?}");
+            assert!(
+                requests[0]
+                    .tools
+                    .iter()
+                    .all(|tool| tool.name != iteron_tools::WORKFLOW_TOOL)
+            );
+        }
         drop(requests);
         let listed = crate::workflow::list_runs(&runs.join("subagents/workflows"));
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "seam");
-        assert_eq!(listed[0].status, "done");
+        #[cfg(feature = "script-workflows")]
+        {
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "seam");
+            assert_eq!(listed[0].status, "done");
+        }
+        #[cfg(not(feature = "script-workflows"))]
+        {
+            assert!(listed.is_empty());
+            assert!(!runs.join("subagents/workflows").exists());
+            let events = iteron_record::replay(agent.rollout.path()).unwrap();
+            assert!(events.iter().all(|event| {
+                !matches!(
+                    &event.kind,
+                    EventKind::Workflow { .. } | EventKind::WorkflowV2 { .. }
+                ) && !matches!(&event.kind, EventKind::EffectIntent { tool, .. }
+                        if tool == iteron_tools::WORKFLOW_TOOL
+                            || Some(tool.as_str()) == iteron_kernel::effect_class::EffectClass::Workflow.label())
+            }));
+        }
 
         drop(agent);
         let _ = std::fs::remove_dir_all(&ws);
@@ -13200,22 +14033,16 @@ ant-api03-SuperSecretModelToken12345"
         let mut agent = agent_for(&ws);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(16);
         agent.set_ui(ui_tx);
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::internal(format!(
-                "{RUNTIME_NOTIFICATION_PREFIX}\nbackground task settled"
-            )));
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::user(
-                "operator correction".into(),
-            ));
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::from_steer(
-                "identified operator correction".into(),
-                SubmissionId(12),
-            ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::internal(format!(
+            "{RUNTIME_NOTIFICATION_PREFIX}\nbackground task settled"
+        )));
+        agent.retain_pending_steer(inbound_control::PendingSteer::user(
+            "operator correction".into(),
+        ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::from_steer(
+            "identified operator correction".into(),
+            SubmissionId(12),
+        ));
         let mut messages = vec![Message::user_text("initial task")];
 
         assert_eq!(
@@ -13242,7 +14069,7 @@ ant-api03-SuperSecretModelToken12345"
             format!("{RUNTIME_NOTIFICATION_PREFIX}\noperator text"),
             SubmissionId(9),
         );
-        agent.pending_steers.push_back(spoofed);
+        agent.retain_pending_steer(spoofed);
         assert_eq!(
             agent
                 .admit_pending_steers(TurnId(0), &mut messages)
@@ -13274,18 +14101,14 @@ ant-api03-SuperSecretModelToken12345"
         let mut agent = agent_for(&ws);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(16);
         agent.set_ui(ui_tx);
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::from_steer(
-                "first".into(),
-                SubmissionId(31),
-            ));
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::from_steer(
-                "second".into(),
-                SubmissionId(32),
-            ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::from_steer(
+            "first".into(),
+            SubmissionId(31),
+        ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::from_steer(
+            "second".into(),
+            SubmissionId(32),
+        ));
         let mut messages = vec![Message::user_text("initial")];
         agent.fail_next_durable_append = Some(DurableAppendFault::SteerMessage);
 
@@ -13294,29 +14117,30 @@ ant-api03-SuperSecretModelToken12345"
                 .admit_pending_steers(TurnId(0), &mut messages)
                 .is_err()
         );
-        assert_eq!(agent.pending_steers.len(), 2);
+        assert_eq!(agent.inbox.len(), 2);
         assert!(
             ui_rx.try_recv().is_err(),
             "failed append cannot claim Applied"
         );
-        assert_eq!(
+        assert!(agent.record_failed);
+        assert!(
             agent
                 .admit_pending_steers(TurnId(0), &mut messages)
-                .unwrap(),
-            2
+                .is_err()
         );
-        assert!(matches!(
-            ui_rx.try_recv(),
-            Ok(UiEvent::SteerSubmissionApplied {
-                id: SubmissionId(31)
-            })
-        ));
-        assert!(matches!(
-            ui_rx.try_recv(),
-            Ok(UiEvent::SteerSubmissionApplied {
-                id: SubmissionId(32)
-            })
-        ));
+        assert_eq!(
+            messages.len(),
+            1,
+            "a failed writer cannot advance the model transcript"
+        );
+        assert!(ui_rx.try_recv().is_err());
+        let (unadmitted, visible) = agent.take_unadmitted_steers_with_client_count();
+        assert_eq!(visible, 2);
+        assert_eq!(unadmitted.len(), 2);
+        assert_eq!(unadmitted[0].submission_id, Some(SubmissionId(31)));
+        assert_eq!(unadmitted[0].text, "first");
+        assert_eq!(unadmitted[1].submission_id, Some(SubmissionId(32)));
+        assert_eq!(unadmitted[1].text, "second");
         assert!(ui_rx.try_recv().is_err());
         let _ = std::fs::remove_dir_all(ws);
     }
@@ -13348,14 +14172,14 @@ ant-api03-SuperSecretModelToken12345"
             agent.collect_inbound_ops_with_limit(TurnId(0), 1),
             InboundControl::None
         );
-        assert_eq!(agent.pending_steers.len(), 1);
+        assert_eq!(agent.inbox.len(), 1);
         agent.set_active_product_turn_id(Some(new));
         assert_eq!(
             agent.collect_inbound_ops_with_limit(TurnId(1), 1),
             InboundControl::None
         );
         assert!(
-            !agent.drain_requested,
+            agent.requested_control() != InboundControl::Drain,
             "old turn drain must not affect turn 42"
         );
         assert!(matches!(
@@ -13370,7 +14194,7 @@ ant-api03-SuperSecretModelToken12345"
         late_interrupt.expected_product_turn_id = Some(old);
         tx.try_send(late_interrupt).unwrap();
         assert!(agent.take_unadmitted_steers_with_client_count().0.len() == 1);
-        assert!(!agent.interrupt_requested);
+        assert!(agent.requested_control() != InboundControl::Interrupt);
         assert!(matches!(
             ui_rx.try_recv(),
             Ok(UiEvent::SubmissionRejected {
@@ -13399,7 +14223,7 @@ ant-api03-SuperSecretModelToken12345"
             agent.collect_inbound_ops_with_limit(TurnId(0), 1),
             InboundControl::Drain
         );
-        assert!(agent.drain_requested);
+        assert_eq!(agent.requested_control(), InboundControl::Drain);
         assert!(matches!(
             ui_rx.try_recv(),
             Ok(UiEvent::ControlSubmissionApplied {
@@ -13416,16 +14240,12 @@ ant-api03-SuperSecretModelToken12345"
         let ws = temp_ws("unadmitted-steer-sources");
         let mut agent = agent_for(&ws);
         let notification = format!("{RUNTIME_NOTIFICATION_PREFIX}\nbackground task settled");
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::internal(
-                notification.clone(),
-            ));
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::user(format!(
-                "{RUNTIME_NOTIFICATION_PREFIX}\noperator-authored text"
-            )));
+        agent.retain_pending_steer(inbound_control::PendingSteer::internal(
+            notification.clone(),
+        ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::user(format!(
+            "{RUNTIME_NOTIFICATION_PREFIX}\noperator-authored text"
+        )));
 
         let (unadmitted, client_visible_count) = agent.take_unadmitted_steers_with_client_count();
         assert_eq!(client_visible_count, 1);
@@ -13539,70 +14359,122 @@ ant-api03-SuperSecretModelToken12345"
     #[tokio::test]
     async fn transcript_64492_of_default_63488_uses_spare_window_but_explicit_cap_compacts() {
         const TRANSCRIPT_TOKENS: usize = 64_492;
-        for (elastic, compact, expected_requests) in [(true, true, 1), (false, true, 2), (false, false, 0)] {
+        for (elastic, compact, expected_requests) in
+            [(true, true, 1), (false, true, 2), (false, false, 0)]
+        {
             let ws = temp_ws("transcript-default-partition");
             let run = iteron_protocol::RunId("transcript-default-partition".into());
-            let rollout = Rollout::open(&ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default()).unwrap();
+            let rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
+                &run,
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
             let provider = std::sync::Arc::new(CaptureSteering::default());
-            let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(), rollout,
-                "kimi-k3-256k".into(), "sys".into(), Budget {
-                    max_turns: 4, max_usd: None, max_tokens: None, max_wall_secs: 30,
+            let mut agent = Agent::new(
+                provider.clone(),
+                Registry::read_only(&ws).unwrap(),
+                rollout,
+                "kimi-k3-256k".into(),
+                "sys".into(),
+                Budget {
+                    max_turns: 4,
+                    max_usd: None,
+                    max_tokens: None,
+                    max_wall_secs: 30,
                     max_consecutive_tool_errors: 3,
-                });
+                },
+            );
             // This fixture counts one bounded summary plus one model request. The general
             // registry fixture can select a multi-stage topology, so seal this choice explicitly.
-            pin_test_tunables_with_edits(&mut agent, [(
-                "multi_stage_summary_topology",
-                iteron_tunables::ResolutionValue::Enum { value: "single_stage".into() },
-            )]);
+            pin_test_tunables_with_edits(
+                &mut agent,
+                [(
+                    "multi_stage_summary_topology",
+                    iteron_tunables::ResolutionValue::Enum {
+                        value: "single_stage".into(),
+                    },
+                )],
+            );
             agent.workspace = ws.clone();
             agent.model_context_window = Some(262_144);
             agent.model_max_output_tokens = Some(8_192);
-            agent.context_budget_policy = iteron_ctx::ContextBudgetPolicy::for_usable_window(262_144, 8_192, 0)
-                .with_elastic_transcript(elastic);
+            agent.context_budget_policy =
+                iteron_ctx::ContextBudgetPolicy::for_usable_window(262_144, 8_192, 0)
+                    .with_elastic_transcript(elastic);
             assert_eq!(agent.context_budget_policy.transcript_tokens, 63_488);
             agent.compaction.enabled = compact;
             agent.compaction.keep_recent = 1;
             agent.compaction.coverage_check = false;
-            let history = |bytes: usize| vec![
-                Message::user_text("original task"),
-                Message { role: Role::Assistant, content: vec![Block::Text { text: "x".repeat(bytes) }] },
-                Message::user_text("older instruction"),
-                Message { role: Role::Assistant, content: vec![Block::Text { text: "recent progress".into() }] },
-                Message::user_text("continue"),
-            ];
+            let history = |bytes: usize| {
+                vec![
+                    Message::user_text("original task"),
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![Block::Text {
+                            text: "x".repeat(bytes),
+                        }],
+                    },
+                    Message::user_text("older instruction"),
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![Block::Text {
+                            text: "recent progress".into(),
+                        }],
+                    },
+                    Message::user_text("continue"),
+                ]
+            };
             // Derive an exact token fixture through the production estimator rather than assume
             // an ASCII byte/token ratio or copy the screenshot's unsupported machine settings.
             let measured = |messages: &[Message]| {
-                let estimate = agent.context_estimator.estimate_uncached("sys", messages, &[]);
+                let estimate = agent
+                    .context_estimator
+                    .estimate_uncached("sys", messages, &[]);
                 let estimate = agent.calibrated_context_estimate(estimate);
-                agent.inspect_context_budget(messages, &estimate)
+                agent
+                    .inspect_context_budget(messages, &estimate)
                     .component_tokens(iteron_ctx::ContextBudgetClass::Transcript)
             };
             let (mut low, mut high) = (0usize, TRANSCRIPT_TOKENS * 8);
             while low < high {
                 let middle = low + (high - low) / 2;
-                if measured(&history(middle)) < TRANSCRIPT_TOKENS { low = middle + 1; }
-                else { high = middle; }
+                if measured(&history(middle)) < TRANSCRIPT_TOKENS {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
             }
             let messages = history(low);
             assert_eq!(measured(&messages), TRANSCRIPT_TOKENS);
             agent.set_resume(messages).unwrap();
             let outcome = agent.run("").await;
             if expected_requests == 0 {
-                assert!(matches!(outcome, Err(KernelError::ContextBudget(ref reason))
-                    if reason.contains("64492") && reason.contains("63488")));
+                assert!(
+                    matches!(outcome, Err(KernelError::ContextBudget(ref reason))
+                    if reason.contains("64492") && reason.contains("63488"))
+                );
             } else {
                 assert_eq!(outcome.unwrap(), Outcome::Done);
             }
             let requests = provider.requests.lock().unwrap();
             assert_eq!(requests.len(), expected_requests);
             if elastic {
-                assert!(!requests[0].tools.is_empty(), "spare input capacity must not trigger a summary call");
-                let estimate = estimate_request_context(&requests[0].system, &requests[0].messages, &requests[0].tools);
+                assert!(
+                    !requests[0].tools.is_empty(),
+                    "spare input capacity must not trigger a summary call"
+                );
+                let estimate = estimate_request_context(
+                    &requests[0].system,
+                    &requests[0].messages,
+                    &requests[0].tools,
+                );
                 assert!(estimate.total_tokens + 8_192 < 262_144);
             } else if compact {
-                assert!(requests[0].tools.is_empty(), "explicit cap must still trigger bounded compaction");
+                assert!(
+                    requests[0].tools.is_empty(),
+                    "explicit cap must still trigger bounded compaction"
+                );
                 assert!(!requests[1].tools.is_empty());
             }
             drop(requests);
@@ -13819,11 +14691,14 @@ ant-api03-SuperSecretModelToken12345"
                     context_window_tokens: None,
                     image_input: Some(false),
                     routing_objectives: None,
+                    data_policy: None,
                 },
             )]),
         };
         let directory = crate::providers::ProviderDirectory::inspect_local(&[configured]).unwrap();
-        let selection = directory.resolve_model("provider-a:route-model", None).unwrap();
+        let selection = directory
+            .resolve_model("provider-a:route-model", None)
+            .unwrap();
         let capabilities = directory.selection_capabilities(&selection);
         assert_eq!(capabilities.context_window_tokens, None);
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
@@ -13886,7 +14761,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
                 permission_mode: Sourced {
                     value: PermissionMode::AcceptEdits,
-                    origin: ConfigOrigin::Builtin,
+                    origin: ConfigOrigin::Cli,
                 },
                 permission_rules_origin: None,
                 permission_rules: &rules,
@@ -13959,12 +14834,18 @@ ant-api03-SuperSecretModelToken12345"
             crate::runtime_tunables::effective_core::TaskContextBudgetSource::Explicit
         );
         let task = "a long ordinary coding request with repository detail. ".repeat(1_300);
-        assert!(estimate_request_context("sys", &[Message::user_text(&task)], &[])
-            .conversation_tokens
-            > 12_000);
+        assert!(
+            estimate_request_context("sys", &[Message::user_text(&task)], &[]).conversation_tokens
+                > 12_000
+        );
         for (label, resolved, settings, expect_dispatch) in [
             ("derived", fresh.resolved, fresh.settings, true),
-            ("explicit", explicit.resolved.clone(), explicit.settings, false),
+            (
+                "explicit",
+                explicit.resolved.clone(),
+                explicit.settings,
+                false,
+            ),
         ] {
             let provider = std::sync::Arc::new(CaptureSteering::default());
             let rollout = Rollout::open(
@@ -14019,12 +14900,14 @@ ant-api03-SuperSecretModelToken12345"
         let checkpoint = iteron_record::TunablesCheckpoint::V2(
             iteron_record::snapshot_v2_from_resolved(&explicit.resolved).unwrap(),
         );
-        let resumed = crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
-            &checkpoint,
-        )
-        .unwrap();
-        let resumed = crate::runtime_tunables::effective_core::EffectiveCoreSettings::decode(&resumed)
+        let resumed =
+            crate::runtime_tunables::effective_view::EffectiveTunablesView::from_checkpoint(
+                &checkpoint,
+            )
             .unwrap();
+        let resumed =
+            crate::runtime_tunables::effective_core::EffectiveCoreSettings::decode(&resumed)
+                .unwrap();
         assert_eq!(
             resumed.task_context_budget_source,
             crate::runtime_tunables::effective_core::TaskContextBudgetSource::Explicit
@@ -15220,6 +16103,7 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(ws);
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     #[tokio::test]
     async fn recording_harness_error_is_terminal_before_provider_dispatch() {
         struct CountingProvider(std::sync::Arc<std::sync::atomic::AtomicU32>);
@@ -15271,6 +16155,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_dispatch_gate_waits_for_provider_then_blocks_retry_until_resume() {
         struct PausableRetryProvider {
             started: tokio::sync::Notify,
@@ -15380,6 +16265,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_dispatch_gate_waits_for_mcp_then_drain_prevents_the_next_turn() {
         struct McpThenDone {
             calls: AtomicUsize,
@@ -15542,27 +16428,42 @@ ant-api03-SuperSecretModelToken12345"
                 _on_item: &mut (dyn FnMut(StreamItem) + Send),
             ) -> Result<TurnResult, ProviderError> {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Err(ProviderError::Api { status: 429, body: "transient before any output".into() })
+                Err(ProviderError::Api {
+                    status: 429,
+                    body: "transient before any output".into(),
+                })
             }
         }
         let ws = temp_ws("pre-output-retry-budget");
         let provider = std::sync::Arc::new(NeverConnected(AtomicUsize::new(0)));
         let run = iteron_protocol::RunId("pre-output-retry-budget".into());
         let rollout = Rollout::open(
-            &ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default(),
-        ).unwrap();
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
         let mut agent = Agent::new(
-            provider.clone(), Registry::read_only(&ws).unwrap(), rollout,
-            "model-a".into(), "sys".into(), Budget::default(),
+            provider.clone(),
+            Registry::read_only(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
         );
         pin_test_tunables(&mut agent);
         agent.workspace = ws.clone();
         agent.set_retry_policy(iteron_sched::BackoffPolicy {
-            base_ms: 1, cap_ms: 1, max_attempts: 2,
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
         });
         assert!(agent.run("finish answer").await.is_err());
-        assert_eq!(provider.0.load(Ordering::SeqCst), 2,
-            "exhausting request attempts must not start another request retry group as stream recovery");
+        assert_eq!(
+            provider.0.load(Ordering::SeqCst),
+            2,
+            "exhausting request attempts must not start another request retry group as stream recovery"
+        );
         std::fs::remove_dir_all(ws).ok();
     }
 
@@ -15571,63 +16472,138 @@ ant-api03-SuperSecretModelToken12345"
         struct RecoverAfterTool(AtomicUsize);
         #[async_trait::async_trait]
         impl Provider for RecoverAfterTool {
-            async fn turn(&self, request: &TurnRequest, on_item: &mut (dyn FnMut(StreamItem) + Send)) -> Result<TurnResult, ProviderError> {
+            async fn turn(
+                &self,
+                request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
                 if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                     on_item(StreamItem::TextDelta("Reading the input".into()));
                     on_item(StreamItem::ToolUseComplete(ToolUse {
-                        id: "recovered-read".into(), name: "read_file".into(),
+                        id: "recovered-read".into(),
+                        name: "read_file".into(),
                         input: serde_json::json!({"path": "input.txt"}),
                     }));
                     return Err(ProviderError::Http("connection reset by peer".into()));
                 }
                 assert!(request.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b,
                     Block::ToolResult(result) if result.tool_use_id == "recovered-read" && !result.is_error)));
-                Ok(TurnResult { blocks: vec![Block::Text { text: "recovered successfully".into() }], stop_reason: StopReason::EndTurn, usage: UsageReport::complete(Usage::default()) })
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "recovered successfully".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
             }
         }
         let ws = temp_ws("response-stream-recovery-tool");
         std::fs::write(ws.join("input.txt"), "fixture").unwrap();
         let provider = std::sync::Arc::new(RecoverAfterTool(AtomicUsize::new(0)));
         let run = iteron_protocol::RunId("response-stream-recovery-tool".into());
-        let rollout = Rollout::open(&ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default()).unwrap();
-        let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(), rollout, "model-a".into(), "sys".into(), Budget::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
         pin_test_tunables(&mut agent);
         agent.workspace = ws.clone();
-        agent.set_retry_policy(iteron_sched::BackoffPolicy { base_ms: 1, cap_ms: 1, max_attempts: 2 });
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
+        });
         assert_eq!(agent.run("read and finish").await.unwrap(), Outcome::Done);
         assert_eq!(provider.0.load(Ordering::SeqCst), 2);
         let events = recorded_events(&ws, &run);
-        assert_eq!(events.iter().filter(|e| matches!(&e.kind, EventKind::ToolDone { .. })).count(), 1);
-        assert!(events.iter().any(|e| matches!(&e.kind, EventKind::EffectUnknown { tool, .. } if tool == "provider")));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(&e.kind, EventKind::ToolDone { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(
+            |e| matches!(&e.kind, EventKind::EffectUnknown { tool, .. } if tool == "provider")
+        ));
         std::fs::remove_dir_all(ws).ok();
     }
 
     #[tokio::test]
     async fn response_stream_recovery_continues_text_and_stops_at_retry_ceiling() {
-        struct RecoverText { calls: AtomicUsize, forever: bool }
+        struct RecoverText {
+            calls: AtomicUsize,
+            forever: bool,
+        }
         #[async_trait::async_trait]
         impl Provider for RecoverText {
-            async fn turn(&self, request: &TurnRequest, on_item: &mut (dyn FnMut(StreamItem) + Send)) -> Result<TurnResult, ProviderError> {
+            async fn turn(
+                &self,
+                request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
                 let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0 || self.forever {
                     on_item(StreamItem::TextDelta("partial answer".into()));
                     return Err(ProviderError::Http("connection reset".into()));
                 }
-                assert!(request.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.contains("partial answer"))));
-                Ok(TurnResult { blocks: vec![Block::Text { text: "finished".into() }], stop_reason: StopReason::EndTurn, usage: UsageReport::complete(Usage::default()) })
+                assert!(
+                    request.messages.iter().flat_map(|m| &m.content).any(
+                        |b| matches!(b, Block::Text { text } if text.contains("partial answer"))
+                    )
+                );
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "finished".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
             }
         }
         for forever in [false, true] {
             let ws = temp_ws("response-stream-recovery-text");
-            let provider = std::sync::Arc::new(RecoverText { calls: AtomicUsize::new(0), forever });
+            let provider = std::sync::Arc::new(RecoverText {
+                calls: AtomicUsize::new(0),
+                forever,
+            });
             let run = iteron_protocol::RunId("response-stream-recovery-text".into());
-            let rollout = Rollout::open(&ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default()).unwrap();
-            let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(), rollout, "model-a".into(), "sys".into(), Budget::default());
+            let rollout = Rollout::open(
+                &ws.join(".iteron/runs"),
+                &run,
+                iteron_protocol::TenantId::default(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
+                provider.clone(),
+                Registry::read_only(&ws).unwrap(),
+                rollout,
+                "model-a".into(),
+                "sys".into(),
+                Budget::default(),
+            );
             pin_test_tunables(&mut agent);
             agent.workspace = ws.clone();
-            agent.set_retry_policy(iteron_sched::BackoffPolicy { base_ms: 1, cap_ms: 1, max_attempts: 2 });
+            agent.set_retry_policy(iteron_sched::BackoffPolicy {
+                base_ms: 1,
+                cap_ms: 1,
+                max_attempts: 2,
+            });
             let result = agent.run("finish answer").await;
-            if forever { assert!(result.is_err()); } else { assert_eq!(result.unwrap(), Outcome::Done); }
+            if forever {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), Outcome::Done);
+            }
             assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
             std::fs::remove_dir_all(ws).ok();
         }
@@ -15792,7 +16768,9 @@ ant-api03-SuperSecretModelToken12345"
                 if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
                     assert!(_request.messages.iter().flat_map(|message| &message.content).any(|block| matches!(block, Block::ToolResult(result) if result.tool_use_id == "read-1")));
                     return Ok(TurnResult {
-                        blocks: vec![Block::Text { text: "completed after reconnect".into() }],
+                        blocks: vec![Block::Text {
+                            text: "completed after reconnect".into(),
+                        }],
                         stop_reason: StopReason::EndTurn,
                         usage: UsageReport::complete(Usage::default()),
                     });
@@ -16022,6 +17000,19 @@ ant-api03-SuperSecretModelToken12345"
         struct FailedPrimary(std::sync::Arc<std::sync::atomic::AtomicU32>);
         #[async_trait::async_trait]
         impl Provider for FailedPrimary {
+            // Immutable scripted metering: this fixture never reports input above 4;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(4)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 6.
+                Ok(Some(budget.requested_max_tokens.max(6)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("primary")
             }
@@ -16468,6 +17459,19 @@ ant-api03-SuperSecretModelToken12345"
 
         #[async_trait::async_trait]
         impl Provider for PricedWinner {
+            // Immutable scripted metering: this fixture never reports input above 1;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(1)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 1.
+                Ok(Some(budget.requested_max_tokens.max(1)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("primary")
             }
@@ -16786,6 +17790,19 @@ ant-api03-SuperSecretModelToken12345"
 
         #[async_trait::async_trait]
         impl Provider for LocallyUnavailableProvider {
+            // Immutable scripted metering: this fixture never reports input above 1;
+            // its result generation is independent of the runtime's planning window.
+            fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+                Some(1)
+            }
+            fn physical_output_token_ceiling(
+                &self,
+                budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+            ) -> Result<Option<u32>, ProviderError> {
+                // The script ignores the policy's smaller output value and can still report 1.
+                Ok(Some(budget.requested_max_tokens.max(1)))
+            }
+
             fn provider_instance_id(&self) -> Option<&str> {
                 Some("provider-a")
             }
@@ -17067,6 +18084,7 @@ ant-api03-SuperSecretModelToken12345"
                 "sys".into(),
                 Budget::default(),
             );
+            agent.workspace = ws.clone();
             agent
                 .record_genesis(
                     ws.display().to_string(),
@@ -17117,6 +18135,7 @@ ant-api03-SuperSecretModelToken12345"
             Budget::default(),
         );
         resumed.set_pricing_port(pricing);
+        resumed.workspace = ws.clone();
         resumed.set_resume(messages).unwrap();
         assert_eq!(resumed.effective_max_usd(), Some(0.5));
         drop(resumed);
@@ -17457,7 +18476,7 @@ ant-api03-SuperSecretModelToken12345"
                 ..
             })
         ));
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -17504,7 +18523,7 @@ ant-api03-SuperSecretModelToken12345"
                 format!("sha256:{}", "c".repeat(64)),
             )
             .unwrap();
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         assert!(!agent.bind_selected_rate_card().unwrap());
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -17534,7 +18553,8 @@ ant-api03-SuperSecretModelToken12345"
         record_test_genesis(&mut agent, &ws);
         let (pricing, _) = test_pricing("provider-a", "model-a");
         let select = |agent: &mut Agent| {
-            agent.record_model_selection(
+            agent.record_operator_model_selection(
+                provider.clone(),
                 "provider-a".into(),
                 "model-a".into(),
                 test_pricing_digests().0,
@@ -17546,13 +18566,16 @@ ant-api03-SuperSecretModelToken12345"
         assert!(agent.bind_selected_rate_card().unwrap());
 
         select(&mut agent).unwrap();
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         assert!(matches!(
             agent.run("must wait for rebind").await,
             Err(KernelError::UnpricedUsdCeiling)
         ));
         assert!(provider.requests.lock().unwrap().is_empty());
 
+        // This is the same order as an operator's model control followed by a retry. The
+        // runtime must adopt the cold transcript, then authenticate a fresh pricing-card epoch.
+        assert!(agent.transcript_state.working().is_none());
         assert!(agent.bind_selected_rate_card().unwrap());
         assert_eq!(
             agent.follow_up("now dispatch").await.unwrap(),
@@ -17562,6 +18585,16 @@ ant-api03-SuperSecretModelToken12345"
         assert!(matches!(agent.ledger.cost_state(), CostState::Known { .. }));
 
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let bindings: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::RateCardBound { .. }))
+            .collect();
+        assert_eq!(bindings.len(), 3, "adoption authenticates a new epoch once");
+        let physical_intent = events
+            .iter()
+            .find(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .unwrap();
+        assert!(bindings[2].seq < physical_intent.seq);
         let mut replay = iteron_obs::PricingReplay::trusted(pricing);
         let mut replayed = Ledger::new();
         for event in &events {
@@ -17576,6 +18609,276 @@ ant-api03-SuperSecretModelToken12345"
         }
         assert_eq!(replayed.cost_state(), agent.ledger.cost_state());
         let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn cold_restored_host_reauthenticates_pricing_before_its_first_followup_dispatch() {
+        let ws = temp_ws("cold-host-priced-first-followup");
+        let runs = ws.join(".iteron/runs");
+        let run = iteron_protocol::RunId("cold-host-priced-first-followup".into());
+        let tenant = iteron_protocol::TenantId::default();
+        let provider = std::sync::Arc::new(CaptureSteering::default());
+        let (pricing, _) = test_pricing("provider-a", "model-a");
+        {
+            let mut original = Agent::new(
+                provider.clone(),
+                Registry::coding_agent(&ws).unwrap(),
+                Rollout::open(&runs, &run, tenant.clone()).unwrap(),
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_usd: Some(1.0),
+                    max_tokens: None,
+                    ..Budget::default()
+                },
+            );
+            // Artifact manifests bind the actual writer workspace. Keep the first producer and
+            // cold host on this same physical fixture, rather than the constructor's `.` default.
+            original.workspace = ws.clone();
+            record_test_genesis(&mut original, &ws);
+            original
+                .record_model_selection(
+                    "provider-a".into(),
+                    "model-a".into(),
+                    test_pricing_digests().0,
+                    test_pricing_digests().1,
+                )
+                .unwrap();
+            original.set_pricing_port(pricing.clone());
+            assert!(original.bind_selected_rate_card().unwrap());
+            assert_eq!(
+                original.run("first durable turn").await.unwrap(),
+                Outcome::Done
+            );
+        }
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        let rollout = Rollout::open_existing(&runs, &run, tenant).unwrap();
+        let checkpoint = rollout.tunables_checkpoint().unwrap().unwrap();
+        let messages = Agent::messages_from_rollout(rollout.path()).unwrap();
+        let mut resumed = Agent::new_with_tunables_checkpoint(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+            checkpoint,
+        )
+        .unwrap();
+        resumed.workspace = ws.clone();
+        resumed.set_pricing_port(pricing.clone());
+        resumed.set_resume(messages).unwrap();
+        assert!(resumed.provider_selection.card().is_none());
+        assert_eq!(resumed.budget.max_usd, Some(1.0));
+        assert!(resumed.transcript_state.working().is_none());
+        assert!(resumed.transcript_state.restored().is_some());
+        // This is the real host selection transaction used after cold session adoption.
+        resumed
+            .record_operator_model_selection(
+                provider.clone(),
+                "provider-a".into(),
+                "model-a".into(),
+                test_pricing_digests().0,
+                test_pricing_digests().1,
+            )
+            .unwrap();
+        assert!(resumed.bind_selected_rate_card().unwrap());
+        assert_eq!(
+            resumed.follow_up("cold host retry").await.unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(provider.requests.lock().unwrap().len(), 2);
+        let events = iteron_record::replay(resumed.rollout.path()).unwrap();
+        let last_binding = events
+            .iter()
+            .rfind(|event| matches!(event.kind, EventKind::RateCardBound { .. }))
+            .unwrap();
+        let last_intent = events
+            .iter()
+            .rfind(|event| matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .unwrap();
+        assert!(last_binding.seq < last_intent.seq);
+        let mut replayed = Ledger::new();
+        let mut replay = iteron_obs::PricingReplay::trusted(pricing);
+        for event in &events {
+            replay
+                .observe(
+                    event,
+                    resumed.rollout.tenant(),
+                    resumed.rollout.run_id(),
+                    &mut replayed,
+                )
+                .unwrap();
+        }
+        assert_eq!(replayed.cost_state(), resumed.ledger.cost_state());
+        drop(resumed);
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    /// A fixture manifest may become unavailable or return a corrupted artifact between two
+    /// host authentications. All signature and projection verification still uses the real HMAC
+    /// authority; this adapter never manufactures known cost or a successful authentication.
+    struct FollowupPricingManifest {
+        trusted: std::sync::Arc<iteron_obs::HmacPricingAuthority>,
+        failure: AtomicUsize,
+        resolutions: AtomicUsize,
+    }
+    impl iteron_obs::PricingPort for FollowupPricingManifest {
+        fn resolve_rate_card(
+            &self,
+            route: &PricingRoute,
+            at_unix_secs: u64,
+        ) -> Result<Option<SignedRateCard>, iteron_obs::PricingError> {
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            let mut signed = self.trusted.resolve_rate_card(route, at_unix_secs)?;
+            match self.failure.load(Ordering::SeqCst) {
+                1 => Ok(None),
+                2 => {
+                    if let Some(card) = &mut signed {
+                        let end = card.signature.len();
+                        let replacement = if card.signature.ends_with('0') {
+                            "1"
+                        } else {
+                            "0"
+                        };
+                        card.signature.replace_range(end - 1..end, replacement);
+                    }
+                    Ok(signed)
+                }
+                _ => Ok(signed),
+            }
+        }
+        fn verify_rate_card(
+            &self,
+            signed: &SignedRateCard,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_rate_card(signed)
+        }
+        fn project(
+            &self,
+            signed: &SignedRateCard,
+            identity: iteron_protocol::CostProjectionIdentity,
+            usage: Usage,
+            projected_at_unix_secs: u64,
+        ) -> Result<iteron_protocol::CostProjection, iteron_obs::PricingError> {
+            self.trusted
+                .project(signed, identity, usage, projected_at_unix_secs)
+        }
+        fn verify_projection(
+            &self,
+            signed: &SignedRateCard,
+            projection: &iteron_protocol::CostProjection,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_projection(signed, projection)
+        }
+        fn verify_projection_by_digest(
+            &self,
+            projection: &iteron_protocol::CostProjection,
+        ) -> Result<(), iteron_obs::PricingError> {
+            self.trusted.verify_projection_by_digest(projection)
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_followup_cannot_reuse_unbound_missing_expired_corrupt_or_uncommitted_pricing() {
+        for case in ["unbound", "missing", "expired", "corrupt", "record"] {
+            let ws = temp_ws(&format!("priced-cold-followup-{case}"));
+            let provider = std::sync::Arc::new(CaptureSteering::default());
+            let (_, mut signed) = test_pricing("provider-a", "model-a");
+            signed.rate_card.expires_at_unix_secs = 200;
+            let signed =
+                iteron_obs::sign_rate_card(signed.rate_card, "pricing-root-v1", [42; 32]).unwrap();
+            let manifest = std::sync::Arc::new(FollowupPricingManifest {
+                trusted: std::sync::Arc::new(
+                    iteron_obs::HmacPricingAuthority::new(vec![(
+                        signed,
+                        iteron_obs::HmacPricingKey::from_bytes([42; 32]),
+                    )])
+                    .unwrap(),
+                ),
+                failure: AtomicUsize::new(0),
+                resolutions: AtomicUsize::new(0),
+            });
+            let mut agent = Agent::new(
+                provider.clone(),
+                Registry::coding_agent(&ws).unwrap(),
+                Rollout::open(
+                    &ws.join(".iteron/runs"),
+                    &iteron_protocol::RunId(format!("priced-cold-followup-{case}")),
+                    iteron_protocol::TenantId::default(),
+                )
+                .unwrap(),
+                "model-a".into(),
+                "sys".into(),
+                Budget {
+                    max_usd: Some(1.0),
+                    max_tokens: None,
+                    ..Budget::default()
+                },
+            );
+            record_test_genesis(&mut agent, &ws);
+            agent
+                .record_model_selection(
+                    "provider-a".into(),
+                    "model-a".into(),
+                    test_pricing_digests().0,
+                    test_pricing_digests().1,
+                )
+                .unwrap();
+            agent.set_pricing_port(manifest.clone());
+            agent.pricing_now_unix_secs = Some(100);
+            if case != "unbound" {
+                assert!(agent.bind_selected_rate_card().unwrap());
+            }
+            match case {
+                "missing" => manifest.failure.store(1, Ordering::SeqCst),
+                "expired" => agent.pricing_now_unix_secs = Some(200),
+                "corrupt" => manifest.failure.store(2, Ordering::SeqCst),
+                "record" => {
+                    agent.fail_next_durable_append = Some(DurableAppendFault::RateCardBound)
+                }
+                _ => {}
+            }
+            let result = agent.follow_up("must remain before provider IO").await;
+            match case {
+                "unbound" | "missing" => {
+                    assert!(matches!(result, Err(KernelError::UnpricedUsdCeiling)))
+                }
+                "expired" => assert!(matches!(
+                    result,
+                    Err(KernelError::Pricing(
+                        iteron_obs::PricingError::RateCardExpired
+                    ))
+                )),
+                "corrupt" => assert!(matches!(
+                    result,
+                    Err(KernelError::Pricing(
+                        iteron_obs::PricingError::SignatureMismatch
+                    ))
+                )),
+                "record" => {
+                    assert!(matches!(result, Err(KernelError::Record(_))));
+                    assert!(agent.record_failed);
+                }
+                _ => unreachable!(),
+            }
+            assert!(agent.provider_selection.card().is_none());
+            assert!(provider.requests.lock().unwrap().is_empty());
+            assert_eq!(agent.ledger.provider_attempts, 0);
+            assert_eq!(
+                manifest.resolutions.load(Ordering::SeqCst),
+                if case == "unbound" { 0 } else { 2 }
+            );
+            assert!(
+                !iteron_record::replay(agent.rollout.path())
+                    .unwrap()
+                    .iter()
+                    .any(|event| matches!(event.kind, EventKind::TurnStart)
+                        || matches!(&event.kind, EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            );
+            drop(agent);
+            std::fs::remove_dir_all(ws).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -17909,6 +19212,17 @@ ant-api03-SuperSecretModelToken12345"
             .begin_provider_attempt_after_intent(TurnId(0))
             .unwrap();
         in_flight.pricing_now_unix_secs = Some(200);
+        let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut in_flight,
+            TurnId(0),
+            UsageReport::complete(Usage {
+                input: 1,
+                output: 1,
+                ..Usage::default()
+            }),
+            attempt.projected_at_unix_secs(),
+        )
+        .unwrap();
         in_flight
             .complete_provider_turn(
                 TurnId(0),
@@ -17918,7 +19232,7 @@ ant-api03-SuperSecretModelToken12345"
                     ..Usage::default()
                 },
                 0,
-                attempt.projected_at_unix_secs(),
+                &usage_evidence,
                 StreamTiming::default(),
                 true,
             )
@@ -18178,9 +19492,10 @@ ant-api03-SuperSecretModelToken12345"
 
         assert!(matches!(
             agent.run("continue after this response").await,
-            Err(KernelError::PricingLedger(
-                "remaining USD ceiling cannot cover the provider request upper bound"
-            ))
+            Err(KernelError::InvalidRouteMetadata {
+                field: "provider_budget_envelope",
+                reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
+            })
         ));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         assert_eq!(agent.ledger.provider_attempts, 0);
@@ -18355,7 +19670,7 @@ ant-api03-SuperSecretModelToken12345"
             agent.workspace = ws.clone();
             bind_test_pricing(&mut agent);
             assert!(
-                agent.pricing.as_ref().is_some_and(|signed| signed
+                agent.provider_selection.card().is_some_and(|signed| signed
                     .rate_card
                     .rates
                     .cache_creation_microusd_per_million
@@ -18375,8 +19690,21 @@ ant-api03-SuperSecretModelToken12345"
                 UsageReport::cache_creation_unreported(usage)
             };
             agent.ledger.attempt();
+            let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+                &mut agent,
+                TurnId(0),
+                report,
+                unix_now_secs(),
+            )
+            .unwrap();
             agent
-                .record_provider_usage(TurnId(0), report, 5, 1_000, StreamTiming::default())
+                .record_provider_usage(
+                    TurnId(0),
+                    report,
+                    5,
+                    &usage_evidence,
+                    StreamTiming::default(),
+                )
                 .unwrap();
 
             let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -18459,7 +19787,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[test]
-    fn projection_admission_failure_closes_the_shared_usd_budget() {
+    fn logical_projection_failure_preserves_known_physical_charge_truth() {
         let ws = temp_ws("projection-ledger-failure");
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
@@ -18498,12 +19826,19 @@ ant-api03-SuperSecretModelToken12345"
             ..Usage::default()
         };
         agent.ledger.attempt();
+        let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut agent,
+            TurnId(0),
+            UsageReport::complete(usage),
+            unix_now_secs(),
+        )
+        .unwrap();
         agent
             .complete_provider_turn(
                 TurnId(0),
                 usage,
                 0,
-                unix_now_secs(),
+                &usage_evidence,
                 StreamTiming::default(),
                 true,
             )
@@ -18513,20 +19848,33 @@ ant-api03-SuperSecretModelToken12345"
         // counter so the next durable projection cannot be admitted to the ledger.
         agent.ledger.turns = 0;
         agent.ledger.attempt();
+        agent
+            .usd_budget
+            .as_ref()
+            .unwrap()
+            .reserve_provider_attempt(1_000)
+            .unwrap();
+        let second_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut agent,
+            TurnId(1),
+            UsageReport::complete(usage),
+            unix_now_secs(),
+        )
+        .unwrap();
         assert!(matches!(
             agent.complete_provider_turn(
                 TurnId(1),
                 usage,
                 0,
-                unix_now_secs(),
+                &second_evidence,
                 StreamTiming::default(),
                 true
             ),
             Err(KernelError::PricingLedger(_))
         ));
         assert!(
-            agent.usd_budget_exhausted(),
-            "completed usage without an admitted projection must close the shared ceiling"
+            !agent.usd_budget_exhausted(),
+            "a logical ledger failure must preserve already verified physical charge truth"
         );
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -18559,6 +19907,17 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id: "provider-a".into(),
+                    model_id: "model-a".into(),
+                    catalog_digest: test_pricing_digests().0,
+                    capability_digest: test_pricing_digests().1,
+                },
+            }),
+            agent.provider.clone(),
+        );
         record_test_genesis(&mut agent, &ws);
         agent
             .record_model_selection(
@@ -18572,30 +19931,22 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_pricing_port(pricing);
         assert!(agent.bind_selected_rate_card().unwrap());
 
-        // Admit exactly one worst-case request plus less than this fixture's measured 16 micro-USD
-        // charge. The first child can dispatch; after its signed terminal charge, neither its
-        // continuation nor a sibling can reserve another physical request.
-        let input_bound = agent.model_context_window.unwrap();
-        let output_bound = u64::from(agent.model_max_output_tokens.unwrap());
+        // Admit the fixture's minimum physical envelope plus less than its measured 16 micro-USD
+        // charge. Funding may lower a request's output cap, so the planning window or original
+        // output policy cannot establish the refusal of a later smaller request.
+        let input_bound = provider.physical_input_token_ceiling("model-a").unwrap();
         let rates = signed.rate_card.rates;
-        let reservation = iteron_obs::pricing::projected_amount_microusd(
+        let reservation = super::provider_usage_reservation::reservation(
+            provider.usage_bound_semantics(),
             rates,
-            Usage {
-                input: input_bound,
-                output: output_bound,
-                cache_creation: input_bound,
-                cache_read: input_bound,
-                thinking: if rates.thinking_microusd_per_million > rates.output_microusd_per_million
-                {
-                    output_bound
-                } else {
-                    0
-                },
-            },
+            input_bound,
+            6, // the immutable MeteredProvider output floor, independent of requested policy
         )
-        .unwrap();
+        .unwrap()
+        .cost_microusd;
         agent.budget.max_usd = Some((reservation + 8) as f64 / 1_000_000.0);
         agent.synchronize_usd_budget().unwrap();
+        install_test_provider_governor_from_tunables(&mut agent);
 
         let first = agent.spawn_subagent("inspect the repository", 0).await;
         assert!(
@@ -18616,9 +19967,11 @@ ant-api03-SuperSecretModelToken12345"
             .await
             .unwrap_err();
         assert!(
-            second.contains(
-                "route pricing evidence failed validation; Iteron will not invent a dollar amount"
-            ),
+            second.contains("parent inference budget exhausted (max_usd)")
+                || second.contains(&KernelError::InvalidRouteMetadata {
+                field: "provider_budget_envelope",
+                reason: "remaining hard budget cannot cover physical input and minimum output upper bounds",
+            }.public_summary()),
             "unexpected sibling admission refusal: {second}"
         );
         assert_eq!(
@@ -18654,8 +20007,20 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id: "provider-a".into(),
+                    model_id: "model-a".into(),
+                    catalog_digest: test_pricing_digests().0,
+                    capability_digest: test_pricing_digests().1,
+                },
+            }),
+            agent.provider.clone(),
+        );
         record_test_genesis(&mut agent, &ws);
         bind_test_pricing(&mut agent);
+        install_test_provider_governor_from_tunables(&mut agent);
 
         assert!(
             agent
@@ -18667,12 +20032,51 @@ ant-api03-SuperSecretModelToken12345"
             agent.ledger.cost_state(),
             CostState::Unknown { .. }
         ));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let unknown = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::EffectUnknown { id, tool, .. } if tool == "subagent" => {
+                    Some((id, event.seq))
+                }
+                _ => None,
+            })
+            .expect("actual unknown child effect");
+        assert!(events.iter().any(|event| matches!(&event.kind,
+            EventKind::ChildAccountingPendingV1 { effect_id } if effect_id == unknown.0
+                && event.seq < unknown.1)));
+        assert!(!events.iter().any(|event| matches!(&event.kind,
+            EventKind::ChildAccountingResolvedV1 { effect_id } if effect_id == unknown.0)));
+        let mut replay = iteron_obs::PricingReplay::default();
+        let mut restored = Ledger::new();
+        for event in &events {
+            replay
+                .observe(
+                    event,
+                    agent.rollout.tenant(),
+                    agent.rollout.run_id(),
+                    &mut restored,
+                )
+                .unwrap();
+        }
+        assert!(matches!(restored.cost_state(), CostState::Unknown { .. }));
+        assert_eq!(
+            restored.provider_attempts, 0,
+            "unconfirmed child metrics are never fabricated"
+        );
         assert!(agent.usd_budget_exhausted());
         let second = agent
             .spawn_subagent("inspect another area", 1)
             .await
             .unwrap_err();
-        assert!(second.contains("parent inference budget exhausted (max_usd)"));
+        assert_eq!(
+            second,
+            KernelError::ContextResolution(
+                "child accounting is unavailable for finite budget admission".into()
+            )
+            .public_summary()
+        );
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
             1,
@@ -18942,11 +20346,9 @@ ant-api03-SuperSecretModelToken12345"
                 max_consecutive_tool_errors: 3,
             },
         );
-        agent
-            .pending_steers
-            .push_back(inbound_control::PendingSteer::user(
-                "already pending".into(),
-            ));
+        agent.retain_pending_steer(inbound_control::PendingSteer::user(
+            "already pending".into(),
+        ));
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         tx.try_send(
             Op::Steer {
@@ -19830,10 +21232,13 @@ ant-api03-SuperSecretModelToken12345"
         live.workspace = ws.clone();
         live.permission_mode = PermissionMode::AcceptEdits;
         record_test_genesis(&mut live, &ws);
-        let first_turn = live.current_turn_id();
+        let first_sequence = live.rollout.next_sequence();
         let uncertain = live.run("exercise uncertain effect").await;
-        assert!(matches!(uncertain, Err(KernelError::UnknownEffects { count: 1 })));
-        let terminal = live.terminal_diagnostic_snapshot(first_turn, &uncertain);
+        assert!(matches!(
+            uncertain,
+            Err(KernelError::UnknownEffects { count: 1 })
+        ));
+        let terminal = live.terminal_diagnostic_snapshot(first_sequence, &uncertain);
         assert_eq!(
             terminal.failure_code,
             Some(iteron_protocol::PolicyHarnessErrorCode::EffectUnknown)
@@ -19848,7 +21253,7 @@ ant-api03-SuperSecretModelToken12345"
                 .as_slice(),
             b"changed"
         );
-        assert_eq!(live.live_unresolved_effects, 1);
+        assert_eq!(live.effect_journal.unresolved_count(), 1);
         let turns_before_retry = live.ledger.turns;
         assert!(matches!(
             live.run("do not continue after an unobserved native effect")
@@ -20056,6 +21461,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn sole_request_user_input_creates_the_typed_terminal_without_another_turn() {
         let ws = temp_ws("request-user-input-terminal");
         let run = iteron_protocol::RunId("run-1".into());
@@ -20116,6 +21522,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn mixed_request_user_input_batch_executes_nothing_and_counts_one_error_turn() {
         let ws = temp_ws("request-user-input-mixed");
         let target = ws.join("protected.txt");
@@ -20272,7 +21679,8 @@ ant-api03-SuperSecretModelToken12345"
         let before = agent.ledger.kernel_tax().record_fsync_latency_us;
         agent.advance_turn().await.unwrap();
         assert_eq!(
-            agent.ledger.kernel_tax().record_fsync_latency_us, before,
+            agent.ledger.kernel_tax().record_fsync_latency_us,
+            before,
             "turn advance queues cache publication without a foreground fsync"
         );
         let _ = std::fs::remove_dir_all(&ws);
@@ -20679,15 +22087,36 @@ mod slot_binding_tests {
 
     fn bound(agent: &Agent) -> Vec<(&'static str, &std::sync::Arc<dyn StrategySlot>)> {
         vec![
-            ("core/context", &agent.context_strategy),
-            ("core/tool_policy", &agent.tool_policy),
-            ("core/memory", &agent.memory_strategy),
-            ("core/router", &agent.router),
-            ("core/planner", &agent.planner),
-            ("core/collaboration", &agent.collaboration),
-            ("core/scheduler", &agent.scheduler),
-            ("core/verifier", &agent.verifier),
-            ("core/model_router", &agent.model_router),
+            (
+                "core/context",
+                &agent.compiled_policy_bundle.slots().context,
+            ),
+            (
+                "core/tool_policy",
+                &agent.compiled_policy_bundle.slots().tool_policy,
+            ),
+            ("core/memory", &agent.compiled_policy_bundle.slots().memory),
+            ("core/router", &agent.compiled_policy_bundle.slots().router),
+            (
+                "core/planner",
+                &agent.compiled_policy_bundle.slots().planner,
+            ),
+            (
+                "core/collaboration",
+                &agent.compiled_policy_bundle.slots().collaboration,
+            ),
+            (
+                "core/scheduler",
+                &agent.compiled_policy_bundle.slots().scheduler,
+            ),
+            (
+                "core/verifier",
+                &agent.compiled_policy_bundle.slots().verifier,
+            ),
+            (
+                "core/model_router",
+                &agent.compiled_policy_bundle.slots().model_router,
+            ),
         ]
     }
 

@@ -2,20 +2,12 @@
 
 use super::*;
 use iteron_ctx::{
-    CacheClass, ContaminationEvidence, ContextDecision, ContextDecisionReason, ContextLedger,
-    ContextSegmentEvidence, ContextSegmentId, ContextSourceClass, ContextTransformEvidence,
-    ContextTransformKind, MemoryBudgetEvidence, MemoryCandidateDecision, MemoryCandidateEvidence,
-    MemoryDecisionTrace, MemoryFactId, MemoryInjectionEvidence, MemoryQueryEvidence, MemoryQueryId,
-    MemoryRecallAudit, MemoryRecallExclusionKind, MemoryScopeClass, MemoryScopeEvidence,
-    MemorySelectionEvidence, MemoryStoreEvidence, MemoryTierClass, MemoryVisibilityEvidence,
-    MemoryVisibilityState, TokenRange,
+    ContaminationEvidence, ContextDecision, MemoryBudgetEvidence, MemoryCandidateDecision,
+    MemoryCandidateEvidence, MemoryDecisionTrace, MemoryFactId, MemoryInjectionEvidence,
+    MemoryQueryEvidence, MemoryQueryId, MemoryRecallAudit, MemoryRecallExclusionKind,
+    MemoryScopeClass, MemoryScopeEvidence, MemorySelectionEvidence, MemoryStoreEvidence,
+    MemoryTierClass, MemoryVisibilityState,
 };
-
-/// Recalled fact count reported for a turn whose memory trace carries no injection.
-const NO_RECALLED_FACTS: u64 = 0;
-
-/// Tool output byte count reported when the result carries no textual stream to measure.
-const NO_TOOL_OUTPUT_BYTES: u64 = 0;
 
 /// Query-rewrite count reported when the turn ran without a recall audit.
 const NO_QUERY_REWRITES: u16 = 0;
@@ -31,27 +23,13 @@ const ABSENT_CANDIDATE_SCORE_PPM: i64 = 0;
 /// Rank reported for a candidate the audit's rank vector has no entry for.
 const ABSENT_CANDIDATE_RANK: u32 = 0;
 
-/// Bytes held back from `MAX_STEER_BYTES` for the operator-memory notification's own prose, so the
-/// quoted fact cannot push the assembled notification past the steer ceiling.
-const MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES: usize = 1024;
-
-/// Headroom below `window / this` raises the context high-watermark event — one order of magnitude
-/// left is the last point at which an operator can still act before compaction is forced.
-const CONTEXT_HIGH_WATERMARK_DIVISOR: u64 = 10;
 use iteron_obs::lifecycle::LifecycleCorrelation;
 use iteron_protocol::context::{ContextSegment, ContextSource};
-use iteron_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, TurnId, Usage};
+use iteron_protocol::{LifecyclePayload, TurnId};
 use sha2::{Digest, Sha256};
 
-pub(super) struct ContextRequestObservation<'a> {
-    pub(super) system: &'a str,
-    pub(super) messages: &'a [Message],
-    pub(super) tools: &'a [ToolSpec],
-    pub(super) images: &'a [iteron_protocol::ImageContent],
-    pub(super) estimate: iteron_ctx::ContextEstimate,
-    pub(super) output_reserved_tokens: u32,
-    pub(super) elapsed_us: u64,
-}
+#[cfg(test)]
+pub(super) use super::request_context_evidence::ContextRequestObservation;
 
 #[derive(Clone, Copy)]
 pub(super) struct ResolvedContextObservation<'a> {
@@ -89,55 +67,44 @@ impl Agent {
         text: &str,
         superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
-        if self.pending_steers.len() >= super::inbound_control::inbound_poll_limit() {
-            return Err("the bounded session refresh queue is full");
-        }
-        let source_turn = TurnId(self.seq_turn);
-        let destination_turn = if self.working_set.is_some() {
-            TurnId(
-                self.seq_turn
-                    .checked_add(1)
-                    .ok_or("turn identity exhausted")?,
-            )
-        } else {
-            source_turn
-        };
-        let fact_digest_sha256 = digest(text.as_bytes());
-        if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
-            self.session_memory_visibility.pop_front();
-        }
-        self.session_memory_visibility
-            .push_back(MemoryVisibilityEvidence {
-                fact_id: memory_fact_id(fact_digest_sha256),
-                fact_digest_sha256,
-                source_turn,
-                destination_turn,
-                state: MemoryVisibilityState::Scheduled,
-            });
-        self.registry.invalidate_pure_cache();
-        let fact = strict_utf8_head(
+        let workspace = self
+            .memory_workspace
+            .as_deref()
+            .ok_or("memory workspace unavailable")?;
+        let activation = super::memory_activation::MemoryActivation::capture(
+            workspace,
+            id,
             text,
-            iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES)
-                .saturating_sub(iteron_tunables::param_integer(
-                    "cli.runtime.decision_observability.memory_notification_prose_reserve_bytes",
-                    MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES,
-                )),
-        );
-        let notification = match superseded_id {
-            Some(old_id) => format!(
-                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was updated explicitly by the \
-                 operator and supersedes `{old_id}` in this session. Exact replacement fact:\n{fact}\n\n\
-                 Use the replacement when relevant and disregard the superseded wording. \
-                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
-            ),
-            None => format!(
-                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was added explicitly by the operator \
-                 and is available in this session. Exact fact:\n{fact}\n\nUse this fact when relevant. \
-                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
-            ),
-        };
-        self.pending_steers
-            .push_back(super::inbound_control::PendingSteer::internal(notification));
+            superseded_id,
+            TurnId(self.seq_turn),
+        )?;
+        self.registry.invalidate_pure_cache();
+        self.context_refresh_requested = true;
+        if let Some(old_id) = superseded_id {
+            self.inbox.retire_memory(old_id);
+        }
+        self.inbox.retire_memory(id);
+        self.inbox
+            .push(super::inbound_control::PendingSteer::memory(activation))
+            .map_err(|_| "the bounded session refresh queue is full")?;
+        Ok(())
+    }
+    pub(crate) fn deactivate_session_memory(&mut self, id: &str) -> Result<(), &'static str> {
+        self.registry.invalidate_pure_cache();
+        self.context_refresh_requested = true;
+        self.inbox.retire_memory(id);
+        let workspace = self
+            .memory_workspace
+            .as_deref()
+            .ok_or("memory workspace unavailable")?;
+        let activation = super::memory_activation::MemoryActivation::capture_deletion(
+            workspace,
+            id,
+            TurnId(self.seq_turn),
+        )?;
+        self.inbox
+            .push(super::inbound_control::PendingSteer::memory(activation))
+            .map_err(|_| "memory was deleted, but the bounded refresh queue is full")?;
         Ok(())
     }
 
@@ -145,18 +112,7 @@ impl Agent {
     /// distinct from `Used`: a control request can still stop the turn before a provider transport
     /// is admitted, in which case claiming provider exposure would be false.
     pub(super) fn observe_session_memory_activation(&mut self, turn: TurnId, task: &str) {
-        let scheduled = self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Scheduled
-            })
-            .map(|evidence| {
-                evidence.state = MemoryVisibilityState::Activated;
-                evidence.clone()
-            })
-            .collect::<Vec<_>>();
+        let scheduled = self.session_memory_visibility.activate(turn);
         if scheduled.is_empty() {
             return;
         }
@@ -208,143 +164,15 @@ impl Agent {
         );
     }
 
-    /// Commit the exact point at which serialized memory crosses the provider transport boundary.
-    /// "Used" here means provider-context exposure; it never claims the model relied on the fact.
-    pub(super) fn observe_memory_provider_exposure(&mut self, turn: TurnId) {
-        let used = self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Activated
-            })
-            .map(|evidence| {
-                evidence.state = MemoryVisibilityState::Used;
-                evidence.clone()
-            })
-            .collect::<Vec<_>>();
-        for evidence in &used {
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
-            );
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
-                    fact_id: evidence.fact_id,
-                    cited: false,
-                    used_by_tool: false,
-                    later_turns_visible: 1,
-                }),
-            );
-        }
-
-        // Stable recalled memory is serialized before request construction. Attribute it only now,
-        // once the provider boundary is actually admitted, and only once for this physical turn.
-        let recalled = self
-            .memory_traces
-            .snapshot()
-            .traces
-            .into_iter()
-            .find(|trace| trace.turn_id == turn)
-            .filter(|trace| trace.injection.is_some() && trace.attribution.is_empty())
-            .map(|trace| trace.selected)
-            .unwrap_or_default();
-        for selection in &recalled {
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
-                    fact_id: selection.fact_id,
-                    cited: false,
-                    used_by_tool: false,
-                    later_turns_visible: 0,
-                }),
-            );
-        }
-        let count = u64::try_from(used.len().saturating_add(recalled.len())).unwrap_or(u64::MAX);
-        if count > 0 {
-            for event_id in ["memory.recall.used", "memory.attribution.recorded"] {
-                self.lifecycle_event(
-                    event_id,
-                    Some(turn),
-                    LifecyclePayload {
-                        count: Some(count),
-                        reason_code: Some("provider_transport_admitted".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }
-    }
-
-    pub(super) fn observe_memory_provider_refusal(&mut self, turn: TurnId) {
-        let mut count = 0u64;
-        for evidence in self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Activated
-            })
-        {
-            evidence.state = MemoryVisibilityState::Unused;
-            count = count.saturating_add(1);
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
-            );
-        }
-        let recalled = self
-            .memory_traces
-            .snapshot()
-            .traces
-            .into_iter()
-            .find(|trace| trace.turn_id == turn)
-            .and_then(|trace| trace.injection)
-            .map(|injection| u64::from(injection.fact_count))
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.decision_observability.no_recalled_facts",
-                NO_RECALLED_FACTS,
-            ));
-        count = count.saturating_add(recalled);
-        if count > 0 {
-            self.lifecycle_event(
-                "memory.recall.unused",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(count),
-                    reason_code: Some("provider_dispatch_refused".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-    }
-
-    pub(super) fn observe_context_window_denied(&self, turn: TurnId, excess_tokens: u64) {
-        for event_id in [
-            "context.window.overflow_predicted",
-            "context.segment.budget_denied",
-        ] {
-            self.lifecycle_event(
-                event_id,
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(excess_tokens),
-                    reason_code: Some("context_window_exhausted".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-    }
-
     pub(crate) fn set_lifecycle_emitter(
         &mut self,
         emitter: iteron_obs::lifecycle::LifecycleEmitter,
     ) {
+        if let Some(owner) = &self.ordinary_extensions {
+            // Same optional SDK read Arc follows the actual session bus. Failed rebind leaves
+            // prior-generation reads unavailable; it cannot block the Main writer.
+            let _ = owner.bind_lifecycle(emitter.bus());
+        }
         self.lifecycle_emitter = Some(emitter);
     }
 
@@ -398,18 +226,6 @@ impl Agent {
         }
     }
 
-    pub(super) fn child_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        subagent_id: &str,
-        payload: LifecyclePayload,
-    ) {
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
-        self.lifecycle_event_with_correlation(event_id, correlation, payload);
-    }
-
     pub(super) fn lifecycle_correlation(&self, turn_id: Option<TurnId>) -> LifecycleCorrelation {
         LifecycleCorrelation {
             session_id: Some(iteron_protocol::SessionId(format!(
@@ -422,165 +238,16 @@ impl Agent {
         }
     }
 
-    pub(super) fn tool_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        effect_id: Option<iteron_protocol::EffectId>,
-        payload: LifecyclePayload,
-    ) {
-        let Some(emitter) = &self.lifecycle_emitter else {
-            return;
-        };
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.effect_id = effect_id;
-        if let Ok(event) = emitter.emit(event_id, correlation, payload)
-            && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
+    pub(super) fn tool_events(&self, turn: TurnId) -> super::stream_tool_events::StreamToolEvents {
+        super::stream_tool_events::StreamToolEvents {
+            frontend: self.frontend_saturation.clone(),
+            ui: self.ui_tx.clone(),
+            resident_ui: self.resident_ui_tx.clone(),
+            lifecycle: self.lifecycle_emitter.clone(),
+            lifecycle_hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+            partial_mailbox: self.persistent_mailbox.clone(),
         }
-    }
-
-    pub(super) fn observe_process_tool_started(
-        &self,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        call: &iteron_protocol::ToolUse,
-    ) {
-        let event_id = match call.name.as_str() {
-            "bash" | "process_start" => "process.spawn_requested",
-            _ => return,
-        };
-        self.tool_lifecycle_event(
-            event_id,
-            turn_id,
-            Some(effect_id),
-            LifecyclePayload::default(),
-        );
-    }
-
-    pub(super) fn observe_process_tool_terminal(
-        &self,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        tool: &str,
-        result: &ToolResult,
-        definite: bool,
-    ) {
-        let value = (!result.is_error)
-            .then(|| serde_json::from_str::<serde_json::Value>(&result.content).ok())
-            .flatten();
-        let job_id = value
-            .as_ref()
-            .and_then(|value| value.get("job_id"))
-            .and_then(serde_json::Value::as_str);
-        match tool {
-            "bash" => {
-                if definite
-                    && (result.content.starts_with("[exit ")
-                        || result.content.contains("[timed out after"))
-                {
-                    self.tool_lifecycle_event(
-                        "process.spawned",
-                        turn_id,
-                        Some(effect_id.clone()),
-                        LifecyclePayload::default(),
-                    );
-                    self.tool_lifecycle_event(
-                        "process.reaped",
-                        turn_id,
-                        Some(effect_id),
-                        LifecyclePayload {
-                            duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                } else if !definite {
-                    if result.content.contains("interrupted") {
-                        self.tool_lifecycle_event(
-                            "process.kill_sent",
-                            turn_id,
-                            Some(effect_id.clone()),
-                            LifecyclePayload::default(),
-                        );
-                    }
-                    self.tool_lifecycle_event(
-                        "process.reap_failed",
-                        turn_id,
-                        Some(effect_id),
-                        LifecyclePayload::default(),
-                    );
-                }
-            }
-            "process_start" if definite && !result.is_error => {}
-            "process_poll" if definite && !result.is_error => {
-                let output_bytes = value
-                    .as_ref()
-                    .map(|value| {
-                        ["stdout", "stderr"]
-                            .into_iter()
-                            .fold(0u64, |total, stream| {
-                                total.saturating_add(
-                                    value
-                                        .get(stream)
-                                        .and_then(|stream| stream.get("text"))
-                                        .and_then(serde_json::Value::as_str)
-                                        .map(|text| u64::try_from(text.len()).unwrap_or(u64::MAX))
-                                        .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES)),
-                                )
-                            })
-                    })
-                    .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES));
-                if output_bytes > 0 {
-                    self.process_lifecycle_event(
-                        "tool.output_chunk",
-                        turn_id,
-                        effect_id.clone(),
-                        job_id,
-                        LifecyclePayload {
-                            magnitude: Some(output_bytes),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                }
-                self.process_lifecycle_event(
-                    "background.attached",
-                    turn_id,
-                    effect_id,
-                    job_id,
-                    LifecyclePayload::default(),
-                );
-            }
-            "process_write" if definite && !result.is_error => self.process_lifecycle_event(
-                "background.input_written",
-                turn_id,
-                effect_id,
-                job_id,
-                LifecyclePayload {
-                    magnitude: value
-                        .as_ref()
-                        .and_then(|value| value.get("accepted_bytes"))
-                        .and_then(serde_json::Value::as_u64),
-                    ..LifecyclePayload::default()
-                },
-            ),
-            "process_stop" if definite && !result.is_error => {}
-            _ => {}
-        }
-    }
-
-    fn process_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        job_id: Option<&str>,
-        payload: LifecyclePayload,
-    ) {
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.effect_id = Some(effect_id);
-        correlation.job_id = job_id.map(|id| iteron_protocol::JobId(id.to_owned()));
-        self.lifecycle_event_with_correlation(event_id, correlation, payload);
     }
 
     /// Capture live context source decisions as digests and magnitudes before their bytes are
@@ -597,24 +264,9 @@ impl Agent {
             benchmark_memory_rejections: _,
             elapsed_us,
         } = observation;
-        self.context_source_evidence.clear();
-        let mut token_cursor = 0u64;
-        for evidence in &materialization.segments {
-            let mut evidence = evidence.clone();
-            evidence.elapsed_us = elapsed_us;
-            if matches!(
-                evidence.decision,
-                ContextDecision::Selected | ContextDecision::Truncated | ContextDecision::Compacted
-            ) {
-                let end = token_cursor.saturating_add(evidence.estimated_tokens);
-                evidence.token_range = Some(TokenRange {
-                    start: token_cursor,
-                    end,
-                });
-                token_cursor = end;
-            }
-            self.context_source_evidence.push(evidence);
-        }
+        let token_cursor = self
+            .context_source_evidence
+            .replace_materialized(materialization, elapsed_us);
         let selected = materialization
             .segments
             .iter()
@@ -699,27 +351,9 @@ impl Agent {
     }
 
     pub(super) fn observe_recorded_context(&mut self, turn: TurnId, text: &str, trust: Trust) {
-        let tokens = u64::try_from(self.context_estimator.estimate_text(text)).unwrap_or(u64::MAX);
-        self.context_source_evidence = vec![ContextSegmentEvidence {
-            segment_id: ContextSegmentId(0),
-            parent_segment_id: None,
-            source_class: ContextSourceClass::CompactionSummary,
-            source_digest_sha256: digest(text.as_bytes()),
-            trust,
-            ordinal: 0,
-            bytes_before: u64::try_from(text.len()).unwrap_or(u64::MAX),
-            bytes_after: u64::try_from(text.len()).unwrap_or(u64::MAX),
-            estimated_tokens: tokens,
-            actual_tokens: None,
-            token_range: Some(TokenRange {
-                start: 0,
-                end: tokens,
-            }),
-            cache_class: CacheClass::StablePrefix,
-            decision: ContextDecision::Selected,
-            reason: ContextDecisionReason::Required,
-            elapsed_us: 0,
-        }];
+        let tokens =
+            self.context_source_evidence
+                .replace_recorded(text, trust, &self.context_estimator);
         self.lifecycle_event(
             "context.source.classified",
             Some(turn),
@@ -748,534 +382,14 @@ impl Agent {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn observe_context_request(
         &self,
         turn: TurnId,
         observation: ContextRequestObservation<'_>,
     ) {
-        let ContextRequestObservation {
-            system: _system,
-            messages,
-            tools,
-            images,
-            estimate,
-            output_reserved_tokens,
-            elapsed_us,
-        } = observation;
-        let mut ledger = ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
-        let execution_window = self.execution_context_window();
-        ledger.model_context_window = execution_window;
-        ledger.output_reserved_tokens = u64::from(output_reserved_tokens);
-        ledger.usable_window =
-            execution_window.map(|window| window.saturating_sub(u64::from(output_reserved_tokens)));
-        for segment in &self.context_source_evidence {
-            ledger.record_segment(segment.clone());
-        }
-        let mut ordinal = u32::try_from(ledger.segments.len()).unwrap_or(u32::MAX);
-        record_segment(
-            &mut ledger,
-            ordinal,
-            ContextSourceClass::KernelSystem,
-            self.system.as_bytes(),
-            self.system_trust,
-            u64::try_from(self.context_estimator.estimate_text(&self.system)).unwrap_or(u64::MAX),
-            CacheClass::StablePrefix,
-        );
-        ordinal = ordinal.saturating_add(1);
-        if !tools.is_empty() {
-            let mut hasher = Sha256::new();
-            let mut bytes = 0u64;
-            for tool in tools {
-                hasher.update(tool.name.as_bytes());
-                hasher.update(tool.description.as_bytes());
-                let schema = tool.input_schema.to_string();
-                hasher.update(schema.as_bytes());
-                bytes = bytes
-                    .saturating_add(u64::try_from(tool.name.len()).unwrap_or(u64::MAX))
-                    .saturating_add(u64::try_from(tool.description.len()).unwrap_or(u64::MAX))
-                    .saturating_add(u64::try_from(schema.len()).unwrap_or(u64::MAX));
-            }
-            ledger.record_segment(ContextSegmentEvidence {
-                segment_id: ContextSegmentId(u64::from(ordinal)),
-                parent_segment_id: None,
-                source_class: ContextSourceClass::ToolSchema,
-                source_digest_sha256: hasher.finalize().into(),
-                trust: Trust::Trusted,
-                ordinal,
-                bytes_before: bytes,
-                bytes_after: bytes,
-                estimated_tokens: u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX),
-                actual_tokens: None,
-                token_range: None,
-                cache_class: CacheClass::StablePrefix,
-                decision: ContextDecision::Selected,
-                reason: ContextDecisionReason::Required,
-                elapsed_us: 0,
-            });
-            ledger.totals.tool_schema_tokens =
-                u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX);
-            ordinal = ordinal.saturating_add(1);
-        }
-        let active_task_index = messages.iter().rposition(|message| {
-            message.role == Role::User
-                && message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, Block::Text { .. }))
-        });
-        let mut lsp_tool_use_ids = std::collections::BTreeSet::new();
-        for (index, message) in messages.iter().enumerate() {
-            // Tool-result messages can contain the results of several parallel calls. Record each
-            // result as its own source so an LSP result never disappears into an ordinary mixed
-            // tool message. The exact tool-use identity, learned from the preceding request block,
-            // is the classification authority shared with RequestEstimator.
-            for block in &message.content {
-                if let Block::ToolUse(tool) = block
-                    && tool.name == "lsp_query"
-                {
-                    lsp_tool_use_ids.insert(tool.id.clone());
-                }
-            }
-            let has_tool_results = message
-                .content
-                .iter()
-                .any(|block| matches!(block, Block::ToolResult(_)));
-            if !has_tool_results {
-                let bytes = serde_json::to_vec(message).unwrap_or_default();
-                let source = if Some(index) == active_task_index {
-                    ContextSourceClass::TaskPrompt
-                } else {
-                    match message.role {
-                        Role::User => ContextSourceClass::TranscriptUser,
-                        Role::Assistant => ContextSourceClass::TranscriptAssistant,
-                    }
-                };
-                record_segment(
-                    &mut ledger,
-                    ordinal,
-                    source,
-                    &bytes,
-                    Trust::Trusted,
-                    u64::try_from(
-                        self.context_estimator
-                            .estimate_text(&String::from_utf8_lossy(&bytes)),
-                    )
-                    .unwrap_or(u64::MAX),
-                    CacheClass::Uncached,
-                );
-                ordinal = ordinal.saturating_add(1);
-                continue;
-            }
-
-            let non_results = message
-                .content
-                .iter()
-                .filter(|block| !matches!(block, Block::ToolResult(_)))
-                .collect::<Vec<_>>();
-            if !non_results.is_empty() {
-                let bytes = serde_json::to_vec(&(message.role, non_results)).unwrap_or_default();
-                let source = if Some(index) == active_task_index {
-                    ContextSourceClass::TaskPrompt
-                } else {
-                    match message.role {
-                        Role::User => ContextSourceClass::TranscriptUser,
-                        Role::Assistant => ContextSourceClass::TranscriptAssistant,
-                    }
-                };
-                record_segment(
-                    &mut ledger,
-                    ordinal,
-                    source,
-                    &bytes,
-                    Trust::Trusted,
-                    u64::try_from(
-                        self.context_estimator
-                            .estimate_text(&String::from_utf8_lossy(&bytes)),
-                    )
-                    .unwrap_or(u64::MAX),
-                    CacheClass::Uncached,
-                );
-                ordinal = ordinal.saturating_add(1);
-            }
-            for block in &message.content {
-                let Block::ToolResult(result) = block else {
-                    continue;
-                };
-                let bytes = serde_json::to_vec(block).unwrap_or_default();
-                let source = if lsp_tool_use_ids.contains(&result.tool_use_id) {
-                    ContextSourceClass::LspResult
-                } else {
-                    ContextSourceClass::TranscriptTool
-                };
-                record_segment(
-                    &mut ledger,
-                    ordinal,
-                    source,
-                    &bytes,
-                    result.trust,
-                    u64::try_from(
-                        self.context_estimator
-                            .estimate_text(&result.content)
-                            .saturating_add(8),
-                    )
-                    .unwrap_or(u64::MAX),
-                    CacheClass::Uncached,
-                );
-                ordinal = ordinal.saturating_add(1);
-            }
-        }
-        ledger.totals.tool_result_tokens =
-            u64::try_from(estimate.tool_result_tokens).unwrap_or(u64::MAX);
-        ledger.totals.lsp_result_tokens =
-            u64::try_from(estimate.lsp_result_tokens).unwrap_or(u64::MAX);
-        if let Some(file) = self.input_file_evidence {
-            ledger.record_segment(ContextSegmentEvidence {
-                segment_id: ContextSegmentId(u64::from(ordinal)),
-                parent_segment_id: None,
-                source_class: ContextSourceClass::FileAttachment,
-                source_digest_sha256: file.digest_sha256,
-                trust: Trust::Trusted,
-                ordinal,
-                bytes_before: file.bytes,
-                bytes_after: file.bytes,
-                estimated_tokens: file.estimated_tokens,
-                actual_tokens: None,
-                token_range: None,
-                cache_class: CacheClass::Uncached,
-                decision: ContextDecision::Selected,
-                reason: ContextDecisionReason::Required,
-                elapsed_us: 0,
-            });
-            ledger.totals.attachment_tokens = ledger
-                .totals
-                .attachment_tokens
-                .saturating_add(file.estimated_tokens);
-            ordinal = ordinal.saturating_add(1);
-            self.lifecycle_event(
-                "context.source.classified",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(file.count)),
-                    magnitude: Some(file.bytes),
-                    reason_code: Some("file_attachment".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        if !images.is_empty() {
-            let fallback = || {
-                let encoded_bytes = images.iter().fold(0u64, |total, image| {
-                    total
-                        .saturating_add(u64::try_from(image.data.encoded_len()).unwrap_or(u64::MAX))
-                });
-                let estimated_tokens = images.iter().fold(0u64, |total, image| {
-                    total.saturating_add(
-                        u64::try_from(
-                            self.context_estimator
-                                .estimate_image_with_provenance(image.data.encoded_len())
-                                .tokens,
-                        )
-                        .unwrap_or(u64::MAX),
-                    )
-                });
-                context_runtime::InputImageEvidence {
-                    count: u32::try_from(images.len()).unwrap_or(u32::MAX),
-                    encoded_bytes,
-                    raw_bytes: encoded_bytes.saturating_mul(3) / 4,
-                    estimated_tokens,
-                    provenance:
-                        iteron_ctx::ImageTokenEstimateProvenance::EncodedBytesConservativeFallback,
-                }
-            };
-            let image = self.input_image_evidence.unwrap_or_else(fallback);
-            ledger.record_segment(ContextSegmentEvidence {
-                segment_id: ContextSegmentId(u64::from(ordinal)),
-                parent_segment_id: None,
-                source_class: ContextSourceClass::ImageAttachment,
-                source_digest_sha256: image_attachment_digest(images),
-                trust: Trust::Trusted,
-                ordinal,
-                bytes_before: image.encoded_bytes,
-                bytes_after: image.encoded_bytes,
-                estimated_tokens: image.estimated_tokens,
-                actual_tokens: None,
-                token_range: None,
-                cache_class: CacheClass::Unknown,
-                decision: ContextDecision::Selected,
-                reason: ContextDecisionReason::Required,
-                elapsed_us: 0,
-            });
-            ledger.totals.attachment_tokens = ledger
-                .totals
-                .attachment_tokens
-                .saturating_add(image.estimated_tokens);
-            ledger.record_transform(ContextTransformEvidence {
-                kind: ContextTransformKind::Tokenize,
-                policy_id: image.provenance.policy_id().into(),
-                input_segments: image.count,
-                output_segments: image.count,
-                input_bytes: image.raw_bytes,
-                output_bytes: image.raw_bytes,
-                input_tokens: 0,
-                output_tokens: image.estimated_tokens,
-                elapsed_us: 0,
-            });
-            self.lifecycle_event(
-                "context.source.classified",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(image.count)),
-                    magnitude: Some(image.encoded_bytes),
-                    reason_code: Some("image_attachment".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        ledger.record_transform(ContextTransformEvidence {
-            kind: ContextTransformKind::Serialize,
-            policy_id: "core/context@1".into(),
-            input_segments: u32::try_from(ledger.segments.len()).unwrap_or(u32::MAX),
-            output_segments: u32::try_from(ledger.segments.len()).unwrap_or(u32::MAX),
-            input_bytes: ledger.totals.bytes,
-            output_bytes: ledger.totals.bytes,
-            input_tokens: u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX),
-            output_tokens: u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX),
-            elapsed_us,
-        });
-        ledger.cache.stable_prefix_tokens =
-            u64::try_from(estimate.system_tokens.saturating_add(estimate.tool_tokens))
-                .unwrap_or(u64::MAX);
-        ledger.cache.uncached_tokens = u64::try_from(estimate.total_tokens)
-            .unwrap_or(u64::MAX)
-            .saturating_sub(ledger.cache.stable_prefix_tokens);
-        // The request estimator is the single accounting pass used for admission. Segment-level
-        // classification may overlap (a file is also serialized inside a transcript message), so
-        // the aggregate must remain that authoritative request estimate rather than their sum.
-        ledger.totals.estimated_tokens = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
-        let segment_count = u64::try_from(ledger.segments.len()).unwrap_or(u64::MAX);
-        let stable_prefix_tokens = ledger.cache.stable_prefix_tokens;
-        let headroom = ledger.headroom_tokens();
-        self.context_ledgers.publish(ledger);
-        for event_id in ["context.segment.created", "context.segment.ordered"] {
-            self.lifecycle_event(
-                event_id,
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(segment_count),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.lifecycle_event(
-            "context.segment.budget_granted",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if let Some(window) = execution_window {
-            self.lifecycle_event(
-                "context.window.capacity_resolved",
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(window),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.lifecycle_event(
-            "context.window.output_reserved",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(u64::from(output_reserved_tokens)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if let Some(headroom) = headroom {
-            self.lifecycle_event(
-                "context.window.headroom_updated",
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(headroom),
-                    ..LifecyclePayload::default()
-                },
-            );
-            if execution_window.is_some_and(|window| {
-                headroom.saturating_mul(iteron_tunables::param_integer(
-                    "cli.runtime.decision_observability.context_high_watermark_divisor",
-                    CONTEXT_HIGH_WATERMARK_DIVISOR,
-                )) < window
-            }) {
-                self.lifecycle_event(
-                    "context.window.high_watermark",
-                    Some(turn),
-                    LifecyclePayload {
-                        magnitude: Some(headroom),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }
-        self.lifecycle_event(
-            "context.tool_schema.admitted",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(tools.len()).unwrap_or(u64::MAX)),
-                magnitude: Some(u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.stable_prefix.computed",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(stable_prefix_tokens),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.cache_region.classified",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(stable_prefix_tokens),
-                reason_code: Some("cache_candidate".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.request.serialized",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(messages.len()).unwrap_or(u64::MAX)),
-                duration_us: Some(elapsed_us),
-                magnitude: Some(u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-    }
-
-    pub(super) fn observe_context_usage(&mut self, turn: TurnId, usage: Usage) {
-        use iteron_ctx::{ContextObservation, ContextObserver};
-        let actual_input_tokens = usage
-            .input
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_creation);
-        let matching_ledger = self
-            .context_ledgers
-            .snapshot()
-            .ledgers
-            .into_iter()
-            .find(|ledger| ledger.turn_id == turn);
-        let estimated_input_tokens = matching_ledger
-            .as_ref()
-            .map(|ledger| ledger.totals.estimated_tokens);
-        let uncalibrated_input_tokens = self.take_token_estimate_baseline(turn);
-        if let Some(mut ledger) = matching_ledger {
-            // Provider usage is the first authority that can distinguish an actual cache hit,
-            // cache population, and uncached prefill. Replace the pre-dispatch estimate in the
-            // same bounded turn slot instead of leaving those three public counters at zero.
-            ledger.totals.actual_input_tokens = Some(actual_input_tokens);
-            ledger.cache.cache_read_tokens = usage.cache_read;
-            ledger.cache.cache_write_tokens = usage.cache_creation;
-            ledger.cache.uncached_tokens = usage.input;
-            self.context_ledgers.publish(ledger);
-        } else {
-            self.context_ledgers.observe(
-                turn,
-                ContextObservation::ProviderUsage {
-                    actual_input_tokens,
-                    cache_read_tokens: usage.cache_read,
-                    cache_write_tokens: usage.cache_creation,
-                    uncached_tokens: usage.input,
-                },
-            );
-        }
-        self.lifecycle_event(
-            "context.tokenizer.actual_observed",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(actual_input_tokens),
-                ..LifecyclePayload::default()
-            },
-        );
-        if let Some(estimated) = estimated_input_tokens {
-            let (provider_id, model_id) = self.token_calibration_route();
-            let calibration = uncalibrated_input_tokens.and_then(|baseline| {
-                self.token_calibration
-                    .observe_actual_input(provider_id, model_id, baseline, actual_input_tokens)
-                    .ok()
-            });
-            self.lifecycle_event(
-                "context.tokenizer.error_calculated",
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(estimated.abs_diff(actual_input_tokens)),
-                    outcome_code: Some(
-                        match estimated.cmp(&actual_input_tokens) {
-                            std::cmp::Ordering::Less => "underestimated",
-                            std::cmp::Ordering::Equal => "exact",
-                            std::cmp::Ordering::Greater => "overestimated",
-                        }
-                        .into(),
-                    ),
-                    ..LifecyclePayload::default()
-                },
-            );
-            match calibration {
-                Some(observation) => self.lifecycle_event(
-                    "context.tokenizer.error_calculated",
-                    Some(turn),
-                    LifecyclePayload {
-                        magnitude: Some(observation.error_ppm),
-                        outcome_code: Some(
-                            if observation.drifted {
-                                "drifted_conservative"
-                            } else {
-                                "ewma_updated"
-                            }
-                            .into(),
-                        ),
-                        count: Some(observation.ratio_ppm),
-                        reason_code: Some("calibration_updated".into()),
-                        ..LifecyclePayload::default()
-                    },
-                ),
-                None => self.lifecycle_event(
-                    "context.tokenizer.error_calculated",
-                    Some(turn),
-                    LifecyclePayload {
-                        outcome_code: Some("calibration_rejected".into()),
-                        ..LifecyclePayload::default()
-                    },
-                ),
-            }
-        }
-        self.lifecycle_event(
-            "context.request.usage_reconciled",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(usage.input),
-                ..LifecyclePayload::default()
-            },
-        );
-        for (reason_code, tokens) in [
-            ("cache_read", usage.cache_read),
-            ("cache_write", usage.cache_creation),
-            ("cache_miss", usage.input),
-        ] {
-            if tokens > 0 {
-                self.lifecycle_event(
-                    "context.cache_region.classified",
-                    Some(turn),
-                    LifecyclePayload {
-                        magnitude: Some(tokens),
-                        reason_code: Some(reason_code.into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }
+        self.request_context_publication(observation.messages)
+            .publish(turn, observation);
     }
 
     fn observe_memory_resolution(&self, observation: &ResolvedContextObservation<'_>) {
@@ -1534,7 +648,7 @@ impl Agent {
                             .copied()
                             .unwrap_or(iteron_ctx::SCORE_SCALE),
                     ),
-                    confidence_ppm: 0,
+                    confidence_ppm: i64::from(candidate.confidence_ppm),
                     combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(
                         iteron_tunables::param_integer(
                             "cli.runtime.decision_observability.absent_candidate_score_ppm",
@@ -1842,34 +956,6 @@ impl Agent {
     }
 }
 
-fn record_segment(
-    ledger: &mut ContextLedger,
-    ordinal: u32,
-    source_class: ContextSourceClass,
-    bytes: &[u8],
-    trust: Trust,
-    estimated_tokens: u64,
-    cache_class: CacheClass,
-) {
-    ledger.record_segment(ContextSegmentEvidence {
-        segment_id: ContextSegmentId(u64::from(ordinal)),
-        parent_segment_id: None,
-        source_class,
-        source_digest_sha256: digest(bytes),
-        trust,
-        ordinal,
-        bytes_before: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        bytes_after: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        estimated_tokens,
-        actual_tokens: None,
-        token_range: None,
-        cache_class,
-        decision: ContextDecision::Selected,
-        reason: ContextDecisionReason::Required,
-        elapsed_us: 0,
-    });
-}
-
 fn memory_fact_id(digest: [u8; 32]) -> MemoryFactId {
     let mut head = [0u8; 8];
     head.copy_from_slice(&digest[..8]);
@@ -1885,44 +971,4 @@ fn memory_tier(trust: Trust) -> MemoryTierClass {
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
-}
-
-/// Ordered, content-addressed identity for the exact neutral image payloads sent on this turn.
-/// The media type and explicit lengths make the framing unambiguous; hashing only aggregate byte
-/// length would make unrelated same-size images indistinguishable in the context ledger.
-fn image_attachment_digest(images: &[iteron_protocol::ImageContent]) -> [u8; 32] {
-    const DOMAIN: &[u8] = b"iteron-context-image-attachments-v1\0";
-    let mut hasher = Sha256::new();
-    hasher.update(DOMAIN);
-    hasher.update((images.len() as u64).to_le_bytes());
-    for image in images {
-        let media_type = image.media_type.as_str().as_bytes();
-        let encoded = image.data.as_str().as_bytes();
-        hasher.update((media_type.len() as u64).to_le_bytes());
-        hasher.update(media_type);
-        hasher.update((encoded.len() as u64).to_le_bytes());
-        hasher.update(encoded);
-    }
-    hasher.finalize().into()
-}
-
-#[cfg(test)]
-mod image_digest_tests {
-    use super::image_attachment_digest;
-    use iteron_protocol::{ImageContent, ImageMediaType};
-
-    #[test]
-    fn image_attachment_commitment_distinguishes_same_size_content_and_order() {
-        let first = ImageContent::new(ImageMediaType::Png, "AAAA").unwrap();
-        let second = ImageContent::new(ImageMediaType::Png, "AQID").unwrap();
-        assert_eq!(first.data.encoded_len(), second.data.encoded_len());
-        assert_ne!(
-            image_attachment_digest(std::slice::from_ref(&first)),
-            image_attachment_digest(std::slice::from_ref(&second)),
-        );
-        assert_ne!(
-            image_attachment_digest(&[first.clone(), second.clone()]),
-            image_attachment_digest(&[second, first]),
-        );
-    }
 }

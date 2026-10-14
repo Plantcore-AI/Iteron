@@ -1,6 +1,7 @@
 //! First-class file submission admission and content-free context provenance.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// Content-free provenance for file bytes carried by one top-level submission.
 ///
@@ -66,7 +67,7 @@ impl Agent {
         iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
         self.stage_follow_up_transcript().await?;
-        self.verify_attempts = 0;
+        self.verification_state.reset_attempts();
         self.run_files(text, images, files).await
     }
 }

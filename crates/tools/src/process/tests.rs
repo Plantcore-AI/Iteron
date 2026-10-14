@@ -632,11 +632,18 @@ async fn concurrent_stop_and_write_never_drop_an_accepted_control_reply() {
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
         Ok(started) => started,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
@@ -718,7 +725,7 @@ async fn detached_session_cannot_outlive_the_reported_job_terminal() {
     cleanup(&root);
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 #[tokio::test]
 async fn unsupported_platform_refuses_detached_session_oracle_before_spawn() {
     let root = temp_root("unsupported-detached-session");
@@ -780,11 +787,18 @@ async fn aborted_controller_reports_cleanup_unknown_and_kills_its_group() {
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
         Ok(started) => started,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
@@ -846,7 +860,7 @@ async fn dropping_exec_yield_kills_and_reaps_the_process_group() {
     tokio::select! {
         () = armed.notified() => {}
         result = &mut running => match result.unwrap() {
-            Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+            Err(ActionError::Definite(error) | ActionError::Refused(iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable, error)) if error.contains("unsupported") => {
                 cleanup(&root);
                 return;
             }
@@ -906,11 +920,18 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
     {
         Ok(value) => value,
-        Err(ActionError::Definite(error)) if error.contains("unsupported") => {
+        Err(
+            ActionError::Definite(error)
+            | ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+                error,
+            ),
+        ) if error.contains("unsupported") => {
             cleanup(&root);
             return;
         }
@@ -923,6 +944,7 @@ async fn job_ids_are_nonce_scoped_monotonic_and_foreign_runtime_ids_fail_loud() 
             super::DEFAULT_PTY_ROWS,
             super::DEFAULT_PTY_COLS,
             installed_launch(&root),
+            true,
         )
         .await
         .unwrap();

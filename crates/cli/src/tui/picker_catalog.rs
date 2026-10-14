@@ -1,5 +1,5 @@
 use super::*;
-use crate::providers::ProviderEntry;
+use crate::providers::ProviderCatalogEntry;
 
 /// The providers `/model` offers, grouped by the service they actually reach.
 ///
@@ -8,10 +8,10 @@ use crate::providers::ProviderEntry;
 /// and the provider the session is currently routing to is always kept even if it would have been
 /// dropped, because the picker must be able to show the operator where he already is.
 fn offered_service_groups<'a>(
-    directory: &'a ProviderDirectory,
+    directory: &'a ProviderCatalogView,
     current_provider: &str,
-) -> Vec<Vec<&'a ProviderEntry>> {
-    let mut groups: Vec<Vec<&ProviderEntry>> = Vec::new();
+) -> Vec<Vec<&'a ProviderCatalogEntry>> {
+    let mut groups: Vec<Vec<&ProviderCatalogEntry>> = Vec::new();
     for entry in directory
         .entries()
         .iter()
@@ -32,7 +32,7 @@ fn offered_service_groups<'a>(
 }
 
 pub(super) fn model_picker_items(
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     current_provider: &str,
     current_model: &str,
 ) -> Vec<PickItem> {
@@ -249,31 +249,49 @@ pub(super) fn model_picker_items(
     items
 }
 
-/// Build the `/mode` picker. The code clause is *derived* from the same gate the runtime consults,
-/// never asserted: a session rule (`--allow-code`, `/permissions allow code_executing`) outranks the
-/// mode table, so a hard-coded "code still gated" mislabels every session that carries such a grant.
-pub(super) fn mode_picker_items(current: PermissionMode, rules: &PermissionRules) -> Vec<PickItem> {
-    let code_clause = |mode: PermissionMode| match iteron_protocol::gate(
-        mode,
-        rules,
-        "bash",
-        Capability::CodeExecuting,
-    ) {
-        Verdict::Auto => "code auto",
-        Verdict::Deny => "code denied",
-        Verdict::Ask => "code still gated",
+/// Describe the permission gate, including the session's immutable bypass. Selecting a mode
+/// changes its overlay, not bypass authority; explicit denies and outer ceilings still apply.
+pub(super) fn mode_picker_items(
+    current: PermissionMode,
+    rules: &PermissionRules,
+    bypass: bool,
+) -> Vec<PickItem> {
+    let code_clause = |mode: PermissionMode| {
+        let verdict = if bypass && mode != PermissionMode::Plan {
+            if rules.tool_rule("bash") == Some(Verdict::Deny)
+                || rules.cap_rule(Capability::CodeExecuting) == Some(Verdict::Deny)
+            {
+                Verdict::Deny
+            } else {
+                Verdict::Auto
+            }
+        } else {
+            iteron_protocol::gate(mode, rules, "bash", Capability::CodeExecuting)
+        };
+        match verdict {
+            Verdict::Auto => "code auto",
+            Verdict::Deny => "code denied",
+            Verdict::Ask => "code still gated",
+        }
+    };
+    let active_hint = |mode, gated_hint| {
+        if bypass {
+            format!(
+                "bypass active; {}; explicit denies and limits apply",
+                code_clause(mode)
+            )
+        } else {
+            format!("{gated_hint}; {}", code_clause(mode))
+        }
     };
     let modes = [
         (
             PermissionMode::Default,
-            format!(
-                "edits prompt live; {}",
-                code_clause(PermissionMode::Default)
-            ),
+            active_hint(PermissionMode::Default, "edits prompt live"),
         ),
         (
             PermissionMode::AcceptEdits,
-            format!("edits auto; {}", code_clause(PermissionMode::AcceptEdits)),
+            active_hint(PermissionMode::AcceptEdits, "edits auto"),
         ),
         (
             PermissionMode::Plan,
@@ -281,7 +299,10 @@ pub(super) fn mode_picker_items(current: PermissionMode, rules: &PermissionRules
         ),
         (
             PermissionMode::Yolo,
-            "auto-approve (still asks for trust-mutating + egress)".to_string(),
+            active_hint(
+                PermissionMode::Yolo,
+                "trust and external actions follow permission rules",
+            ),
         ),
     ];
     modes
@@ -302,8 +323,10 @@ pub(super) fn mode_picker_items(current: PermissionMode, rules: &PermissionRules
 /// label reads as a promise to prompt, which is false. Say both rather than either.
 pub(super) fn permission_mode_row_value(session: &Session) -> String {
     let label = session.permission_mode().label().to_string();
-    if session.bypass_permissions() {
-        format!("{label} (bypassed: every tool auto-approves)")
+    if session.permission_mode() == PermissionMode::Plan {
+        format!("{label} (read-only)")
+    } else if session.bypass_permissions() {
+        format!("{label} (bypass active; explicit denies and limits apply)")
     } else {
         label
     }
@@ -328,8 +351,8 @@ pub(super) fn permission_picker_items(rules: &PermissionRules, bypass: bool) -> 
     if bypass {
         items.push(PickItem {
             label: "Permission gate → BYPASSED for this session".into(),
-            hint: "every tool auto-approves; the rows below take effect only under \
-                   --ask-permissions, except an explicit deny, which still applies"
+            hint: "asking decisions auto-approve unless Plan, explicit denies or authority limits \
+                   prevent them; use --ask-permissions in a new session to restore approval gates"
                 .into(),
             is_current: false,
             action: PickAction::Info,
@@ -339,7 +362,7 @@ pub(super) fn permission_picker_items(rules: &PermissionRules, bypass: bool) -> 
             expanded: false,
             enabled: false,
             disabled_reason: Some(
-                "started with the default bypass; re-run with --ask-permissions to restore the gate"
+                "this session retains its bypass; start a new session with --ask-permissions for approval gates"
                     .into(),
             ),
         });

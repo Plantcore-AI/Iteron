@@ -1,3 +1,4 @@
+use super::artifact_verification::verify_program;
 use super::{
     ImplementationRuntime, ImplementationRuntimeError, Input, Output, RuntimeEvidence, RuntimeState,
 };
@@ -13,9 +14,7 @@ use crate::implementation_protocol::{
 use iteron_tunables::{
     CapabilitySeamNode, ModuleId, capability_seam_graph, validate_capability_seam_graph,
 };
-use sha2::Digest as _;
 use std::collections::VecDeque;
-use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -101,11 +100,17 @@ impl OutputQueueBudget {
 impl ImplementationRuntime {
     /// Spawn a direct child from a registry-minted plan after revalidating its content binding.
     pub fn launch(plan: ProcessLaunchPlan) -> Result<Self, ImplementationRuntimeError> {
+        let started_at = Instant::now();
         validate_plan(&plan)?;
+        let end = started_at
+            .checked_add(Duration::from_millis(plan.runtime_deadline_ms()))
+            .ok_or(ImplementationRuntimeError::InvalidPlan(
+                "invalid runtime deadline",
+            ))?;
         let seam = seam(plan.module())?;
         let expected = normalized_digest(plan.artifact_sha256())?;
         let program = canonical_program(plan.program())?;
-        verify_program(&program, expected)?;
+        verify_program(&program, expected, end)?;
 
         let mut command = Command::new(&program);
         command
@@ -117,7 +122,7 @@ impl ImplementationRuntime {
         configure_process_group(&mut command);
         let mut child = command.spawn().map_err(|error| io("spawn", error))?;
         let child_pid = Some(child.id());
-        if let Err(error) = verify_program(&program, expected) {
+        if let Err(error) = verify_program(&program, expected, end) {
             kill_process_group(child_pid);
             kill_and_reap(&mut child);
             return Err(error);
@@ -162,7 +167,7 @@ impl ImplementationRuntime {
             input: Some(input_tx),
             output: output_rx,
             threads,
-            started_at: Instant::now(),
+            started_at,
             next_request: 1,
             stdin_bytes: 0,
             evidence: RuntimeEvidence {
@@ -366,30 +371,6 @@ fn normalized_digest(value: &str) -> Result<&str, ImplementationRuntimeError> {
         Err(ImplementationRuntimeError::InvalidPlan(
             "invalid artifact SHA-256",
         ))
-    }
-}
-
-fn verify_program(path: &Path, expected: &str) -> Result<(), ImplementationRuntimeError> {
-    let mut file = File::open(path).map_err(|error| io("open executable", error))?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| io("hash executable", error))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let actual = hex::encode(hasher.finalize());
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(ImplementationRuntimeError::ContentMismatch {
-            expected: expected.to_owned(),
-            actual,
-        })
     }
 }
 

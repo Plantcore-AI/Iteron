@@ -1,4 +1,8 @@
 use super::*;
+use iteron_protocol::Block;
+#[path = "resume/adoption_diagnostic.rs"]
+mod adoption_diagnostic;
+use adoption_diagnostic::{Stage as AdoptionStage, refused as adoption_refused};
 
 /// Approval sequence a replay starts from when the journal holds no `Approval` event, so the first
 /// approval of the resumed run still mints a strictly increasing id.
@@ -8,6 +12,8 @@ const NO_APPROVAL_SEQ: u64 = 0;
 /// validate identities, allocate bounded state, and append a monotone USD tightening to the target
 /// journal; applying it to the resident `Agent` is assignments only.
 struct StagedAdoptedResume {
+    cohort_installation: Option<iteron_protocol::agent_cohort::AgentCohortInstallationV1>,
+    task_plan: super::task_plan::TaskPlanOwner,
     messages: Vec<Message>,
     redacted_tool_results: u32,
     redaction_count_saturated: bool,
@@ -23,9 +29,12 @@ struct StagedAdoptedResume {
     seq_turn: u32,
     last_compaction_turn: Option<u64>,
     approval_seq: u64,
-    selected_route: Option<SelectedRoute>,
+    selected_route: super::provider_selection::RecoveredProviderSelection,
     ledger: Ledger,
     observed_trust: Trust,
+    turn_publications: turn_publication::TurnPublicationOwner,
+    verification_tasks: std::sync::Arc<bounded_verify::VerificationTaskRegistry>,
+    policy_evidence: policy_evidence_recorder::PolicyEvidenceRecorder,
 }
 
 impl Agent {
@@ -44,17 +53,35 @@ impl Agent {
         // (replayed up to the fork point and VERIFIED against the recorded parent_hash_at_seq, so a
         // tampered parent is detected — ADR-008 §4). A non-forked run's genesis has no parent, so
         // this returns just its own chain (identical to a plain replay).
-        let events = replay_logical_rollout(path)?;
-        Ok(project_messages_from_events(events))
+        let events = replay_scoped_rollout(path)?;
+        Ok(super::transcript::project_messages_from_scoped_events(
+            events,
+        ))
     }
 
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
     pub fn set_resume(&mut self, messages: Vec<Message>) -> Result<(), KernelError> {
+        self.validate_ordinary_extension_adoption(self.rollout.path())?;
+        if self.persistent_agents.is_some() {
+            return Err(KernelError::AgentControl(
+                iteron_agents::ControllerError::Invalid(
+                    "installed persistent agents require their existing session owner; restart to resume another run",
+                ),
+            ));
+        }
+
+        self.cohort_installation = super::cold_cohort::CohortReplay::load(
+            self.rollout.path(),
+            self.rollout.tenant(),
+            self.rollout.run_id(),
+        )?
+        .installation;
+        self.cohort_replay_checked = true;
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // An explicit resume replaces the transcript outright; a working set left over from an
         // earlier run in this process must never outrank it on the next follow-up.
-        self.working_set = None;
-        self.last_compaction_turn = None;
+        self.transcript_state.replace_working(None);
+        self.compaction_state.restore_same_run(None);
         // Redaction is applied on the RECORD path (ADR-008 §1). Resuming from that record can
         // therefore give the model masked tool output where the live turn saw the original bytes.
         // Emit only a bounded count through the injected port; neither transcript content nor a
@@ -88,6 +115,28 @@ impl Agent {
         // unexpectedly fails, do not widen authority on the resume path.
         match replay_scoped_rollout(self.rollout.path()) {
             Ok(scoped_events) => {
+                self.task_plan = super::task_plan::TaskPlanOwner::recover(
+                    scoped_events
+                        .iter()
+                        .filter(|scoped| &scoped.run_id == self.rollout.run_id())
+                        .map(|scoped| &scoped.event),
+                )
+                .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
+                let verification_tasks = bounded_verify::VerificationTaskRegistry::new();
+                verification_tasks.recover(
+                    self.rollout.run_id(),
+                    scoped_events
+                        .iter()
+                        .filter(|scoped| &scoped.run_id == self.rollout.run_id())
+                        .map(|scoped| &scoped.event),
+                );
+                self.verification_tasks = verification_tasks;
+                self.turn_publications =
+                    turn_publication::TurnPublicationOwner::from_verified_scoped(
+                        &scoped_events,
+                        self.rollout.tenant(),
+                        self.rollout.run_id(),
+                    );
                 let mut committed_provider_run_notices = std::collections::BTreeSet::new();
                 for scoped in &scoped_events {
                     if &scoped.run_id != self.rollout.run_id() {
@@ -220,10 +269,14 @@ impl Agent {
                     .map(|event| event.turn.0)
                     .max()
                     .map_or(0, |turn| turn.saturating_add(1));
-                self.last_compaction_turn = events.iter().rev().find_map(|event| {
-                    matches!(event.kind, EventKind::Compaction { .. })
+                self.compaction_state
+                    .restore_same_run(events.iter().rev().find_map(|event| {
+                        matches!(
+                            event.kind,
+                            EventKind::Compaction { .. } | EventKind::CompactionV2 { .. }
+                        )
                         .then_some(u64::from(event.turn.0))
-                });
+                    }));
                 self.approval_seq = events
                     .iter()
                     .filter_map(|event| match &event.kind {
@@ -235,24 +288,10 @@ impl Agent {
                         "cli.runtime.resume.no_approval_seq",
                         NO_APPROVAL_SEQ,
                     ));
-                self.selected_route = events.iter().rev().find_map(|event| match &event.kind {
-                    EventKind::ModelSelected {
-                        provider_id,
-                        model_id,
-                        catalog_digest,
-                        capability_digest,
-                    } => Some(SelectedRoute {
-                        route: PricingRoute {
-                            provider_id: provider_id.clone(),
-                            model_id: model_id.clone(),
-                            catalog_digest: catalog_digest.clone(),
-                            capability_digest: capability_digest.clone(),
-                        },
-                    }),
-                    _ => None,
-                });
-                self.selected_provider =
-                    self.selected_route.as_ref().map(|_| self.provider.clone());
+                let recovered_selection =
+                    super::provider_selection::ProviderSelectionOwner::recover_verified(&events)?;
+                self.provider_selection
+                    .adopt_verified(recovered_selection, self.provider.clone());
                 // A newly constructed Agent has an empty in-memory ledger. Rebuild completed
                 // usage/cost and admitted provider attempts from the verified logical record so
                 // resume cannot reset max_turns/max_usd. A live TUI follow-up already owns a
@@ -261,8 +300,8 @@ impl Agent {
                 if self.ledger.provider_attempts == 0 && self.ledger.turns == 0 {
                     let mut restored = Ledger::new();
                     let mut pricing_replay = self
-                        .pricing_port
-                        .as_ref()
+                        .provider_selection
+                        .pricing_port()
                         .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
                         .unwrap_or_default();
                     for scoped in &scoped_events {
@@ -282,14 +321,28 @@ impl Agent {
                 self.observed_trust = Trust::governing(events.into_iter().flat_map(|event| {
                     match event.kind {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
-                        EventKind::Message { message } => message
-                            .content
-                            .into_iter()
-                            .filter_map(|block| match block {
-                                Block::ToolResult(result) => Some(result.trust),
-                                _ => None,
-                            })
-                            .collect(),
+                        EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
+                        kind @ EventKind::AgentInputAdmittedV1 { .. } => {
+                            super::persistent_agents::input_admission::replay_reference_trust(&kind)
+                                .into_iter()
+                                .collect()
+                        }
+                        kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
+                            super::memory_activation::replay_reference_trust(&kind)
+                                .into_iter()
+                                .collect()
+                        }
+                        EventKind::Message { message } | EventKind::MessageV2 { message } => {
+                            message
+                                .content
+                                .into_iter()
+                                .filter_map(|block| match block {
+                                    Block::ToolResult(result) => Some(result.trust),
+                                    Block::ToolImage(image) => Some(image.trust()),
+                                    _ => None,
+                                })
+                                .collect()
+                        }
                         _ => Vec::new(),
                     }
                 }))
@@ -307,7 +360,7 @@ impl Agent {
                     runtime_policy_overlay::RuntimePolicyProvenance::default();
             }
         }
-        self.resumed = Some(messages);
+        self.transcript_state.replace_restored(Some(messages));
         Ok(())
     }
 
@@ -322,6 +375,7 @@ impl Agent {
         effective_content: &crate::runtime_tunables::effective_content::EffectiveContentIdentities,
         effective_core: &crate::runtime_tunables::effective_core::EffectiveCoreSettings,
         compiled_policy_bundle: &crate::bundle_adapter::CompiledPolicyBundle,
+        tunables_digest_sha256: &str,
     ) -> Result<StagedAdoptedResume, KernelError> {
         effective_core
             .budget
@@ -387,9 +441,9 @@ impl Agent {
             .environment
             .matches(recorded_environment.as_ref())
         {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted runtime environment differs from its immutable environment_snapshot identity"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::RecordedEnvironment,
+                KernelError::ExecutionPolicy("adopted runtime environment differs from its immutable environment_snapshot identity".into()),
             ));
         }
 
@@ -512,7 +566,11 @@ impl Agent {
             .runtime_policy_provenance
             .replay_preserving_handle(&events, RuntimePolicyObservation::ResumeReplay);
         let last_compaction_turn = events.iter().rev().find_map(|event| {
-            matches!(event.kind, EventKind::Compaction { .. }).then_some(u64::from(event.turn.0))
+            matches!(
+                event.kind,
+                EventKind::Compaction { .. } | EventKind::CompactionV2 { .. }
+            )
+            .then_some(u64::from(event.turn.0))
         });
         let approval_seq = events
             .iter()
@@ -525,27 +583,12 @@ impl Agent {
                 "cli.runtime.resume.no_approval_seq",
                 NO_APPROVAL_SEQ,
             ));
-        let selected_route = events.iter().rev().find_map(|event| match &event.kind {
-            EventKind::ModelSelected {
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-            } => Some(SelectedRoute {
-                route: PricingRoute {
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    catalog_digest: catalog_digest.clone(),
-                    capability_digest: capability_digest.clone(),
-                },
-            }),
-            _ => None,
-        });
-
+        let selected_route =
+            super::provider_selection::ProviderSelectionOwner::recover_verified(&events)?;
         let mut restored = Ledger::new();
         let mut pricing_replay = self
-            .pricing_port
-            .as_ref()
+            .provider_selection
+            .pricing_port()
             .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
             .unwrap_or_default();
         for scoped in &scoped_events {
@@ -559,7 +602,9 @@ impl Agent {
                 let budget = std::sync::Arc::new(SharedUsdBudget::from_microusd(ceiling));
                 let route_replay = route_attempt_accounting::replay_route_charges(
                     &scoped_events,
-                    self.pricing_port.as_deref(),
+                    self.provider_selection
+                        .pricing_port()
+                        .map(|port| port.as_ref()),
                 )?;
                 budget
                     .restore_provider_route_charges(&restored.cost_state(), route_replay)
@@ -570,11 +615,23 @@ impl Agent {
         let observed_trust = Trust::governing(events.iter().flat_map(|event| {
             match &event.kind {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
-                EventKind::Message { message } => message
+                EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
+                kind @ EventKind::AgentInputAdmittedV1 { .. } => {
+                    super::persistent_agents::input_admission::replay_reference_trust(kind)
+                        .into_iter()
+                        .collect()
+                }
+                kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
+                    super::memory_activation::replay_reference_trust(kind)
+                        .into_iter()
+                        .collect()
+                }
+                EventKind::Message { message } | EventKind::MessageV2 { message } => message
                     .content
                     .iter()
                     .filter_map(|block| match block {
                         Block::ToolResult(result) => Some(result.trust),
+                        Block::ToolImage(image) => Some(image.trust()),
                         _ => None,
                     })
                     .collect(),
@@ -582,6 +639,18 @@ impl Agent {
             }
         }))
         .unwrap_or(Trust::Trusted);
+
+        // A recorder belongs to the held physical writer, not the resident process or inherited
+        // transcript. Validate the target's own segments and immutable policy identities before
+        // swapping writers; retaining the previous recorder would append foreign run evidence.
+        let timed_events = iteron_record::replay_timed(rollout.path())?;
+        let policy_evidence = policy_evidence_recorder::PolicyEvidenceRecorder::restore_or_begin(
+            rollout.run_id(),
+            tunables_digest_sha256.to_owned(),
+            compiled_policy_bundle.policy_runtime_bindings().to_vec(),
+            &timed_events,
+        )
+        .map_err(|error| KernelError::PolicyEvidence(error.to_string()))?;
 
         // Exercise the last fallible point of the staging transaction. This is deliberately after
         // replay, pricing receipt verification, policy projection, and bounded allocations but
@@ -594,7 +663,26 @@ impl Agent {
             )));
         }
 
+        let verification_tasks = bounded_verify::VerificationTaskRegistry::new();
+        verification_tasks.recover(
+            rollout.run_id(),
+            scoped_events
+                .iter()
+                .filter(|scoped| &scoped.run_id == rollout.run_id())
+                .map(|scoped| &scoped.event),
+        );
         Ok(StagedAdoptedResume {
+            cohort_installation: super::cold_cohort::installation_from_rows(
+                &scoped_events,
+                rollout.tenant(),
+            )?,
+            task_plan: super::task_plan::TaskPlanOwner::recover(
+                scoped_events
+                    .iter()
+                    .filter(|scoped| &scoped.run_id == rollout.run_id())
+                    .map(|scoped| &scoped.event),
+            )
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))?,
             messages,
             redacted_tool_results,
             redaction_count_saturated,
@@ -614,6 +702,13 @@ impl Agent {
             selected_route,
             ledger: restored,
             observed_trust,
+            verification_tasks,
+            policy_evidence,
+            turn_publications: turn_publication::TurnPublicationOwner::from_verified_scoped(
+                &scoped_events,
+                rollout.tenant(),
+                rollout.run_id(),
+            ),
         })
     }
 
@@ -656,6 +751,15 @@ impl Agent {
     /// run, its policy publication handle, and its writer lock intact. The target may contain a
     /// successfully committed monotone USD tightening, but is never reported as the active run.
     pub fn adopt_run(&mut self, mut rollout: Rollout) -> Result<AdoptedRun, KernelError> {
+        self.validate_ordinary_extension_adoption(rollout.path())?;
+        if self.persistent_agents.is_some() {
+            return Err(KernelError::AgentControl(
+                iteron_agents::ControllerError::Invalid(
+                    "installed persistent agents require their existing session owner; restart to resume another run",
+                ),
+            ));
+        }
+
         // Replay first: this is the only step that can fail without leaving the session between two
         // runs, so it happens while the live run is still entirely intact.
         let messages = Self::messages_from_rollout(rollout.path())?;
@@ -677,8 +781,12 @@ impl Agent {
                 || current.workflow_graph != effective.content.workflow_graph
                 || current.agent_catalog != effective.content.agent_catalog
         }) {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted resident content-owner identities differ from the running process".into(),
+            return Err(adoption_refused(
+                AdoptionStage::ResidentContent,
+                KernelError::ExecutionPolicy(
+                    "adopted resident content-owner identities differ from the running process"
+                        .into(),
+                ),
             ));
         }
         let effective_content = effective.content;
@@ -720,12 +828,13 @@ impl Agent {
                     "resource_prompt_plugin_capability_exposure",
                     "session_isolation_profile",
                 ],
-            )?;
+            )
+            .map_err(|error| adoption_refused(AdoptionStage::ProcessFamilies, error))?;
         }
         if effective_core.app_server_queue != self.app_server_queue_policy {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted app-server queue owner differs from the resident process; restart to resume that run"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::QueueOwner,
+                KernelError::ExecutionPolicy("adopted app-server queue owner differs from the resident process; restart to resume that run".into()),
             ));
         }
         let primary_route_id =
@@ -750,9 +859,9 @@ impl Agent {
             .map(GovernedProviderRoute::id)
             .collect::<Vec<_>>();
         if installed_fallback_ids != expected_fallback_ids {
-            return Err(KernelError::ExecutionPolicy(
-                "adopted fallback-route topology differs from the resident process; restart to resume that run"
-                    .into(),
+            return Err(adoption_refused(
+                AdoptionStage::FallbackTopology,
+                KernelError::ExecutionPolicy("adopted fallback-route topology differs from the resident process; restart to resume that run".into()),
             ));
         }
         let capabilities = self.provider.control_capabilities();
@@ -786,7 +895,12 @@ impl Agent {
                 self.model_context_window,
                 self.model_max_output_tokens,
             )
-            .map_err(|error| KernelError::ExecutionPolicy(error.to_string()))?;
+            .map_err(|error| {
+                adoption_refused(
+                    AdoptionStage::NativeCeilings,
+                    KernelError::ExecutionPolicy(error.to_string()),
+                )
+            })?;
         let adopted_governor = iteron_provider::ProviderGovernor::new(
             effective_core.provider_governor.policy.clone(),
             std::iter::once(primary_route_id).chain(expected_fallback_ids.iter().cloned()),
@@ -796,8 +910,12 @@ impl Agent {
             reason: "adopted governor policy or route set is invalid",
         })?;
         let adopted_spawn_ledger = std::sync::Arc::new(
-            SessionSpawnLedger::new(effective_core.session_spawn_cap)
-                .map_err(|reason| KernelError::ExecutionPolicy(reason.into()))?,
+            SessionSpawnLedger::new(effective_core.session_spawn_cap).map_err(|reason| {
+                adoption_refused(
+                    AdoptionStage::SpawnQuota,
+                    KernelError::ExecutionPolicy(reason.into()),
+                )
+            })?,
         );
         let adopted_authority_ceiling =
             effective_core.constrain_authority_ceiling(self.authority_ceiling);
@@ -853,16 +971,24 @@ impl Agent {
             &effective_content,
             &effective_core,
             compiled_policy_bundle.as_ref(),
+            tunables_pin.resolution_digest_sha256(),
         )?;
         let message_count = staged.messages.len();
 
         // Dropping the previous rollout releases its exclusive writer lock, so the run this session
         // is leaving becomes resumable by another process the moment this returns.
         let previous = std::mem::replace(&mut self.rollout, rollout);
+        self.turn_publications = staged.turn_publications;
+        self.task_plan = staged.task_plan;
+        self.cohort_installation = staged.cohort_installation;
+        self.cohort_replay_checked = true;
+        self.verification_tasks = staged.verification_tasks;
+        self.policy_evidence = Some(staged.policy_evidence);
+        self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
-        self.working_set = None;
-        self.resumed = None;
+        self.transcript_state.replace_working(None);
+        self.transcript_state.replace_restored(None);
         self.tunables_pin = Some(tunables_pin);
         self.tool_output_spill = Some(tool_output_spill);
         self.budget = staged.budget;
@@ -875,7 +1001,8 @@ impl Agent {
         self.session_spawn_ledger = adopted_spawn_ledger;
         self.deferred_tool_eager_limit = effective_core.deferred_tool_eager_limit;
         self.execution_policy = effective_core.execution;
-        self.verification_policy = effective_core.verification;
+        self.verification_state
+            .install_resolved_policy(effective_core.verification)?;
         self.verify_command = effective_core.verify_command;
         self.compaction = effective_core.compaction;
         self.context_budget_policy =
@@ -905,8 +1032,8 @@ impl Agent {
         self.committed_provider_run_notices = staged.committed_provider_run_notices;
         self.composition_environment_context = staged.composition_environment_context.clone();
         self.environment_context = staged.composition_environment_context;
-        self.selected_route = staged.selected_route;
-        self.selected_provider = self.selected_route.as_ref().map(|_| self.provider.clone());
+        self.provider_selection
+            .adopt_verified(staged.selected_route, self.provider.clone());
         self.seq_turn = staged.seq_turn;
         self.approval_seq = staged.approval_seq;
         self.observed_trust = staged.observed_trust;
@@ -922,23 +1049,21 @@ impl Agent {
         self.instruction_context = self.composition_instruction_context.clone();
         self.last_assistant_text.clear();
         self.failed_actions.clear();
-        self.pending_steers.clear();
-        self.verify_attempts = 0;
-        self.verification_quarantine.clear();
-        self.verification_quarantine_restored = false;
-        self.compacted_in_run = false;
-        self.last_compaction_turn = staged.last_compaction_turn;
-        self.interrupt_requested = false;
-        self.force_cancel_requested = false;
-        self.force_cancel
-            .store(false, std::sync::atomic::Ordering::Release);
-        self.pricing = None;
+        self.inbox.clear();
+        self.verification_state.adopt();
+        if previous.run_id() == self.rollout.run_id() && previous.tenant() == self.rollout.tenant()
+        {
+            self.compaction_state
+                .restore_same_run(staged.last_compaction_turn);
+        } else {
+            self.compaction_state
+                .replace_verified_run(staged.last_compaction_turn);
+        }
+        self.control.reset_after_adoption();
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window
         // in between cannot admit an effect against the previous run's ledger.
-        self.effect_admissions = effect_admission::EffectAdmissions::default();
-        self.live_unresolved_effects = 0;
-        self.recovery_effect_replay_required = true;
+        self.effect_journal.adopt_journal();
         // The estimator caches a per-message token estimate for a transcript that is being replaced.
         self.context_estimator.invalidate_transcript();
         self.token_estimate_baselines.clear();
@@ -951,7 +1076,8 @@ impl Agent {
         // A failed append belongs to the journal it failed on. The adopted journal was just replayed
         // and opened with its own writer descriptor, so the halt does not carry over.
         self.record_failed = false;
-        self.resumed = Some(staged.messages);
+        self.transcript_state
+            .replace_restored(Some(staged.messages));
         if staged.redacted_tool_results > 0 {
             self.diagnostics
                 .emit(KernelDiagnostic::ResumeRedactionDegraded {
@@ -1021,6 +1147,9 @@ impl Agent {
             config_digest,
             agent_definition_tag,
             fresh_usd_ceiling_microusd,
+            // A completed turn consumes the pending proposal. New uses the same retained,
+            // admitted environment bytes; it never rediscovers the host or widens its identity.
+            self.composition_environment_context.as_ref(),
         )?;
         let policy_tail = self.genesis_policy_tail_events_with_usd_ceiling(
             RuntimePolicySource::Startup,
@@ -1107,6 +1236,7 @@ impl Agent {
         self.ledger
             .record_fsync_latency_us(elapsed_us(fsync_started));
         if let Err(error) = appended {
+            self.rollout.retain_failure(&error);
             self.record_failed = true;
             self.diagnostic_record_append_failed();
             return Err(KernelError::Record(error));
@@ -1132,6 +1262,7 @@ impl Agent {
         self.ledger
             .record_fsync_latency_us(elapsed_us(fsync_started));
         if let Err(error) = appended {
+            self.rollout.retain_failure(&error);
             self.record_failed = true;
             self.diagnostic_record_append_failed();
             return Err(KernelError::Record(error));
@@ -1157,6 +1288,7 @@ impl Agent {
             self.usd_budget
                 .as_ref()
                 .map(|budget| budget.ceiling_microusd()),
+            self.environment_context.as_ref(),
         )
     }
 
@@ -1167,6 +1299,7 @@ impl Agent {
         config_digest: String,
         agent_definition_tag: Option<String>,
         usd_ceiling_microusd: Option<u64>,
+        environment: Option<&(String, Trust)>,
     ) -> Result<Event, KernelError> {
         if !self.model.is_empty() {
             validate_route_identifier("model_id", &self.model, 512, false)?;
@@ -1180,14 +1313,12 @@ impl Agent {
                 false,
             )?;
         }
-        let environment =
-            self.environment_context
-                .as_ref()
-                .map(|(text, trust)| DurableEnvironmentContext {
-                    text: text.clone(),
-                    trust: *trust,
-                });
-        self.validate_environment_identity(environment.as_ref())?;
+        let environment = environment.map(|(text, trust)| DurableEnvironmentContext {
+            text: text.clone(),
+            trust: *trust,
+        });
+        self.validate_environment_identity(environment.as_ref())
+            .map_err(|error| adoption_refused(AdoptionStage::GenesisEnvironment, error))?;
         Ok(Event {
             seq: Seq::ZERO,
             turn: TurnId(0),
@@ -1449,4 +1580,29 @@ fn require_runtime_genesis_event(
             "V2 runtime genesis policy tail is incomplete or out of order".into(),
         ))
     }
+}
+
+/// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
+/// stopped displaying.
+///
+/// The counts come from the state the kernel actually restored from the adopted record, not from
+/// the request — a frontend that renders these is renders what the next turn will continue.
+#[derive(Debug, Clone)]
+pub struct AdoptedRun {
+    pub run_id: String,
+    pub rollout_path: std::path::PathBuf,
+    /// The run this session was on until the adoption. Its writer lock is released by then, so it
+    /// can be adopted back (here or by another process).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Returned adoption receipt preserves the prior released writer identity; the adoption fixture observes it."
+        )
+    )]
+    pub previous_run_id: String,
+    /// Messages reconstructed from the adopted record — the transcript the next turn continues.
+    pub messages: usize,
+    /// Completed model turns rebuilt from the adopted record.
+    pub turns: u32,
 }

@@ -127,7 +127,7 @@ pub(crate) struct EffectiveCoreSettings {
     pub mcp_exposure: super::effective_mcp::McpCapabilityExposure,
     pub execution: super::execution_policy::ExecutionRuntimePolicy,
     pub session_isolation: crate::session_isolation::SessionIsolationPolicy,
-    pub app_server_queue: crate::app_server::AppServerQueuePolicy,
+    pub app_server_queue: crate::queue_policy::FrontendQueuePolicy,
     pub binary_media: crate::image_input::BinaryMediaInspectionPolicy,
     pub multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
 }

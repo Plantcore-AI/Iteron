@@ -47,3 +47,47 @@ neighbor does not inherit the limits documented for another model.
 The catalog implementation is evolving. Use `/model` and `/status` as the runtime
 view, and report stale or contradictory provider evidence with a synthetic
 reproduction.
+
+## Ark Chat continuation
+
+For explicitly configured Chat routes at these exact API roots, Iteron retains
+returned `reasoning_content` and `encrypted_content` in private continuation
+state:
+
+- `https://ark.cn-beijing.volces.com/api/v3`
+- `https://ark.cn-beijing.volces.com/api/plan/v3`
+- `https://ark.cn-beijing.volces.com/api/coding/v3`
+
+Ark documents that some models return a thinking summary and encrypted original
+thinking by default. The encrypted field can arrive in a separate stream chunk.
+It must be returned intact during tool continuation; a successful response alone
+does not establish correct continuation, because omission may silently reduce
+quality. When both fields are supplied, Ark gives the encrypted original
+precedence. See [Ark deep thinking](https://docs.volcengine.com/docs/ark/deep-thinking?lang=en)
+and [integration FAQ](https://docs.volcengine.com/docs/ark/go-live-faq?lang=zh).
+
+The adapter retains the complete encrypted value without interpreting it;
+identical repeats are idempotent and conflicting values are rejected. Plaintext
+reasoning deltas are concatenated. This follows the [Chat stream schema](https://docs.volcengine.com/docs/ark/chat-api?lang=zh&redirect=1).
+Both fields are stored as `ark.chat.thinking.v1`. The state survives transcript serialization
+and is replayed only for the same provider instance, exact API root and model
+identifier. Reusing the same instance with another supported Ark endpoint or a different
+model rejects matching continuation state before dispatch. Other instances and unknown state
+versions remain opaque. Portable thinking display blocks cannot reconstruct
+missing continuation state from an older transcript.
+Legacy generic Chat reasoning state lacks endpoint/model binding; on the same
+Ark instance it is rejected before dispatch and requires a fresh session.
+
+Encrypted state is excluded from text/thinking stream deltas and debug output.
+It remains present in the private durable transcript and prepared request, which
+must be treated as sensitive. State is bounded by the existing reasoning payload
+limit (at most 4 MiB encoded) and stream/output limits; malformed or oversized
+state fails without reflecting its contents. Cancellation does not publish a
+completed state or automatically replay the interrupted request.
+
+This protocol support does not add a built-in Ark account, discover entitlement,
+or infer model capabilities from names. Custom routes do not gain a guaranteed
+reasoning effort setting: `low` or another requested effort is applied only when
+the exact route/model capability evidence permits it. API roots and credentials
+for standard usage, Agent Plan and Coding Plan are separate; configure the route
+that belongs to the account. See [Ark route configuration](https://docs.volcengine.com/docs/ark/integrate-third-party-tools?lang=zh).

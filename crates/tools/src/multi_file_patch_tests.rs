@@ -54,6 +54,8 @@ fn patch_only_registry(root: &Path) -> Registry {
         observation_focus: Default::default(),
         process_launch_policy: Default::default(),
         workspace_boundary: false,
+        // Ordinary operator registry: no inherited child write scope has been installed.
+        inherited_write_scope: Default::default(),
         process_control: None,
         lsp_control: None,
         deferred_tool_catalog: None,
@@ -76,11 +78,150 @@ fn file_patch_with_hunks(path: &str, hunks: &[(&str, &str)]) -> Value {
     })
 }
 
+#[tokio::test]
+async fn failed_later_commit_retains_user_edits_during_rollback() {
+    for confined in [false, true] {
+        for edited in [false, true] {
+            let root = TestRoot::new("rollback-intervening-edit");
+            root.write("first.txt", "first original\n");
+            root.write("second.txt", "second original\n");
+            root.write("unrelated.txt", "existing user work\n");
+            let input = json!({"files": [
+                file_patch("first.txt", "first original", "first patched"),
+                file_patch("second.txt", "second original", "second patched")
+            ]});
+            let requests = parse_requests(&input).unwrap();
+            let plans = plan_patch(&root.0, requests, &mut PatchIoStats::default(), confined)
+                .await
+                .unwrap();
+            let first = StagedWrite::prepare_with_boundary(
+                &plans[0].target,
+                &plans[0].updated,
+                confined.then_some(root.0.as_path()),
+            )
+            .await
+            .unwrap();
+            let second = StagedWrite::prepare_with_boundary(
+                &plans[1].target,
+                &plans[1].updated,
+                confined.then_some(root.0.as_path()),
+            )
+            .await
+            .unwrap();
+            first.commit().await.unwrap();
+            if edited {
+                root.write("first.txt", "user edited after the first commit\n");
+            }
+            // An actual later rename fails on every supported platform; no simulated result.
+            std::fs::remove_file(&plans[1].target).unwrap();
+            std::fs::create_dir(&plans[1].target).unwrap();
+            let failure = second.commit().await.unwrap_err();
+            assert!(!failure.target_replaced);
+            let restored = rollback(&root.0, &plans, &[0], confined).await;
+            if edited {
+                assert!(restored.unwrap().contains("rollback conflict"));
+                assert_eq!(
+                    root.read("first.txt"),
+                    b"user edited after the first commit\n"
+                );
+            } else {
+                assert_eq!(restored, None);
+                assert_eq!(root.read("first.txt"), b"first original\n");
+            }
+            assert!(plans[1].target.is_dir());
+            assert_eq!(root.read("unrelated.txt"), b"existing user work\n");
+        }
+    }
+}
+
 fn patch_call(id: &str, files: Vec<Value>) -> ToolUse {
     ToolUse {
         id: id.into(),
         name: "apply_patch".into(),
         input: json!({"files": files}),
+    }
+}
+
+#[tokio::test]
+async fn each_patch_member_refuses_new_user_bytes_after_the_batch_precheck() {
+    for confined in [false, true] {
+        for edited_member in [0, 1] {
+            for edit_committed_member in [false, true] {
+                let root = TestRoot::new("per-member-commit-guard");
+                root.write("first.txt", "first original\n");
+                root.write("second.txt", "second original\n");
+                root.write("unrelated.txt", "existing dirty work\n");
+                let requests = parse_requests(&json!({"files":[
+                    file_patch("first.txt", "first original", "first patched"),
+                    file_patch("second.txt", "second original", "second patched")
+                ]}))
+                .unwrap();
+                let mut stats = PatchIoStats::default();
+                let plans = plan_patch(&root.0, requests, &mut stats, confined)
+                    .await
+                    .unwrap();
+                let failure = commit_patch_with_member_hook(
+                    &root.0,
+                    &plans,
+                    &mut stats,
+                    confined,
+                    |index, target| {
+                        if index != edited_member {
+                            return;
+                        }
+                        // Keep both length and modification time: the original metadata-only
+                        // batch check is insufficient, especially on Windows without inode/ctime.
+                        let modified = std::fs::metadata(target).unwrap().modified().unwrap();
+                        let bytes = if index == 0 {
+                            "first human!!!\n"
+                        } else {
+                            "second human!!!\n"
+                        };
+                        assert_eq!(bytes.len(), plans[index].original.len());
+                        std::fs::write(target, bytes).unwrap();
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(target)
+                            .unwrap()
+                            .set_modified(modified)
+                            .unwrap();
+                        if index == 1 && edit_committed_member {
+                            root.write("first.txt", "user edited committed first member\n");
+                        }
+                    },
+                )
+                .await
+                .unwrap_err();
+                let error: Value = serde_json::from_str(&failure.model_json()).unwrap();
+                if edited_member == 0 {
+                    assert_eq!(error["kind"], "file_changed");
+                    assert_eq!(stats.file_writes, 0);
+                    assert_eq!(root.read("first.txt"), b"first human!!!\n");
+                    assert_eq!(root.read("second.txt"), b"second original\n");
+                } else {
+                    assert_eq!(stats.file_writes, 1);
+                    assert_eq!(root.read("second.txt"), b"second human!!!\n");
+                    if edit_committed_member {
+                        assert_eq!(error["kind"], "rollback_failed");
+                        assert_eq!(
+                            root.read("first.txt"),
+                            b"user edited committed first member\n"
+                        );
+                    } else {
+                        assert_eq!(error["kind"], "file_changed_rolled_back");
+                        assert_eq!(root.read("first.txt"), b"first original\n");
+                    }
+                }
+                assert_eq!(root.read("unrelated.txt"), b"existing dirty work\n");
+                assert!(std::fs::read_dir(&root.0).unwrap().all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".core-write-")
+                }));
+            }
+        }
     }
 }
 
@@ -229,7 +370,7 @@ async fn d3_02_g1_three_file_patch_commits_in_one_call() {
         .find(|spec| spec.name == "apply_patch")
         .unwrap();
     assert_eq!(spec.purity, Purity::Effecting);
-    assert_eq!(spec.capability, Capability::TrustMutating);
+    assert_eq!(spec.capability, Capability::ReversibleLocal);
     assert_eq!(
         spec.input_schema["properties"]["files"]["maxItems"],
         MAX_FILES
@@ -405,7 +546,7 @@ async fn d3_03_g2_missing_anchor_leaves_single_file_byte_identical() {
     assert_eq!(error["kind"], "anchor_not_found");
     assert_eq!(error["file_index"], 1);
     assert_eq!(error["hunk_index"], 3);
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(
         stats.file_writes, 0,
         "invalid proposal must perform no write"
@@ -454,7 +595,7 @@ async fn d3_03_g2_ambiguous_anchor_leaves_single_file_byte_identical() {
     assert_eq!(error["kind"], "ambiguous_anchor");
     assert_eq!(error["file_index"], 1);
     assert_eq!(error["hunk_index"], 3);
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(
         stats.file_writes, 0,
         "invalid proposal must perform no write"
@@ -477,7 +618,7 @@ async fn d3_03_g3_instrumentation_records_one_content_read_and_one_destination_w
     let result = execute_patch(&root.0, &input, &mut stats, false).await;
 
     assert_eq!(result.unwrap(), (1, 3));
-    assert_eq!(stats.file_reads, 1, "content snapshot reads");
+    assert_eq!(stats.planning_reads, 1, "planning snapshot reads");
     assert_eq!(stats.file_writes, 1, "destination replacements");
     assert_eq!(root.read("single.txt"), b"ALPHA\nBETA\nGAMMA\n");
 }
@@ -561,7 +702,7 @@ async fn d3_04_g2_two_normalized_candidates_are_refused_with_zero_writes() {
             .unwrap()
             .contains("whitespace-normalized candidates")
     );
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(stats.file_writes, 0);
     assert_snapshots(&root, &["single.txt"], &before);
 }
@@ -635,7 +776,7 @@ async fn d3_04_g5_normalization_line_work_is_bounded_and_fail_closed() {
     let error: Value = serde_json::from_str(&failure.model_json()).unwrap();
     assert_eq!(error["kind"], "normalization_limit");
     assert!(error["message"].as_str().unwrap().contains("262144"));
-    assert_eq!(stats.file_reads, 1);
+    assert_eq!(stats.planning_reads, 1);
     assert_eq!(stats.file_writes, 0);
     assert_eq!(byte_hash(&root.read("single.txt")), before_hash);
 }

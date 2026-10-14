@@ -306,13 +306,14 @@ fn validate_source_bindings(root: &Path, c: &Contract) -> Result<()> {
         "crates/cli/src/runtime_tunables/effective_provider.rs",
     )?;
     let tui = source(root, "crates/cli/src/tui.rs")?;
+    let status = source(root, "crates/cli/src/tui/status_render.rs")?;
     let driver = source(root, "crates/cli/src/tui/driver_support.rs")?;
     let picker = source(root, "crates/cli/src/tui/session_picker.rs")?;
 
     let frame_ms = duration_const_ms(&driver, "FRAME_COALESCE")?;
     let maximum_fps = 1_000_u64.div_ceil(frame_ms);
-    let activity_visible = function_duration_ms(&tui, "visible_activity")?;
-    let status_thresholds = function_duration_values_ms(&tui, "render_status")?;
+    let activity_visible = function_duration_ms(&status, "visible_activity")?;
+    let status_thresholds = function_duration_values_ms(&status, "render_status")?;
     let activity_elapsed = only_named_threshold(&status_thresholds, 1_000, "activity elapsed")?;
     let activity_remedy = only_named_threshold(&status_thresholds, 2_000, "activity remedy")?;
     let route_default = helper_integer_default(
@@ -526,7 +527,25 @@ fn duration_expr_ms(expression: &syn::Expr) -> Option<u64> {
     let syn::Expr::Path(function) = call.func.as_ref() else {
         return None;
     };
-    let constructor = function.path.segments.last()?.ident.to_string();
+    let path = function
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let constructor = path.last()?;
+    if call.args.len() != 1
+        || !matches!(
+            &path[..path.len().checked_sub(1)?],
+            [duration] if duration == "Duration"
+        ) && !matches!(
+            &path[..path.len().checked_sub(1)?],
+            [standard, time, duration]
+                if standard == "std" && time == "time" && duration == "Duration"
+        )
+    {
+        return None;
+    }
     let value = plain_integer(call.args.first()?)?;
     match constructor.as_str() {
         "from_millis" => Some(value),
@@ -542,8 +561,23 @@ struct FunctionDurations<'a> {
 }
 
 impl<'ast> Visit<'ast> for FunctionDurations<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if production_attrs(&item.attrs) {
+            visit::visit_item_mod(self, item);
+        }
+    }
+
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if item.sig.ident == self.function && production_attrs(&item.attrs) {
+        if item.sig.ident == self.function
+            && production_attrs(&item.attrs)
+            && !item.attrs.iter().any(|attribute| {
+                attribute
+                    .path()
+                    .segments
+                    .last()
+                    .is_some_and(|part| part.ident == "test")
+            })
+        {
             self.depth += 1;
             visit::visit_block(self, &item.block);
             self.depth -= 1;
@@ -551,8 +585,15 @@ impl<'ast> Visit<'ast> for FunctionDurations<'_> {
     }
 
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+        // These activity affordances are governed by the real elapsed comparison. A duration
+        // constructor in an unused local, unrelated call or former forwarding facade is not a
+        // visible/elapsed/remedy threshold.
         if self.depth > 0
-            && let Some(value) = duration_expr_ms(expression)
+            && let syn::Expr::Binary(comparison) = expression
+            && matches!(comparison.op, syn::BinOp::Ge(_))
+            && let syn::Expr::Path(elapsed) = comparison.left.as_ref()
+            && elapsed.path.is_ident("elapsed")
+            && let Some(value) = duration_expr_ms(&comparison.right)
         {
             self.values.push(value);
         }
@@ -669,7 +710,7 @@ fn validate_reqwest_http2(root: &Path, c: &Contract) -> Result<()> {
 fn validate_behavior_test_seams(root: &Path) -> Result<()> {
     let required = [
         (
-            "crates/cli/src/providers.rs",
+            "crates/cli/src/providers/directory/tests.rs",
             "a_launch_paints_before_any_provider_network_settles",
         ),
         (
@@ -677,7 +718,7 @@ fn validate_behavior_test_seams(root: &Path) -> Result<()> {
             "same_task_structural_saturation_returns_instead_of_waiting_for_its_consumer",
         ),
         (
-            "crates/cli/src/app_server.rs",
+            "crates/cli/src/app_server/tests.rs",
             "a_saturated_sq_applies_backpressure_within_a_fixed_bound",
         ),
         (
@@ -755,6 +796,63 @@ mod tests {
         assert_eq!(integer_const(source, "LIMIT").unwrap(), 10);
         assert_eq!(duration_const_ms(source, "WINDOW").unwrap(), 3_000);
         assert!(integer_const("// const LIMIT: u64 = 10;", "LIMIT").is_err());
+    }
+
+    #[test]
+    fn activity_thresholds_bind_actual_elapsed_comparisons() {
+        let source = r#"
+            fn visible_activity() {
+                let elapsed = observed.elapsed();
+                (elapsed >= Duration::from_millis(250)).then_some(activity)
+            }
+            fn render_status() {
+                if elapsed >= Duration::from_secs(1) { show_elapsed(); }
+                if elapsed >= std::time::Duration::from_secs(2) { show_remedy(); }
+            }
+        "#;
+        assert_eq!(
+            function_duration_ms(source, "visible_activity").unwrap(),
+            250
+        );
+        let status = function_duration_values_ms(source, "render_status").unwrap();
+        assert_eq!(
+            only_named_threshold(&status, 1_000, "elapsed").unwrap(),
+            1_000
+        );
+        assert_eq!(
+            only_named_threshold(&status, 2_000, "remedy").unwrap(),
+            2_000
+        );
+        let slower = source.replace("from_millis(250)", "from_millis(251)");
+        assert!(
+            exact(
+                "activity visible",
+                function_duration_ms(&slower, "visible_activity").unwrap(),
+                250
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn former_facades_and_test_or_unused_duration_bait_cannot_satisfy_activity_gate() {
+        for source in [
+            "fn visible_activity(app: &App) { status_render::visible_activity(app) }",
+            "fn visible_activity() { let unused = Duration::from_millis(250); render(); }",
+            "fn visible_activity() { observe(Duration::from_millis(250)); }",
+            "fn visible_activity() { if elapsed >= OtherClock::from_millis(250) {} }",
+            "fn visible_activity() { if unrelated >= Duration::from_millis(250) {} }",
+            "#[cfg(test)] fn visible_activity() { if elapsed >= Duration::from_millis(250) {} }",
+            "#[cfg(test)] mod tests { fn visible_activity() { if elapsed >= Duration::from_millis(250) {} } }",
+            "#[test] fn visible_activity() { if elapsed >= Duration::from_millis(250) {} }",
+        ] {
+            assert!(
+                function_duration_ms(source, "visible_activity").is_err(),
+                "{source}"
+            );
+        }
+        let duplicate = "fn visible_activity() { if elapsed >= Duration::from_millis(250) {} if elapsed >= Duration::from_millis(250) {} }";
+        assert!(function_duration_ms(duplicate, "visible_activity").is_err());
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub struct WorkflowGraphRuntimeIdentity {
 /// the executable graph semantics shared by every script: the deterministic prelude, host port
 /// versions, schema retry ceiling, and durable task-DAG limits. A resumed run therefore refuses a
 /// binary whose graph semantics no longer match its immutable tunables checkpoint.
+#[cfg(feature = "script-workflows")]
 pub fn workflow_graph_runtime_identity() -> WorkflowGraphRuntimeIdentity {
     #[derive(Serialize)]
     struct Descriptor {
@@ -60,6 +61,18 @@ pub fn workflow_graph_runtime_identity() -> WorkflowGraphRuntimeIdentity {
     }
 }
 
+/// Default builds bind the generic live scheduler contract without compiling or parsing the
+/// optional JavaScript catalog, allocating its cache or starting its executor.
+#[cfg(not(feature = "script-workflows"))]
+pub fn workflow_graph_runtime_identity() -> WorkflowGraphRuntimeIdentity {
+    let descriptor = b"iteron-live-workflow-runtime-v1;controller-port=1;journal-port=1;script-workflows=disabled";
+    WorkflowGraphRuntimeIdentity {
+        digest_sha256: hex::encode(Sha256::digest(descriptor)),
+        entry_count: 1,
+        canonical_bytes: descriptor.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,7 +89,12 @@ mod tests {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
         );
-        assert_eq!(first.entry_count, 2);
-        assert!(first.canonical_bytes > include_bytes!("prelude.js").len());
+        if cfg!(feature = "script-workflows") {
+            assert_eq!(first.entry_count, 2);
+            assert!(first.canonical_bytes > include_bytes!("prelude.js").len());
+        } else {
+            assert_eq!(first.entry_count, 1);
+            assert!(first.canonical_bytes < 128);
+        }
     }
 }

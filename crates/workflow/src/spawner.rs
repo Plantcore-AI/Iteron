@@ -16,6 +16,30 @@ pub const MAX_AGENT_TYPE_BYTES: usize = 128;
 /// A request-side model override is metadata, not unbounded prompt content.
 pub const MAX_AGENT_MODEL_BYTES: usize = 512;
 
+/// Actual script-engine dispatch identity. Created after the task ledger admits a physical
+/// attempt; model options, labels and local spawner counters cannot substitute this proof.
+#[derive(Debug, Clone, Copy)]
+pub struct AgentInvocationIdentity {
+    index: u64,
+    attempt: u64,
+}
+impl AgentInvocationIdentity {
+    #[cfg(feature = "script-workflows")]
+    pub(crate) fn admitted(index: usize, attempt: crate::task_dag::AttemptId) -> Option<Self> {
+        Some(Self {
+            index: u64::try_from(index).ok()?.checked_add(1)?,
+            attempt: attempt.0,
+        })
+        .filter(|identity| identity.attempt > 0)
+    }
+    pub fn index(self) -> u64 {
+        self.index
+    }
+    pub fn attempt(self) -> u64 {
+        self.attempt
+    }
+}
+
 /// A request metadata refusal. Variants intentionally carry no caller-controlled text: their
 /// public reason is safe to journal and render without reflecting a model id, agent name, control
 /// sequence, or credential-shaped value back to a terminal.
@@ -26,6 +50,7 @@ pub enum AgentRequestMetadataError {
 }
 
 impl AgentRequestMetadataError {
+    #[cfg(feature = "script-workflows")]
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::AgentType => "invalid_agent_type",
@@ -163,6 +188,7 @@ impl std::fmt::Debug for AgentActivityReporter {
 }
 
 impl AgentActivityReporter {
+    #[cfg(feature = "script-workflows")]
     pub(crate) fn channel() -> (Self, watch::Receiver<Option<AgentActivitySnapshot>>) {
         let (tx, rx) = watch::channel(None);
         (Self { tx }, rx)
@@ -233,6 +259,17 @@ pub trait AgentSpawner: Send + Sync {
         _activity: AgentActivityReporter,
     ) -> AgentOutcome {
         self.spawn(call).await
+    }
+
+    /// Existing spawners need no migration. Persistent controller adapters bind this actual
+    /// durable attempt identity rather than deriving one from scheduling or caller text.
+    async fn spawn_with_identity(
+        &self,
+        call: AgentCall,
+        _identity: AgentInvocationIdentity,
+        activity: AgentActivityReporter,
+    ) -> AgentOutcome {
+        self.spawn_with_activity(call, activity).await
     }
 }
 

@@ -1,123 +1,70 @@
-//! Streaming admission for ordinary Auto-approved local tools.
-//!
-//! The execution gate follows Codex's tool policy: parallel-capable handlers share a
-//! read guard, mutations requiring ordering retain an exclusive guard through execution.
+//! Frozen operation-specific eligibility for streamed execution. Every call, including pure
+//! reads, passes the real permission/authority ceiling before overlap can poll its executor.
+use super::permission_policy::{OperationPolicy, evaluate_operation};
+use iteron_protocol::{Capability, Purity, Verdict};
+use iteron_tools::{Registry, ToolPolicyProposal};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
-use super::*;
-
-pub(super) struct ExecutionGuard {
-    _shared: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
-    _exclusive: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+pub(super) struct StreamToolControl {
+    pub(super) deadline: Option<Instant>,
+    pub(super) requested: bool,
+    pub(super) interrupt: Option<Arc<AtomicBool>>,
+    pub(super) force_cancel: Arc<AtomicBool>,
+    pub(super) drain: Arc<AtomicBool>,
+}
+impl StreamToolControl {
+    fn stopped(&self) -> bool {
+        self.requested
+            || self
+                .deadline
+                .is_some_and(|deadline| deadline <= Instant::now())
+            || self.force_cancel.load(Ordering::Acquire)
+            || self.drain.load(Ordering::Relaxed)
+            || self
+                .interrupt
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
 }
 
-pub(super) async fn execution_guard(
-    gate: std::sync::Arc<tokio::sync::RwLock<()>>,
-    supports_parallel: bool,
-) -> ExecutionGuard {
-    if supports_parallel {
-        ExecutionGuard {
-            _shared: Some(gate.read_owned().await),
-            _exclusive: None,
-        }
+/// Pure reads cross the same actual operation gate as effects. An explicit deny/request or
+/// tighter task ceiling routes to ordered handling instead of bypassing through overlap.
+pub(super) fn early_capability(
+    registry: &Registry,
+    proposal: &ToolPolicyProposal,
+    policy: OperationPolicy<'_>,
+    record_failed: bool,
+    control: &StreamToolControl,
+) -> Option<Capability> {
+    let call = &proposal.intent.call;
+    if record_failed
+        || control.stopped()
+        || registry.is_mcp_effect(&call.name)
+        || matches!(
+            call.name.as_str(),
+            iteron_tools::DISPATCH_AGENT
+                | iteron_tools::WORKFLOW_TOOL
+                | iteron_tools::REQUEST_USER_INPUT
+        )
+    {
+        return None;
+    }
+    let effects = registry.operation_effects(call)?;
+    let admission = evaluate_operation(&call.name, &effects, policy);
+    let pure = proposal.intent.purity == Purity::Pure;
+    let allowed = if pure {
+        admission.capability == Capability::ReadOnly
     } else {
-        ExecutionGuard {
-            _shared: None,
-            _exclusive: Some(gate.write_owned().await),
-        }
-    }
-}
-
-impl Agent {
-    pub(super) fn early_local_tool_capability(
-        &self,
-        proposal: &iteron_tools::ToolPolicyProposal,
-        governing_trust: Trust,
-    ) -> Option<Capability> {
-        let call = &proposal.intent.call;
-        if self.record_failed
-            || self.run_deadline_exhausted()
-            || self.requested_control() != InboundControl::None
-            || self.registry.is_mcp_effect(&call.name)
-            || matches!(
-                call.name.as_str(),
-                iteron_tools::DISPATCH_AGENT
-                    | iteron_tools::WORKFLOW_TOOL
-                    | iteron_tools::REQUEST_USER_INPUT
-            )
-        {
-            return None;
-        }
-        let base = proposal.eligible.iter().next()?;
-        let capability = effective_capability(&call.input, base);
-        if !matches!(
-            capability,
+        matches!(
+            admission.capability,
             Capability::ReversibleLocal | Capability::CodeExecuting
-        ) {
-            return None;
-        }
-        let verdict = if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-            bypass_verdict(&self.permission_rules, &call.name, capability)
-        } else {
-            iteron_protocol::gate(
-                self.permission_mode,
-                &self.permission_rules,
-                &call.name,
-                capability,
-            )
-        };
-        (iteron_kernel::admission::constrain_under_authority(
-            verdict,
-            capability,
-            self.authority_ceiling,
-            self.policy_capabilities,
-            Some(governing_trust),
-            self.operator_authority(),
-        ) == Verdict::Auto)
-            .then_some(capability)
-    }
-}
-
-/// Poll once at declaration time: Tokio's fair lock queue then reflects model call
-/// order even if spawned tasks are first polled in a different order.
-pub(super) fn reserve_execution(
-    gate: std::sync::Arc<tokio::sync::RwLock<()>>,
-    supports_parallel: bool,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = ExecutionGuard> + Send>> {
-    let mut future = Box::pin(execution_guard(gate, supports_parallel));
-    let mut context = std::task::Context::from_waker(futures_util::task::noop_waker_ref());
-    match std::future::Future::poll(future.as_mut(), &mut context) {
-        std::task::Poll::Ready(guard) => Box::pin(std::future::ready(guard)),
-        std::task::Poll::Pending => future,
-    }
-}
-
-/// A fallible record/projection path must never detach an already admitted tool.
-/// Its durable intent stays unresolved if that path cannot append a terminal.
-pub(super) struct EarlyToolTask(tokio::task::JoinHandle<EarlyPureToolOutcome>);
-
-impl EarlyToolTask {
-    pub(super) fn new(handle: tokio::task::JoinHandle<EarlyPureToolOutcome>) -> Self {
-        Self(handle)
-    }
-
-    pub(super) fn abort(&self) {
-        self.0.abort();
-    }
-}
-
-impl std::future::Future for EarlyToolTask {
-    type Output = Result<EarlyPureToolOutcome, tokio::task::JoinError>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::pin::Pin::new(&mut self.0).poll(context)
-    }
-}
-
-impl Drop for EarlyToolTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
+        )
+    };
+    (allowed
+        && admission.verdict == Verdict::Auto
+        && !admission.ceiling_blocks
+        && !admission.taint_blocks)
+        .then_some(admission.capability)
 }

@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 const PENDING_DIR: &str = ".session-pending";
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
-type Work = (PathBuf, session::SessionMeta);
+pub(crate) const QUEUE_CAPACITY: usize = 64;
 
 enum Command {
-    Publish(Box<Work>),
+    Publish(std::sync::Arc<crate::session_publication_admission::Scope>),
     Flush(mpsc::Sender<()>),
 }
 
@@ -20,17 +20,14 @@ static WORKER: OnceLock<Option<mpsc::SyncSender<Command>>> = OnceLock::new();
 fn worker() -> Option<&'static mpsc::SyncSender<Command>> {
     WORKER
         .get_or_init(|| {
-            let (sender, receiver) = mpsc::sync_channel(64);
+            let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
             std::thread::Builder::new()
                 .name("iteron-session-publication".into())
                 .spawn(move || {
                     for command in receiver {
                         match command {
-                            Command::Publish(work) => {
-                                let (runs, meta) = *work;
-                                // A durable pending marker survives any publication failure. Readers
-                                // validate its record tail and rebuild instead of trusting stale rows.
-                                let _ = session::write_meta_if_current(&runs, &meta);
+                            Command::Publish(scope) => {
+                                crate::session_publication_admission::publish_pending(scope)
                             }
                             Command::Flush(reply) => {
                                 let _ = reply.send(());
@@ -45,21 +42,21 @@ fn worker() -> Option<&'static mpsc::SyncSender<Command>> {
 }
 
 pub(crate) fn enqueue(runs: PathBuf, meta: session::SessionMeta) -> bool {
-    worker().is_some_and(|sender| {
-        sender
-            .try_send(Command::Publish(Box::new((runs, meta))))
-            .is_ok()
-    })
+    crate::session_publication_admission::enqueue(runs, meta)
 }
 
-/// Read/maintenance rendezvous, never used by ordinary turn completion.
+pub(crate) fn schedule(scope: std::sync::Arc<crate::session_publication_admission::Scope>) -> bool {
+    worker().is_some_and(|sender| sender.try_send(Command::Publish(scope)).is_ok())
+}
+
+/// Read/maintenance rendezvous, never used by ordinary turn completion. A proposal deferred by
+/// active foreground work remains pending; this barrier does not wait for that activity to end.
 pub(crate) fn flush() -> Result<(), RecordError> {
     let Some(Some(sender)) = WORKER.get() else {
         return Ok(());
     };
     let start = Instant::now();
-    let wait_limit =
-        iteron_tunables::param_duration("record.session_maintenance.wait_limit", WAIT_LIMIT);
+    let wait_limit = wait_limit();
     let (reply, receipt) = mpsc::channel();
     let mut command = Command::Flush(reply);
     loop {
@@ -80,7 +77,11 @@ pub(crate) fn flush() -> Result<(), RecordError> {
         .map_err(|_| unavailable())
 }
 
-fn unavailable() -> RecordError {
+pub(crate) fn wait_limit() -> Duration {
+    iteron_tunables::param_duration("record.session_maintenance.wait_limit", WAIT_LIMIT)
+}
+
+pub(crate) fn unavailable() -> RecordError {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,
         "session publication worker unavailable",

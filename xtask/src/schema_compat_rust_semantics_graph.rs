@@ -12,13 +12,16 @@ const MAX_PROTOCOL_BYTES: u64 = 16 * 1024 * 1024;
 const PROTOCOL_ROOT: &str = "crates/protocol/src/lib.rs";
 
 #[derive(Clone, Copy)]
-pub(super) enum SourceView<'a> {
+pub(in crate::schema_compat::rust_shape) enum SourceView<'a> {
     Base { root: &'a Path, revision: &'a str },
     Candidate { root: &'a Path },
 }
 
 impl SourceView<'_> {
-    pub(super) fn read_optional(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+    pub(in crate::schema_compat::rust_shape) fn read_optional(
+        &self,
+        relative: &str,
+    ) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Base { root, revision } => {
                 read_revision_file_bounded(root, revision, relative, MAX_FILE_BYTES)
@@ -32,7 +35,7 @@ impl SourceView<'_> {
         }
     }
 
-    pub(super) fn read_text(&self, relative: &str) -> Result<String> {
+    pub(in crate::schema_compat::rust_shape) fn read_text(&self, relative: &str) -> Result<String> {
         let bytes = self
             .read_optional(relative)?
             .with_context(|| format!("compatibility source '{relative}' is missing"))?;
@@ -40,7 +43,10 @@ impl SourceView<'_> {
             .with_context(|| format!("compatibility source '{relative}' is not UTF-8"))
     }
 
-    pub(super) fn parse_file(&self, relative: &str) -> Result<syn::File> {
+    pub(in crate::schema_compat::rust_shape) fn parse_file(
+        &self,
+        relative: &str,
+    ) -> Result<syn::File> {
         let source = self.read_text(relative)?;
         syn::parse_file(&source)
             .with_context(|| format!("compatibility source '{relative}' does not parse as Rust"))
@@ -446,8 +452,12 @@ fn use_tree_names(
             } else {
                 Some(name.ident.unraw().to_string())
             };
-            if let (Some(names), Some(bound)) = (names.as_mut(), bound) {
-                names.insert(bound);
+            if let Some(bound) = bound {
+                if let Some(names) = names.as_mut() {
+                    names.insert(bound);
+                }
+            } else {
+                *names = None;
             }
         }
         syn::UseTree::Rename(rename) => {
@@ -469,17 +479,109 @@ fn use_tree_names(
     }
 }
 
+/// Canonical leaves retain the actual complete path, alias, visibility and attributes. Grouping
+/// unrelated imports together is formatting, not a change to each named binding's authority.
+/// Unknown-name imports stay whole and unconditional; executable freezes still compare all leaves.
+fn named_use_leaves(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<(syn::Ident, syn::token::PathSep)>,
+    emit: &mut impl FnMut(syn::UseTree) -> bool,
+) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => {
+            prefix.push((path.ident.clone(), path.colon2_token));
+            let complete = named_use_leaves(&path.tree, prefix, emit);
+            prefix.pop();
+            complete
+        }
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .all(|tree| named_use_leaves(tree, prefix, emit)),
+        leaf => {
+            let mut parts = prefix.as_slice();
+            let mut leaf = leaf.clone();
+            // `use a::b::{self}` imports a::b as b. Reconstruct that same complete module
+            // path, not an invalid standalone `a::b::self` or a different `a::self` binding.
+            if let Some((parent, rest)) = parts.split_last() {
+                match &mut leaf {
+                    syn::UseTree::Name(name) if name.ident.unraw() == "self" => {
+                        name.ident = parent.0.clone();
+                        parts = rest;
+                    }
+                    syn::UseTree::Rename(rename) if rename.ident.unraw() == "self" => {
+                        rename.ident = parent.0.clone();
+                        parts = rest;
+                    }
+                    _ => {}
+                }
+            }
+            for (ident, colon2) in parts.iter().rev() {
+                leaf = syn::UseTree::Path(syn::UsePath {
+                    ident: ident.clone(),
+                    colon2_token: *colon2,
+                    tree: Box::new(leaf),
+                });
+            }
+            emit(leaf)
+        }
+    }
+}
+
 pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
+    let mut bytes = 0usize;
     file.items
         .iter()
-        .filter_map(|item| match item {
+        .flat_map(|item| match item {
             syn::Item::Use(item) => {
                 let mut names = binding_attributes_are_inert(&item.attrs).then(BTreeSet::new);
                 use_tree_names(&item.tree, None, &mut names);
-                Some(ScopeBinding {
-                    fingerprint: semantic_use(item),
-                    names,
-                })
+                if names.as_ref().is_some_and(|names| !names.is_empty()) {
+                    let mut leaves = Vec::new();
+                    let complete = named_use_leaves(&item.tree, &mut Vec::new(), &mut |tree| {
+                        // Clone only leaf metadata, never the whole group for each member.
+                        let canonical = syn::ItemUse {
+                            attrs: item
+                                .attrs
+                                .iter()
+                                .filter(|attr| !is_doc(attr))
+                                .cloned()
+                                .collect(),
+                            vis: item.vis.clone(),
+                            use_token: item.use_token,
+                            leading_colon: item.leading_colon,
+                            tree,
+                            semi_token: item.semi_token,
+                        };
+                        let fingerprint = semantic_use(&canonical);
+                        let Some(next) = bytes
+                            .checked_add(fingerprint.len())
+                            .filter(|next| *next as u64 <= MAX_FILE_BYTES)
+                        else {
+                            return false;
+                        };
+                        bytes = next;
+                        let mut names = Some(BTreeSet::new());
+                        use_tree_names(&canonical.tree, None, &mut names);
+                        leaves.push(ScopeBinding { fingerprint, names });
+                        true
+                    });
+                    if complete {
+                        leaves
+                    } else {
+                        // A pathological repeated prefix/attribute cannot create an unbounded
+                        // synthetic scope. Keep the original item unconditional on refusal.
+                        vec![ScopeBinding {
+                            fingerprint: semantic_use(item),
+                            names: None,
+                        }]
+                    }
+                } else {
+                    vec![ScopeBinding {
+                        fingerprint: semantic_use(item),
+                        names,
+                    }]
+                }
             }
             syn::Item::ExternCrate(item) => {
                 let bound = item.rename.as_ref().map_or_else(
@@ -488,12 +590,12 @@ pub(super) fn import_bindings(file: &syn::File) -> Vec<ScopeBinding> {
                 );
                 let names = (binding_attributes_are_inert(&item.attrs) && bound != "_")
                     .then(|| BTreeSet::from([bound]));
-                Some(ScopeBinding {
+                vec![ScopeBinding {
                     fingerprint: semantic_extern_crate(item),
                     names,
-                })
+                }]
             }
-            _ => None,
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -504,12 +606,26 @@ pub(super) fn module_bindings(file: &syn::File) -> Vec<ScopeBinding> {
         .filter_map(|item| match item {
             syn::Item::Mod(module) => Some(ScopeBinding {
                 fingerprint: module_fingerprint(module),
-                names: binding_attributes_are_inert(&module.attrs)
+                names: module_binding_attributes_are_named(&module.attrs)
                     .then(|| BTreeSet::from([module.ident.unraw().to_string()])),
             }),
             _ => None,
         })
         .collect()
+}
+
+/// The built-in literal `path` attribute selects a module source without introducing another
+/// binding. Referenced modules still compare their complete declaration, including the path.
+/// Keep this exception module-only: procedural/conditional attributes and nonliteral paths remain
+/// unknown-name bindings and are therefore always compared.
+fn module_binding_attributes_are_named(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        binding_attributes_are_inert(std::slice::from_ref(attribute))
+            || (attribute.path().is_ident("path")
+                && matches!(&attribute.meta, syn::Meta::NameValue(value)
+                    if matches!(&value.value, syn::Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(path) if !path.value().is_empty()))))
+    })
 }
 
 /// Doc and plain `cfg` attributes do not make a binding's name unknowable. `cfg` can remove the

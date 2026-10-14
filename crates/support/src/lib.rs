@@ -29,6 +29,13 @@
 use iteron_record::redact::scrub;
 use std::collections::BTreeMap;
 
+#[cfg(windows)]
+pub mod durable_windows_state;
+#[cfg(windows)]
+pub mod owned_windows_job;
+#[cfg(windows)]
+pub mod windows_process_isolation;
+
 /// Environment variables permitted into a bundle. Deliberately short, and deliberately excluding
 /// anything whose name ends in `KEY`, `TOKEN` or `SECRET`.
 pub const ENV_ALLOWLIST: &[&str] = &["LANG", "LC_ALL", "TERM", "SHELL", "TZ"];

@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// Byte ceiling on a benchmark memory scope identifier. Only its digest is retained, so the string
 /// itself only needs to hold a corpus identifier, never corpus content.
@@ -7,7 +8,7 @@ const MAX_MEMORY_BENCHMARK_SCOPE_BYTES: usize = 1_024;
 impl Agent {
     /// Replace the world-facing context adapter before context becomes durable for this run.
     // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in strategies and
-    // every child/workflow agent inherits them by direct field copy.
+    // every child/workflow agent inherits the complete immutable compiled owner.
     #[allow(dead_code)]
     pub fn set_context_port(
         &mut self,
@@ -22,10 +23,11 @@ impl Agent {
 
     /// Install a pinned replacement for `core/context` before the run resolves live context.
     // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in
-    // strategies and every child/workflow agent inherits them by direct field copy, so the
+    // strategies and every child/workflow agent inherits the complete compiled owner, so the
     // override is exercised by conformance tests rather than the composition root. It was a
     // library-public method before the runtime moved into this binary.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_context_strategy(
         &mut self,
         strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -38,16 +40,20 @@ impl Agent {
                 "context strategy has the wrong slot identity".into(),
             ));
         }
-        self.context_strategy = strategy;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Context, strategy),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/tool_policy` before provider execution starts.
     // Pinning seam for the W1 strategy slots. `Agent::new` installs the built-in
-    // strategies and every child/workflow agent inherits them by direct field copy, so the
+    // strategies and every child/workflow agent inherits the complete compiled owner, so the
     // override is exercised by conformance tests rather than the composition root. It was a
     // library-public method before the runtime moved into this binary.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_tool_policy(
         &mut self,
         policy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -60,12 +66,16 @@ impl Agent {
                 "tool policy has the wrong slot identity".into(),
             ));
         }
-        self.tool_policy = policy;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::ToolPolicy, policy),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/memory` before context is resolved.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_memory_strategy(
         &mut self,
         strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -78,7 +88,10 @@ impl Agent {
                 "memory strategy has the wrong slot identity".into(),
             ));
         }
-        self.memory_strategy = strategy;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Memory, strategy),
+        );
         Ok(())
     }
 
@@ -94,7 +107,7 @@ impl Agent {
         self.memory_workspace.clone().map(|workspace| {
             (
                 workspace,
-                self.memory_strategy.clone(),
+                self.compiled_policy_bundle.slots().memory.clone(),
                 iteron_protocol::TurnId(self.seq_turn),
             )
         })
@@ -103,9 +116,10 @@ impl Agent {
     /// Install a pinned replacement for `core/router` before any submission is routed.
     ///
     /// The same pinning seam the sibling slots use: `Agent::new` installs the built-in baseline and
-    /// every child/workflow agent inherits it by direct field copy, so a replacement classifier
+    /// every child/workflow agent inherits the compiled owner, so a replacement classifier
     /// (ADR-011) arrives here rather than by editing the heuristic.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_router(
         &mut self,
         router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -118,12 +132,16 @@ impl Agent {
                 "router has the wrong slot identity".into(),
             ));
         }
-        self.router = router;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Router, router),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/planner` before any fan plan is materialized.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_planner(
         &mut self,
         planner: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -136,12 +154,16 @@ impl Agent {
                 "planner has the wrong slot identity".into(),
             ));
         }
-        self.planner = planner;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Planner, planner),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/collaboration` before fan execution is admitted.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_collaboration(
         &mut self,
         collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -154,12 +176,17 @@ impl Agent {
                 "collaboration strategy has the wrong slot identity".into(),
             ));
         }
-        self.collaboration = collaboration;
+        self.compiled_policy_bundle =
+            std::sync::Arc::new(self.compiled_policy_bundle.with_fixture_slot(
+                crate::bundle_adapter::CoreSlot::Collaboration,
+                collaboration,
+            ));
         Ok(())
     }
 
     /// Install a pinned replacement for `core/scheduler` before concurrent work is dispatched.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_scheduler(
         &mut self,
         scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -172,12 +199,16 @@ impl Agent {
                 "scheduler has the wrong slot identity".into(),
             ));
         }
-        self.scheduler = scheduler;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Scheduler, scheduler),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/verifier` before the completion gate is reached.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_verifier(
         &mut self,
         verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -190,12 +221,16 @@ impl Agent {
                 "verifier has the wrong slot identity".into(),
             ));
         }
-        self.verifier = verifier;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::Verifier, verifier),
+        );
         Ok(())
     }
 
     /// Install a pinned replacement for `core/model_router` before any delegated route is chosen.
     #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_model_router(
         &mut self,
         router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
@@ -208,7 +243,10 @@ impl Agent {
                 "model router has the wrong slot identity".into(),
             ));
         }
-        self.model_router = router;
+        self.compiled_policy_bundle = std::sync::Arc::new(
+            self.compiled_policy_bundle
+                .with_fixture_slot(crate::bundle_adapter::CoreSlot::ModelRouter, router),
+        );
         Ok(())
     }
 
@@ -267,10 +305,6 @@ impl Agent {
         Ok(())
     }
 
-    pub(crate) fn dependency_skill_dirs(&self) -> &[(std::path::PathBuf, std::path::PathBuf)] {
-        &self.dependency_skill_dirs
-    }
-
     /// Atomically install one compiler-validated nine-slot policy generation before turn zero.
     /// Validation happens before the first assignment, so an invalid checkpoint or a late caller
     /// cannot leave a mixture of old and new strategy Arcs on the agent.
@@ -320,17 +354,6 @@ impl Agent {
         &mut self,
         compiled: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     ) {
-        let slots = compiled.slots();
-        self.context_strategy = slots.context.clone();
-        self.tool_policy = slots.tool_policy.clone();
-        self.memory_strategy = slots.memory.clone();
-        self.router = slots.router.clone();
-        self.planner = slots.planner.clone();
-        self.collaboration = slots.collaboration.clone();
-        self.scheduler = slots.scheduler.clone();
-        self.verifier = slots.verifier.clone();
-        self.model_router = slots.model_router.clone();
-        self.boot_bundle = compiled.boot_bundle();
         self.compiled_policy_bundle = compiled;
     }
 
@@ -380,6 +403,37 @@ impl Agent {
         self.composition_instruction_context = Some((text.clone(), trust));
         self.instruction_context = Some((text, trust));
         Ok(())
+    }
+
+    /// Trusted frontend capture from the same actual instruction discovery and renderer.
+    /// This installs reference provenance only and grants no tool or execution authority.
+    pub fn set_instruction_context_with_provenance(
+        &mut self,
+        text: String,
+        trust: Trust,
+        materials: Vec<iteron_ctx::context_provenance::CapturedContextMaterial>,
+        dropped: u32,
+    ) -> Result<(), KernelError> {
+        if materials.len() > iteron_ctx::context_provenance::MAX_CONTEXT_MATERIALS
+            || materials
+                .iter()
+                .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
+                .is_none_or(|bytes| {
+                    bytes > iteron_ctx::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                })
+        {
+            return Err(KernelError::ContextResolution(
+                "frontend provenance exceeds source bounds".into(),
+            ));
+        }
+        self.set_instruction_context(text, trust)?;
+        let installed = self
+            .composition_instruction_context
+            .as_ref()
+            .map_or("", |(text, _)| text.as_str());
+        self.context_source_evidence
+            .install_frontend_materials(installed, &materials, dropped)
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))
     }
 
     /// Install a frontend-observed, already-framed fresh-start environment snapshot. The kernel

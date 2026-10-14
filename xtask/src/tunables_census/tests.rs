@@ -1,6 +1,118 @@
 use super::*;
 
 #[test]
+fn moved_source_forms_keep_id_and_real_owner_evidence() {
+    for (krate, old_path, new_path, source) in [
+        (
+            "record",
+            "crates/record/src/session.rs",
+            "crates/record/src/session/model.rs",
+            "struct SessionMeta { #[serde(default)] ancestry: Vec<String> }\n\
+             struct SessionAncestryReceipt { #[serde(default)] observed_record_bytes: u64 }",
+        ),
+        (
+            "record",
+            "crates/record/src/session.rs",
+            "crates/record/src/session/index.rs",
+            "struct SessionDeltaRef { #[serde(default)] delta_high_water: u64 }",
+        ),
+        (
+            "ctx",
+            "crates/ctx/src/memory.rs",
+            "crates/ctx/src/memory/selection.rs",
+            "struct MemoryCandidate { #[serde(default)] modified_unix_secs: Option<u64> }\n\
+             struct MemorySlotObservation { #[serde(default)] reference_unix_secs: u64 }",
+        ),
+        (
+            "provider",
+            "crates/provider/src/catalog.rs",
+            "crates/provider/src/catalog/discovery.rs",
+            "struct FireworksModel { #[serde(default)] conversation_config: Option<String> }\n\
+             struct FireworksDeployedModel { #[serde(default)] is_default: bool }",
+        ),
+        (
+            "provider",
+            "crates/provider/src/catalog.rs",
+            "crates/provider/src/catalog/health.rs",
+            "impl ProviderHealthStore { pub fn new(max_entries: usize) -> Self { todo!() } }",
+        ),
+    ] {
+        let before = discover_source(krate, old_path, source).unwrap();
+        let after = discover_source(krate, new_path, source).unwrap();
+        assert!(!before.is_empty(), "{old_path}");
+        assert_eq!(before.len(), after.len());
+        for (old, new) in before.iter().zip(&after) {
+            assert_eq!(old.id, new.id);
+            assert_eq!(old.disposition, new.disposition);
+            assert_eq!(old.value, new.value);
+            assert_eq!(new.owner.path, new_path);
+            assert!(new.use_sites.iter().all(|site| site.path == new_path));
+            if let Some(proof) = &new.caller_input_proof {
+                assert_eq!(proof.path, new_path);
+            }
+        }
+    }
+}
+
+#[test]
+fn moved_session_hard_envelope_remains_readonly_and_validates_actual_source() {
+    let source = "struct SessionDeltaHardLimits { rows: u64, bytes: u64 }\n\
+                  const SESSION_DELTA_HARD_LIMITS: SessionDeltaHardLimits =\n\
+                      SessionDeltaHardLimits { rows: 4_096, bytes: 16 * 1024 * 1024 };";
+    let before = discover_source("record", "crates/record/src/session.rs", source).unwrap();
+    let after = discover_source("record", "crates/record/src/session/index.rs", source).unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, before[0].id);
+    assert_eq!(
+        after[0].id,
+        "record.session.session.inline.sessiondeltahardlimits.field.rows.1"
+    );
+    assert_eq!(after[0].owner.path, "crates/record/src/session/index.rs");
+    assert_eq!(after[0].owner.symbol, "session::index");
+    assert_eq!(after[0].disposition, CensusDisposition::InvariantReadOnly);
+    assert_eq!(after[0].invariant_kind, Some(InvariantKind::Durability));
+    assert!(source_form_invariant_matches(&before[0]));
+    assert!(source_form_invariant_matches(&after[0]));
+    validate(&after).unwrap();
+
+    let unrelated = source.replace("SessionDeltaHardLimits", "SessionScanLimits");
+    let row = discover_source("record", "crates/record/src/session/index.rs", &unrelated)
+        .unwrap()
+        .remove(0);
+    assert_eq!(row.disposition, CensusDisposition::BindingRequired);
+    assert!(row.id.starts_with("record.session.index."));
+    assert!(!source_form_invariant_matches(&row));
+
+    let mut forged_source = after[0].clone();
+    forged_source.owner.path = "crates/record/src/unrelated.rs".into();
+    assert!(!source_form_invariant_matches(&forged_source));
+}
+
+#[test]
+fn unrelated_new_owner_defaults_do_not_inherit_historical_aliases() {
+    let source = "struct NewPolicy { #[serde(default)] threshold: u32 }";
+    for (krate, path, expected_prefix) in [
+        (
+            "ctx",
+            "crates/ctx/src/memory/selection.rs",
+            "ctx.memory.selection.",
+        ),
+        ("cli", "crates/cli/src/block/diff.rs", "cli.block.diff."),
+        (
+            "provider",
+            "crates/provider/src/catalog/discovery.rs",
+            "provider.catalog.discovery.",
+        ),
+    ] {
+        let row = discover_source(krate, path, source).unwrap().remove(0);
+        assert!(row.id.starts_with(expected_prefix));
+        assert_eq!(row.owner.path, path);
+        assert_eq!(row.disposition, CensusDisposition::RuntimeSettable);
+    }
+}
+
+#[test]
 fn discovers_declared_defaults_but_not_default_constructor_uses() {
     let source = r#"
         struct RuntimePolicy {
@@ -214,6 +326,110 @@ fn quality_affecting_invariant_requires_an_explicit_override() {
     );
     row.explicit_invariant_override = true;
     validate(std::slice::from_ref(&row)).unwrap();
+}
+
+fn exact_client_invariant_row() -> CensusRow {
+    let mut row = discover_source(
+        "cli",
+        "crates/cli/src/app_server/thread_inspection.rs",
+        "struct Inspection { #[serde(default)] max_events: usize }",
+    )
+    .unwrap()
+    .remove(0);
+    row.id = "cli.app_server.thread_inspection.max_inspection_events".into();
+    row.tier2_id = Some(row.id.clone());
+    row.candidate_kind = CensusCandidateKind::Const;
+    row.owner.symbol = "MAX_INSPECTION_EVENTS".into();
+    row.disposition = CensusDisposition::InvariantReadOnly;
+    row.external_address = None;
+    row.binding_requirement = None;
+    row.caller_input_proof = None;
+    row.invariant_kind = Some(InvariantKind::Security);
+    row.explicit_invariant_override = true;
+    row.owning_human_review = Some(OwningHumanReviewStatus::RequiredNotSourceProven);
+    row.applied = false;
+    row.behavior_oracle = None;
+    row.review_evidence = Some(format!(
+        "explicit source-specific Tier-2 disposition rule: `{}` at {} — Security; observed at {}:1; mechanical source evidence only, not a claim of human review",
+        row.owner.symbol, row.owner.path, row.owner.path
+    ));
+    row
+}
+
+#[test]
+fn closed_declaration_disposition_is_validated_from_source_owner_and_reason() {
+    let row = exact_client_invariant_row();
+    validate(std::slice::from_ref(&row)).unwrap();
+    assert_eq!(
+        source_dispositions::kind(&row),
+        Some(InvariantKind::Security)
+    );
+
+    let mut wrong_reason = row.clone();
+    wrong_reason.invariant_kind = Some(InvariantKind::Identity);
+    assert!(
+        validate(&[wrong_reason])
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete exact source disposition evidence")
+    );
+    let mut wrong_evidence = row.clone();
+    wrong_evidence.review_evidence = row.review_evidence.as_ref().map(|evidence| {
+        evidence.replace(
+            "explicit source-specific Tier-2 disposition rule",
+            "closed Tier-2 disposition rule",
+        )
+    });
+    assert!(
+        validate(&[wrong_evidence])
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete exact source disposition evidence")
+    );
+}
+
+#[test]
+fn changed_owner_or_new_source_form_cannot_borrow_a_fixed_const_disposition() {
+    let row = exact_client_invariant_row();
+    let mut changed_owner = row.clone();
+    changed_owner.owner.symbol = "Other::MAX_INSPECTION_EVENTS".into();
+    assert!(source_dispositions::kind(&changed_owner).is_none());
+    assert!(validate(&[changed_owner]).is_err());
+    let mut foreign_path = row.clone();
+    foreign_path.owner.path = "crates/cli/src/other.rs".into();
+    assert!(validate(&[foreign_path]).is_err());
+    let mut foreign_crate = row.clone();
+    foreign_crate.owner.krate = "other".into();
+    assert!(validate(&[foreign_crate]).is_err());
+    let mut new_symbol = row.clone();
+    new_symbol.owner.symbol = "MAX_FUTURE_EVENTS".into();
+    assert!(validate(&[new_symbol]).is_err());
+    let mut source_form = row.clone();
+    source_form.candidate_kind = CensusCandidateKind::SerdeDefault;
+    assert!(validate(&[source_form]).is_err());
+    let mut no_tier2 = row;
+    no_tier2.tier2_id = None;
+    assert!(validate(&[no_tier2]).is_err());
+}
+
+#[test]
+fn unapplied_quality_marker_stays_unclassified_without_an_exact_decision() {
+    let mut row = exact_client_invariant_row();
+    row.id = "cli.app_server.thread_inspection.new_quality_threshold".into();
+    row.tier2_id = Some(row.id.clone());
+    row.owner.symbol = "NEW_QUALITY_THRESHOLD".into();
+    row.explicit_invariant_override = false;
+    row.review_evidence = Some(format!(
+        "closed Tier-2 disposition rule: `{}` at {} — mechanical test; observed at {}:1; mechanical source evidence only, not a claim of human review",
+        row.owner.symbol, row.owner.path, row.owner.path
+    ));
+    assert!(!row.applied);
+    assert!(
+        validate(&[row])
+            .unwrap_err()
+            .to_string()
+            .contains("have no explicit override")
+    );
 }
 
 #[test]
@@ -720,4 +936,276 @@ fn duplicate_external_addresses_require_owner_qualification() {
     );
     rows[1].external_address.as_mut().unwrap().owner = "serde::OtherConfig".to_owned();
     validate(&rows).unwrap();
+}
+
+#[test]
+fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let cases = [
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "cli.app.server.plantcore.plantcoreadmission.disabled.inline.self.field.state.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.2",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "mcp.supervisor.config.mcplaunchconfig.new.inline.self.field.advertises.elicitation.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "mcp.supervisor.config.mcplaunchconfig.new.inline.self.field.protocol.mode.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "ctx.memory.membudget.fit.content.bytes.inline.self.field.index.bytes.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "ctx.memory.membudget.fit.content.bytes.inline.self.field.recall.bytes.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/cli/src/app_server/session_factory.rs",
+            "cli.app.server.session.factory.sessionfactory.verified.inline.replayreadlimits.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.3.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.4.1",
+            InvariantKind::Durability,
+        ),
+        (
+            "crates/cli/src/runtime/budget_control.rs",
+            "cli.runtime.budget.control.agent.admit.operator.tool.call.inline.super.permission.policy.operationpolicy.field.governing.trust.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/invocation_admission.rs",
+            "cli.runtime.invocation.admission.invocationadmissionsession.prepare.inline.invocationadmission.field.phase.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/runtime/memory_activation.rs",
+            "cli.runtime.memory.activation.memoryactivation.resolve.inline.memoryreferenceadmissionv1.field.version.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/cli/src/runtime/permission_policy.rs",
+            "cli.runtime.permission.policy.evaluate.operation.inline.operationadmission.field.verdict.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/persistent_agents/input_admission.rs",
+            "cli.runtime.persistent.agents.input.admission.liveagentmailbox.source.admission.inline.agentinputadmissionv1.field.version.1",
+            InvariantKind::WireCompatibility,
+        ),
+        (
+            "crates/cli/src/runtime/pricing.rs",
+            "cli.runtime.pricing.sharedusdbudget.from.microusd.inline.self.field.depth.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/runtime/request_admission.rs",
+            "cli.runtime.request.admission.requestadmission.a.from.bound.inline.self.field.phase.1",
+            InvariantKind::NonValueStructural,
+        ),
+        (
+            "crates/cli/src/runtime/workspace_rewind.rs",
+            "cli.runtime.workspace.rewind.agent.admit.workspace.rewind.inline.operationpolicy.field.governing.trust.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/cli/src/tui/persistent_agents.rs",
+            "cli.tui.persistent.agents.parse.inline.agentbudgetv1.field.turns.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ctx.runtime.policy.contextbudgetpolicy.for.usable.window.inline.self.field.task.context.elastic.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "ctx.runtime.policy.contextbudgetpolicy.for.usable.window.inline.self.field.transcript.elastic.1",
+            InvariantKind::Authority,
+        ),
+        (
+            "crates/obs/src/pricing/physical_replay.rs",
+            "obs.pricing.physical.replay.physicalpricingreplay.observe.inline.admission.field.closed.1",
+            InvariantKind::Replay,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.hydrated.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "record.bounded.replay.replayreadlimits.budget.inline.replayreadbudget.field.physical.1",
+            InvariantKind::HardBudget,
+        ),
+        (
+            "crates/record/src/session/bounded_reindex.rs",
+            "record.session.bounded.reindex.session.bounded.reindex.inline.replayreadlimits.field.events.1",
+            InvariantKind::HardBudget,
+        ),
+    ];
+    assert_eq!(cases.len(), 26);
+    for (path, expected_id, kind) in cases {
+        let source = std::fs::read_to_string(root.join(path)).unwrap();
+        let krate = path.split('/').nth(1).unwrap();
+        let rows = discover_source(krate, path, &source).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.id == expected_id)
+            .unwrap_or_else(|| panic!("actual inline declaration absent: {expected_id}"));
+        assert_eq!(
+            row.disposition,
+            CensusDisposition::InvariantReadOnly,
+            "{expected_id}"
+        );
+        assert_eq!(row.invariant_kind, Some(kind), "{expected_id}");
+        assert!(source_form_invariant_matches(row), "{expected_id}");
+        assert!(row.external_address.is_none());
+        assert!(!row.applied);
+        validate(std::slice::from_ref(row)).unwrap();
+        let mut wrong_value = row.clone();
+        wrong_value.value = "not_the_admitted_literal".into();
+        assert!(
+            !source_form_invariant_matches(&wrong_value),
+            "{expected_id}"
+        );
+        assert!(
+            validate(std::slice::from_ref(&wrong_value)).is_err(),
+            "{expected_id}"
+        );
+        wrong_value.review_evidence = wrong_value.review_evidence.map(|evidence| {
+            evidence.replace(
+                "closed source-form invariant rule",
+                "unproven structural label",
+            )
+        });
+        assert!(validate(&[wrong_value]).is_err(), "{expected_id}");
+        let mut wrong_identity = row.clone();
+        wrong_identity.id.push_str(".foreign");
+        assert!(
+            !source_form_invariant_matches(&wrong_identity),
+            "{expected_id}"
+        );
+        assert!(validate(&[wrong_identity]).is_err(), "{expected_id}");
+        let mut wrong_ordinal = row.clone();
+        let (prefix, _) = wrong_ordinal.id.rsplit_once('.').unwrap();
+        wrong_ordinal.id = format!("{prefix}.3");
+        assert!(
+            !source_form_invariant_matches(&wrong_ordinal),
+            "{expected_id}"
+        );
+        assert!(validate(&[wrong_ordinal]).is_err(), "{expected_id}");
+        let mut wrong_path = row.clone();
+        wrong_path.owner.path.push_str(".foreign");
+        assert!(!source_form_invariant_matches(&wrong_path), "{expected_id}");
+        assert!(validate(&[wrong_path]).is_err(), "{expected_id}");
+    }
+}
+
+#[test]
+fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
+    for (path, source) in [
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "fn add() { let _ = McpServerConfig { transport: OtherTransport::Http }; }",
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "fn other_add() { let _ = McpServerConfig { transport: McpTransportConfig::Http }; }",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "impl McpLaunchConfig { fn new() -> Self { Self { advertises_elicitation: true, protocol_mode: crate::McpProtocolMode::Stateless } } }",
+        ),
+        (
+            "crates/mcp/src/supervisor/config.rs",
+            "impl OtherMcpLaunchConfig { fn new() -> Self { Self { advertises_elicitation: false, protocol_mode: crate::McpProtocolMode::Stateful } } }",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "impl MemBudget { fn fit_content_bytes() -> Self { Self { index_bytes: 1, recall_bytes: 1 } } }",
+        ),
+        (
+            "crates/ctx/src/memory.rs",
+            "impl OtherMemBudget { fn fit_content_bytes() -> Self { Self { index_bytes: 0, recall_bytes: 0 } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Required } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl OtherPlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { other_state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/plantcore.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { OtherAdmission { state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/app_server/unrelated.rs",
+            "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
+        ),
+        (
+            "crates/cli/src/runtime/permission_policy.rs",
+            "fn evaluate_operation() { let _ = OtherAdmission { verdict: Verdict::Auto }; }",
+        ),
+        (
+            "crates/cli/src/runtime/memory_activation.rs",
+            "impl MemoryActivation { fn resolve() { let _ = MemoryReferenceAdmissionV1 { version: 2 }; } }",
+        ),
+        (
+            "crates/cli/src/queue_policy.rs",
+            "impl FrontendQueuePolicy { fn owner() { let _ = Self::new(1, 2, 3, CosmeticOverflow::Drop, AuthoritativeOverflow::Reject); } }",
+        ),
+        (
+            "crates/ctx/src/runtime_policy.rs",
+            "impl ContextBudgetPolicy { fn for_usable_window() -> Self { Self { task_context_elastic: true, transcript_elastic: true } } }",
+        ),
+        (
+            "crates/record/src/bounded_replay.rs",
+            "impl ReplayReadLimits { fn budget() { let _ = ReplayReadBudget { events: 1, physical: 1, hydrated: 1 }; } }",
+        ),
+    ] {
+        let krate = path.split('/').nth(1).unwrap();
+        let rows = discover_source(krate, path, source).unwrap();
+        assert!(!rows.is_empty(), "{path}");
+        assert!(
+            rows.iter()
+                .all(|row| row.disposition == CensusDisposition::BindingRequired),
+            "{path}"
+        );
+    }
 }

@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+legacy-plantcore = []
+ticket-investigation = []
+script-workflows = ["iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
+
 [[bin]]
 name = "iteron"
 path = "src/main.rs"
@@ -28,6 +34,7 @@ iteron-sandbox = { path = "../sandbox" }
 iteron-tunables = { path = "../tunables" }
 iteron-changeset = { path = "../changeset" }
 iteron-marketplace = { path = "../marketplace" }
+iteron-extension-sdk = { path = "../extension-sdk" }
 iteron-statusline = { path = "../statusline" }
 iteron-support = { path = "../support" }
 tokio = { workspace = true }
@@ -37,7 +44,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ratatui = { workspace = true }
-crossterm = { workspace = true }
+# Attach consumes its bearer on stdin before polling the controlling terminal. Select the
+# existing Unix poll backend rather than requiring Mio registration of the /dev/tty handle.
+crossterm = { workspace = true, features = ["use-dev-tty"] }
 futures-util = { workspace = true }
 async-trait = "0.1"
 url = "2"
@@ -66,6 +75,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+ed25519-dalek = { workspace = true }
 # Tests pin a registry-driven resolved tunable set rather than inventing a snapshot.
 iteron-record = { path = "../record", features = ["test-fixtures"] }
 # CLI unit tests run under libtest, which cannot self-exec the production helper entry point.
@@ -73,5 +83,7 @@ iteron-record = { path = "../record", features = ["test-fixtures"] }
 iteron-tools = { path = "../tools", features = ["test-helper"] }
 jsonschema = { version = "0.28", default-features = false }
 portable-pty = "=0.9.0"
+rcgen = "0.13.2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 vt100 = "=0.15.2"
 tokio = { workspace = true, features = ["test-util"] }

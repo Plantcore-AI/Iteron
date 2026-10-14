@@ -1,9 +1,8 @@
 //! Agent-side bridge from the immutable provider policy to per-physical-attempt admission.
 
 use super::*;
-use iteron_provider::{
-    AdmissionReason, AttemptPermit, CircuitTransition, ProviderAdmission as Admission,
-};
+use iteron_provider::AttemptPermit;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteObjectiveRank {
@@ -49,6 +48,19 @@ impl GovernedProviderRoute {
         format!("{}:{}", self.route.provider_id, self.route.model_id)
     }
 
+    pub(super) fn objective_evidence(&self) -> super::provider_dispatch::ProviderObjectiveEvidence {
+        super::provider_dispatch::ProviderObjectiveEvidence {
+            score: self
+                .objective_rank
+                .as_ref()
+                .map(|rank| rank.score_millionths),
+            digest: self
+                .objective_rank
+                .as_ref()
+                .map(|rank| rank.evidence_digest_sha256.clone()),
+        }
+    }
+
     pub(super) fn admits_request(&self, request: &TurnRequest) -> bool {
         self.objective_rank.is_some()
             && (request.input_images.is_empty() || self.image_input == Some(true))
@@ -66,7 +78,7 @@ impl Agent {
         &self,
         provider: &dyn Provider,
     ) -> iteron_provider::ProviderRequestControls {
-        if self.plantcore_runtime_enabled() {
+        if self.provider_extension_enabled() {
             self.provider_controls
         } else {
             provider
@@ -97,17 +109,14 @@ impl Agent {
             });
         }
         let capabilities = self.provider.control_capabilities();
-        let executable = if self.plantcore_runtime_enabled() {
+        let executable = if self.provider_extension_enabled() {
             controls
         } else {
             capabilities.adapt_optional_cache_breakpoint(controls)
         };
         capabilities
             .validate(&executable)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: "selected provider does not attest one configured control",
-            })?;
+            .map_err(KernelError::ProviderControl)?;
         self.provider_controls = controls;
         Ok(())
     }
@@ -178,6 +187,7 @@ impl Agent {
         Ok(())
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     /// Remove every preconfigured fallback that would change the immutable PlantCore engine
     /// identity. Retry and hedge attempts remain on the selected route; a future alternate
     /// transport instance may remain only when it advertises the exact same provider/model pair.
@@ -231,109 +241,7 @@ impl Agent {
         turn: TurnId,
         route_id: &str,
     ) -> Result<Option<AttemptPermit>, KernelError> {
-        let Some(governor) = &self.provider_governor else {
-            return Ok(None);
-        };
-        let queue_started = Instant::now();
-        let total_permits = u64::try_from(governor.policy().max_in_flight_per_route)
-            .unwrap_or(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS)
-            .min(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS);
-        let mut queued_activity: Option<turn_activity::ActivitySpan> = None;
-        loop {
-            match governor.admit(route_id, Instant::now()) {
-                Admission::Admitted(permit) => {
-                    let snapshot = governor.snapshot(Instant::now());
-                    let in_flight = snapshot
-                        .routes
-                        .iter()
-                        .find(|route| route.route_id == route_id)
-                        .map_or(0, |route| route.in_flight);
-                    let available = governor
-                        .policy()
-                        .max_in_flight_per_route
-                        .saturating_sub(in_flight);
-                    if let Some(mut queued) = queued_activity.take() {
-                        queued
-                            .progress(u64::try_from(available).unwrap_or(u64::MAX), total_permits);
-                        queued.complete();
-                    }
-                    self.lifecycle_event(
-                        "model.route_selected",
-                        Some(turn),
-                        LifecyclePayload {
-                            count: Some(u64::try_from(available).unwrap_or(u64::MAX)),
-                            duration_us: Some(elapsed_us(queue_started)),
-                            reason_code: Some("provider_permit_admitted".into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    self.emit_circuit_transition(turn, permit.transition);
-                    self.record_provider_governor_state(turn, route_id, permit.transition, None)?;
-                    return Ok(Some(permit));
-                }
-                Admission::Deferred { wait, reason } => {
-                    if queued_activity.is_none() {
-                        let snapshot = governor.snapshot(Instant::now());
-                        let in_flight = snapshot
-                            .routes
-                            .iter()
-                            .find(|route| route.route_id == route_id)
-                            .map_or(0, |route| route.in_flight);
-                        let available = governor
-                            .policy()
-                            .max_in_flight_per_route
-                            .saturating_sub(in_flight);
-                        let mut activity = self
-                            .activity
-                            .span(turn_activity::ActivityStage::QueuedForProvider, Some(turn));
-                        activity
-                            .progress(u64::try_from(available).unwrap_or(u64::MAX), total_permits);
-                        queued_activity = Some(activity);
-                    }
-                    // A deferred admission rejects this physical scheduling attempt without
-                    // opening a provider effect. Keep it inside the canonical 192-event
-                    // vocabulary and distinguish the retryable decision in the bounded reason.
-                    self.lifecycle_event(
-                        "model.route_rejected",
-                        Some(turn),
-                        LifecyclePayload {
-                            duration_us: Some(u64::try_from(wait.as_micros()).unwrap_or(u64::MAX)),
-                            reason_code: Some(format!(
-                                "admission_deferred:{}",
-                                admission_reason(reason)
-                            )),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    let waited = self.wait_provider_retry(wait).await;
-                    match waited {
-                        Ok(()) => {}
-                        Err(error) => {
-                            if let Some(queued) = queued_activity.take() {
-                                queued.fail(iteron_protocol::ActivityDetailCode::RoutePermit);
-                            }
-                            return Err(error);
-                        }
-                    }
-                }
-                Admission::Rejected(reason) => {
-                    self.lifecycle_event(
-                        "model.route_rejected",
-                        Some(turn),
-                        LifecyclePayload {
-                            reason_code: Some(admission_reason(reason).into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    return Err(KernelError::Provider(
-                        iteron_provider::ProviderError::Configuration(format!(
-                            "provider governor rejected route admission ({})",
-                            admission_reason(reason)
-                        )),
-                    ));
-                }
-            }
-        }
+        self.provider_route_admission(turn).admit(route_id).await
     }
 
     pub(super) fn observe_governed_route_attempt(
@@ -343,23 +251,8 @@ impl Agent {
         result: &Result<iteron_provider::TurnResult, KernelError>,
         rate_limit: Option<iteron_provider::RateLimitSnapshot>,
     ) -> Result<(), KernelError> {
-        let Some(governor) = &self.provider_governor else {
-            return Ok(());
-        };
-        if let Some(snapshot) = rate_limit {
-            governor.observe_rate_limit(route_id, snapshot, Instant::now());
-        }
-        let transition = match result {
-            Ok(_) => governor.observe_success(route_id),
-            Err(KernelError::Provider(
-                iteron_provider::ProviderError::Interrupted
-                | iteron_provider::ProviderError::DeadlineExceeded,
-            )) => CircuitTransition::None,
-            Err(KernelError::Provider(_)) => governor.observe_failure(route_id, Instant::now()),
-            Err(_) => CircuitTransition::None,
-        };
-        self.emit_circuit_transition(turn, transition);
-        self.record_provider_governor_state(turn, route_id, transition, rate_limit)
+        self.provider_route_admission(turn)
+            .observe(route_id, result, rate_limit)
     }
 
     pub(super) fn admitted_failover(
@@ -367,25 +260,11 @@ impl Agent {
         error: &KernelError,
         semantic_output_observed: bool,
     ) -> Option<iteron_provider::FailoverClass> {
-        let governor = self.provider_governor.as_ref()?;
-        let KernelError::Provider(error) = error else {
-            return None;
-        };
-        let point = if matches!(
+        super::provider_followup::admitted_failover(
+            self.provider_governor.as_ref(),
             error,
-            iteron_provider::ProviderError::ConnectFailed
-                | iteron_provider::ProviderError::KnownModelUnavailable { .. }
-                | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
-        ) {
-            iteron_provider::FailurePoint::PreDispatch
-        } else if !semantic_output_observed
-            && !super::provider_route::provider_outcome_is_unobservable(error)
-        {
-            iteron_provider::FailurePoint::ProvenTerminal
-        } else {
-            return None;
-        };
-        governor.failover_class(error, point)
+            semantic_output_observed,
+        )
     }
 
     /// Durably move to the next already-attested route before its provider effect intent opens.
@@ -429,8 +308,8 @@ impl Agent {
     }
 
     pub(super) fn governed_route_id(&self) -> String {
-        self.selected_route
-            .as_ref()
+        self.provider_selection
+            .selected()
             .map(|selected| format!("{}:{}", selected.route.provider_id, selected.route.model_id))
             .unwrap_or_else(|| {
                 format!(
@@ -441,49 +320,31 @@ impl Agent {
             })
     }
 
-    pub(super) fn emit_circuit_transition(&self, turn: TurnId, transition: CircuitTransition) {
-        // Circuit state is retained by the governor owner and projected by `/status`. Admission
-        // rejection carries the exact circuit reason, while the physical request terminal owns
-        // open/close causality. Do not manufacture an unregistered lifecycle identifier here.
-        let _ = (turn, transition);
-    }
-
-    pub(super) fn record_provider_governor_state(
+    pub(super) fn provider_route_admission(
         &mut self,
         turn: TurnId,
-        route_id: &str,
-        transition: CircuitTransition,
-        quota: Option<iteron_provider::RateLimitSnapshot>,
-    ) -> Result<(), KernelError> {
-        if transition == CircuitTransition::None && quota.is_none() {
-            return Ok(());
-        }
-        let transition = match transition {
-            CircuitTransition::None => "none",
-            CircuitTransition::Opened => "opened",
-            CircuitTransition::HalfOpened => "half_opened",
-            CircuitTransition::Closed => "closed",
-        };
-        let quota = quota.unwrap_or_default();
-        let payload = serde_json::json!({
-            "schema": "iteron-provider-governor-state-v1",
-            "route_id": route_id,
-            "circuit_transition": transition,
-            "requests_remaining": quota.requests_remaining,
-            "tokens_remaining": quota.tokens_remaining,
-            "requests_reset_ms": quota.requests_reset.map(|value| {
-                u64::try_from(value.as_millis()).unwrap_or(u64::MAX)
-            }),
-            "tokens_reset_ms": quota.tokens_reset.map(|value| {
-                u64::try_from(value.as_millis()).unwrap_or(u64::MAX)
-            }),
-        });
-        self.emit_durable(
+    ) -> super::provider_route_admission::ProviderRouteAdmission<'_> {
+        let events = super::provider_route_events::ProviderRouteEvents {
             turn,
-            EventKind::Notice {
-                text: payload.to_string(),
+            lifecycle: self.lifecycle_emitter.clone(),
+            hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+            activity: self.activity.clone(),
+        };
+        super::provider_route_admission::ProviderRouteAdmission {
+            governor: self.provider_governor.clone(),
+            control: &self.control,
+            run_deadline: self.run_deadline.current(),
+            events,
+            journal: super::provider_route_journal::ProviderRouteJournal {
+                rollout: &mut self.rollout,
+                ledger: &mut self.ledger,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
             },
-        )
+        }
     }
 }
 
@@ -586,16 +447,7 @@ fn objective_evidence_digest(
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
 
-pub(super) const fn admission_reason(reason: AdmissionReason) -> &'static str {
-    match reason {
-        AdmissionReason::UnknownRoute => "provider_route_not_admitted",
-        AdmissionReason::Ceiling => "provider_concurrency_ceiling",
-        AdmissionReason::QuotaUnknown => "provider_quota_unknown",
-        AdmissionReason::QuotaExhausted => "provider_quota_exhausted",
-        AdmissionReason::CircuitOpen => "provider_circuit_open",
-        AdmissionReason::CircuitHalfOpen => "provider_circuit_half_open",
-    }
-}
+pub(super) use super::provider_route_admission::admission_reason;
 
 #[cfg(test)]
 mod objective_rank_tests {
@@ -748,5 +600,78 @@ mod objective_rank_tests {
             None,
             "ranking must not invent an output-token ceiling"
         );
+    }
+
+    struct RaisedPhysicalCap;
+    #[async_trait::async_trait]
+    impl Provider for RaisedPhysicalCap {
+        async fn turn(
+            &self,
+            _: &TurnRequest,
+            _: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+            unreachable!("fallback admission must not dispatch")
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            _: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, iteron_provider::ProviderError> {
+            Ok(Some(4096))
+        }
+    }
+
+    #[test]
+    fn normalized_fallback_rechecks_actual_output_and_context_before_selection() {
+        let candidate = rank_provider_routes(
+            vec![route("candidate", Some(QUALITY), Some(true), Some(3072))],
+            iteron_provider::ObjectiveWeights::default(),
+        )
+        .unwrap()
+        .remove(0);
+        let policy_request = request(false);
+        assert!(candidate.admits_request(&policy_request));
+        let physical = super::super::provider_output_request::normalize(
+            &RaisedPhysicalCap,
+            policy_request,
+            true,
+        )
+        .unwrap();
+        assert_eq!(physical.requested_max_tokens, 1024);
+        assert_eq!(physical.request.max_tokens, 4096);
+        assert!(matches!(
+            super::super::provider_route_turn::validate_fallback_request(
+                &candidate,
+                &physical.request,
+                1
+            ),
+            Err(KernelError::InvalidRouteMetadata {
+                field: "fallback_request",
+                ..
+            }),
+        ));
+        let mut candidate = rank_provider_routes(
+            vec![route(
+                "bounded-context",
+                Some(QUALITY),
+                Some(true),
+                Some(8192),
+            )],
+            iteron_provider::ObjectiveWeights::default(),
+        )
+        .unwrap()
+        .remove(0);
+        candidate.context_window_tokens = Some(4096);
+        assert!(candidate.admits_request(&physical.request));
+        assert!(matches!(
+            super::super::provider_route_turn::validate_fallback_request(
+                &candidate,
+                &physical.request,
+                1
+            ),
+            Err(KernelError::ContextWindowExceeded {
+                reserved_output_tokens: 4096,
+                ..
+            }),
+        ));
     }
 }

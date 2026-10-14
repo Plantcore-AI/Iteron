@@ -1,11 +1,13 @@
 use super::LspToolError;
+#[cfg(windows)]
+use super::capability_windows::SourceBinding as WindowsSourceBinding;
 use super::policy::LspLanguageRoute;
 use iteron_lsp::intel::Position;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -15,7 +17,7 @@ use tokio::io::AsyncReadExt as _;
 
 pub(super) const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REQUEST_PATH_BYTES: usize = 4 * 1024;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const SOURCE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,8 @@ pub(super) struct SourceDocument {
     root_binding: RootBinding,
     #[cfg(unix)]
     source_binding: SourceBinding,
+    #[cfg(windows)]
+    source_binding: WindowsSourceBinding,
 }
 
 impl SourceDocument {
@@ -76,10 +80,64 @@ impl SourceDocument {
         requested: &str,
         routes: &BTreeMap<String, LspLanguageRoute>,
     ) -> Result<Self, LspToolError> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (root, requested, routes);
             Err(LspToolError::SandboxUnavailable)
+        }
+
+        #[cfg(windows)]
+        {
+            validate_requested_path(requested)?;
+            let requested_root = if root.is_absolute() {
+                root.to_owned()
+            } else {
+                std::env::current_dir()
+                    .map_err(|_| LspToolError::WorkspaceUnavailable)?
+                    .join(root)
+            };
+            let relative = PathBuf::from(requested);
+            let adapter = Adapter::for_path(&relative)?;
+            let route = routes
+                .get(adapter.language_id())
+                .cloned()
+                .ok_or(LspToolError::UnsupportedLanguage)?;
+            let limit =
+                iteron_tunables::param_usize("tools.lsp.input.max_source_bytes", MAX_SOURCE_BYTES);
+            let wait = iteron_tunables::param_duration(
+                "tools.lsp.input.source_read_timeout",
+                SOURCE_READ_TIMEOUT,
+            );
+            // Bind the actual requested path before canonical display/URI derivation. A reparse
+            // point in any requested ancestor cannot be hidden by canonicalization first.
+            let (source_binding, canonical_root, bytes) = WindowsSourceBinding::open(
+                &requested_root,
+                &relative,
+                &route.workspace_markers,
+                limit,
+                wait,
+            )
+            .await?;
+            let text = String::from_utf8(bytes).map_err(|_| LspToolError::SourceNotUtf8)?;
+            let digest = digest(text.as_bytes());
+            let uri = url::Url::from_file_path(canonical_root.join(&relative))
+                .map_err(|_| LspToolError::InvalidFileUri)?
+                .to_string();
+            let command = route.command();
+            let server_label = route.server_id.clone();
+            let server_id = route.server_id;
+            Ok(Self {
+                requested_root,
+                canonical_root,
+                uri,
+                text,
+                digest,
+                adapter,
+                command,
+                server_label,
+                server_id,
+                source_binding,
+            })
         }
 
         #[cfg(unix)]
@@ -167,7 +225,11 @@ impl SourceDocument {
         Ok(self.root_binding.root())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    pub(super) fn root_capability(&self) -> Result<&File, LspToolError> {
+        Ok(self.source_binding.workspace())
+    }
+    #[cfg(not(any(unix, windows)))]
     pub(super) fn root_capability(&self) -> Result<&File, LspToolError> {
         Err(LspToolError::SandboxUnavailable)
     }
@@ -211,7 +273,7 @@ impl SourceDocument {
         Position::new(line, character).map_err(LspToolError::Protocol)
     }
 
-    /// Re-open the canonical target and bind the returned context to the same target bytes.
+    /// Bind returned context to the same held target and its actual bytes.
     /// Dependency files remain server-owned observations and are an explicit residual nonclaim.
     pub(super) async fn recheck(&self) -> Result<(), LspToolError> {
         #[cfg(unix)]
@@ -240,7 +302,29 @@ impl SourceDocument {
             }
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let bytes = self
+                .source_binding
+                .read(
+                    &self.requested_root,
+                    &self.canonical_root,
+                    iteron_tunables::param_usize(
+                        "tools.lsp.input.max_source_bytes",
+                        MAX_SOURCE_BYTES,
+                    ),
+                    iteron_tunables::param_duration(
+                        "tools.lsp.input.source_read_timeout",
+                        SOURCE_READ_TIMEOUT,
+                    ),
+                )
+                .await?;
+            if digest(&bytes) != self.digest {
+                return Err(LspToolError::SourceChanged);
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Err(LspToolError::SandboxUnavailable)
         }

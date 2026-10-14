@@ -6,7 +6,7 @@
 //! could not discover that a flag skipping the entire capability gate exists.
 //!
 //! Prose cannot be trusted to track a `#[derive(Parser)]` struct, so it no longer has to. This
-//! parses `crates/cli/src/main.rs`, reads the clap attributes and doc comments that already are the
+//! parses `crates/cli/src/cli_entry/options.rs`, reads the clap attributes and doc comments that already are the
 //! specification, and renders the page. `docs check` compares the file on disk against that
 //! rendering, so adding a flag without regenerating fails the build (`cargo test -p iteron-xtask`
 //! runs the same comparison), and the drift cannot come back.
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-const CLI_SOURCE: &str = "crates/cli/src/main.rs";
+const CLI_SOURCE: &str = "crates/cli/src/cli_entry/options.rs";
 const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[
     ("mcp::commands", "crates/cli/src/mcp/commands.rs"),
     ("plugin", "crates/cli/src/plugin.rs"),
@@ -123,10 +123,15 @@ impl Arg {
             };
         }
         let long = self.long.clone().unwrap_or_else(|| self.field.clone());
-        if self.arity == Arity::Flag {
-            format!("[--{long}]")
+        let fragment = if self.arity == Arity::Flag {
+            format!("--{long}")
         } else {
-            format!("[--{long} <{}>]", self.placeholder())
+            format!("--{long} <{}>", self.placeholder())
+        };
+        if self.required {
+            fragment
+        } else {
+            format!("[{fragment}]")
         }
     }
 
@@ -415,6 +420,7 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
         arity: arity(&field.ty),
         doc: doc_comment(&field.attrs),
     };
+    let mut typed_default = false;
     for attr in &field.attrs {
         if !attr.path().is_ident("arg") {
             continue;
@@ -442,6 +448,15 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
                 arg.default_value = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 return Ok(());
             }
+            if meta.path.is_ident("default_value_t") {
+                // A typed default also makes a named argument optional. Its Rust expression
+                // is not the rendered CLI default string, so retain only that admission fact.
+                typed_default = true;
+                if let Ok(value) = meta.value() {
+                    let _: syn::Expr = value.parse()?;
+                }
+                return Ok(());
+            }
             // Any other clap knob (`value_enum`, `action`, …) does not change the rendered
             // contract; consume its value if it has one so parsing continues.
             if let Ok(value) = meta.value() {
@@ -451,7 +466,7 @@ fn parse_arg(field_name: &str, field: &syn::Field) -> Result<Arg> {
         })
         .with_context(|| format!("cannot read the clap attributes of `{field_name}`"))?;
     }
-    arg.required = is_required(&field.ty, arg.default_value.as_ref());
+    arg.required = !typed_default && is_required(&field.ty, arg.default_value.as_ref());
     Ok(arg)
 }
 

@@ -4,6 +4,7 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(crate) struct CompiledSlots {
     pub context: Arc<dyn StrategySlot>,
     pub tool_policy: Arc<dyn StrategySlot>,

@@ -3,6 +3,7 @@
 //! a preference.
 
 use crate::tool::{ToolResult, ToolUse};
+use crate::tool_image::ToolImageObservationV1;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Versioned adapter-private state format carried on the durable wire.
@@ -147,6 +148,9 @@ pub enum Block {
     ProviderState(ProviderState),
     ToolUse(ToolUse),
     ToolResult(ToolResult),
+    /// Actual tool pixels with exact terminal correlation. The record owner stores image data in
+    /// private CAS; adapters project it as untrusted tool output, never a new operator admission.
+    ToolImage(ToolImageObservationV1),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

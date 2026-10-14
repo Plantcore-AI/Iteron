@@ -1,4 +1,7 @@
-use super::*;
+#[cfg(test)]
+use super::ui_safe_text;
+use super::{App, ModelSelection, ProviderCatalogView, Session, app_server, block};
+use std::time::{Duration, Instant};
 
 pub(super) fn format_resume_command(run_id: &str) -> String {
     let argument = if !run_id.is_empty()
@@ -20,9 +23,11 @@ pub(super) fn format_resume_command(run_id: &str) -> String {
 /// bound only, so a thousand-turn session cannot push the live transcript past its own eviction cap
 /// on the way in. The notice above the projection says how much was left out, because a history
 /// silently rendered short reads as a shorter conversation than the one the model will see.
+#[cfg(test)]
 pub(super) const MAX_ADOPTED_BLOCKS: usize = 120;
 
 /// Bound on one recorded tool result rendered back into a card.
+#[cfg(test)]
 pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 
 /// The `(provider_id, model_id)` an existing record says its last turn dispatched on.
@@ -30,6 +35,7 @@ pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 /// Same rule the `--resume` startup path applies: the last durable `ModelSelected` is authoritative;
 /// a legacy journal that predates provider identity offers only `RunStart.model`, and its model is
 /// never used to guess a provider.
+#[cfg(test)]
 pub(super) fn recorded_route(
     events: &[iteron_protocol::Event],
 ) -> Option<(Option<String>, String)> {
@@ -51,255 +57,256 @@ pub(super) fn recorded_route(
     })
 }
 
-pub(super) struct PreparedAdoption {
-    pub(super) fresh: bool,
-    pub(super) control: app_server::Control,
-    pub(super) run_id: String,
-    pub(super) events: Vec<iteron_protocol::Event>,
-    pub(super) selection: ModelSelection,
-    pub(super) substituted: Option<String>,
-    pub(super) context_window_tokens: Option<u64>,
-}
-
-pub(super) enum PreparedAdoptionResult {
-    Ready(PreparedAdoption),
-    Failed {
-        message: String,
-        handoff_run: Option<String>,
-    },
-}
-
-/// Begin the record read, route construction and writer-lock acquisition without touching the TUI
-/// thread. The visible picker closes immediately and the completion is generation-free because at
-/// most one adoption job exists; starting another aborts the stale one first.
+/// Submit IDs through the same trusted host control used by external clients. No provider or
+/// physical journal constructor is available to this presentation module.
 pub(super) fn start_adopt_session(
     app: &mut App,
     session: &Session,
-    directory: &ProviderDirectory,
+    _directory: &ProviderCatalogView,
     run_id: String,
 ) {
-    if app.running || app.pending.is_some() {
+    queue_navigation(
+        app,
+        session,
+        |scope| iteron_protocol::session_navigation::SessionNavigationV1::Resume {
+            thread_id: scope.thread_id.clone(),
+            run_id: scope.run_id.clone(),
+            target_run_id: iteron_protocol::RunId(run_id),
+        },
+        "opening session…",
+    );
+}
+pub(super) fn start_fresh_session(
+    app: &mut App,
+    session: &Session,
+    _directory: &ProviderCatalogView,
+) {
+    queue_navigation(
+        app,
+        session,
+        |scope| iteron_protocol::session_navigation::SessionNavigationV1::New {
+            thread_id: scope.thread_id.clone(),
+            run_id: scope.run_id.clone(),
+        },
+        "creating session…",
+    );
+}
+pub(super) fn start_fork_session(app: &mut App, session: &Session) {
+    queue_navigation(
+        app,
+        session,
+        |scope| iteron_protocol::session_navigation::SessionNavigationV1::Fork {
+            thread_id: scope.thread_id.clone(),
+            run_id: scope.run_id.clone(),
+            through_seq: None,
+        },
+        "forking session…",
+    );
+}
+fn queue_navigation(
+    app: &mut App,
+    session: &Session,
+    command: impl FnOnce(
+        &iteron_protocol::product_contract::ThreadSnapshotV1,
+    ) -> iteron_protocol::session_navigation::SessionNavigationV1,
+    label: &str,
+) {
+    if !adoption_draft_ready(app) {
+        return;
+    }
+    let Some(scope) = session.client.thread_snapshot_v1() else {
         app.note(
             block::NoticeLevel::Warn,
-            "finish the current turn before resuming another session",
+            "public session scope unavailable; navigation was not started",
         );
         return;
-    }
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
-        app.note(
-            block::NoticeLevel::Warn,
-            format!(
-                "{} still pending for this session; send or clear them before resuming another one",
-                block::plural(
-                    app.queued.len().saturating_add(app.steer_previews.len()),
-                    "submission"
-                )
-            ),
-        );
-        return;
-    }
-    let rollout_path = session.rollout_path().to_path_buf();
-    let runs = rollout_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let current_run = rollout_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if run_id == current_run {
-        app.note(
-            block::NoticeLevel::Info,
-            "that session is already the live one",
-        );
-        return;
-    }
-    if let Some(previous) = app.session_adoption_job.take() {
-        previous.abort();
-    }
-    let current_selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
     };
-    let directory = directory.clone();
-    let worker_run_id = run_id.clone();
-    app.status = format!("opening session {run_id}…");
-    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
-        let run = iteron_protocol::RunId(worker_run_id.clone());
-        let events = match iteron_record::load_forked(&runs, &run) {
-            Ok(events) => events,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!(
-                        "cannot read session {}: {error}",
-                        ui_safe_text(&worker_run_id)
-                    ),
-                    handoff_run: None,
-                };
-            }
-        };
-        let recorded = recorded_route(&events);
-        let (selection, built, substituted) = match &recorded {
-            Some((Some(provider_id), model_id)) => {
-                let candidate = ModelSelection {
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                };
-                match directory.build(&candidate) {
-                    Ok(provider) => (candidate, Some(provider), None),
-                    Err(error) => (
-                        current_selection,
-                        None,
-                        Some(format!(
-                            "the recorded route {provider_id}:{model_id} is not usable here ({error})"
-                        )),
-                    ),
-                }
-            }
-            Some((None, model_id)) => (
-                current_selection,
-                None,
-                Some(format!(
-                    "this session predates provider identity and records only model `{model_id}`"
-                )),
-            ),
-            None => (
-                current_selection,
-                None,
-                Some("this session records no route".into()),
-            ),
-        };
-        let provider = match built {
-            Some(provider) => provider,
-            None => match directory.build(&selection) {
-                Ok(provider) => provider,
-                Err(error) => {
-                    return PreparedAdoptionResult::Failed {
-                        message: format!("cannot resume that session here: {error}"),
-                        handoff_run: None,
-                    };
-                }
-            },
-        };
-        let rollout = match iteron_record::Rollout::open_existing(
-            &runs,
-            &run,
-            iteron_protocol::TenantId::default(),
-        ) {
-            Ok(rollout) => rollout,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!(
-                        "cannot take over session {}: {error}. Another iteron process may still be running it.",
-                        ui_safe_text(&worker_run_id)
-                    ),
-                    handoff_run: Some(worker_run_id),
-                };
-            }
-        };
-        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-        let capabilities = directory.selection_capabilities(&selection);
-        PreparedAdoptionResult::Ready(PreparedAdoption {
-            fresh: false,
-            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
-                rollout,
-                fresh: false,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            })),
-            run_id: worker_run_id,
-            events,
-            selection,
-            substituted,
-            context_window_tokens: capabilities.context_window_tokens,
-        })
-    }));
+    if app
+        .navigation
+        .queue_adoption(&scope, session.control_sender(), command(&scope))
+    {
+        app.session_title.cancel();
+        app.status = label.into();
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "session navigation is still pending; wait for the host result",
+        );
+    }
 }
 
-/// Prepare a fresh rollout, provider instance, and writer lease on the same bounded adoption actor.
-/// `/sessions new` therefore acknowledges immediately and never opens/fsyncs a record on the TUI
-/// thread.
-pub(super) fn start_fresh_session(app: &mut App, session: &Session, directory: &ProviderDirectory) {
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+pub(super) fn apply_navigated_session(
+    app: &mut App,
+    session: &mut Session,
+    directory: &ProviderCatalogView,
+    reply: app_server::NavigatedSession,
+) {
+    let app_server::NavigatedSession {
+        presentation: fact,
+        adopted,
+        snapshot,
+        tunables_checkpoint,
+        compaction_trigger_tokens,
+    } = reply;
+    app.navigation.cancel_preview();
+    let origin = app.attachments.invalidate();
+    super::composer_images::restore_unprepared_origin(app, origin);
+    app.completions.dismiss();
+    app.close_picker_restore_theme();
+    project_host_transcript(app, &fact.transcript);
+    app.history.bind_selected_run(&fact.run_id);
+    session.adopt_run(
+        adopted.rollout_path,
+        tunables_checkpoint,
+        compaction_trigger_tokens,
+        snapshot.clone(),
+    );
+    app.session_name = if fact.fresh {
+        "New session".into()
+    } else {
+        "Loading session…".into()
+    };
+    if !fact.fresh
+        && let Some(history) = super::history_client::HistoryClient::capture(
+            session.client.clone(),
+            session.control_sender(),
+        )
+    {
+        app.session_title.start(history, app.session_name.clone());
+    }
+    app.mode = snapshot.mode;
+    app.effort = snapshot.effort;
+    app.model = snapshot.model.clone();
+    app.telemetry.bind_run(
+        &snapshot,
+        if fact.fresh { 0 } else { fact.turns },
+        fact.context_window_tokens,
+        compaction_trigger_tokens,
+    );
+    app.route = directory.route_view(
+        &ModelSelection {
+            provider_id: fact.provider_id.clone(),
+            model_id: fact.model_id.clone(),
+        },
+        app.route.limits.clone(),
+    );
+    app.status = if fact.fresh {
+        "ready".into()
+    } else {
+        "ready · resumed".into()
+    };
+    if let Some(reason) = fact.substituted_route {
         app.note(
             block::NoticeLevel::Warn,
-            "send or clear pending submissions before creating another session",
+            format!("{reason}; selected {}:{}", fact.provider_id, fact.model_id),
         );
-        return;
     }
-    if let Some(previous) = app.session_adoption_job.take() {
-        previous.abort();
+    app.note(
+        block::NoticeLevel::Ok,
+        format!(
+            "{} · {} messages · {} turns",
+            if fact.fresh {
+                "New session"
+            } else {
+                "Session resumed"
+            },
+            fact.messages,
+            fact.turns,
+        ),
+    );
+    if let Some(reason) = fact.blocked {
+        app.note(block::NoticeLevel::Err, reason);
+        app.prepare_resume_handoff(&fact.run_id.0);
+        app.status = "idle · selected session requires restart".into();
     }
-    let selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
-    };
-    let runs = session
-        .rollout_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let directory = directory.clone();
-    app.status = "creating session…".into();
-    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
-        let provider = match directory.build(&selection) {
-            Ok(provider) => provider,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!("cannot create a session on the current route: {error}"),
-                    handoff_run: None,
-                };
+}
+pub(super) fn project_host_transcript(
+    app: &mut App,
+    transcript: &iteron_protocol::session_navigation::SessionTranscriptV1,
+) {
+    use iteron_protocol::session_navigation::SessionTranscriptContentV1;
+    clear_transcript_for_adoption(app);
+    if transcript.omitted_blocks > 0 {
+        app.note(
+            block::NoticeLevel::Info,
+            format!(
+                "showing {} of {} verified transcript blocks; {} omitted from display",
+                transcript.blocks.len(),
+                transcript.total_blocks,
+                transcript.omitted_blocks
+            ),
+        );
+    }
+    for row in &transcript.blocks {
+        let kind = match &row.content {
+            SessionTranscriptContentV1::User { text } => block::BlockKind::User(text.clone()),
+            SessionTranscriptContentV1::Assistant { text } => {
+                block::BlockKind::Assistant(crate::markdown::MarkdownDoc::parse(text))
             }
+            SessionTranscriptContentV1::Thinking { text } => block::BlockKind::Thinking {
+                text: text.clone(),
+                open: false,
+            },
+            SessionTranscriptContentV1::Tool {
+                name,
+                recorded_is_error: None,
+                output,
+                ..
+            } => block::BlockKind::Notice {
+                level: block::NoticeLevel::Warn,
+                text: format!("recorded tool {name} · outcome unavailable · {output}"),
+            },
+            SessionTranscriptContentV1::Tool {
+                name,
+                args,
+                recorded_is_error,
+                output,
+                latency_ms,
+            } => block::BlockKind::Tool(block::ToolCard {
+                name: name.clone(),
+                args: args.clone(),
+                status: match recorded_is_error {
+                    Some(false) => block::ToolStatus::Ok,
+                    _ => block::ToolStatus::Err,
+                },
+                output: output.clone(),
+                diff: None,
+                exit_code: None,
+                started: Instant::now(),
+                elapsed: latency_ms.map(Duration::from_millis),
+                open: false,
+            }),
         };
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-        let rollout =
-            match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
-                Ok(rollout) => rollout,
-                Err(error) => {
-                    return PreparedAdoptionResult::Failed {
-                        message: format!("cannot create session: {error}"),
-                        handoff_run: None,
-                    };
-                }
-            };
-        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-        let capabilities = directory.selection_capabilities(&selection);
-        PreparedAdoptionResult::Ready(PreparedAdoption {
-            fresh: true,
-            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
-                rollout,
-                fresh: true,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            })),
-            run_id: run.0,
-            events: Vec::new(),
-            selection,
-            substituted: None,
-            context_window_tokens: capabilities.context_window_tokens,
-        })
-    }));
+        app.push_block(kind);
+        if row.content_truncated {
+            app.note(
+                block::NoticeLevel::Info,
+                "recorded content truncated for display; full verified history remains in the host",
+            );
+        }
+    }
+}
+
+fn adoption_draft_ready(app: &mut App) -> bool {
+    if app.run.running() || app.permission_prompt.read().is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before switching sessions",
+        );
+        return false;
+    }
+    if app.input_lanes.pending_count() > 0 {
+        app.note(
+            block::NoticeLevel::Warn,
+            "review pending input with Alt-Up before switching sessions; your draft is preserved",
+        );
+        return false;
+    }
+    true
 }
 
 /// One recorded tool call, rebuilt from the durable transcript.
+#[cfg(test)]
 pub(super) struct AdoptedTool {
     is_error: bool,
     content: String,
@@ -311,6 +318,7 @@ pub(super) struct AdoptedTool {
 /// This renders the RECORD, not a replay of the run: no tool is re-executed, no card is live, and
 /// nothing here can start a turn. Returns `(rendered, total)` so the caller can state the bound it
 /// applied instead of quietly showing a shorter conversation.
+#[cfg(test)]
 pub(super) fn adopted_transcript_blocks(
     events: &[iteron_protocol::Event],
 ) -> (Vec<block::BlockKind>, usize) {
@@ -319,7 +327,8 @@ pub(super) fn adopted_transcript_blocks(
     let mut results: std::collections::HashMap<String, AdoptedTool> =
         std::collections::HashMap::new();
     for event in events {
-        let EventKind::Message { message } = &event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) = &event.kind
+        else {
             continue;
         };
         for block in &message.content {
@@ -338,7 +347,8 @@ pub(super) fn adopted_transcript_blocks(
 
     let mut blocks = Vec::new();
     for event in events {
-        let EventKind::Message { message } = &event.kind else {
+        let (EventKind::Message { message } | EventKind::MessageV2 { message }) = &event.kind
+        else {
             continue;
         };
         for block in &message.content {
@@ -399,6 +409,7 @@ pub(super) fn adopted_transcript_blocks(
                 }
                 MessageBlock::Thinking { .. }
                 | MessageBlock::ToolResult(_)
+                | MessageBlock::ToolImage(_)
                 | MessageBlock::ProviderState(_) => {}
             }
         }
@@ -423,6 +434,7 @@ pub(super) fn adopted_transcript_blocks(
 }
 
 /// Truncate on a char boundary, never mid-UTF-8.
+#[cfg(test)]
 pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_owned();
@@ -439,22 +451,21 @@ pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
 /// Retained UI state is per-run exactly as kernel state is: a card, an index entry or a half-streamed
 /// paragraph from the previous run would render under the adopted run's identity.
 pub(super) fn clear_transcript_for_adoption(app: &mut App) {
-    app.transcript.clear();
+    app.artifact_viewer.close();
+    app.history.clear();
+    app.history.clear_selected_run_binding();
+    app.permission_prompt.clear();
+    app.mcp_form.clear();
     app.mark_transcript_changed();
-    app.tool_index.clear();
-    app.pending_tools.clear();
-    app.workflow_index.clear();
+    app.tools.clear();
+    app.history.clear_workflow_bindings();
     app.workflow_monitor.reset();
     app.workflows_panel.reset();
-    app.active_tools.clear();
-    app.render_cache.clear();
-    app.cur_text.clear();
-    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-    app.cur_doc_revision = app.cur_text_revision;
-    app.cur_doc = None;
-    app.cur_think.clear();
-    app.last_result = None;
-    app.retryable_task = None;
+    app.geometry.clear();
+    app.assistant.reset();
+    app.activity_observations.retire_run_observations();
+    app.run.select_verified_run();
+    app.product.clear_selected_run();
     app.resume_handoff = None;
     app.follow_latest();
 }
@@ -464,6 +475,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
 /// Both startup `--resume` and in-process `/resume` use this seam so the operator sees the same
 /// history regardless of how the runtime acquired the rollout. The model still receives the full
 /// reconstructed transcript; only this display projection is bounded.
+#[cfg(test)]
 pub(super) fn project_recorded_transcript(app: &mut App, events: &[iteron_protocol::Event]) {
     clear_transcript_for_adoption(app);
     let (blocks, total) = adopted_transcript_blocks(events);

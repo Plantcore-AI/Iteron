@@ -5,15 +5,18 @@
 //! state. Function calls become Responses input items and are only considered executable once
 //! `response.function_call_arguments.done` supplies the final argument JSON.
 
+mod usage;
+use usage::parse_usage;
+
+use crate::decode::{self, invalid};
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
-    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult, UsageReport,
+    ProviderError, ResponseVerbosity, ServiceTier, TurnRequest, TurnResult,
 };
+use crate::{DecodeCode as Code, DecodeField as Field};
 use futures_util::StreamExt;
-use iteron_protocol::{
-    Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse, Usage,
-};
+use iteron_protocol::{Block, Message, ProviderState, ReasoningEffort, Role, StopReason, ToolUse};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -144,7 +147,7 @@ fn request_body(
         // stateless continuation contract therefore requires the encrypted reasoning item to be
         // requested, retained, and supplied as a later input item.
         "include": ["reasoning.encrypted_content"],
-        "max_output_tokens": request.max_tokens,
+        "max_output_tokens": crate::output_ceiling::requested(request.into())?,
         "stream": true,
         "store": false,
     });
@@ -234,15 +237,18 @@ fn transcript_to_input(
                 .enumerate()
                 .rev()
                 .find_map(|(message_index, message)| {
-                    (message.role == Role::User)
-                        .then(|| {
-                            message
-                                .content
-                                .iter()
-                                .rposition(|block| matches!(block, Block::Text { .. }))
-                        })
-                        .flatten()
-                        .map(|block_index| (message_index, block_index))
+                    (message.role == Role::User
+                        && !message.content.iter().any(|block| {
+                            matches!(block, Block::ToolResult(_) | Block::ToolImage(_))
+                        }))
+                    .then(|| {
+                        message
+                            .content
+                            .iter()
+                            .rposition(|block| matches!(block, Block::Text { .. }))
+                    })
+                    .flatten()
+                    .map(|block_index| (message_index, block_index))
                 })
                 .ok_or_else(|| {
                     ProviderError::Decode(
@@ -253,6 +259,7 @@ fn transcript_to_input(
     };
     let mut input = Vec::new();
     for (message_index, message) in messages.iter().enumerate() {
+        crate::tool_image::validate_message(message)?;
         if message.role == Role::Assistant
             && let Some(native_output) = matching_native_output(message, route_scope)?
         {
@@ -286,6 +293,10 @@ fn transcript_to_input(
                         "call_id": result.tool_use_id,
                         "output": result.content,
                     }));
+                }
+                Block::ToolImage(observation) => {
+                    flush_message_text(message.role, &mut text_parts, &mut input);
+                    input.push(serde_json::json!({"role":"user","content":[{"type":"input_text","text":observation.observation_label()},{"type":"input_image","image_url":crate::tool_image::data_url(observation)}]}));
                 }
             }
             if image_target == Some((message_index, block_index)) {
@@ -354,6 +365,7 @@ struct WireFrame {
 
 #[derive(Default)]
 struct SseDecoder {
+    data_frames: u64,
     pending: Vec<u8>,
     cursor: usize,
     total_bytes: usize,
@@ -361,20 +373,19 @@ struct SseDecoder {
 
 impl SseDecoder {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<WireFrame>, ProviderError> {
+        self.push_inner(bytes)
+            .map_err(|error| error.at_decode_frame(self.data_frames.saturating_add(1)))
+    }
+
+    fn push_inner(&mut self, bytes: &[u8]) -> Result<Vec<WireFrame>, ProviderError> {
         self.total_bytes = self
             .total_bytes
             .checked_add(bytes.len())
-            .ok_or_else(|| ProviderError::Decode("Responses stream byte count overflow".into()))?;
+            .ok_or_else(|| invalid(Code::LimitExceeded, Field::SseData))?;
         if self.total_bytes
             > iteron_tunables::param_usize("provider.responses.max_stream_bytes", MAX_STREAM_BYTES)
         {
-            return Err(ProviderError::Decode(format!(
-                "Responses stream exceeded {} bytes",
-                iteron_tunables::param_usize(
-                    "provider.responses.max_stream_bytes",
-                    MAX_STREAM_BYTES
-                )
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData));
         }
         self.pending.extend_from_slice(bytes);
         let mut frames = Vec::new();
@@ -385,15 +396,16 @@ impl SseDecoder {
                     MAX_SSE_FRAME_BYTES,
                 )
             {
-                return Err(ProviderError::Decode(format!(
-                    "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData));
             }
             let frame_start = self.cursor;
             let frame_end = frame_start.saturating_add(boundary);
             let block = self.pending[frame_start..frame_end].to_vec();
             self.cursor = frame_end.saturating_add(separator_len);
-            if let Some(frame) = parse_wire_frame(&block)? {
+            if let Some(frame) = parse_wire_frame(&block)
+                .map_err(|error| error.at_decode_frame(self.data_frames.saturating_add(1)))?
+            {
+                self.data_frames = self.data_frames.saturating_add(1);
                 frames.push(frame);
             }
         }
@@ -403,9 +415,7 @@ impl SseDecoder {
                 MAX_SSE_FRAME_BYTES,
             )
         {
-            return Err(ProviderError::Decode(format!(
-                "Responses SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData));
         }
         if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
             self.pending.drain(..self.cursor);
@@ -440,9 +450,8 @@ impl SseDecoder {
         {
             Ok(())
         } else {
-            Err(ProviderError::Decode(
-                "Responses stream contained invalid partial data after terminal event".into(),
-            ))
+            Err(invalid(Code::ProtocolSequence, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)))
         }
     }
 }
@@ -469,9 +478,8 @@ fn frame_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn parse_wire_frame(block: &[u8]) -> Result<Option<WireFrame>, ProviderError> {
-    let text = std::str::from_utf8(block).map_err(|error| {
-        ProviderError::Decode(format!("Responses SSE frame was not valid UTF-8: {error}"))
-    })?;
+    let text =
+        std::str::from_utf8(block).map_err(|_| invalid(Code::InvalidUtf8, Field::SseData))?;
     let mut event = None;
     let mut data = Vec::new();
     for line in text.split(['\r', '\n']).filter(|line| !line.is_empty()) {
@@ -511,6 +519,7 @@ struct FunctionMeta {
 }
 
 struct ResponseParser {
+    frame_index: u64,
     outputs: BTreeMap<u64, OutputAcc>,
     functions: HashMap<String, FunctionMeta>,
     done_items: HashSet<String>,
@@ -537,6 +546,7 @@ impl ResponseParser {
     ) -> Result<Self, ProviderError> {
         validate_route_scope(&route_scope)?;
         Ok(Self {
+            frame_index: 0,
             outputs: BTreeMap::new(),
             functions: HashMap::new(),
             done_items: HashSet::new(),
@@ -556,37 +566,39 @@ impl ResponseParser {
         response_retry_after: Option<Duration>,
         response_request_id: Option<&str>,
     ) -> Result<Vec<StreamItem>, ProviderError> {
+        self.frame_index = self.frame_index.saturating_add(1);
+        self.push_frame_inner(frame, response_retry_after, response_request_id)
+            .map_err(|error| error.at_decode_frame(self.frame_index))
+    }
+
+    fn push_frame_inner(
+        &mut self,
+        frame: WireFrame,
+        response_retry_after: Option<Duration>,
+        response_request_id: Option<&str>,
+    ) -> Result<Vec<StreamItem>, ProviderError> {
         if frame.data.trim() == "[DONE]" {
             if self.saw_done_marker {
-                return Err(ProviderError::Decode(
-                    "Responses stream emitted duplicate [DONE] markers".into(),
-                ));
+                return Err(invalid(Code::ProtocolSequence, Field::SseData));
             }
             self.saw_done_marker = true;
             return Ok(Vec::new());
         }
         if self.saw_done_marker {
-            return Err(ProviderError::Decode(
-                "Responses stream emitted data after [DONE]".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::SseData));
         }
         if self.terminal {
-            return Err(ProviderError::Decode(
-                "Responses stream emitted data after a terminal event".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::Type));
         }
 
-        let value: serde_json::Value = serde_json::from_str(&frame.data).map_err(|error| {
-            ProviderError::Decode(format!("malformed Responses SSE JSON: {error}"))
-        })?;
+        let value: serde_json::Value = serde_json::from_str(&frame.data)
+            .map_err(|error| decode::json(&error, Field::SseData))?;
         let event_type = required_str(&value, "type")?;
         if let Some(wire_event) = frame.event.as_deref()
             && wire_event != "message"
             && wire_event != event_type
         {
-            return Err(ProviderError::Decode(
-                "Responses SSE event/data type mismatch".into(),
-            ));
+            return Err(invalid(Code::ConflictingValue, Field::Type));
         }
 
         match event_type {
@@ -819,14 +831,13 @@ impl ResponseParser {
     ) -> Result<Vec<StreamItem>, ProviderError> {
         let item_id = required_str(value, "item_id")?;
         if self.done_items.contains(item_id) {
-            return Err(ProviderError::Decode(
-                "duplicate function_call_arguments.done".into(),
-            ));
+            return Err(invalid(Code::ProtocolSequence, Field::ItemId));
         }
         let (meta_call_id, meta_name, meta_output_index) = {
-            let meta = self.functions.get(item_id).ok_or_else(|| {
-                ProviderError::Decode("function_call_arguments.done lacked prior metadata".into())
-            })?;
+            let meta = self
+                .functions
+                .get(item_id)
+                .ok_or_else(|| invalid(Code::ProtocolSequence, Field::ItemId))?;
             (meta.call_id.clone(), meta.name.clone(), meta.output_index)
         };
         let output_index = required_u64(value, "output_index")?;
@@ -841,7 +852,7 @@ impl ResponseParser {
             meta_name.as_str()
         };
         if event_name.is_empty() || event_name != meta_name.as_str() {
-            return Err(ProviderError::Decode("function call changed name".into()));
+            return Err(invalid(Code::ConflictingValue, Field::Name));
         }
         let arguments = required_str(value, "arguments")?;
         let input = parse_arguments(event_name, arguments)?;
@@ -953,7 +964,7 @@ impl ResponseParser {
         let output = response
             .get("output")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| ProviderError::Decode("terminal response lacked output array".into()))?;
+            .ok_or_else(|| invalid(Code::InvalidType, Field::ResponseOutput))?;
         if output.len()
             > iteron_tunables::param_usize("provider.responses.max_output_items", MAX_OUTPUT_ITEMS)
         {
@@ -1091,9 +1102,7 @@ impl ResponseParser {
         let existing = self.outputs[&output_index].thinking.get(&key);
         if let Some(existing) = existing {
             if existing != full {
-                return Err(ProviderError::Decode(
-                    "Responses completed reasoning disagreed with streamed deltas".into(),
-                ));
+                return Err(invalid(Code::ConflictingValue, Field::ResponseOutput));
             }
             return Ok(());
         }
@@ -1442,59 +1451,26 @@ fn validate_bounded_string(
 }
 
 fn required_str<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str, ProviderError> {
-    value
+    let raw = value
         .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ProviderError::Decode(format!("Responses event lacked string {field}")))
+        .ok_or_else(|| invalid(Code::MissingField, Field::schema_key(field)))?;
+    raw.as_str()
+        .ok_or_else(|| invalid(Code::InvalidType, Field::schema_key(field)))
 }
 
 fn required_u64(value: &serde_json::Value, field: &str) -> Result<u64, ProviderError> {
-    value
+    let raw = value
         .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| ProviderError::Decode(format!("Responses event lacked integer {field}")))
+        .ok_or_else(|| invalid(Code::MissingField, Field::schema_key(field)))?;
+    raw.as_u64()
+        .ok_or_else(|| invalid(Code::InvalidType, Field::schema_key(field)))
 }
 
 fn parse_arguments(_name: &str, arguments: &str) -> Result<serde_json::Value, ProviderError> {
     if arguments.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
-    serde_json::from_str(arguments).map_err(|error| {
-        ProviderError::Decode(format!("tool arguments were not valid JSON: {error}"))
-    })
-}
-
-fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, ProviderError> {
-    let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) else {
-        return Ok(UsageReport::provider_omitted());
-    };
-    let total_input = required_u64(usage, "input_tokens")?;
-    let cache_read = optional_nested_u64(usage, "/input_tokens_details/cached_tokens")?;
-    let input = total_input.checked_sub(cache_read).ok_or_else(|| {
-        ProviderError::Decode("Responses cached tokens exceeded total input tokens".into())
-    })?;
-    // The Responses usage schema has no cache-creation member at all: `input_tokens_details`
-    // carries `cached_tokens` and nothing about what wrote them. A `cache_creation: 0` here is
-    // therefore the struct default, not a measurement, and the report says so rather than letting
-    // pricing charge a cache-write rate against a constant zero (I-52).
-    Ok(UsageReport::cache_creation_unreported(Usage {
-        input,
-        output: required_u64(usage, "output_tokens")?,
-        cache_creation: 0,
-        cache_read,
-        thinking: optional_nested_u64(usage, "/output_tokens_details/reasoning_tokens")?,
-    }))
-}
-
-fn optional_nested_u64(value: &serde_json::Value, pointer: &str) -> Result<u64, ProviderError> {
-    let Some(token) = value.pointer(pointer) else {
-        return Ok(0);
-    };
-    token.as_u64().ok_or_else(|| {
-        ProviderError::Decode(format!(
-            "Responses usage field {pointer} was not an unsigned integer"
-        ))
-    })
+    serde_json::from_str(arguments).map_err(|error| decode::json(&error, Field::Arguments))
 }
 
 fn stream_failure(
@@ -1546,6 +1522,27 @@ fn incomplete_failure(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiResponses {
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        crate::usage_bounds::physical_input_ceiling(
+            &crate::StaticProviderMetadata::embedded(),
+            self.root.as_str(),
+            model,
+        )
+    }
+    fn usage_bound_semantics(&self) -> crate::ProviderUsageBoundSemantics {
+        if self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT {
+            crate::ProviderUsageBoundSemantics::PartitionedInput
+        } else {
+            crate::ProviderUsageBoundSemantics::IndependentClasses
+        }
+    }
+
+    fn physical_output_token_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        crate::output_ceiling::requested(budget).map(Some)
+    }
     fn supports_image_input(&self) -> bool {
         self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT
     }
@@ -1578,6 +1575,20 @@ impl Provider for OpenAiResponses {
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(
+            request,
+            on_item,
+            &crate::request_capture::DisabledRequestObserver,
+        )
+        .await
+    }
+
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn crate::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         let transport = request.controls.transport;
         let deadline = Instant::now()
             .checked_add(transport.request_total)
@@ -1589,18 +1600,29 @@ impl Provider for OpenAiResponses {
         let client = self.client.client(transport)?;
         let endpoint = self.root.endpoint("responses")?;
         let body = self.body(request)?;
+        let bytes = crate::request_capture::prepare_json(
+            AdapterKind::OpenAiResponses,
+            endpoint.as_str(),
+            &body,
+            request,
+            observer,
+        )?;
         let request = client
             .post(endpoint)
             .bearer_auth(&self.key)
             .header("content-type", "application/json")
-            .json(&body);
+            .body(bytes);
         let header_timeout = remaining_timeout(
             deadline,
             iteron_tunables::param_duration(
                 "provider.responses.response_header_timeout",
                 RESPONSE_HEADER_TIMEOUT,
             ),
-        )?;
+        )
+        .map_err(|_| ProviderError::RequestDeadlineBeforeDispatch)?;
+        crate::request_capture::dispatching(observer)?;
+        let header_timeout =
+            crate::request_capture::remaining_before_send(deadline, header_timeout)?;
         let response = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Timeout {
@@ -1724,9 +1746,8 @@ fn remaining_timeout(
 ) -> Result<Duration, ProviderError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        // This check precedes polling `request.send()`, but classifying the exact-zero edge as an
-        // unobservable request-total timeout is deliberately fail-closed. It cannot license a
-        // second paid attempt, and avoids making the authority flip between 0ns and 1ns left.
+        // Used after dispatch as well as during request preparation. The pre-send call site
+        // maps exhaustion to its proven no-dispatch disposition; response reads stay unknown.
         return Err(ProviderError::Timeout {
             stage: crate::ProviderTimeoutStage::RequestTotal,
         });
@@ -1736,6 +1757,28 @@ fn remaining_timeout(
 
 #[cfg(test)]
 mod tests {
+    use crate::UsageReport;
+    use iteron_protocol::Usage;
+    #[test]
+    fn actual_tool_pixels_follow_function_output_without_new_operator_semantics() {
+        let message = crate::tool_image::message_fixture();
+        let image = crate::tool_image::fixture();
+        let out = super::transcript_to_input(&[message], "image-fixture", &[]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["type"], "function_call_output");
+        assert_eq!(out[0]["call_id"], "vision-call");
+        assert_eq!(out[1]["content"][1]["type"], "input_image");
+        assert_eq!(
+            out[1]["content"][1]["image_url"],
+            crate::tool_image::data_url(&image)
+        );
+        assert!(
+            out[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("terminal_seq=7")
+        );
+    }
     use super::*;
     use iteron_protocol::{
         Capability, ImageContent, ImageMediaType, Purity, ToolResult, ToolSpec, Trust,
@@ -2140,7 +2183,7 @@ mod tests {
                 None,
             );
             assert!(
-                matches!(result, Err(ProviderError::Decode(message)) if message == "function call changed name")
+                matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ConflictingValue && diagnostic.field == Field::Name)
             );
         }
     }
@@ -2159,7 +2202,7 @@ mod tests {
             None,
         );
         assert!(
-            matches!(result, Err(ProviderError::Decode(message)) if message == "function_call_arguments.done lacked prior metadata")
+            matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ProtocolSequence && diagnostic.field == Field::ItemId)
         );
     }
 
@@ -2175,7 +2218,7 @@ mod tests {
         parser.push_frame(frame(done.clone()), None, None).unwrap();
         let result = parser.push_frame(frame(done), None, None);
         assert!(
-            matches!(result, Err(ProviderError::Decode(message)) if message == "duplicate function_call_arguments.done")
+            matches!(result, Err(ProviderError::InvalidResponse(diagnostic)) if diagnostic.code == Code::ProtocolSequence && diagnostic.field == Field::ItemId)
         );
     }
 
@@ -2535,7 +2578,7 @@ mod tests {
                 None,
                 None,
             );
-            assert!(matches!(result, Err(ProviderError::Decode(_))));
+            assert!(matches!(result, Err(ProviderError::InvalidResponse(_))));
         }
         let mut parser = ResponseParser::default();
         assert!(matches!(
@@ -2547,7 +2590,7 @@ mod tests {
                 None,
                 None
             ),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
     }
 
@@ -2578,8 +2621,10 @@ mod tests {
                 None,
                 None,
             );
-            assert!(matches!(result, Err(ProviderError::Decode(message))
-                if message == "Responses completed reasoning disagreed with streamed deltas"));
+            assert!(
+                matches!(result, Err(ProviderError::InvalidResponse(diagnostic))
+                if diagnostic.code == Code::ConflictingValue && diagnostic.field == Field::ResponseOutput)
+            );
         }
     }
 
@@ -2790,7 +2835,7 @@ mod tests {
         };
         assert!(matches!(
             ResponseParser::default().push_frame(malformed, None, None),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
         assert!(ResponseParser::default().finish().is_err());
     }
@@ -2970,7 +3015,7 @@ mod tests {
         });
         assert!(matches!(
             parser.push_frame(frame(complete), None, None),
-            Err(ProviderError::Decode(_))
+            Err(ProviderError::InvalidResponse(_))
         ));
     }
 }

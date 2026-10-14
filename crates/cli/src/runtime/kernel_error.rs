@@ -15,10 +15,11 @@ enum PublicRecordFailure {
     Integrity,
     Checkpoint,
     PrivateContent,
+    ContentBusy,
 }
 
 impl PublicRecordFailure {
-    fn all() -> [Self; 11] {
+    fn all() -> [Self; 12] {
         [
             Self::StorageFull,
             Self::StorageAccess,
@@ -31,39 +32,25 @@ impl PublicRecordFailure {
             Self::Integrity,
             Self::Checkpoint,
             Self::PrivateContent,
+            Self::ContentBusy,
         ]
     }
 
     fn from_error(error: &iteron_record::RecordError) -> Self {
-        use iteron_record::RecordError;
-        match error {
-            RecordError::Io(source) => match source.kind() {
-                std::io::ErrorKind::StorageFull => Self::StorageFull,
-                std::io::ErrorKind::PermissionDenied
-                | std::io::ErrorKind::ReadOnlyFilesystem
-                | std::io::ErrorKind::NotFound => Self::StorageAccess,
-                _ => Self::StorageIo,
-            },
-            RecordError::WriterBusy { .. } => Self::WriterBusy,
-            RecordError::WriterLock { .. } => Self::WriterLock,
-            RecordError::WriterPoisoned => Self::WriterPoisoned,
-            RecordError::RecordLineTooLarge { .. }
-            | RecordError::EnvironmentContextTooLarge { .. }
-            | RecordError::RolloutTooLarge { .. }
-            | RecordError::TooManyEvents { .. }
-            | RecordError::TooManyRecordLines { .. } => Self::Limit,
-            RecordError::InvalidRunId { .. }
-            | RecordError::InvalidEventSchema { .. }
-            | RecordError::InvalidAppendBatch { .. }
-            | RecordError::Json(_) => Self::InvalidSchema,
-            RecordError::SequenceBroken { .. }
-            | RecordError::TenantMismatch { .. }
-            | RecordError::ChainBroken { .. }
-            | RecordError::ForkParentMismatch { .. } => Self::Integrity,
-            RecordError::Pricing(_)
-            | RecordError::TunablesSnapshot(_)
-            | RecordError::PolicyBundleCheckpoint(_) => Self::Checkpoint,
-            RecordError::PrivateContent(_) => Self::PrivateContent,
+        use iteron_record::{RecordFailure, RecordFailureKind};
+        match RecordFailure::from_error(error).kind {
+            RecordFailureKind::StorageFull => Self::StorageFull,
+            RecordFailureKind::StorageAccess => Self::StorageAccess,
+            RecordFailureKind::StorageIo => Self::StorageIo,
+            RecordFailureKind::WriterBusy => Self::WriterBusy,
+            RecordFailureKind::WriterLock => Self::WriterLock,
+            RecordFailureKind::WriterPoisoned => Self::WriterPoisoned,
+            RecordFailureKind::Limit => Self::Limit,
+            RecordFailureKind::InvalidSchema => Self::InvalidSchema,
+            RecordFailureKind::Integrity => Self::Integrity,
+            RecordFailureKind::Checkpoint => Self::Checkpoint,
+            RecordFailureKind::PrivateContent => Self::PrivateContent,
+            RecordFailureKind::ContentBusy => Self::ContentBusy,
         }
     }
 
@@ -102,14 +89,27 @@ impl PublicRecordFailure {
             Self::PrivateContent => {
                 "session record [private_content]: private-content storage or validation failed; do not continue this run"
             }
+            Self::ContentBusy => {
+                "session record [content_busy]: session storage remained busy; wait for other session work to finish, then close and reopen this run"
+            }
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
+    #[error("ordinary extension refused: {0}")]
+    OrdinaryExtension(&'static str),
+    #[error("persistent agent control failed")]
+    AgentControl(#[source] iteron_agents::ControllerError),
     #[error("provider: {0}")]
     Provider(#[from] iteron_provider::ProviderError),
+    #[error("selected provider does not attest the requested control: {0}")]
+    ProviderControl(#[source] iteron_provider::ControlError),
+    #[error("selected provider does not attest the physical request control: {0}")]
+    ProviderRequestControl(#[source] iteron_provider::ControlError),
+    #[error("provider governor refused admission: {0:?}")]
+    ProviderAdmission(iteron_provider::AdmissionReason),
     #[error("record: {0}")]
     Record(#[from] iteron_record::RecordError),
     #[error("invalid route metadata in {field}: {reason}")]
@@ -171,6 +171,10 @@ pub enum KernelError {
     EnvironmentContextAlreadyResolved,
     #[error("context resolution failed: {0}")]
     ContextResolution(String),
+    #[error("model context contains a secret-bearing structural field")]
+    SensitiveModelContext,
+    #[error("model context exceeds its bounded projection capacity")]
+    ModelContextProjectionLimit,
     #[error("context strategy inputs are already resolved for this run")]
     ContextAlreadyResolved,
     #[error("agent catalog is already pinned for this run")]
@@ -202,7 +206,17 @@ impl KernelError {
     /// payload fragments, or implementation details and therefore never cross a frontend seam.
     pub fn public_summary(&self) -> String {
         match self {
+            Self::AgentControl(_) => {
+                "persistent agent control or its durable mailbox failed; execution stopped".into()
+            }
             Self::Provider(error) => format!("provider: {}", error.public_summary()),
+            Self::ProviderControl(error) => format!(
+                "invalid route metadata in provider_controls: {}",
+                super::provider_route_binding::unattested_control_reason(*error)
+            ),
+            Self::ProviderAdmission(_) | Self::ProviderRequestControl(_) => {
+                "provider: provider configuration is invalid".into()
+            }
             Self::Record(error) => PublicRecordFailure::from_error(error).summary().into(),
             Self::InvalidRouteMetadata { field, reason } => {
                 format!("invalid route metadata in {field}: {reason}")
@@ -319,8 +333,93 @@ impl KernelError {
                     "context materialization exceeds the {limit}-byte protocol grant limit; reduce the configured context grant size"
                 )
             }
+            Self::ContextResolution(reason)
+                if reason == "context selection was not admitted as read-only" =>
+            {
+                "context selection was refused by read-only capability policy; review the configured context strategy".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "context observation is invalid"
+                        | "context decision is invalid"
+                        | "context slot version is unsupported"
+                        | "unsupported context slot version"
+                ) =>
+            {
+                "context selection returned an incompatible observation or decision; review the configured context strategy version".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "context decision attributes its request to another slot"
+                        | "context decision changed the caller request identity"
+                        | "context decision widened the caller's byte or trust ceiling"
+                        | "context decision changed or exceeded the bounded task query"
+                        | "context decision selected outside the gathered observation"
+                ) =>
+            {
+                "context selection exceeded the admitted request, source, or trust boundary; review the configured context strategy".into()
+            }
+            Self::ContextResolution(reason) if reason == "too many context selectors" => {
+                "context selection exceeds the selector-count limit; select fewer context sources".into()
+            }
+            Self::ContextResolution(reason)
+                if reason == "context outline depth exceeds the local traversal bound" =>
+            {
+                "context outline selection exceeds the traversal-depth limit; reduce the selected outline depth".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "too many memory keys in one selector" | "memory key must be 1..=256 bytes"
+                ) =>
+            {
+                "context memory selection exceeds the key count or byte limit; select fewer or shorter memory keys".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "selector root must be 1..=4096 bytes"
+                        | "context selector root must stay workspace-relative"
+                ) =>
+            {
+                "context outline selection has an invalid root; use a bounded workspace-relative path".into()
+            }
+            Self::ContextResolution(reason)
+                if reason == "context port requires an explicit absolute workspace" =>
+            {
+                "context materialization has no absolute workspace; select a workspace before submitting".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "too many context segments"
+                        | "granted context bytes exceed the bound the request declared"
+                ) =>
+            {
+                "context materialization exceeds the selected segment or byte limit; select fewer context sources or reduce their size".into()
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "grant does not answer this request"
+                        | "granted bytes under-report the segments, so the bound is unenforceable"
+                        | "a segment exceeds the trust ceiling the request declared"
+                ) =>
+            {
+                "context materialization violated its request, byte-accounting, or trust boundary; review the configured context port".into()
+            }
             Self::ContextResolution(_) => {
+                // Hook and replacement-port errors can contain private paths or task text.
+                // Only closed, known owner reasons above are safe to classify publicly.
                 "context selection or materialization failed closed".into()
+            }
+            Self::SensitiveModelContext => {
+                "model request was not dispatched: remove credentials from tool names, argument keys or advertised schemas".into()
+            }
+            Self::ModelContextProjectionLimit => {
+                "model request was not dispatched: historic arguments or advertised schemas exceed the bounded text projection capacity".into()
             }
             Self::ContextAlreadyResolved => {
                 "context strategy inputs are already fixed for this run".into()
@@ -334,6 +433,7 @@ impl KernelError {
             Self::TunablesNotResolved => {
                 "runtime tunables were not resolved before execution began".into()
             }
+            Self::OrdinaryExtension(reason) => format!("ordinary extension refused: {reason}"),
             Self::ToolingPolicy(_) => {
                 "resolved process/LSP policy could not be installed before execution".into()
             }
@@ -417,6 +517,10 @@ mod tests {
             ),
             (RecordError::WriterPoisoned, "[writer_poisoned]"),
             (
+                RecordError::PrivateContent(iteron_record::ContentStoreError::Busy),
+                "[content_busy]",
+            ),
+            (
                 RecordError::RolloutTooLarge {
                     bytes: 101,
                     max: 100,
@@ -437,10 +541,15 @@ mod tests {
             ),
         ];
         for (record_error, expected_class) in cases {
+            let retained = iteron_record::RecordFailure::from_error(&record_error);
             let public = KernelError::Record(record_error).public_summary();
             assert!(public.contains(expected_class), "{public}");
             assert!(!public.contains(SECRET), "{public}");
             assert!(KernelError::is_public_record_failure(&public));
+            assert_eq!(
+                KernelError::Record(RecordError::PreviousFailure(retained)).public_summary(),
+                public
+            );
         }
         assert!(!KernelError::is_public_record_failure(
             "session record [storage_full]: private/client/sk-test-secret"
@@ -544,5 +653,101 @@ mod context_resolution_message_tests {
         let opaque =
             KernelError::ContextResolution("private/path/secret-token".into()).public_summary();
         assert_eq!(opaque, "context selection or materialization failed closed");
+    }
+
+    #[test]
+    fn context_refusals_identify_selection_or_materialization_without_echoing_input() {
+        for (reason, component, action) in [
+            (
+                "context decision selected outside the gathered observation",
+                "context selection",
+                "review the configured context strategy",
+            ),
+            (
+                "too many memory keys in one selector",
+                "context memory selection",
+                "select fewer or shorter memory keys",
+            ),
+            (
+                "context selector root must stay workspace-relative",
+                "context outline selection",
+                "workspace-relative path",
+            ),
+            (
+                "granted context bytes exceed the bound the request declared",
+                "context materialization",
+                "reduce their size",
+            ),
+        ] {
+            let summary = KernelError::ContextResolution(reason.into()).public_summary();
+            assert!(
+                summary.contains(component) && summary.contains(action),
+                "{summary}"
+            );
+            let injected = KernelError::ContextResolution(format!("{reason}: private-task-text"))
+                .public_summary();
+            assert_eq!(
+                injected,
+                "context selection or materialization failed closed"
+            );
+        }
+    }
+
+    #[test]
+    fn large_unicode_submission_uses_bounded_selection_without_changing_the_submission() {
+        let task = format!(
+            "initial-path-hint\n{}\nlatest-question",
+            "分析".repeat(14_000)
+        );
+        let original = task.clone();
+        let resolved = crate::runtime::strategy_runtime::resolve_live_context(
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
+            &iteron_ctx::PortStub::new(vec![]),
+            crate::runtime::strategy_runtime::LiveContextRequest {
+                workspace: std::path::Path::new("/synthetic-context"),
+                home_dir: None,
+                dependency_skill_dirs: &[],
+                turn: iteron_protocol::TurnId(6),
+                task: &task,
+                memory_benchmark_scope: None,
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
+            },
+        )
+        .expect("a large submission must not overflow the separate relevance query");
+        assert_eq!(
+            task, original,
+            "selection must not replace the submitted text"
+        );
+        assert!(resolved.policy_observation.task.len() <= 65_536);
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .starts_with("initial-path-hint")
+        );
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .ends_with("latest-question")
+        );
+        assert_eq!(resolved.policy_plan.task, resolved.policy_observation.task);
+
+        // TaskContext is measured in tokens; it is independent of the selection query's bytes.
+        let mut policy = iteron_ctx::ContextBudgetPolicy::for_usable_window(1_208_192, 8_192, 0);
+        policy.task_context_tokens = 120_000;
+        let violation = policy
+            .admit_components(&iteron_ctx::ContextComponentUsage {
+                task_context_tokens: 120_001,
+                ..Default::default()
+            })
+            .unwrap_err();
+        let summary = KernelError::ContextBudget(violation.to_string()).public_summary();
+        assert!(
+            summary.contains("TaskContext") && summary.contains("120000"),
+            "{summary}"
+        );
+        assert!(!summary.contains("selection"));
     }
 }

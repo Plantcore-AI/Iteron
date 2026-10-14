@@ -21,7 +21,7 @@ const MAX_CAPABILITY_PATH_BYTES: usize = 4 * 1024;
 const MAX_CAPABILITY_COMPONENTS: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FileStamp {
+pub(crate) struct FileStamp {
     device: u64,
     inode: u64,
     len: u64,
@@ -33,7 +33,7 @@ pub(super) struct FileStamp {
 }
 
 impl FileStamp {
-    pub(super) fn capture(file: &File) -> io::Result<Self> {
+    pub(crate) fn capture(file: &File) -> io::Result<Self> {
         let metadata = file.metadata()?;
         // `metadata.is_file()` is exactly `mode & S_IFMT == S_IFREG`, and unlike the raw comparison
         // it does not depend on the width of `libc::mode_t`, which is `u16` on macOS and `u32` on
@@ -59,14 +59,14 @@ impl FileStamp {
 }
 
 #[derive(Debug)]
-pub(super) struct RootBinding {
+pub(crate) struct RootBinding {
     anchor: File,
     components: Vec<OsString>,
     chain: Vec<File>,
 }
 
 #[derive(Debug)]
-pub(super) struct SourceBinding {
+pub(crate) struct SourceBinding {
     components: Vec<OsString>,
     parents: Vec<File>,
     leaf: File,
@@ -74,7 +74,7 @@ pub(super) struct SourceBinding {
 }
 
 impl RootBinding {
-    pub(super) fn open(canonical_path: &Path) -> io::Result<Self> {
+    pub(crate) fn open(canonical_path: &Path) -> io::Result<Self> {
         if !canonical_path.is_absolute()
             || canonical_path.as_os_str().as_bytes().len()
                 > iteron_tunables::param_integer(
@@ -128,11 +128,11 @@ impl RootBinding {
         })
     }
 
-    pub(super) fn root(&self) -> &File {
+    pub(crate) fn root(&self) -> &File {
         self.chain.last().unwrap_or(&self.anchor)
     }
 
-    pub(super) fn bind_source(&self, relative: &Path) -> io::Result<SourceBinding> {
+    pub(crate) fn bind_source(&self, relative: &Path) -> io::Result<SourceBinding> {
         let components = relative_components(relative)?;
         let (leaf, parents) = components
             .split_last()
@@ -153,7 +153,7 @@ impl RootBinding {
         })
     }
 
-    pub(super) fn still_visible(&self) -> bool {
+    pub(crate) fn still_visible(&self) -> bool {
         let Ok(mut current) = self.anchor.try_clone() else {
             return false;
         };
@@ -161,10 +161,7 @@ impl RootBinding {
             let Ok(reopened) = open_directory_at(&current, component) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(iteron_tunables::param_bool(
-                "tools.lsp.capability.identity_unprovable",
-                IDENTITY_UNPROVABLE,
-            )) {
+            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
                 return false;
             }
             current = reopened;
@@ -174,15 +171,15 @@ impl RootBinding {
 }
 
 impl SourceBinding {
-    pub(super) fn file(&self) -> io::Result<File> {
+    pub(crate) fn file(&self) -> io::Result<File> {
         self.leaf.try_clone()
     }
 
-    pub(super) fn stamp(&self) -> &FileStamp {
+    pub(crate) fn stamp(&self) -> &FileStamp {
         &self.stamp
     }
 
-    pub(super) fn still_visible(&self, root: &RootBinding) -> bool {
+    pub(crate) fn still_visible(&self, root: &RootBinding) -> bool {
         if !root.still_visible() {
             return false;
         }
@@ -197,10 +194,7 @@ impl SourceBinding {
             let Ok(reopened) = open_directory_at(&current, name) else {
                 return false;
             };
-            if !same_directory(expected, &reopened).unwrap_or(iteron_tunables::param_bool(
-                "tools.lsp.capability.identity_unprovable",
-                IDENTITY_UNPROVABLE,
-            )) {
+            if !same_directory(expected, &reopened).unwrap_or(IDENTITY_UNPROVABLE) {
                 return false;
             }
             current = reopened;
@@ -208,10 +202,8 @@ impl SourceBinding {
         let Ok(leaf) = open_regular_nonblocking_at(&current, leaf_name) else {
             return false;
         };
-        same_file(&self.leaf, &leaf).unwrap_or(iteron_tunables::param_bool(
-            "tools.lsp.capability.identity_unprovable",
-            IDENTITY_UNPROVABLE,
-        )) && FileStamp::capture(&leaf).is_ok_and(|stamp| stamp == self.stamp)
+        same_file(&self.leaf, &leaf).unwrap_or(IDENTITY_UNPROVABLE)
+            && FileStamp::capture(&leaf).is_ok_and(|stamp| stamp == self.stamp)
     }
 }
 

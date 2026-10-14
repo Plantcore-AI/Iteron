@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use self::journal::HookEffectJournal;
 
+mod inventory;
 pub(crate) mod journal;
 
 const HOOK_CAPTURE_HEAD_BYTES: usize = 32 * 1024;
@@ -138,6 +139,7 @@ struct HooksFile {
 #[derive(Debug, Clone)]
 pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
+    handler_sources: BTreeMap<(String, usize), &'static str>,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
     plantcore_workspace_posture: Option<&'static str>,
@@ -151,12 +153,15 @@ pub struct Hooks {
     /// `Hooks` into workflow children carries the same AppServer-owned observer instead of making
     /// each child grow a detached finalization task.
     stop_observer: Option<StopHookDispatcher>,
+    extension_dispatch:
+        Option<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
 }
 
 impl Default for Hooks {
     fn default() -> Self {
         Self {
             by_event: BTreeMap::new(),
+            handler_sources: BTreeMap::new(),
             timeout_secs: iteron_tunables::param_integer(
                 "cli.runtime.hooks.default_hook_timeout_secs",
                 DEFAULT_HOOK_TIMEOUT_SECS,
@@ -166,6 +171,7 @@ impl Default for Hooks {
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
+            extension_dispatch: None,
         }
     }
 }
@@ -453,6 +459,7 @@ const SIGNAL_TERMINATED_EXIT_CODE: i32 = -1;
 /// without busy-waiting on the child.
 const HOOK_CANCEL_POLL: Duration = Duration::from_millis(25);
 
+#[cfg(any(test, feature = "legacy-plantcore"))]
 fn validate_plantcore_workspace_executable(path: &Path) -> Result<(), &'static str> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| "PlantCore workspace Hook executable is unavailable")?;
@@ -470,11 +477,35 @@ fn validate_plantcore_workspace_executable(path: &Path) -> Result<(), &'static s
 }
 
 impl Hooks {
+    pub(crate) fn install_extension_dispatch_policy(
+        &mut self,
+        policy: Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+    ) -> Result<(), &'static str> {
+        if let Some(current) = &self.extension_dispatch {
+            if Arc::ptr_eq(current, &policy) {
+                return Ok(());
+            }
+            return Err("hook extension dispatch policy is already installed");
+        }
+        self.extension_dispatch = Some(policy);
+        Ok(())
+    }
+    fn extension_dispatch_admitted(&self, event: &str, command: &str) -> bool {
+        self.extension_dispatch.as_ref().is_none_or(|policy| {
+            policy.admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Hook,
+                &crate::plugin_runtime::dispatch::hook_key(event, command),
+            )
+        })
+    }
+
+    #[cfg(feature = "legacy-plantcore")]
     pub(crate) fn preflight_plantcore_workspace_gate() -> Result<(), &'static str> {
         let _ = resolve_plantcore_workspace_executable()?;
         Ok(())
     }
 
+    #[cfg(any(test, feature = "legacy-plantcore"))]
     /// Replace every configurable hook with the release-owned PlantCore workspace gate.
     pub(crate) fn install_plantcore_workspace_gate(
         &mut self,
@@ -503,8 +534,17 @@ impl Hooks {
     /// Build from the immutable operator config snapshot already parsed by the composition root.
     /// This is the production path: hooks must not reopen and reparse `config.json` independently.
     pub(crate) fn from_user_config(commands: Option<&BTreeMap<String, Vec<String>>>) -> Hooks {
+        let by_event = bounded_hook_map(commands.cloned().unwrap_or_default());
+        let handler_sources = by_event
+            .iter()
+            .flat_map(|(event, commands)| {
+                (0..commands.len())
+                    .map(move |index| ((event.clone(), index), "trusted_user_config"))
+            })
+            .collect();
         Hooks {
-            by_event: bounded_hook_map(commands.cloned().unwrap_or_default()),
+            by_event,
+            handler_sources,
             timeout_secs: iteron_tunables::param_integer(
                 "cli.runtime.hooks.default_hook_timeout_secs",
                 DEFAULT_HOOK_TIMEOUT_SECS,
@@ -514,6 +554,7 @@ impl Hooks {
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
+            extension_dispatch: None,
         }
     }
 
@@ -568,6 +609,10 @@ impl Hooks {
         {
             return Err("hook chain exceeds 128 commands");
         }
+        self.handler_sources.insert(
+            (event.to_owned(), commands.len()),
+            "signature_verified_plugin_manifest",
+        );
         commands.push(command);
         Ok(())
     }
@@ -765,7 +810,9 @@ impl Hooks {
                     .acquire()
                     .await
                     .expect("the hook concurrency semaphore is never closed");
-                let out = if cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
+                let out = if !self.extension_dispatch_admitted(event.key(), &cmd) {
+                    HookRun::NotStarted("verified plugin future hook dispatch was revoked".into())
+                } else if cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
                     || drain.is_some_and(|flag| flag.load(Ordering::Acquire))
                 {
                     HookRun::Cancelled
@@ -986,15 +1033,19 @@ impl Hooks {
                     .acquire()
                     .await
                     .expect("the hook concurrency semaphore is never closed");
-                let outcome = run_one_with_sensitive_env_names_cancellable(
-                    &command,
-                    context_json,
-                    timeout,
-                    &self.sensitive_env_names,
-                    cancel,
-                    drain,
-                )
-                .await;
+                let outcome = if !self.extension_dispatch_admitted(event_id, &command) {
+                    HookRun::NotStarted("verified plugin future hook dispatch was revoked".into())
+                } else {
+                    run_one_with_sensitive_env_names_cancellable(
+                        &command,
+                        context_json,
+                        timeout,
+                        &self.sensitive_env_names,
+                        cancel,
+                        drain,
+                    )
+                    .await
+                };
                 (index, ticket, outcome)
             })
             .buffer_unordered(max_parallel_hooks())
@@ -1031,6 +1082,13 @@ impl Hooks {
                     report.completed = report.completed.saturating_add(1);
                     if output.code != 0 {
                         report.failed = report.failed.saturating_add(1);
+                        if spec.hook_capability == iteron_protocol::HookCapability::Gate
+                            && matches!(report.decision, HookDecision::Allow)
+                        {
+                            report.decision = HookDecision::Deny(format!(
+                                "{event_id} gate hook failed without an allow decision"
+                            ));
+                        }
                     } else if spec.hook_capability == iteron_protocol::HookCapability::Augment
                         && !output.stdout.trim().is_empty()
                     {
@@ -1119,6 +1177,7 @@ impl Hooks {
     }
 }
 
+#[cfg(any(test, feature = "legacy-plantcore"))]
 fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
     let current_executable =
         std::env::current_exe().map_err(|_| "current executable path is unavailable")?;
@@ -1314,7 +1373,7 @@ fn digest_part(digest: &mut Sha256, bytes: &[u8]) {
 
 impl super::Agent {
     /// Install exactly the hook catalog named by the immutable tunables checkpoint.
-    pub(crate) fn install_hooks(&mut self, hooks: Hooks) -> Result<(), super::KernelError> {
+    pub(crate) fn install_hooks(&mut self, mut hooks: Hooks) -> Result<(), super::KernelError> {
         if self.hooks_runtime_installed {
             return Err(super::KernelError::ExecutionPolicy(
                 "hook runtime was already installed".into(),
@@ -1326,6 +1385,11 @@ impl super::Agent {
             .ok_or(super::KernelError::TunablesNotResolved)?
             .hooks
             .as_ref();
+        if let Some(policy) = self.extension_dispatch_policy() {
+            hooks
+                .install_extension_dispatch_policy(policy)
+                .map_err(|reason| super::KernelError::ContextResolution(reason.into()))?;
+        }
         let actual = (!hooks.is_empty()).then(|| hooks.catalog_identity());
         if expected != actual.as_ref() {
             return Err(super::KernelError::ExecutionPolicy(
@@ -1869,12 +1933,14 @@ mod tests {
                     "sleep 0.1; exit 0".to_owned(),
                 ],
             )]),
+            handler_sources: BTreeMap::new(),
             timeout_secs: 2,
             sensitive_env_names: Vec::new(),
             plantcore_workspace_posture: None,
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_HOOKS)),
             stop_observer: None,
+            extension_dispatch: None,
         };
         let started = std::time::Instant::now();
         let decision = hooks.run(HookEvent::PreToolUse, "{}").await;

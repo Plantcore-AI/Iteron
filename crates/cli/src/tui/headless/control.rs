@@ -34,6 +34,7 @@ pub(super) enum PlantcoreCommand {
     ResumeDispatch,
 }
 
+#[cfg(feature = "legacy-plantcore")]
 impl PlantcoreCommand {
     pub(super) fn into_op(self) -> Option<iteron_protocol::Op> {
         match self {
@@ -48,6 +49,81 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    ResidentServiceV1 {
+        command: iteron_protocol::resident_service::ResidentServiceCommandV1,
+    },
+    RefusalsV1 {
+        command: iteron_protocol::client_refusal::RefusalsReadV1,
+    },
+    HostFinalEvidenceV1 {
+        command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
+    },
+    McpInputsV1 {
+        command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+    },
+    SideV1 {
+        command: iteron_protocol::client_interaction::SideCommandV1,
+    },
+    WorkspaceRewindV1 {
+        command: iteron_protocol::workspace_rewind::WorkspaceRewindCommandV1,
+    },
+    SessionNavigateV1 {
+        command: iteron_protocol::session_navigation::SessionNavigationV1,
+    },
+    OrdinaryExtensionsV1 {
+        command: iteron_protocol::ordinary_extension_control::OrdinaryExtensionReadV1,
+    },
+    PluginManagementV1 {
+        command: iteron_protocol::plugin_control::PluginControlV1,
+    },
+    ActivityCenterV1 {
+        command: iteron_protocol::activity_control::ActivityControlV1,
+    },
+    MaintenanceV1 {
+        command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
+    },
+    TurnPublicationsV1 {
+        command: iteron_protocol::turn_publication::TurnPublicationReadV1,
+    },
+    ProviderCatalogV1 {
+        command: super::provider_catalog::ProviderCatalogCommandV1,
+    },
+    ProjectInitV1 {
+        command: crate::app_server::ProjectInitV1,
+    },
+    OperatorShellV1 {
+        command: crate::app_server::OperatorShellV1,
+    },
+    TranscriptExportV1 {
+        command: crate::app_server::TranscriptExportV1,
+    },
+    InventoryV1 {
+        query: iteron_protocol::client_inventory::ClientInventoryQueryV1,
+    },
+    SelectModelDefaultV1 {
+        selection: iteron_protocol::client_inventory::ClientModelSelectionV1,
+    },
+    TunablesSimulationV1 {
+        command: crate::app_server::TunablesLoadV1,
+    },
+    LabV1 {
+        command: crate::app_server::LabCommandV1,
+    },
+    ModelPreferenceReadV1 {
+        command: crate::app_server::ModelPreferenceReadV1,
+    },
+    SelectModelV1 {
+        selection: iteron_protocol::client_inventory::ClientModelSelectionV1,
+    },
+    LiveWorkflowV1 {
+        command: crate::workflow::live_session::LiveWorkflowCommandV1,
+    },
+    AgentsV1 {
+        command: iteron_protocol::client_agent_control::ClientAgentControlV1,
+    },
+    ArtifactsV1 {
+        command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
+    },
     ProductV1 {
         command: ProductControlV1,
     },
@@ -69,6 +145,11 @@ pub(super) enum WireControl {
         capability: Capability,
         verdict: Verdict,
     },
+    SetToolRule {
+        #[serde(deserialize_with = "deserialize_command_id")]
+        tool: String,
+        verdict: Verdict,
+    },
     Compact {
         #[serde(default, deserialize_with = "deserialize_optional_focus")]
         focus: Option<String>,
@@ -77,7 +158,48 @@ pub(super) enum WireControl {
         #[serde(default)]
         set: Option<u32>,
     },
+    OperatorStatus,
+    ThreadLifecycleV1 {
+        command: iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1,
+    },
+    WorkflowsList,
+    WorkflowsCancel {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        run_id: String,
+    },
+    WorkflowsResume {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        run_id: String,
+    },
+    McpStatus,
+    McpCancel {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    McpRestart {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    McpStop {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    MemoryAdd {
+        #[serde(deserialize_with = "deserialize_command_text")]
+        text: String,
+    },
+    MemoryUpdate {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        id: String,
+        #[serde(deserialize_with = "deserialize_command_text")]
+        text: String,
+    },
+    MemoryDelete {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        id: String,
+    },
     JobsList,
+    JobsClean,
     JobsAttach {
         #[serde(deserialize_with = "deserialize_job_id")]
         job_id: String,
@@ -192,8 +314,116 @@ where
 }
 
 impl WireControl {
+    pub(super) fn is_read_only(&self) -> bool {
+        if let Self::ResidentServiceV1 { command } = self {
+            return command.is_read_only();
+        }
+        if matches!(
+            self,
+            Self::HostFinalEvidenceV1 { .. } | Self::RefusalsV1 { .. }
+        ) {
+            return true;
+        }
+        if let Self::McpInputsV1 { command } = self {
+            return command.is_read_only();
+        }
+        if let Self::SideV1 { command } = self {
+            return command.is_read_only();
+        }
+        if let Self::WorkspaceRewindV1 { command } = self {
+            return command.is_read_only();
+        }
+        if matches!(self, Self::OrdinaryExtensionsV1 { .. }) {
+            return true;
+        }
+        if let Self::PluginManagementV1 { command } = self {
+            return command.is_read_only();
+        }
+        if let Self::ActivityCenterV1 { command } = self {
+            return command.is_read_only();
+        }
+        if let Self::LiveWorkflowV1 { command } = self {
+            return command.is_read_only();
+        }
+        if let Self::AgentsV1 { command } = self {
+            return command.is_read_only();
+        }
+        if matches!(self, Self::ArtifactsV1 { .. }) {
+            return true;
+        }
+        if let Self::ThreadLifecycleV1 { command } = self {
+            return command.is_read_only();
+        }
+        matches!(
+            self,
+            Self::MaintenanceV1 { .. }
+                | Self::TurnPublicationsV1 { .. }
+                | Self::InventoryV1 { .. }
+                | Self::ProductV1 {
+                    command: ProductControlV1::ThreadRead { .. }
+                        | ProductControlV1::TerminalDiagnosticsRead { .. }
+                        | ProductControlV1::EventsRead { .. }
+                }
+                | Self::ModelPreferenceReadV1 { .. }
+                | Self::OperatorStatus
+                | Self::WorkflowsList
+                | Self::McpStatus
+                | Self::JobsList
+                | Self::JobsAttach { .. }
+                | Self::TurnBudget { set: None }
+        )
+    }
+
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::ResidentServiceV1 { .. } => {
+                unreachable!("service lifecycle belongs to the captured resident host")
+            }
+            Self::RefusalsV1 { .. } => {
+                unreachable!("refusal observations address the captured readonly owner")
+            }
+            Self::HostFinalEvidenceV1 { .. } => {
+                unreachable!("host evidence reads address the actual receipt projection")
+            }
+            Self::McpInputsV1 { .. } => {
+                unreachable!("public input commands address the captured callback owner")
+            }
+            Self::SideV1 { command } => Control::SideV1(command),
+            Self::WorkspaceRewindV1 { command } => Control::WorkspaceRewind {
+                command,
+                cancel: None,
+            },
+            Self::SessionNavigateV1 { command } => Control::SessionNavigate {
+                command,
+                cancel: None,
+            },
+            Self::OrdinaryExtensionsV1 { command } => Control::OrdinaryExtensions(command),
+            Self::PluginManagementV1 { command } => Control::PluginManagement(command),
+            Self::ActivityCenterV1 { command } => Control::ActivityCenter(command),
+            Self::MaintenanceV1 { .. } => {
+                unreachable!("maintenance reads address the actual readonly owner port")
+            }
+            Self::TurnPublicationsV1 { .. } => {
+                unreachable!("publication reads address the public resident projection")
+            }
+            Self::InventoryV1 { query } => Control::Inventory(query),
+            Self::SelectModelDefaultV1 { selection } => Control::SelectModelDefaultV1(selection),
+            Self::ModelPreferenceReadV1 { command } => Control::ModelPreferenceRead(command),
+            Self::TunablesSimulationV1 { command } => Control::TunablesSimulation(command),
+            Self::LabV1 { command } => Control::Lab(command),
+            Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
+            Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
+            Self::ProjectInitV1 { command } => Control::ProjectInit(Box::new(command)),
+            Self::OperatorShellV1 { command } => Control::OperatorShell {
+                command: Box::new(command),
+                cancel: None,
+            },
+            Self::TranscriptExportV1 { command } => Control::TranscriptExport(Box::new(command)),
+            Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
+            Self::AgentsV1 { command } => Control::PersistentAgents(command),
+            Self::ArtifactsV1 { .. } => {
+                unreachable!("artifact reads address the public resident projection")
+            }
             Self::ProductV1 { .. } => {
                 unreachable!("product controls are admitted by the versioned transport")
             }
@@ -210,9 +440,39 @@ impl WireControl {
                 capability,
                 verdict,
             },
+            Self::SetToolRule { tool, verdict } => Control::SetToolRule { tool, verdict },
             Self::Compact { focus } => Control::Compact { focus },
             Self::TurnBudget { set } => Control::TurnBudget { set },
+            Self::OperatorStatus => Control::OperatorStatus,
+            Self::ThreadLifecycleV1 { command } => Control::ThreadLifecycle(command),
+            Self::WorkflowsList => Control::Workflow(crate::app_server::WorkflowControl::Inventory),
+            Self::WorkflowsCancel { run_id } => {
+                Control::Workflow(crate::app_server::WorkflowControl::Cancel { run_id })
+            }
+            Self::WorkflowsResume { run_id } => {
+                Control::Workflow(crate::app_server::WorkflowControl::Resume { run_id })
+            }
+            Self::McpStatus => Control::Mcp(crate::app_server::McpControl::Status),
+            Self::McpCancel { server } => {
+                Control::Mcp(crate::app_server::McpControl::Cancel { server })
+            }
+            Self::McpRestart { server } => {
+                Control::Mcp(crate::app_server::McpControl::Restart { server })
+            }
+            Self::McpStop { server } => {
+                Control::Mcp(crate::app_server::McpControl::Stop { server })
+            }
+            Self::MemoryAdd { text } => {
+                Control::Memory(crate::app_server::MemoryControl::Add(text))
+            }
+            Self::MemoryUpdate { id, text } => {
+                Control::Memory(crate::app_server::MemoryControl::Update { id, text })
+            }
+            Self::MemoryDelete { id } => {
+                Control::Memory(crate::app_server::MemoryControl::Delete(id))
+            }
             Self::JobsList => Control::Job(JobControl::Inventory),
+            Self::JobsClean => Control::Job(JobControl::Clean),
             Self::JobsAttach {
                 job_id,
                 stdout_cursor,
@@ -236,6 +496,14 @@ pub(super) fn product_reply(
     client: &crate::app_server::AppServerClient,
     command: ProductControlV1,
 ) -> Value {
+    if let ProductControlV1::TurnStart {
+        thread_id,
+        request_key,
+        text,
+    } = command
+    {
+        return client.turn_start_v2(thread_id, request_key, text);
+    }
     let Some(snapshot) = client.thread_snapshot_v1() else {
         return product_refused("thread_unavailable");
     };
@@ -264,32 +532,6 @@ pub(super) fn product_reply(
                 json!({"type": "product_events_error_v1", "contract_version": PRODUCT_CONTRACT_VERSION, "error": error})
             }
             None => product_refused("thread_unavailable"),
-        };
-    }
-    if let ProductControlV1::TurnStart { text, .. } = &command {
-        if snapshot
-            .turn
-            .as_ref()
-            .is_some_and(|turn| turn.state == TurnStateV1::Running)
-        {
-            return product_refused("turn_active");
-        }
-        if text.trim().is_empty() || text.len() > MAX_TASK_TEXT_BYTES {
-            return product_refused("invalid_turn_text");
-        }
-        return match client.submit_identified(iteron_protocol::Op::UserInput { text: text.clone() })
-        {
-            Ok(id) => json!({
-                "type": "control_queued_v1",
-                "contract_version": PRODUCT_CONTRACT_VERSION,
-                "submission_id": id,
-                "thread_id": snapshot.thread_id,
-                "turn_id": null,
-            }),
-            Err(crate::app_server::SubmitError::Busy) => product_refused("busy"),
-            Err(crate::app_server::SubmitError::Disconnected) => {
-                product_refused("runtime_disconnected")
-            }
         };
     }
     let Some(turn) = snapshot.turn.as_ref() else {
@@ -352,6 +594,19 @@ fn product_refused(reason_code: &'static str) -> Value {
 pub(super) type Pending =
     Pin<Box<dyn Future<Output = Result<(u64, ControlReply)>> + Send + 'static>>;
 
+pub(super) fn dispatch_input(
+    client: crate::app_server::AppServerClient,
+    request_id: u64,
+    command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+) -> Pending {
+    Box::pin(async move {
+        Ok((
+            request_id,
+            ControlReply::McpInputs(client.mcp_inputs_v1(command).await),
+        ))
+    })
+}
+
 pub(super) fn dispatch(
     sender: mpsc::Sender<ControlRequest>,
     request_id: u64,
@@ -382,6 +637,8 @@ pub(super) async fn receive(pending: &mut Option<Pending>) -> Result<(u64, Contr
 
 pub(super) fn reply_value(reply: ControlReply) -> Value {
     match reply {
+        ControlReply::McpInputs(value) => value,
+        #[cfg(feature = "legacy-plantcore")]
         ControlReply::PlantcoreBootstrapAccepted(accepted) => json!({
             "type": "plantcore_run_bootstrap_accepted_v1",
             "run_id": accepted.run_id,
@@ -392,14 +649,50 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "code": error.code,
             "message": error.message,
         }),
+        ControlReply::WorkspaceRewound(reply) => {
+            let navigation=reply.navigation.map(|navigation|json!({"navigation":navigation.presentation,"state":snapshot_value(&navigation.snapshot)}));
+            json!({"type":"workspace_rewound_v1","rewind":reply.presentation,"adoption":navigation})
+        }
+        ControlReply::SessionNavigated(reply) => {
+            json!({"type":"session_navigated_v1","navigation":reply.presentation,"state":snapshot_value(&reply.snapshot)})
+        }
+        ControlReply::ThreadLifecycle(value) => value,
+        ControlReply::PersistentAgents(value) => value,
+        ControlReply::OrdinaryExtensions(value) => value,
+        ControlReply::PluginManagement(value) => value,
+        ControlReply::ActivityCenter(value) => value,
+        ControlReply::Inventory(value) => value,
+        ControlReply::TranscriptExport(value) => value,
+        ControlReply::ModelPreference(value) => {
+            json!({"type":"model_preference_v1","receipt":value,"source":"actual_host_config_writer","delivery":"bounded_last_receipt_not_config_replay"})
+        }
+        ControlReply::TunablesSimulation(value) => {
+            json!({"type":"tunables_simulation_v1","receipt":value,"source":"host_workspace_request","runtime_bound":false})
+        }
+        ControlReply::Lab(value) => {
+            json!({"type":"lab_v1","receipt":value,"runtime_activation":false})
+        }
+        ControlReply::ProjectInit(value) => json!({"type":"project_init_v1","receipt":value}),
+        ControlReply::OperatorShell(value) => json!({"type":"operator_shell_v1","receipt":value}),
+        ControlReply::ProviderCatalog(view) => {
+            json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"discovery_error":view.discovery_error(),"providers":view.entries().len(),"source":"host_captured_inventory"})
+        }
+        ControlReply::LiveWorkflow(value) => json!({
+            "type": "live_workflow_v1",
+            "contract_version": crate::workflow::live_session::LIVE_WORKFLOW_CONTRACT_VERSION,
+            "view": value.view,
+            "receipt": value.receipt,
+        }),
         ControlReply::State(snapshot) => json!({
             "type": "state",
             "state": snapshot_value(&snapshot),
         }),
-        ControlReply::Refused(message) => json!({
-            "type": "refused",
-            "message": message,
-        }),
+        ControlReply::RefusedWithOrigin { message, refusal } => {
+            crate::app_server::refusal_projection::reply_value(message, *refusal)
+        }
+        ControlReply::Refused(message) => {
+            crate::app_server::refusal_projection::unknown_reply(message)
+        }
         ControlReply::Compacted { report, snapshot } => json!({
             "type": "compacted",
             "before": report.before,
@@ -442,15 +735,86 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "servers": reply.servers,
             "notice": reply.notice,
         }),
-        ControlReply::SideAnswer(_)
-        | ControlReply::SideStatus { .. }
-        | ControlReply::Adopted { .. }
-        | ControlReply::Workflows(_)
-        | ControlReply::OperatorStatus(_) => json!({
+        ControlReply::Workflows(reply) => json!({
+            "type": "workflows",
+            "runs": reply.runs.iter().map(|run| json!({
+                "run_id": run.run_id,
+                "name": run.name,
+                "status": match run.status {
+                    crate::workflow::SupervisedRunStatus::Running => "running",
+                    crate::workflow::SupervisedRunStatus::Cancelling => "cancelling",
+                    crate::workflow::SupervisedRunStatus::Settled => "settled",
+                    crate::workflow::SupervisedRunStatus::Failed => "failed",
+                },
+                "elapsed_ms": run.elapsed_ms,
+                "finished_agents": run.finished_agents,
+                "running_agents": run.running_agents,
+                "dropped_results": run.dropped_results,
+            })).collect::<Vec<_>>(),
+            "notice": reply.notice,
+        }),
+        ControlReply::OperatorStatus(reply) => operator_status_value(&reply),
+        ControlReply::SideAnswer(answer) => super::side::answer_value(&answer),
+        ControlReply::SideStatus { status, closed } => {
+            super::side::status_value(status.as_deref(), closed)
+        }
+        ControlReply::Adopted { .. } => json!({
             "type": "refused",
             "message": "this reply type is not available on the public control transport",
         }),
     }
+}
+
+fn operator_status_value(snapshot: &crate::app_server::OperatorStatusSnapshot) -> Value {
+    let budget = &snapshot.runtime.settled_budget;
+    let collaboration = snapshot.runtime.collaboration;
+    json!({
+        "type": "operator_status",
+        "policy_bundle": snapshot.runtime.policy_bundle,
+        "governor": snapshot.runtime.governor.as_ref().map(|governor| json!({
+            "max_in_flight_per_route": governor.max_in_flight_per_route,
+            "hedge_enabled": governor.hedge_enabled,
+            "routes": governor.routes.iter().map(|route| json!({
+                "route_id": route.route_id,
+                "in_flight": route.in_flight,
+                "quota_observed": route.quota_observed,
+                "quota_age_ms": route.quota_age_ms,
+                "requests_remaining": route.requests_remaining,
+                "tokens_remaining": route.tokens_remaining,
+                "reset_remaining_ms": route.reset_remaining_ms,
+            })).collect::<Vec<_>>(),
+        })),
+        "settled_budget": {
+            "ceiling": budget.ceiling,
+            "provider_attempts": budget.provider_attempts,
+            "provider_attempts_remaining": budget.provider_attempts_remaining,
+            "tokens_used": budget.tokens_used,
+            "tokens_remaining": budget.tokens_remaining,
+            "wall_remaining_ms": budget.wall_remaining_ms,
+            "tool_calls": budget.tool_calls,
+            "tool_errors": budget.tool_errors,
+        },
+        "collaboration": {
+            "session_spawn_limit": collaboration.session_spawn_limit,
+            "session_spawns_admitted": collaboration.session_spawns_admitted,
+            "session_spawns_remaining": collaboration.session_spawns_remaining,
+        },
+        "workflows": {
+            "retained": snapshot.workflows.retained,
+            "running": snapshot.workflows.running,
+            "cancelling": snapshot.workflows.cancelling,
+            "settled": snapshot.workflows.settled,
+            "failed": snapshot.workflows.failed,
+            "running_agents": snapshot.workflows.running_agents,
+        },
+        "processes": snapshot.processes,
+        "language_servers": match snapshot.language_servers {
+            crate::app_server::LanguageServerStatus::Unavailable => json!({"state":"unavailable"}),
+            crate::app_server::LanguageServerStatus::Busy => json!({"state":"busy"}),
+            crate::app_server::LanguageServerStatus::Available(health) => json!({"state":"available", "health":health}),
+        },
+        "mcp": snapshot.mcp,
+    })
 }
 
 fn snapshot_value(snapshot: &SessionSnapshot) -> Value {
@@ -475,7 +839,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn product_turn_start_queues_input_without_inventing_an_admitted_turn() {
+    fn mcp_input_observer_wire_cannot_handoff_an_operator_answer() {
+        let mut source = json!({"type":"mcp_inputs_v1","command":{"thread_id":"session-run","run_id":"run","command":{"action":"read"}}});
+        let read: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(read.is_read_only());
+        source["command"]["command"] =
+            json!({"action":"respond","request_id":1,"answer":{"action":"reject"}});
+        let response: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(!response.is_read_only());
+        source["command"]["command"]["answer"]["values"] =
+            json!([{"field_index":0,"content":"private-value"}]);
+        assert!(serde_json::from_value::<WireControl>(source).is_err());
+    }
+
+    #[test]
+    fn ordinary_sdk_observer_wire_is_readonly_and_cannot_install_or_emit() {
+        let source = json!({"type":"ordinary_extensions_v1","command":{"action":"read","thread_id":"thread","run_id":"run","offset":0,"limit":8}});
+        let wire: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(wire.is_read_only());
+        assert!(matches!(
+            wire.into_app_server(),
+            Control::OrdinaryExtensions(_)
+        ));
+        for action in ["install", "emit", "select", "register"] {
+            let mut forged = source.clone();
+            forged["command"]["action"] = json!(action);
+            assert!(serde_json::from_value::<WireControl>(forged).is_err());
+        }
+    }
+
+    #[test]
+    fn product_turn_start_without_record_authority_is_unknown_and_never_enqueues() {
+        use sha2::{Digest, Sha256};
         let (sender, mut submissions) = tokio::sync::mpsc::channel(2);
         let client =
             crate::app_server::AppServerClient::connect(iteron_protocol::PROTOCOL_VERSION, sender)
@@ -483,20 +878,35 @@ mod tests {
         let thread_id = iteron_protocol::SessionId("session-r".into());
         client
             .seed_contract_identity_for_test(thread_id.clone(), iteron_protocol::RunId("r".into()));
-        let queued = product_reply(
+        let text = "fix the test";
+        let mut uuid = [0u8; 16];
+        uuid[6] = 0x70;
+        uuid[8] = 0x80;
+        uuid[15] = 1;
+        let mut digest = Sha256::new();
+        digest.update(uuid);
+        digest.update((thread_id.0.len() as u64).to_be_bytes());
+        digest.update(thread_id.0.as_bytes());
+        digest.update((text.len() as u64).to_be_bytes());
+        digest.update(text.as_bytes());
+        let reply = product_reply(
             &client,
             ProductControlV1::TurnStart {
                 thread_id,
-                text: "fix the test".into(),
+                request_key: format!(
+                    "00000000-0000-7000-8000-000000000001:{:x}",
+                    digest.finalize()
+                ),
+                text: text.into(),
             },
         );
-        assert_eq!(queued["type"], "control_queued_v1");
-        assert!(queued["turn_id"].is_null());
+        assert_eq!(reply["type"], "turn_start_receipt_v2");
+        assert_eq!(reply["state"], "admission_unknown");
+        for field in ["submission_id", "run_id", "turn_id"] {
+            assert!(reply[field].is_null());
+        }
         assert!(client.thread_snapshot_v1().unwrap().turn.is_none());
-        assert!(matches!(
-            &submissions.try_recv().unwrap().op,
-            iteron_protocol::Op::UserInput { text } if text == "fix the test"
-        ));
+        assert!(submissions.try_recv().is_err());
     }
 
     #[test]
@@ -835,6 +1245,68 @@ mod tests {
     }
 
     #[test]
+    fn plugin_observers_can_read_captured_sources_but_cannot_change_install_or_current_authority() {
+        for command in [
+            json!({"action":"list","thread_id":"thread","run_id":"run"}),
+            json!({"action":"inspect","thread_id":"thread","run_id":"run","plugin_id":"verified"}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"plugin_management_v1","command":command}))
+                    .unwrap();
+            assert!(wire.is_read_only());
+        }
+        for command in [
+            json!({"action":"set_enabled","thread_id":"thread","run_id":"run","plugin_id":"verified","enabled":false}),
+            json!({"action":"set_precedence","thread_id":"thread","run_id":"run","plugin_id":"verified","precedence":1}),
+            json!({"action":"rollback","thread_id":"thread","run_id":"run","plugin_id":"verified"}),
+            json!({"action":"install","thread_id":"thread","run_id":"run","receipt_id":"prepared-1"}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"plugin_management_v1","command":command}))
+                    .unwrap();
+            assert!(!wire.is_read_only());
+        }
+        assert!(serde_json::from_value::<WireControl>(json!({"type":"plugin_management_v1","command":{"action":"install","thread_id":"thread","run_id":"run","receipt_id":"prepared-1","path":"/tmp/package"}})).is_err());
+    }
+
+    #[test]
+    fn inventory_is_observable_but_model_selection_requires_control_authority() {
+        let wire: WireControl =
+            serde_json::from_value(json!({"type":"inventory_v1","query":{"kind":"plugins"}}))
+                .unwrap();
+        assert!(wire.is_read_only());
+        let wire:WireControl=serde_json::from_value(json!({"type":"select_model_v1","selection":{"inventory_digest_sha256":"a".repeat(64),"provider_id":"p","model_id":"m","catalog_digest_sha256":"b".repeat(64),"capability_digest_sha256":"c".repeat(64)}})).unwrap();
+        assert!(!wire.is_read_only());
+    }
+
+    #[test]
+    fn live_workflow_observers_only_read_and_cannot_claim_host_authority() {
+        let read: WireControl = serde_json::from_value(json!({"type":"live_workflow_v1", "command":{"command":"read", "workflow_id":"graph-1"}})).unwrap();
+        assert!(read.is_read_only());
+        for command in [
+            json!({"command":"open", "workflow_id":"graph-1"}),
+            json!({"command":"pump", "workflow_id":"graph-1"}),
+            json!({"command":"interrupt", "workflow_id":"graph-1", "node_id":1}),
+            json!({"command":"reconcile", "workflow_id":"graph-1", "node_id":1}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"live_workflow_v1", "command":command}))
+                    .unwrap();
+            assert!(!wire.is_read_only());
+        }
+        for field in ["actor", "budget", "root", "effects_known", "completion"] {
+            let mut command = json!({"command":"open", "workflow_id":"graph-1"});
+            command[field] = json!(true);
+            assert!(
+                serde_json::from_value::<WireControl>(
+                    json!({"type":"live_workflow_v1", "command":command})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn job_attach_preserves_resume_cursors() {
         let wire: WireControl = serde_json::from_value(json!({
             "type": "jobs_attach",
@@ -853,6 +1325,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     #[test]
     fn reversible_dispatch_gate_commands_are_closed_and_not_sq_operations() {
         for (wire_type, expected) in [
@@ -896,5 +1369,89 @@ mod tests {
             .err()
             .expect("oversized job input must be refused");
         assert!(error.to_string().contains("job input exceeds"));
+    }
+}
+
+#[cfg(test)]
+mod workspace_rewind_wire_tests {
+    use super::WireControl;
+    use serde_json::json;
+    #[test]
+    fn observer_reads_are_distinct_from_operator_apply_and_accept_no_native_locator() {
+        let base = json!({"type":"workspace_rewind_v1","command":{"action":"preview","thread_id":"t","run_id":"r","target":{"run_id":"parent","seq":3},"scope":"code_only","unrecorded":"keep"}});
+        assert!(
+            serde_json::from_value::<WireControl>(base.clone())
+                .unwrap()
+                .is_read_only()
+        );
+        let mut apply = base.clone();
+        apply["command"]["action"] = json!("apply");
+        assert!(
+            !serde_json::from_value::<WireControl>(apply)
+                .unwrap()
+                .is_read_only()
+        );
+        let mut forged = base;
+        forged["command"]["workspace"] = json!("/other-root");
+        assert!(serde_json::from_value::<WireControl>(forged).is_err());
+    }
+}
+
+#[cfg(test)]
+mod provider_catalog_reply_tests {
+    use super::{ControlReply, reply_value};
+    use crate::providers::{ModelSelection, ProviderCatalogView, ProviderDirectory};
+
+    #[test]
+    fn failed_host_discovery_is_public_truth_without_a_full_catalog_payload() {
+        let directory = ProviderDirectory::inspect_local(&[]).unwrap();
+        let providers = directory.entries().len();
+        assert!(
+            providers > 0,
+            "the host retains its builtin provider entries"
+        );
+        let view = ProviderCatalogView::capture(
+            &directory,
+            &ModelSelection {
+                provider_id: "fixture".into(),
+                model_id: "m".into(),
+            },
+            "1".repeat(64),
+            false,
+        )
+        .unwrap()
+        .with_discovery_error(Some("actual catalog rejected"));
+        let reply = reply_value(ControlReply::ProviderCatalog(Box::new(view)));
+        assert_eq!(reply["discovery_pending"], false);
+        assert_eq!(reply["discovery_error"], "actual catalog rejected");
+        assert_eq!(reply["source"], "host_captured_inventory");
+        assert_eq!(reply["providers"], providers);
+        assert!(reply.get("models").is_none());
+    }
+}
+
+#[cfg(test)]
+mod transcript_export_wire_tests {
+    use super::WireControl;
+    #[test]
+    fn export_is_operator_only_and_cannot_supply_a_native_source_locator() {
+        let command = serde_json::json!({"type":"transcript_export_v1","command":{"thread_id":"t","run_id":"r","text":"visible data","requested":"transcript.md","collision":"refuse"}});
+        assert!(
+            !serde_json::from_value::<WireControl>(command.clone())
+                .unwrap()
+                .is_read_only()
+        );
+        for name in [
+            "workspace",
+            "runs_dir",
+            "tenant",
+            "record_path",
+            "source_seq",
+            "actor",
+        ] {
+            let mut forged = command.clone();
+            forged["command"][name] = serde_json::json!("untrusted");
+            assert!(serde_json::from_value::<WireControl>(forged).is_err());
+        }
     }
 }

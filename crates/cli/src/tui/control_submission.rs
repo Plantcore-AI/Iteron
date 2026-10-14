@@ -65,7 +65,7 @@ async fn wait_for_server_shutdown_for(
 pub(super) fn dispatch_slash_command(
     app: &mut App,
     session: &mut Session,
-    providers: &ProviderDirectory,
+    providers: &ProviderCatalogView,
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     cmd: &str,
@@ -122,6 +122,13 @@ pub(super) fn dispatch_slash_command(
         commands::DispatchRoute::NotHere(commands::TerminalIntercept::Side) => {
             let request = side_request_for(&routed.invocation.args);
             let asking = matches!(request, app_server::SideRequest::Ask(_));
+            let request = match scoped_side_request(session, request) {
+                Ok(request) => request,
+                Err(reason) => {
+                    app.note(block::NoticeLevel::Warn, reason);
+                    return Ok(());
+                }
+            };
             if asking {
                 // Same reason compaction redraws here: this is about to await a provider call, and
                 // an operator who sees nothing cannot tell a slow answer from a dead terminal.
@@ -129,7 +136,7 @@ pub(super) fn dispatch_slash_command(
             }
             let request = transcript_effect::Request::Control {
                 sender: session.control_sender(),
-                control: app_server::Control::Side(request),
+                control: app_server::Control::SideV1(request),
                 interrupt: interrupt.clone(),
                 kind: transcript_effect::ControlKind::Side,
             };
@@ -142,6 +149,28 @@ pub(super) fn dispatch_slash_command(
         }
     }
     Ok(())
+}
+
+fn scoped_side_request(
+    session: &Session,
+    request: app_server::SideRequest,
+) -> Result<iteron_protocol::client_interaction::SideCommandV1, &'static str> {
+    use iteron_protocol::client_interaction::{SideActionV1, SideCommandV1};
+    let snapshot = session
+        .client
+        .thread_snapshot_v1()
+        .ok_or("side interaction requires the selected thread observation")?;
+    let command = SideCommandV1 {
+        thread_id: snapshot.thread_id,
+        run_id: snapshot.run_id,
+        command: match request {
+            app_server::SideRequest::Status => SideActionV1::Status {},
+            app_server::SideRequest::Ask(text) => SideActionV1::Ask { text },
+            app_server::SideRequest::Close => SideActionV1::Close {},
+        },
+    };
+    command.validate()?;
+    Ok(command)
 }
 
 /// Resolve one `/side` argument into a control request.
@@ -250,7 +279,7 @@ pub(super) fn request_drain(
     drain: &Arc<AtomicBool>,
     _checkpoint_supported: bool,
 ) {
-    if !app.running || app.draining {
+    if !app.run.running() || app.run.draining() {
         return;
     }
     if !matches!(session.submit_for_running_turn(Op::Drain), Some(Ok(_))) {
@@ -263,9 +292,9 @@ pub(super) fn request_drain(
     // The queue event is the durable ordering source; the shared flag lets an already-admitted
     // child and provider observe it within the bounded cancellation poll interval.
     drain.store(true, Ordering::Relaxed);
-    app.draining = true;
+    app.run.drain_accepted();
     app.status = "draining session…".into();
-    if app.pending.take().is_some() {
+    if app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "drain requested · stopping active work and settling the session",
@@ -282,21 +311,25 @@ pub(super) fn request_drain(
 /// control record, while the shared flag wakes provider/tool waits within their fixed poll bound.
 /// Either surface alone is incomplete (headless clients have only SQ; an executing tool needs the
 /// flag immediately), so every keyboard path calls this one function.
-pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Arc<AtomicBool>) {
-    if !app.running || app.force_cancelling {
-        return;
+pub(super) fn request_interrupt(
+    app: &mut App,
+    session: &Session,
+    interrupt: &Arc<AtomicBool>,
+) -> bool {
+    if !app.run.running() || app.run.force_cancelling() {
+        return false;
     }
     if !matches!(session.submit_for_running_turn(Op::Interrupt), Some(Ok(_))) {
         app.note(
             block::NoticeLevel::Err,
             "interrupt was not queued for the active product turn",
         );
-        return;
+        return false;
     }
     interrupt.store(true, Ordering::SeqCst);
-    app.interrupting = true;
-    app.cancel_requested_at = Some(Instant::now());
+    app.run.interrupt_accepted(Instant::now());
     app.status = "interrupting turn…".into();
+    true
 }
 
 /// Escalate an interrupt without inventing an early turn boundary.
@@ -304,9 +337,9 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
 /// `RunEnded` is the sole authority that can return the frontend to idle. Clearing `running` here
 /// used to make the queue driver submit its next prompt while the App Server still owned the old
 /// turn; the server correctly refused that second start, and the frontend had already popped it.
-pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
-    if !app.running || !app.interrupting || app.force_cancelling {
-        return;
+pub(super) fn force_cancel_turn(app: &mut App, session: &Session) -> bool {
+    if !app.run.running() || !app.run.interrupting() || app.run.force_cancelling() {
+        return false;
     }
     // A second gesture targets the same still-running turn regardless of elapsed wall time. The
     // five-second interval is useful for hint/reset presentation, never for withholding the
@@ -319,14 +352,15 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
             block::NoticeLevel::Err,
             "could not request stronger cancellation because the active run is no longer reachable",
         );
-        return;
+        return false;
     }
-    app.force_cancelling = true;
+    app.run.stronger_cancel_accepted();
     app.status = "stronger cancellation requested · awaiting runtime acknowledgement…".into();
     app.note(
         block::NoticeLevel::Warn,
         "stronger cancellation requested; awaiting runtime authority acknowledgement",
     );
+    true
 }
 
 /// Present cancellation as one stack even when a local transcript effect and the agent are live at
@@ -337,25 +371,28 @@ pub(super) fn cancel_local_effect_then_turn(
     session: &Session,
     interrupt: &Arc<AtomicBool>,
 ) {
-    if !app.running {
+    if !app.run.running() {
         app.note(
             block::NoticeLevel::Warn,
-            "local transcript effect cancelled",
+            "local transcript effect cancellation requested",
         );
         return;
     }
-    let escalated = app.interrupting;
-    if escalated {
-        force_cancel_turn(app, session);
+    let escalated = app.run.interrupting();
+    let accepted = if escalated {
+        force_cancel_turn(app, session)
     } else {
-        request_interrupt(app, session, interrupt);
+        request_interrupt(app, session, interrupt)
+    };
+    if !accepted {
+        return;
     }
     app.note(
         block::NoticeLevel::Warn,
         if escalated {
-            "local transcript effect cancelled; the agent is still running, so stronger agent cancellation was requested too"
+            "local transcript effect cancellation requested; the agent is still running, so stronger agent cancellation was requested too"
         } else {
-            "local transcript effect cancelled; the agent is still running, so cooperative agent cancellation was requested too"
+            "local transcript effect cancellation requested; the agent is still running, so cooperative agent cancellation was requested too"
         },
     );
 }
@@ -375,7 +412,7 @@ pub(super) fn submit_turn(
     task: String,
 ) -> bool {
     if submit_operation(app, session, notifier, Op::UserInput { text: task.clone() }).is_some() {
-        app.retryable_task = Some(task);
+        app.run.retain_plain_text_retry(Some(task));
         true
     } else {
         false
@@ -394,35 +431,33 @@ pub(super) fn submit_queued_model_input(
     notifier: &mut notification::TerminalNotifier,
     item: PendingInput,
 ) -> Result<(), Box<PendingInput>> {
-    let retry = item.clone();
-    if item.has_attachments() {
-        let text = item.text.trim().to_owned();
-        let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
-        if submit_staged_input(
-            app,
-            session,
-            notifier,
-            text,
-            item.images,
-            item.files,
-            anchor_order,
-            false,
-        ) {
-            Ok(())
-        } else {
-            Err(Box::new(retry))
-        }
+    let mut retry = item.clone();
+    let text = item.text.trim().to_owned();
+    let anchor_order = paste_input::anchored_image_ids(&text, &item.images);
+    if submit_staged_input(
+        app,
+        session,
+        notifier,
+        text,
+        item.images,
+        item.files,
+        anchor_order,
+        false,
+    ) {
+        // Keep the exact owned queue item until Applied. SQ acceptance alone may still be
+        // followed by admission refusal; that path restores it to the manual review shelf.
+        retry.submission_id = app.run.submission_id();
+        app.run
+            .retain_draft_recovery(crate::editor::OwnedComposerDraft {
+                text: retry.text.clone(),
+                images: retry.images.clone(),
+                files: retry.files.clone(),
+                metadata: retry.draft.clone(),
+            });
+        app.input_lanes.retain_submitted(retry);
+        Ok(())
     } else {
-        let text = item.text.trim().to_owned();
-        debug_assert!(!text.is_empty());
-        debug_assert!(slash_command_body(&text).is_none());
-        debug_assert!(!text.starts_with('!'));
-        if submit_turn(app, session, notifier, text.clone()) {
-            app.push_user(text);
-            Ok(())
-        } else {
-            Err(Box::new(retry))
-        }
+        Err(Box::new(retry))
     }
 }
 
@@ -442,29 +477,19 @@ pub(super) fn submit_operation(
     };
     match session.submit_identified(op) {
         Ok(submission_id) => {
-            // The input-ready shell uses the rollout id until the O(1) title lookup completes in
-            // the background. The first accepted prompt may therefore arrive while that opaque
-            // fallback is still visible. Claim it once here; hydration below restores an existing
-            // durable title for resumed runs and leaves this prompt-derived title on new runs.
-            if app.retryable_task.is_none()
-                && let Some(title) = first_prompt_title.filter(|title| !title.is_empty())
-            {
-                app.session_name = title;
+            // Only an untitled conversation adopts its first accepted prompt. A cleared retry
+            // slot says nothing about whether a resumed or manually named title may be replaced.
+            if let Some(title) = first_prompt_title {
+                super::session_presentation::apply_prompt_title(&mut app.session_name, &title);
             }
             notifier.begin_run();
-            app.running = true;
-            app.interrupting = false;
-            app.force_cancelling = false;
-            app.cancel_requested_at = None;
+            app.run.submission_accepted(submission_id, Instant::now());
             app.ctrl_c_quit_deadline = None;
-            app.draining = false;
             app.status = "running…".into();
-            app.run_started = Some(Instant::now());
             // A new run must not inherit provider authority. The request-sent activity starts the
             // clock; only the later accepted activity changes its semantic label.
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
-            app.completion = None;
+            app.activity_observations.finish_provider_wait();
+            app.completions.dismiss();
             Some(submission_id)
         }
         Err(app_server::SubmitError::Busy) => {

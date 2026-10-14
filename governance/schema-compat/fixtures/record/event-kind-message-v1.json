@@ -1,0 +1,12 @@
+{
+  "kind": "message",
+  "message": {
+    "content": [
+      {
+        "text": "Actual fixture answer before availability",
+        "type": "text"
+      }
+    ],
+    "role": "assistant"
+  }
+}

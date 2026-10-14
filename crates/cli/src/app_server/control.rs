@@ -3,9 +3,20 @@
 use super::*;
 
 pub(super) fn is_immediate_control(control: &Control) -> bool {
+    if let Control::PersistentAgents(command) = control {
+        return !command.is_enable();
+    }
     matches!(
         control,
-        Control::OperatorStatus
+        Control::OrdinaryExtensions(_)
+            | Control::PluginManagement(_)
+            | Control::ActivityCenter(_)
+            | Control::OperatorStatus
+            | Control::ModelPreferenceRead(_)
+            | Control::Inventory(_)
+            | Control::ProviderCatalog(_)
+            | Control::TranscriptExport(_)
+            | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
             | Control::Mcp(_)
@@ -96,11 +107,7 @@ async fn apply_job_control(
     };
     match result {
         Ok(value) => ControlReply::Jobs(value),
-        Err(error) => ControlReply::Refused(if error.unknown {
-            format!("job control outcome is unknown: {}", error.message)
-        } else {
-            error.message
-        }),
+        Err(error) => super::refusal_projection::process_reply(error),
     }
 }
 
@@ -122,10 +129,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
             let proposal = match iteron_ctx::MemoryRecallStrategy::authorize_project_write_with(
                 memory_strategy.as_ref(),
@@ -197,10 +204,10 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
             let proposal = match iteron_ctx::MemoryRecallStrategy::authorize_project_write_with(
                 memory_strategy.as_ref(),
@@ -255,20 +262,29 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
                 .await
             {
                 Ok(report) => report,
-                Err(error) => return ControlReply::Refused(error.public_summary()),
+                Err(error) => return ControlReply::refused_by(&error),
             };
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
-                return ControlReply::Refused(reason);
+                return ControlReply::extension_refused(reason);
             }
-            if iteron_ctx::MemoryStore::at(&workspace).remove(&id) {
-                agent.lifecycle_event(
-                    "memory.fact.deleted",
-                    Some(turn),
-                    LifecyclePayload::default(),
-                );
-                ControlReply::Memory(MemoryControlReply::Deleted { id })
-            } else {
-                ControlReply::Memory(MemoryControlReply::Missing { id })
+            match iteron_ctx::MemoryStore::at(&workspace).remove_checked(&id) {
+                Ok(true) => {
+                    agent.lifecycle_event(
+                        "memory.fact.deleted",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    match agent.deactivate_session_memory(&id) {
+                        Ok(()) => ControlReply::Memory(MemoryControlReply::Deleted { id }),
+                        Err(reason) => ControlReply::Refused(format!(
+                            "memory was deleted, but current-session refresh failed: {reason}"
+                        )),
+                    }
+                }
+                Ok(false) => ControlReply::Memory(MemoryControlReply::Missing { id }),
+                Err(error) => {
+                    ControlReply::Refused(format!("memory delete failed or is uncertain: {error}"))
+                }
             }
         }
     }
@@ -283,6 +299,51 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::ModelPreferenceRead(command) => {
+            let _ = request
+                .reply
+                .send(super::model_preferences::read(&events.contract, command));
+        }
+        Control::OrdinaryExtensions(command) => {
+            operator_status.ordinary_extensions.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+        }
+        Control::PluginManagement(command) => {
+            operator_status.plugins.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+        }
+        Control::ActivityCenter(command) => {
+            operator_status
+                .activity
+                .dispatch(events.contract.clone(), command, request.reply);
+        }
+        Control::TranscriptExport(command) => {
+            super::client_export::dispatch(events.contract.clone(), *command, request.reply);
+        }
+        Control::Inventory(query) => {
+            let _ = request.reply.send(operator_status.inventory.read(query));
+        }
+        Control::ProviderCatalog(command) => {
+            let _ = request
+                .reply
+                .send(operator_status.inventory.catalog(command));
+        }
+        Control::LiveWorkflow(command) => {
+            operator_status
+                .live_workflows
+                .dispatch(command, request.reply);
+        }
+        Control::PersistentAgents(command) => {
+            operator_status.agents.dispatch(command, request.reply);
+        }
         Control::OperatorStatus => {
             let _ = request.reply.send(ControlReply::OperatorStatus(Box::new(
                 operator_status.snapshot().await,
@@ -409,6 +470,7 @@ async fn apply_workflow_control(
 )]
 pub(super) async fn apply_control(
     agent: &mut Agent,
+    session_factory: Option<&std::sync::Arc<super::session_factory::SessionFactory>>,
     workflows: &crate::workflow::WorkflowSupervisor,
     processes: Option<&iteron_tools::ProcessControl>,
     operator_status: &OperatorStatusSources,
@@ -426,14 +488,302 @@ pub(super) async fn apply_control(
     }
     // Adoption swaps the runtime journal. Check the public projection before that mutation so
     // the two identities cannot diverge if a live product turn still owns this thread.
-    if matches!(&request.control, Control::AdoptRun(_)) && !events.can_rebind_contract_run() {
+    if matches!(
+        &request.control,
+        Control::AdoptRun(_) | Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. }
+    ) && !events.can_rebind_contract_run()
+    {
         let _ = request.reply.send(ControlReply::Refused(
             "cannot adopt while the public Thread projection has an active turn".into(),
         ));
         return;
     }
-    let reply = match request.control {
+    // A detached owner operation cannot outlive its admitted selection into a new run.
+    // Hold the actual generation barrier BEFORE adoption mutates Agent or the public projection.
+    let _activity_adoption = if matches!(
+        &request.control,
+        Control::AdoptRun(_) | Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. }
+    ) {
+        match operator_status.activity.adoption_barrier().await {
+            Ok(lease) => Some(lease),
+            Err(reason) => {
+                let _ = request.reply.send(ControlReply::Refused(reason.into()));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    if let Control::PersistentAgents(command) = &request.control
+        && !command.is_enable()
+    {
+        let Control::PersistentAgents(command) = request.control else {
+            unreachable!()
+        };
+        operator_status.agents.dispatch(command, request.reply);
+        return;
+    }
+    let mut rewind_presentation = None;
+    let (control, navigation) = match request.control {
+        Control::SideV1(command) => {
+            if let Err(reason) = command.validate() {
+                let _ = request.reply.send(ControlReply::Refused(reason.into()));
+                return;
+            }
+            if events.contract.snapshot().is_none_or(|snapshot| {
+                snapshot.thread_id != command.thread_id || snapshot.run_id != command.run_id
+            }) || agent.rollout.run_id() != &command.run_id
+            {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "side interaction belongs to a previous selected run".into(),
+                ));
+                return;
+            }
+            let side = match command.command {
+                iteron_protocol::client_interaction::SideActionV1::Status {} => SideRequest::Status,
+                iteron_protocol::client_interaction::SideActionV1::Ask { text } => {
+                    SideRequest::Ask(text)
+                }
+                iteron_protocol::client_interaction::SideActionV1::Close {} => SideRequest::Close,
+            };
+            (Control::Side(side), None)
+        }
+        Control::WorkspaceRewind { command, cancel } => {
+            let prepared = match session_factory {
+                Some(factory) => {
+                    match super::workspace_rewind_control::origin(agent, &events.contract, &command)
+                    {
+                        Ok(origin) => {
+                            super::workspace_rewind_control::prepare(
+                                agent, factory, origin, command, cancel,
+                            )
+                            .await
+                        }
+                        Err(reason) => Err(reason),
+                    }
+                }
+                None => Err("trusted session factory unavailable".into()),
+            };
+            match prepared {
+                Ok(super::workspace_rewind_control::RewindControlResult::Observed(
+                    presentation,
+                )) => {
+                    let _ = request.reply.send(ControlReply::WorkspaceRewound(Box::new(
+                        super::WorkspaceRewound {
+                            presentation,
+                            navigation: None,
+                        },
+                    )));
+                    return;
+                }
+                Ok(super::workspace_rewind_control::RewindControlResult::Adopt {
+                    native,
+                    presentation,
+                    admission,
+                    reply,
+                }) => {
+                    rewind_presentation = Some(reply);
+                    (Control::AdoptRun(native), Some((presentation, admission)))
+                }
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                    return;
+                }
+            }
+        }
+
+        Control::SessionNavigate { command, cancel } => {
+            let Some(factory) = session_factory else {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "trusted session factory unavailable".into(),
+                ));
+                return;
+            };
+            let Some(scope) = events.contract.snapshot() else {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "public session scope unavailable".into(),
+                ));
+                return;
+            };
+            if scope.run_id != *agent.rollout.run_id()
+                || scope.thread_id != *command.thread_id()
+                || scope.run_id != *command.run_id()
+            {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "session navigation belongs to a previous thread/run".into(),
+                ));
+                return;
+            }
+            let checkpoint = match agent.tunables_checkpoint() {
+                Ok(checkpoint) => checkpoint.clone(),
+                Err(error) => {
+                    let _ = request.reply.send(ControlReply::refused_by(&error));
+                    return;
+                }
+            };
+            let origin = super::session_factory::PreparationOrigin {
+                thread: scope.thread_id,
+                run: scope.run_id,
+                checkpoint,
+                selection: crate::providers::ModelSelection {
+                    provider_id: iteron_provider::Provider::provider_instance_id(
+                        agent.provider.as_ref(),
+                    )
+                    .unwrap_or_default()
+                    .to_owned(),
+                    model_id: agent.model.clone(),
+                },
+            };
+            let prepared = match factory.prepare(origin, command, cancel.clone()).await {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                    return;
+                }
+            };
+            if cancel
+                .as_ref()
+                .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire))
+            {
+                let _ = request.reply.send(ControlReply::Refused(format!(
+                    "session navigation cancelled before adoption; retained run {}",
+                    prepared.run_id().0
+                )));
+                return;
+            }
+            let (native, presentation, admission) = prepared.into_parts();
+            (
+                Control::AdoptRun(Box::new(native)),
+                Some((presentation, admission)),
+            )
+        }
+        other => (other, None),
+    };
+    let reply = match control {
+        Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. } | Control::SideV1(_) => {
+            unreachable!("scoped controls were normalized by their actual host owners")
+        }
+        Control::OrdinaryExtensions(command) => {
+            operator_status.ordinary_extensions.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+            return;
+        }
+        Control::PluginManagement(command) => {
+            operator_status.plugins.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+            return;
+        }
+        Control::ActivityCenter(command) => {
+            operator_status
+                .activity
+                .dispatch(events.contract.clone(), command, request.reply);
+            return;
+        }
+        Control::Inventory(query) => operator_status.inventory.read(query),
+        Control::ProviderCatalog(command) => operator_status.inventory.catalog(command),
+        Control::TranscriptExport(command) => {
+            super::client_export::dispatch(events.contract.clone(), *command, request.reply);
+            return;
+        }
+        Control::ProjectInit(command) => {
+            super::project_init::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                *command,
+                request.reply,
+            );
+            return;
+        }
+        Control::OperatorShell { command, cancel } => {
+            super::client_shell::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                *command,
+                cancel,
+                request.reply,
+            );
+            return;
+        }
+        Control::ModelPreferenceRead(command) => {
+            super::model_preferences::read(&events.contract, command)
+        }
+        Control::SelectModelDefaultV1(selection_request) => {
+            let selected = agent
+                .client_inventory_owner()
+                .ok_or("bootstrap inventory is unavailable".to_owned())
+                .and_then(|owner| owner.resolve(&selection_request));
+            match selected {
+                Ok(selection) => {
+                    super::model_preferences::select_default(
+                        agent,
+                        events,
+                        &operator_status.activity,
+                        selection,
+                        request.reply,
+                    )
+                    .await
+                }
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                }
+            }
+            return;
+        }
+        Control::TunablesSimulation(command) => {
+            super::tunables_simulation::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                command,
+                request.reply,
+            );
+            return;
+        }
+        Control::Lab(command) => {
+            super::experiment_lab::dispatch(
+                agent,
+                events.contract.clone(),
+                &operator_status.activity,
+                command,
+                request.reply,
+            );
+            return;
+        }
+        Control::SelectModelV1(request) => match agent
+            .client_inventory_owner()
+            .ok_or("bootstrap inventory is unavailable".to_owned())
+            .and_then(|owner| owner.resolve(&request))
+        {
+            Ok(selection) => super::model_control::apply(agent, events, selection).await,
+            Err(reason) => ControlReply::Refused(reason),
+        },
+        Control::LiveWorkflow(command) => {
+            operator_status
+                .live_workflows
+                .dispatch(command, request.reply);
+            return;
+        }
+        Control::PersistentAgents(command) => super::agent_control::enable(agent, command),
+        Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command).await,
         Control::PlantcoreRunBootstrapV1(payload) => {
+            #[cfg(not(feature = "legacy-plantcore"))]
+            {
+                match plantcore.admit(*payload, agent, None) {
+                    Err(error) => ControlReply::PlantcoreProtocolError(error),
+                    Ok(_) => unreachable!("standalone bootstrap cannot be admitted"),
+                }
+            }
+            #[cfg(feature = "legacy-plantcore")]
             if *started {
                 ControlReply::PlantcoreProtocolError(super::plantcore::PlantcoreProtocolError {
                     code: "bootstrap_conflict",
@@ -453,7 +803,7 @@ pub(super) async fn apply_control(
         Control::SetEffort(next) => {
             match agent.transition_effort(next, iteron_protocol::RuntimePolicySource::Operator) {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::SetPermissionMode(next) => {
@@ -461,7 +811,7 @@ pub(super) async fn apply_control(
                 .transition_permission_mode(next, iteron_protocol::RuntimePolicySource::Operator)
             {
                 Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::SetCapabilityRule {
@@ -473,60 +823,30 @@ pub(super) async fn apply_control(
             iteron_protocol::RuntimePolicySource::Operator,
         ) {
             Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
-            Err(error) => ControlReply::Refused(error.public_summary()),
+            Err(error) => ControlReply::refused_by(&error),
         },
-        Control::SelectModel(selection) => {
-            // One transaction, in the kernel's required order: the durable audit append happens
-            // FIRST, so a failure leaves the old selection in force rather than a half-applied one.
-            let ModelSelection {
-                provider,
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-                context_window_tokens,
-                max_output_tokens,
-            } = *selection;
-            let changed = agent.model != model_id;
-            match agent.record_operator_model_selection(
-                provider,
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-            ) {
-                Ok(()) => {
-                    agent.model_context_window = context_window_tokens;
-                    agent.model_max_output_tokens = max_output_tokens;
-                    if changed {
-                        // Last-turn usage belongs to the model that produced it. Carrying it across
-                        // a switch would print the old model's token counts under the new one's
-                        // name; the frontend used to clear this itself, back when it held the
-                        // ledger.
-                        agent.ledger.last_turn_usage = None;
-                    }
-                    match agent.bind_selected_rate_card() {
-                        Ok(bound) => {
-                            if !bound && agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {
-                                // Advisory, not a refusal: the route is recorded and in force. The
-                                // operator needs to know the ceiling will stop provider calls, so it
-                                // goes out on the EQ where every other runtime advisory goes.
-                                let _ = events
-                                    .publish(ServerEvent::Notice(
-                                        "selected route has no active verified rate card; the USD \
-                                         ceiling will block provider calls"
-                                            .into(),
-                                    ))
-                                    .await;
-                            }
-                            ControlReply::State(Box::new(snapshot_of(agent)))
-                        }
-                        Err(error) => ControlReply::Refused(error.public_summary()),
-                    }
+        Control::SetToolRule { tool, verdict } => {
+            if tool.is_empty()
+                || tool.len() > 128
+                || !tool.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                })
+            {
+                ControlReply::Refused("tool rule name must be bounded literal text".into())
+            } else if agent.permission_rules().tool_rule(&tool).is_none()
+                && agent.permission_rules().tool_rules().len() >= 128
+            {
+                ControlReply::Refused("session tool rule limit reached".into())
+            } else {
+                let mut rules = agent.permission_rules().clone();
+                rules.set_tool(&tool, verdict);
+                match agent.transition_permission_rules(
+                    rules,
+                    iteron_protocol::RuntimePolicySource::Operator,
+                ) {
+                    Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
+                    Err(error) => ControlReply::refused_by(&error),
                 }
-                Err(error) => ControlReply::Refused(format!(
-                    "cannot record model switch; old selection retained: {error}"
-                )),
             }
         }
         Control::Compact { focus } => {
@@ -535,7 +855,7 @@ pub(super) async fn apply_control(
                     report: Box::new(report),
                     snapshot: Box::new(snapshot_of(agent)),
                 },
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             };
             agent.settle_standalone_control_interrupt();
             reply
@@ -544,7 +864,7 @@ pub(super) async fn apply_control(
             None => ControlReply::TurnBudget(agent.turn_budget()),
             Some(max_turns) => match agent.set_turn_ceiling(max_turns) {
                 Ok(state) => ControlReply::TurnBudget(state),
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => ControlReply::refused_by(&error),
             },
         },
         Control::Side(request) => {
@@ -552,17 +872,20 @@ pub(super) async fn apply_control(
             agent.settle_standalone_control_interrupt();
             reply
         }
-        Control::AdoptRun(request) => {
+        Control::AdoptRun(native_request) => {
             let AdoptRun {
                 rollout,
                 route,
                 fresh,
-            } = *request;
+                created_at,
+            } = *native_request;
             let adoption = if fresh {
-                let created_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
+                let Some(created_at) = created_at else {
+                    let _ = request.reply.send(ControlReply::Refused(
+                        "new session has no host clock receipt".into(),
+                    ));
+                    return;
+                };
                 agent.adopt_fresh_run(
                     rollout,
                     agent.workspace.display().to_string(),
@@ -579,6 +902,7 @@ pub(super) async fn apply_control(
                         events.rebind_contract_run(iteron_protocol::RunId(adopted.run_id.clone())),
                         "adoption preflight keeps the public Thread projection rebindable"
                     );
+                    events.contract.bind_artifact_owner(agent);
                     events.record_lifecycle(
                         "session.resumed",
                         None,
@@ -654,10 +978,7 @@ pub(super) async fn apply_control(
                         blocked,
                     }
                 }
-                Err(error) => ControlReply::Refused(format!(
-                    "cannot adopt that session here: {}",
-                    error.public_summary()
-                )),
+                Err(error) => ControlReply::refused_by(&error),
             }
         }
         Control::Workflow(control) => {
@@ -670,7 +991,90 @@ pub(super) async fn apply_control(
             apply_mcp_control(runtime.as_ref(), control).await
         }
     };
+    events.contract.refresh_path_completion(agent);
+    if let ControlReply::RefusedWithOrigin { refusal, .. } = &reply {
+        let _ = events
+            .publish(ServerEvent::Refusal((**refusal).clone()))
+            .await;
+    }
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
+    let reply = if let Some((presentation, _admission)) = navigation {
+        match reply {
+            ControlReply::Adopted {
+                adopted,
+                snapshot,
+                tunables_checkpoint,
+                compaction_trigger_tokens,
+                blocked,
+            } => {
+                let public = iteron_protocol::session_navigation::SessionNavigationReplyV1 {
+                    version: 1,
+                    thread_id: presentation.origin_thread,
+                    origin_run_id: presentation.origin_run,
+                    run_id: iteron_protocol::RunId(adopted.run_id.clone()),
+                    fresh: !*started,
+                    provider_id: snapshot.provider_id.clone(),
+                    model_id: snapshot.model.clone(),
+                    effort: snapshot.effort,
+                    context_window_tokens: agent.model_context_window,
+                    messages: adopted.messages,
+                    turns: adopted.turns,
+                    checkpoint_digest_sha256: tunables_checkpoint
+                        .snapshot_digest_sha256()
+                        .to_owned(),
+                    blocked,
+                    substituted_route: presentation.substituted,
+                    transcript: presentation.projection,
+                };
+                ControlReply::SessionNavigated(Box::new(NavigatedSession {
+                    presentation: public,
+                    adopted: *adopted,
+                    snapshot: *snapshot,
+                    tunables_checkpoint: *tunables_checkpoint,
+                    compaction_trigger_tokens,
+                }))
+            }
+            ControlReply::Refused(reason) => ControlReply::Refused(format!(
+                "{reason}; target run {} is retained and was not reported as selected",
+                presentation.retained_run.0
+            )),
+            other => other,
+        }
+    } else {
+        reply
+    };
+    let reply = if let Some(mut presentation) = rewind_presentation {
+        let navigation = match reply {
+            ControlReply::SessionNavigated(navigation) => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.conversation_adopted = true;
+                }
+                Some(navigation)
+            }
+            ControlReply::Refused(reason)
+            | ControlReply::RefusedWithOrigin {
+                message: reason, ..
+            } => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.reason = Some(reason);
+                }
+                None
+            }
+            _ => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.reason =
+                        Some("host adoption did not return a selected-state receipt".into());
+                }
+                None
+            }
+        };
+        ControlReply::WorkspaceRewound(Box::new(super::WorkspaceRewound {
+            presentation,
+            navigation,
+        }))
+    } else {
+        reply
+    };
     let _ = request.reply.send(reply);
 }
 

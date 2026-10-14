@@ -49,6 +49,22 @@ impl PtyInput {
         if self.eof_sent {
             return Ok(());
         }
+        // This is the permanent input-close boundary, not an interactive write. BSD terminals
+        // can echo VEOF as a visible control character followed by erases. Disable only canonical
+        // input echo before injecting EOF; never filter output, since the child may deliberately
+        // print those same bytes. Do not restore echo while EOF may still be in the input queue.
+        let descriptor = self.writer.get_ref().as_raw_fd();
+        // SAFETY: the owned descriptor remains open and both calls receive a live termios value.
+        let mut attributes: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(descriptor, &mut attributes) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if attributes.c_lflag & (libc::ICANON | libc::ECHO) == (libc::ICANON | libc::ECHO) {
+            attributes.c_lflag &= !libc::ECHO;
+            if unsafe { libc::tcsetattr(descriptor, libc::TCSANOW, &attributes) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
         tokio::io::AsyncWriteExt::write_all(self, &[0x04, 0x04]).await?;
         tokio::io::AsyncWriteExt::flush(self).await?;
         self.eof_sent = true;

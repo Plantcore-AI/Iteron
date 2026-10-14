@@ -15,6 +15,8 @@
 //! deadline-bounded, and output-bounded. External effects (push/publish/DB writes) are NOT
 //! rewindable — a tree restore cannot undo them (ADR-008 §5); only the working tree is restored here.
 
+mod restore;
+
 use crate::RecordError;
 use iteron_protocol::{RunId, Seq};
 use std::collections::HashSet;
@@ -990,48 +992,20 @@ pub fn rewind_workspace_with_policy(
     workspace: &Path,
     delete_unrecorded: bool,
 ) -> Result<(), RecordError> {
-    if !valid_object_id(&snap.tree_ref) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "checkpoint tree_ref is not a full Git object id",
-        )
-        .into());
-    }
-    let isolated = IsolatedGit::create(&snap.run, snap.at, workspace)?;
-    isolated.run(&["read-tree", &snap.tree_ref])?;
-    // Inventory and validate the complete deletion plan before checkout starts mutating files. A
-    // path/output-limit failure therefore leaves the workspace untouched.
-    let snap_files = nul_path_set(&isolated.run(&["ls-files", "-z"])?)?;
-    let current = run_repo_git(
-        workspace,
-        &["ls-files", "-z", "-o", "-c", "--exclude-standard"],
-    )?;
-    let mut removals: Vec<String> = nul_path_set(&current)?
-        .into_iter()
-        .filter(|path| !snap_files.contains(path))
-        .collect();
-    removals.sort_unstable();
-    if delete_unrecorded {
-        for path in &removals {
-            checked_workspace_path(workspace, path)?;
-        }
-    }
+    restore::restore(snap, workspace, delete_unrecorded, None)
+}
 
-    // checkout-index can invoke smudge/process filters. Keep it in the same config-isolated Git
-    // context as add, so repository-controlled filter commands and hooks are unavailable.
-    isolated.run(&["checkout-index", "-a", "-f"])?;
-    if delete_unrecorded {
-        for relative in removals {
-            // Re-check after checkout to narrow symlink-swap races across the mutation boundary.
-            let path = checked_workspace_path(workspace, &relative)?;
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    Ok(())
+/// Restore a workspace while preserving the host's canonical runtime-state directory. A
+/// historical target containing that directory or one of its ancestors is refused before file
+/// mutation. Runtime state is excluded from deletion even when tracked or no longer ignored.
+/// The result is exact only for the editable workspace outside that protected host state.
+pub fn rewind_workspace_excluding_runtime_state(
+    snap: &Snapshot,
+    workspace: &Path,
+    delete_unrecorded: bool,
+    runtime_state_dir: &Path,
+) -> Result<(), RecordError> {
+    restore::restore(snap, workspace, delete_unrecorded, Some(runtime_state_dir))
 }
 
 /// Restore only an explicitly operator-authorised bounded set of repository-relative files.

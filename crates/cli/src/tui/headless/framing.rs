@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
+#[cfg(feature = "legacy-plantcore")]
 use sha2::Digest as _;
 use std::collections::VecDeque;
 use std::io;
@@ -18,6 +19,7 @@ const MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOGICAL_SERVER_FRAME_BYTES: usize =
     (MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES * 6) + MAX_SERVER_FRAME_BYTES;
 const FRAME_CHUNK_SOURCE_BYTES: usize = 512 * 1024;
+#[cfg(feature = "legacy-plantcore")]
 const RECORDING_CHUNK_EVENT_BYTES: usize = MAX_SERVER_FRAME_BYTES + 1;
 const FRAME_CHUNK_CHANNEL_CAPACITY: usize = 2;
 const FRAME_CHUNK_OVERHEAD_CHARGE: usize = 1024;
@@ -96,6 +98,8 @@ pub(super) enum ServerFrame {
         replay_source: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         product_contract_version: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_access: Option<iteron_protocol::client_negotiation::ClientAccessV1>,
     },
     Event {
         protocol_version: u32,
@@ -116,6 +120,18 @@ pub(super) enum ServerFrame {
         protocol_version: u32,
         request_id: u64,
         reply: Value,
+    },
+    AdvisoryMaintenanceV1 {
+        protocol_version: u32,
+        event: iteron_protocol::advisory_maintenance_control::MaintenanceEventV1,
+    },
+    MaintenanceAvailabilityV1 {
+        protocol_version: u32,
+        observation: iteron_protocol::advisory_maintenance_control::MaintenanceAvailabilityV1,
+    },
+    TurnPublicationV1 {
+        protocol_version: u32,
+        publication: iteron_protocol::turn_publication::TurnPublicationEventV1,
     },
     Error {
         protocol_version: u32,
@@ -145,6 +161,9 @@ impl ServerFrame {
             Self::Hello { .. }
             | Self::Rollout { .. }
             | Self::ControlReply { .. }
+            | Self::TurnPublicationV1 { .. }
+            | Self::AdvisoryMaintenanceV1 { .. }
+            | Self::MaintenanceAvailabilityV1 { .. }
             | Self::Error { .. }
             | Self::FrameChunk { .. } => None,
         }
@@ -157,6 +176,13 @@ impl ServerFrame {
             Self::Result { seq, .. } => LogicalIdentity::live("result", *seq),
             Self::Rollout { rollout_seq, .. } => LogicalIdentity::rollout(*rollout_seq),
             Self::ControlReply { .. } => LogicalIdentity::control("control_reply"),
+            Self::TurnPublicationV1 { .. } => LogicalIdentity::control("turn_publication_v1"),
+            Self::AdvisoryMaintenanceV1 { .. } => {
+                LogicalIdentity::control("advisory_maintenance_v1")
+            }
+            Self::MaintenanceAvailabilityV1 { .. } => {
+                LogicalIdentity::control("maintenance_availability_v1")
+            }
             Self::Error { .. } => LogicalIdentity::control("error"),
             Self::FrameChunk { .. } => {
                 bail!("an already-fragmented frame cannot be fragmented recursively")
@@ -503,10 +529,23 @@ pub(super) async fn send_encoded_frame<W: AsyncWrite + Unpin>(
     .await
 }
 
+#[cfg(not(feature = "legacy-plantcore"))]
+pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
+    _writer: &mut W,
+    _outbound_budget: &Arc<Semaphore>,
+    _frame_preparers: &Arc<Semaphore>,
+    _fragment_encoders: &Arc<Semaphore>,
+    _fault: crate::app_server::RecordingAppServerFault,
+    _next_live_seq: u64,
+) -> Result<()> {
+    bail!("legacy recording faults are unavailable in standalone Iteron")
+}
+
 /// Emit one fixed malformed sequence for the release recording Worker parser.
 ///
 /// The caller owns the one-shot admission gate. This seam accepts no bytes, paths, sizes, or
 /// ordinals from the environment or wire.
+#[cfg(feature = "legacy-plantcore")]
 pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
     writer: &mut W,
     outbound_budget: &Arc<Semaphore>,
@@ -653,6 +692,7 @@ pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
     }
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_chunk_event() -> Result<Value> {
     let mut event = serde_json::json!({"recording_probe": ""});
     let base = serde_json::to_vec(&event).context("measure fixed recording chunk event")?;
@@ -666,6 +706,7 @@ fn recording_chunk_event() -> Result<Value> {
     Ok(event)
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     let mut event = serde_json::json!({
         "schema_version": 7,
@@ -680,7 +721,10 @@ fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     if serde_json::to_vec(&event)?.len() != raw_bytes {
         bail!("fixed raw-v7 recording fault does not have the declared size");
     }
-    match (raw_bytes, crate::output::canonical_v7_event_bytes(&event)) {
+    match (
+        raw_bytes,
+        crate::machine_projection::canonical_v7_event_bytes(&event),
+    ) {
         (65_536, Ok(bytes)) if bytes.len() == raw_bytes => {}
         (65_537, Err(_)) => {}
         _ => bail!("fixed raw-v7 recording fault disagrees with the v7 canonicalizer"),
@@ -692,6 +736,7 @@ fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     })
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_success_result(seq: u64) -> ServerFrame {
     ServerFrame::Result {
         protocol_version: iteron_protocol::PROTOCOL_VERSION,
@@ -927,6 +972,7 @@ mod tests {
             cursor: 4,
             replay_source: "ring",
             product_contract_version: None,
+            client_access: None,
         })
         .unwrap();
         assert!(legacy.get("product_contract_version").is_none());
@@ -938,9 +984,13 @@ mod tests {
             product_contract_version: Some(
                 iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             ),
+            client_access: None,
         })
         .unwrap();
-        assert_eq!(negotiated["product_contract_version"], 1);
+        assert_eq!(
+            negotiated["product_contract_version"],
+            iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+        );
     }
 
     fn event(seq: u64, text: String) -> ServerFrame {
@@ -951,6 +1001,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     async fn recording_fault_wire(fault: crate::app_server::RecordingAppServerFault) -> Vec<Value> {
         let (mut writer, mut reader) = tokio::io::duplex(2 * MAX_SERVER_FRAME_BYTES);
         let budget = Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES));
@@ -969,6 +1020,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn recording_faults_are_closed_fixed_sequences() {
         use crate::app_server::RecordingAppServerFault;
 

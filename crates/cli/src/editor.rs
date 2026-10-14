@@ -17,6 +17,7 @@ use crate::paste_input::{ImageAnchors, PasteCapture, PasteInputError, PastedText
 #[cfg(test)]
 use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 /// A cleared draft is a convenience, not another unbounded transcript. Count source UTF-8 bytes
 /// so the retained allocation has a hard, portable ceiling while the editor remains char-based.
@@ -118,20 +119,20 @@ fn grapheme_next_char_boundary(text: &str, target: usize) -> usize {
 pub struct Editor {
     buf: Vec<char>,
     cursor: usize,
+    vertical_column: Option<usize>,
     history: Vec<String>,
     /// `Some(i)` while browsing history (index into `history`); `None` when editing the live line.
     hist_pos: Option<usize>,
-    /// The live line stashed when the user starts browsing history, restored on browsing past the end.
-    stash: Option<String>,
+    /// The complete live draft stashed while browsing history, including cursor and attachments.
+    stash: Option<DraftSnapshot>,
     /// The most recent explicitly recoverable clear. Independent from history's live-line stash;
     /// bounded so repeated clears cannot accumulate an unbounded side buffer.
-    recently_cleared: Option<String>,
-    /// Bounded, already-sniffed image chips attached to the current draft. The payloads are
-    /// deliberately not copied into text history or the recoverable-text slot; only the in-line
-    /// `[Image #N]` anchor that says where each one belongs is draft text.
+    recently_cleared: Option<DraftSnapshot>,
+    /// Bounded, already-sniffed image chips attached to the current draft. Payloads stay in the
+    /// current draft and the two bounded in-process recovery slots; persisted history is text only.
     attachments: ImageAttachments,
     /// Bounded, already-contained file chips on the same draft, under the same rule: file text
-    /// never enters text history or the recoverable-text slot.
+    /// never enters persisted text history.
     files: FileAttachments,
     /// Pasted blocks held aside for this draft. Unlike the two chip collections these are
     /// referenced *in-band*, by a tag inside `buf`, because a pasted block has a position in the
@@ -141,12 +142,15 @@ pub struct Editor {
     /// chip the operator last saw appear rather than the last chip of whichever kind we asked
     /// first. One entry per live attachment; both collections and this log are cleared together.
     chip_order: Vec<ChipKind>,
+    /// Restoring an older owned draft must never recycle an ID issued to a newer draft.
+    attachment_ids: [u32; 3],
     /// State for repeated Ctrl-R searches. The query is the text that was present before the first
     /// search; `before` makes every subsequent press continue toward older entries.
     reverse_search: Option<ReverseSearch>,
-    /// Monotonic dirty marker consumed by the persistence adapter. It deliberately counts text
-    /// mutations rather than wall time so tests and replay remain deterministic.
+    /// Dirty marker for persisted state, including history-only hydration.
     persistence_revision: u64,
+    /// Identity of the live composer. History hydration must not invalidate a pending submission.
+    draft_revision: u64,
     /// Bounded, filesystem-free classification of the leading draft token. The TUI reads this
     /// cached value on every paint/key route; only final Enter admission resolves an ambiguous
     /// single-segment absolute path against disk.
@@ -171,12 +175,49 @@ enum ChipKind {
     Paste(u32),
 }
 
+/// Private restoration metadata captured from the actual editor before queue acceptance.
+/// It does not contain provider input or grant filesystem authority.
+#[derive(Clone)]
+pub(crate) struct QueuedDraftMetadata {
+    raw_text: String,
+    pastes: PastedTexts,
+    chip_order: Vec<ChipKind>,
+}
+pub(crate) struct OwnedComposerDraft {
+    pub(crate) text: String,
+    pub(crate) images: ImageAttachments,
+    pub(crate) files: FileAttachments,
+    pub(crate) metadata: Option<QueuedDraftMetadata>,
+}
+
+impl OwnedComposerDraft {
+    pub(crate) fn within_recovery_bound(&self, max_text_bytes: usize) -> bool {
+        self.text.len() <= max_text_bytes
+            && self
+                .metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.raw_text.len() <= max_text_bytes)
+        // Each store independently enforces protocol image/file/paste count and byte ceilings.
+    }
+}
+
 /// One composer chip in the exact order it was attached. Payloads stay borrowed and never enter
 /// terminal text; the renderer uses this projection solely for one-row identity/metadata lines.
 pub enum DraftChip<'a> {
     Image(&'a ImageAttachment),
     File(&'a FileAttachment),
     Paste(&'a crate::paste_input::PastedText),
+}
+
+/// One bounded in-process draft recovery slot; payloads never enter persisted history.
+#[derive(Debug)]
+struct DraftSnapshot {
+    text: String,
+    cursor: usize,
+    attachments: ImageAttachments,
+    files: FileAttachments,
+    pastes: PastedTexts,
+    chip_order: Vec<ChipKind>,
 }
 
 #[derive(Debug)]
@@ -228,6 +269,80 @@ impl Editor {
             .collect()
     }
 
+    pub(crate) fn owned_draft(&self) -> OwnedComposerDraft {
+        OwnedComposerDraft {
+            text: self.submission_text(),
+            images: self.attachments.clone(),
+            files: self.files.clone(),
+            metadata: Some(self.queued_draft_metadata()),
+        }
+    }
+
+    pub(crate) fn queued_draft_metadata(&self) -> QueuedDraftMetadata {
+        QueuedDraftMetadata {
+            raw_text: self.text(),
+            pastes: self.pastes.clone(),
+            chip_order: self.chip_order.clone(),
+        }
+    }
+
+    pub(crate) fn can_restore_owned_draft(&self) -> bool {
+        self.buf.is_empty()
+            && self.attachments.is_empty()
+            && self.files.is_empty()
+            && self.pastes.as_slice().is_empty()
+    }
+
+    /// Restore an owned queued draft only into an actually empty composer. Rejection returns all
+    /// words, paste metadata and prepared media stores to the caller; it never overwrites chips.
+    pub(crate) fn restore_owned_draft(
+        &mut self,
+        draft: OwnedComposerDraft,
+    ) -> Result<(), Box<OwnedComposerDraft>> {
+        if !self.can_restore_owned_draft() {
+            return Err(Box::new(draft));
+        }
+        let OwnedComposerDraft {
+            text,
+            images,
+            files,
+            metadata,
+        } = draft;
+        let QueuedDraftMetadata {
+            raw_text,
+            pastes,
+            chip_order,
+        } = metadata.unwrap_or_else(|| {
+            let mut raw_text = text;
+            let mut chip_order = Vec::with_capacity(images.len() + files.len());
+            for image in images.as_slice() {
+                raw_text.push_str(&crate::paste_input::image_anchor(image.id()));
+                chip_order.push(ChipKind::Image(image.id()));
+            }
+            for file in files.as_slice() {
+                raw_text.push_str(&crate::paste_input::file_anchor(file.id()));
+                chip_order.push(ChipKind::File(file.id()));
+            }
+            QueuedDraftMetadata {
+                raw_text,
+                pastes: PastedTexts::default(),
+                chip_order,
+            }
+        });
+        self.buf = raw_text.chars().collect();
+        self.cursor = self.buf.len();
+        self.attachments = images;
+        self.files = files;
+        self.pastes = pastes;
+        self.chip_order = chip_order;
+        self.reserve_attachment_ids();
+        self.hist_pos = None;
+        self.stash = None;
+        self.reverse_search = None;
+        self.mark_persistence_change();
+        Ok(())
+    }
+
     pub fn attachments(&self) -> &ImageAttachments {
         &self.attachments
     }
@@ -260,6 +375,7 @@ impl Editor {
                 stored.tag(),
             )
         };
+        self.attachment_ids[2] = self.attachment_ids[2].max(capture.id);
         if !self.chip_order.contains(&ChipKind::Paste(capture.id)) {
             self.chip_order.push(ChipKind::Paste(capture.id));
         }
@@ -292,6 +408,7 @@ impl Editor {
     /// attached exactly as it was before anchors existed, whereas an anchor that must be requested
     /// cannot be discovered at all.
     fn admit_image(&mut self, id: u32) {
+        self.attachment_ids[0] = self.attachment_ids[0].max(id);
         self.chip_order.push(ChipKind::Image(id));
         // Generated text, so it needs no sanitising — but it goes through `insert` for the cursor,
         // history-navigation and persistence bookkeeping every other insertion gets.
@@ -366,6 +483,7 @@ impl Editor {
     }
 
     fn admit_file(&mut self, id: u32) {
+        self.attachment_ids[1] = self.attachment_ids[1].max(id);
         self.chip_order.push(ChipKind::File(id));
         for character in crate::paste_input::file_anchor(id).chars() {
             self.insert(character);
@@ -698,6 +816,30 @@ impl Editor {
         self.delete_range_synchronized(lo, hi);
     }
 
+    /// Replace a completion token at verified UTF-8 boundaries while keeping unrelated chips and
+    /// paste stores. Deletion still reconciles any tag actually inside the replaced range.
+    pub(crate) fn replace_completion_span(
+        &mut self,
+        start: usize,
+        end: usize,
+        replacement: &str,
+    ) -> bool {
+        let text = self.text();
+        if start > end
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            return false;
+        }
+        let start_char = text[..start].chars().count();
+        let end_char = text[..end].chars().count();
+        self.delete_span(start_char, end_char);
+        self.set_cursor(start_char);
+        self.insert_str(replacement);
+        true
+    }
+
     /// Ctrl-W: delete the word before the cursor (skip trailing non-word chars, then a word run).
     pub fn delete_word_before(&mut self) {
         let i = self.word_boundary_left();
@@ -723,20 +865,76 @@ impl Editor {
     // ---- cursor movement -------------------------------------------------------------------
 
     pub fn left(&mut self) {
+        self.vertical_column = None;
         self.cursor = grapheme_previous_char_boundary(&self.text(), self.cursor);
         self.reverse_search = None;
     }
     pub fn right(&mut self) {
+        self.vertical_column = None;
         self.cursor = grapheme_next_char_boundary(&self.text(), self.cursor);
         self.reverse_search = None;
     }
     pub fn home(&mut self) {
+        self.vertical_column = None;
         self.cursor = 0;
         self.reverse_search = None;
     }
     pub fn end(&mut self) {
+        self.vertical_column = None;
         self.cursor = self.buf.len();
         self.reverse_search = None;
+    }
+
+    /// Move within explicit draft lines at a stable terminal column. A wide or combined glyph
+    /// is always selected at its leading boundary. Return false at the first/last line so the
+    /// adapter can choose history navigation without replacing a multiline draft midway.
+    pub fn move_vertical(&mut self, up: bool) -> bool {
+        let start = self.buf[..self.cursor]
+            .iter()
+            .rposition(|c| *c == '\n')
+            .map_or(0, |index| index + 1);
+        let end = self.buf[self.cursor..]
+            .iter()
+            .position(|c| *c == '\n')
+            .map_or(self.buf.len(), |index| self.cursor + index);
+        let (target_start, target_end) = if up {
+            if start == 0 {
+                return false;
+            }
+            let target_end = start - 1;
+            let target_start = self.buf[..target_end]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .map_or(0, |index| index + 1);
+            (target_start, target_end)
+        } else {
+            if end == self.buf.len() {
+                return false;
+            }
+            let target_start = end + 1;
+            let target_end = self.buf[target_start..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map_or(self.buf.len(), |index| target_start + index);
+            (target_start, target_end)
+        };
+        let prefix: String = self.buf[start..self.cursor].iter().collect();
+        let column = self.vertical_column.unwrap_or_else(|| prefix.width());
+        let line: String = self.buf[target_start..target_end].iter().collect();
+        let mut width = 0usize;
+        let mut offset = 0usize;
+        for grapheme in line.graphemes(true) {
+            let next_width = width.saturating_add(grapheme.width());
+            if next_width > column {
+                break;
+            }
+            width = next_width;
+            offset += grapheme.chars().count();
+        }
+        self.cursor = target_start + offset;
+        self.vertical_column = Some(column);
+        self.reverse_search = None;
+        true
     }
 
     /// Place the cursor at an explicit character boundary.
@@ -746,6 +944,7 @@ impl Editor {
     /// layout (for example, a resize arriving beside a click) can never manufacture an invalid
     /// slice boundary.
     pub fn set_cursor(&mut self, char_index: usize) {
+        self.vertical_column = None;
         self.cursor = grapheme_floor_char_boundary(&self.text(), char_index.min(self.buf.len()));
         self.leave_navigation();
     }
@@ -769,12 +968,14 @@ impl Editor {
 
     /// Word-left (Alt-←/Alt-B): skip non-word chars then a word run.
     pub fn word_left(&mut self) {
+        self.vertical_column = None;
         self.cursor = grapheme_floor_char_boundary(&self.text(), self.word_boundary_left());
         self.reverse_search = None;
     }
 
     /// Word-right (Alt-→/Alt-F): skip non-word chars then a word run.
     pub fn word_right(&mut self) {
+        self.vertical_column = None;
         let n = self.buf.len();
         let mut i = self.cursor;
         while i < n && !Self::is_word(self.buf[i]) {
@@ -796,7 +997,7 @@ impl Editor {
         }
         let next = match self.hist_pos {
             None => {
-                self.stash = Some(self.text());
+                self.stash = Some(self.snapshot_draft());
                 self.history.len() - 1
             }
             Some(0) => 0,
@@ -817,8 +1018,11 @@ impl Editor {
             }
             Some(_) => {
                 // past the newest -> restore the stash and leave history mode
-                let s = self.stash.take().unwrap_or_default();
-                self.set_text(&s);
+                if let Some(draft) = self.stash.take() {
+                    self.apply_draft_snapshot(draft);
+                } else {
+                    self.set_text("");
+                }
                 self.hist_pos = None;
                 self.mark_persistence_change();
             }
@@ -842,6 +1046,9 @@ impl Editor {
             return false;
         };
         let entry = self.history[index].clone();
+        if self.hist_pos.is_none() {
+            self.stash = Some(self.snapshot_draft());
+        }
         self.set_text(&entry);
         self.hist_pos = Some(index);
         self.reverse_search = Some(ReverseSearch {
@@ -862,6 +1069,42 @@ impl Editor {
         self.buf = s.chars().collect();
         self.cursor = self.buf.len();
         self.reconcile_tagged_chips();
+    }
+
+    fn snapshot_draft(&self) -> DraftSnapshot {
+        DraftSnapshot {
+            text: self.text(),
+            cursor: self.cursor,
+            attachments: self.attachments.clone(),
+            files: self.files.clone(),
+            pastes: self.pastes.clone(),
+            chip_order: self.chip_order.clone(),
+        }
+    }
+
+    fn apply_draft_snapshot(&mut self, draft: DraftSnapshot) {
+        self.buf = draft.text.chars().collect();
+        self.cursor = draft.cursor.min(self.buf.len());
+        self.attachments = draft.attachments;
+        self.files = draft.files;
+        self.pastes = draft.pastes;
+        self.chip_order = draft.chip_order;
+        self.reserve_attachment_ids();
+        self.vertical_column = None;
+    }
+
+    fn reserve_attachment_ids(&mut self) {
+        for found in crate::paste_input::find_tags(&self.text()) {
+            let index = match found.kind {
+                crate::paste_input::TagKind::Image => 0,
+                crate::paste_input::TagKind::File => 1,
+                crate::paste_input::TagKind::PastedText => 2,
+            };
+            self.attachment_ids[index] = self.attachment_ids[index].max(found.id);
+        }
+        self.attachments.reserve_id(self.attachment_ids[0]);
+        self.files.reserve_id(self.attachment_ids[1]);
+        self.pastes.reserve_id(self.attachment_ids[2]);
     }
 
     fn clear_current(&mut self) {
@@ -894,7 +1137,7 @@ impl Editor {
     /// Drafts larger than 64 KiB in UTF-8 are still cleared but are deliberately not retained.
     /// Calling this on an already-empty editor leaves the existing recovery slot intact.
     pub fn clear_recoverable(&mut self) {
-        if !self.buf.is_empty() {
+        if self.has_submission() {
             let fits = self
                 .buf
                 .iter()
@@ -908,20 +1151,20 @@ impl Editor {
                     })
                 })
                 .is_some();
-            self.recently_cleared = fits.then(|| self.text());
+            self.recently_cleared = fits.then(|| self.snapshot_draft());
         }
         self.clear_current();
     }
 
     /// Restore and consume the most recently recoverable clear, but never overwrite current input.
     pub fn restore_recently_cleared(&mut self) -> bool {
-        if !self.buf.is_empty() {
+        if !self.can_restore_owned_draft() {
             return false;
         }
         let Some(draft) = self.recently_cleared.take() else {
             return false;
         };
-        self.set_text(&draft);
+        self.apply_draft_snapshot(draft);
         self.hist_pos = None;
         self.stash = None;
         self.reverse_search = None;
@@ -999,19 +1242,41 @@ impl Editor {
         self.pastes.clear();
         self.reverse_search = None;
         self.persistence_revision = 0;
+        self.draft_revision = self.draft_revision.wrapping_add(1);
         self.refresh_draft_shape();
         // All stores promise that an id names a moment, and keep that promise with a counter
         // that a restart destroys. The restored text is the only surviving evidence of the previous
         // process's ids, so step the counters past every id it names: without this, the first paste
         // or screenshot of a fresh process would answer a stale placeholder with unrelated content.
-        let restored = self.text();
-        for found in crate::paste_input::find_tags(&restored) {
-            match found.kind {
-                crate::paste_input::TagKind::PastedText => self.pastes.reserve_id(found.id),
-                crate::paste_input::TagKind::Image => self.attachments.reserve_id(found.id),
-                crate::paste_input::TagKind::File => self.files.reserve_id(found.id),
-            }
+        self.reserve_attachment_ids();
+    }
+
+    /// Late host hydration cannot replace an operator draft, tag stores, live prompt history or
+    /// navigation. Only a pristine composer accepts the older persisted draft. Otherwise the
+    /// bounded recovered history is prepended while every current owned submission stays intact.
+    pub(crate) fn observe_persisted_history(
+        &mut self,
+        mut history: Vec<String>,
+        draft: Option<String>,
+    ) {
+        if self.persistence_revision == 0
+            && self.history.is_empty()
+            && self.can_restore_owned_draft()
+        {
+            self.restore_persisted(history, draft);
+            return;
         }
+        let prefix = history.len();
+        history.append(&mut self.history);
+        self.history = history;
+        if let Some(position) = &mut self.hist_pos {
+            *position = position.saturating_add(prefix);
+        }
+        if let Some(search) = &mut self.reverse_search {
+            search.before = search.before.saturating_add(prefix);
+        }
+        // Only older history was prepended; the current draft and its attachments are unchanged.
+        self.persistence_revision = self.persistence_revision.wrapping_add(1);
     }
 
     /// Replace composer text after a trusted external-editor round trip. Every tag-backed chip
@@ -1029,14 +1294,15 @@ impl Editor {
 
     /// Text-only snapshot. Image bytes and paths never enter prompt history.
     pub fn persistence_state(&self) -> crate::prompt_history::State {
-        crate::prompt_history::State::new(
-            self.history.clone(),
-            (!self.buf.is_empty()).then(|| self.text()),
-        )
+        crate::prompt_history::State::capture(&self.history, self.buf.iter().copied())
     }
 
     pub fn persistence_revision(&self) -> u64 {
         self.persistence_revision
+    }
+
+    pub fn draft_revision(&self) -> u64 {
+        self.draft_revision
     }
 
     pub fn history_len(&self) -> usize {
@@ -1050,7 +1316,9 @@ impl Editor {
     }
 
     fn mark_persistence_change(&mut self) {
+        self.vertical_column = None;
         self.persistence_revision = self.persistence_revision.wrapping_add(1);
+        self.draft_revision = self.draft_revision.wrapping_add(1);
         self.refresh_draft_shape();
     }
 
@@ -1479,6 +1747,30 @@ mod tests {
         assert_eq!(editor.text(), "recorded prompt");
         editor.history_next();
         assert_eq!(editor.text(), "typed before history is ready");
+    }
+
+    #[test]
+    fn late_host_history_preserves_actual_paste_media_and_newly_submitted_prompt() {
+        let mut editor = Editor::new();
+        editor.insert_str("new prompt");
+        assert_eq!(editor.take_submit(), "new prompt");
+        editor.insert_str("draft ");
+        let paste = big_paste();
+        editor.capture_paste(&paste).unwrap();
+        editor.attach_image_bytes("actual image", GIF).unwrap();
+        let before = editor.text();
+        editor.observe_persisted_history(
+            vec!["older actual prompt".into()],
+            Some("stale draft".into()),
+        );
+        assert_eq!(editor.text(), before);
+        assert_eq!(
+            editor.persistence_state().history,
+            ["older actual prompt", "new prompt"]
+        );
+        assert_eq!(editor.pastes().len(), 1);
+        assert_eq!(editor.attachments().len(), 1);
+        assert!(editor.take_submit().contains(&paste));
     }
 
     #[test]
@@ -2000,5 +2292,65 @@ mod tests {
         e.insert_str("a\nb");
         assert_eq!(e.text(), "a\nb");
         assert!(e.pastes().is_empty());
+    }
+    #[test]
+    fn draft_history_and_recoverable_clear_preserve_owned_media_paste_and_cursor() {
+        let mut editor = Editor::new();
+        editor.insert_str("earlier prompt");
+        editor.take_submit();
+        editor.insert_str("草稿\n");
+        editor.capture_paste(&big_paste()).unwrap();
+        editor.attach_image_bytes("image", GIF).unwrap();
+        editor
+            .attach_context(ContextKind::Diff, "source", "file payload".into())
+            .unwrap();
+        editor.set_cursor(1);
+        let raw = editor.text();
+        let expanded = editor.submission_text();
+        editor.history_prev();
+        assert_eq!(editor.text(), "earlier prompt");
+        assert_eq!(editor.chip_count(), 0);
+        editor.history_next();
+        assert_eq!(editor.text(), raw);
+        assert_eq!(editor.cursor(), 1);
+        assert_eq!(editor.chip_count(), 3);
+        assert_eq!(editor.submission_text(), expanded);
+        editor.clear_recoverable();
+        assert!(editor.can_restore_owned_draft());
+        assert!(editor.restore_recently_cleared());
+        assert_eq!(editor.text(), raw);
+        assert_eq!(editor.cursor(), 1);
+        assert_eq!(editor.submission_text(), expanded);
+        assert_eq!(editor.chip_count(), 3);
+    }
+
+    #[test]
+    fn multiline_vertical_cursor_keeps_cell_column_without_splitting_unicode() {
+        let mut editor = ed("ab界e\u{301}\n短\n12345");
+        assert!(editor.move_vertical(true));
+        assert_eq!(editor.cursor_row_col(), (1, 1));
+        assert!(editor.move_vertical(true));
+        assert_eq!(editor.cursor_row_col(), (0, 5));
+        assert!(!editor.move_vertical(true));
+        editor.left();
+        assert_eq!(editor.cursor_row_col(), (0, 3));
+        assert!(editor.move_vertical(false));
+        assert!(editor.move_vertical(false));
+        assert_eq!(editor.cursor_row_col(), (2, 4));
+        assert!(!editor.move_vertical(false));
+    }
+    #[test]
+    fn recovering_an_older_draft_never_recycles_newer_attachment_ids() {
+        let mut editor = Editor::new();
+        editor.attach_image_bytes("first", GIF).unwrap();
+        editor.clear_recoverable();
+        let newer = editor.attach_image_bytes("newer", GIF).unwrap().id();
+        editor.remove_last_attachment();
+        assert!(editor.restore_recently_cleared());
+        let after = editor
+            .attach_image_bytes("after recovery", GIF)
+            .unwrap()
+            .id();
+        assert!(after > newer);
     }
 }

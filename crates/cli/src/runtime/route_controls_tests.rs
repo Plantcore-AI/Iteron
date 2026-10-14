@@ -58,7 +58,7 @@ fn route(id: &'static str, cache: bool) -> Arc<CaptureRoute> {
     })
 }
 
-fn agent_for_route(ws: &std::path::Path, source: Arc<CaptureRoute>) -> Agent {
+fn agent_for_route(ws: &std::path::Path, source: Arc<dyn Provider>) -> Agent {
     let rollout = Rollout::open(
         &ws.join(".iteron/runs"),
         &iteron_protocol::RunId("route-cache-hint".into()),
@@ -165,13 +165,11 @@ fn optional_cache_adaptation_preserves_other_control_refusals() {
         }
         agent.set_provider_controls(controls).unwrap();
         let result = switch(&mut agent, target.clone(), "model-b");
-        assert!(matches!(
-            result,
-            Err(KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                ..
-            })
-        ));
+        assert!(matches!(&result, Err(KernelError::ProviderControl(_))));
+        assert_eq!(
+            result.unwrap_err().refusal_reason(),
+            iteron_protocol::refusal::RefusalReasonV1::ModelUnavailable
+        );
         assert_eq!(agent.model, "model-a");
         assert_eq!(agent.provider_controls, controls);
         assert!(target.requests.lock().unwrap().is_empty());
@@ -191,4 +189,85 @@ fn resumed_controls_can_install_without_rewriting_the_cache_preference() {
     assert!(!agent.provider_cache_system_enabled());
     drop(agent);
     std::fs::remove_dir_all(ws).ok();
+}
+
+#[test]
+fn unavailable_resident_route_omits_rolling_without_erasing_required_controls() {
+    let ws = super::gate_integration_tests::temp_ws("unavailable-resident-cache-hint");
+    let directory = crate::providers::ProviderDirectory::inspect_local(&[]).unwrap();
+    let provider = directory.unavailable_provider("synthetic-anthropic-route", "catalog pending");
+    let mut controls = ProviderRequestControls::default();
+    controls.prompt_cache.breakpoint = CacheBreakpoint::Rolling;
+
+    // Resident startup validates this same physical placeholder before the picker opens.
+    let capabilities = provider.control_capabilities();
+    capabilities
+        .validate(&capabilities.adapt_optional_cache_breakpoint(controls))
+        .expect("optional Rolling must not make an unavailable route prevent startup");
+    let mut agent = agent_for_route(&ws, provider.clone());
+    agent.set_provider_controls(controls).unwrap();
+    assert_eq!(agent.provider_controls, controls);
+    assert_eq!(
+        agent
+            .provider_controls_for(provider.as_ref())
+            .prompt_cache
+            .breakpoint,
+        CacheBreakpoint::None
+    );
+    assert!(!agent.provider_cache_system_enabled());
+
+    controls.prompt_cache.ttl_seconds = 300;
+    assert!(matches!(
+        agent.set_provider_controls(controls),
+        Err(KernelError::ProviderControl(_))
+    ));
+    assert_eq!(agent.provider_controls.prompt_cache.ttl_seconds, 0);
+    assert!(
+        !iteron_record::replay(agent.rollout.path())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
+    );
+    drop(agent);
+    std::fs::remove_dir_all(ws).unwrap();
+}
+
+#[test]
+fn actual_physical_control_capability_refuses_before_provider_or_effect_journal() {
+    let ws = super::gate_integration_tests::temp_ws("native-control-refusal");
+    let provider = route("cache-target", false);
+    let agent = agent_for_route(&ws, provider.clone());
+    let mut request = TurnRequest {
+        model: "model-a".into(),
+        system: String::new(),
+        messages: vec![],
+        input_images: vec![],
+        tools: vec![].into(),
+        max_tokens: 16,
+        cache_system: false,
+        thinking_budget: 0,
+        reasoning_effort: iteron_protocol::ReasoningEffort::Medium,
+        controls: iteron_provider::ProviderRequestControls::default(),
+    };
+    request.controls.service_tier = iteron_provider::ServiceTier::Priority;
+    let error = agent.validate_provider_request_route(&request).unwrap_err();
+    assert!(matches!(
+        &error,
+        KernelError::ProviderRequestControl(iteron_provider::ControlError::UnsupportedServiceTier(
+            iteron_provider::ServiceTier::Priority
+        ))
+    ));
+    assert_eq!(
+        error.refusal_reason(),
+        iteron_protocol::refusal::RefusalReasonV1::ModelUnavailable
+    );
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(
+        !iteron_record::replay(agent.rollout.path())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::EffectIntent { .. }))
+    );
+    drop(agent);
+    std::fs::remove_dir_all(ws).unwrap();
 }

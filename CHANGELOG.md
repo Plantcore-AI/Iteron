@@ -7,6 +7,32 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-10-08
+
+### Added
+
+- Persistent agent mailboxes, durable child admission and bounded live workflow revisions.
+- Shared client commands and lifecycle projections for CLI, TUI and the public app server,
+  including scoped session control, artifacts and retained answer availability.
+- Exact provider request manifests, native input provenance and bounded memory admission.
+
+### Changed
+
+- Separate the coding driver, provider and tool execution, context installation, session
+  control and frontend presentation into concrete state owners.
+- Route existing shell, initialization, export and preference operations through the host,
+  retaining their native work independently of frontend observers.
+- Keep optional extensions and workflow strategies outside ordinary disabled execution.
+
+### Fixed
+
+- Retain uncertain physical work across cancellation, storage refusal and observer loss;
+  keep physical completion separate from incomplete cost accounting.
+- Preserve submitted tool images and request transcripts through fallible admission.
+- Retire native process identity before post-exit cleanup observation, with suspended
+  Windows launch assigned to a private JobObject before user code executes.
+- Keep failed compaction coverage checks unverified.
+
 ## [0.0.26] - 2026-09-29
 
 ### Fixed

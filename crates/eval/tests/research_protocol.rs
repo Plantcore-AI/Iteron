@@ -956,10 +956,27 @@ fn liveness(base_secs: u64) -> Duration {
     Duration::from_secs(base_secs.saturating_mul(scale))
 }
 
-fn wait_for_file(path: &Path) {
+#[cfg(unix)]
+fn wait_for_pid(path: &Path) -> i32 {
     let deadline = Instant::now() + liveness(12);
-    while !path.exists() {
-        assert!(Instant::now() < deadline, "fixture file was not created");
+    loop {
+        match fs::read_to_string(path) {
+            Ok(raw) => {
+                // Shell redirection creates the file before printf writes its PID. The newline
+                // commits the complete decimal identity, rather than an empty or partial value.
+                if let Some(line) = raw.strip_suffix('\n') {
+                    let pid = line.parse::<i32>().expect("fixture PID must be decimal");
+                    assert!(pid > 0, "fixture PID must name one child");
+                    return pid;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("fixture PID could not be read: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture PID was not fully written"
+        );
         thread::sleep(Duration::from_millis(10));
     }
 }
@@ -1455,7 +1472,7 @@ fn execute_cancel_and_server_drop_kill_and_reap_the_child() {
     for cancel_explicitly in [true, false] {
         let layout = ExecuteLayout::new(if cancel_explicitly { "cancel" } else { "drop" });
         layout.write_script(&format!(
-            "printf '%s' \"$$\" > '{}'\nwhile :; do :; done",
+            "printf '%s\\n' \"$$\" > '{}'\nwhile :; do :; done",
             layout.pid_file.display()
         ));
         let mut harness = ExecuteHarness::start(&layout.script, &[]);
@@ -1468,11 +1485,7 @@ fn execute_cancel_and_server_drop_kill_and_reap_the_child() {
             "cancel-or-drop",
             RunSpec::IteronCli { spec },
         ));
-        wait_for_file(&layout.pid_file);
-        let pid: i32 = fs::read_to_string(&layout.pid_file)
-            .unwrap()
-            .parse()
-            .unwrap();
+        let pid = wait_for_pid(&layout.pid_file);
         assert!(process_exists(pid));
         if cancel_explicitly {
             let cancelled = harness.request(&envelope(

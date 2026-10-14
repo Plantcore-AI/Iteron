@@ -7,14 +7,15 @@ security boundaries rather than optional polish.
 ## Current posture
 
 - Pre-alpha; only current `main` receives security fixes.
-- Code execution is enabled by default and confined by the macOS/Linux sandbox.
-  Use `--mode plan` to disable effects entirely. Windows has no equivalent
-  code-execution sandbox.
+- Fresh ordinary sessions enable code execution with broad host authority.
+  Use `--confine` or an explicitly gated session to request platform confinement;
+  `--mode plan` disables effects. Source includes Windows LPAC isolation with
+  retained native process custody, but same-candidate native acceptance is pending.
 - The sandbox is not a confidentiality boundary and hostile-code safety is not
   claimed.
 - A repository cannot grant itself provider routing, endpoints, hooks, MCP
   processes, effort, or code execution.
-- The shipped permission gate is enabled by default. Reversible workspace edits
+- With an explicitly requested permission gate, reversible workspace edits
   and trusted sandboxed code execution run automatically; trust-changing and
   declared external operations require approval. The file-write guard still has
   an unresolved symlink race, so workspace containment is not yet proven against

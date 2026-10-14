@@ -21,11 +21,13 @@ mod context_assembly;
 pub mod context_ledger;
 mod context_materialization;
 mod context_port;
+pub mod context_provenance;
 mod context_strategy;
 pub mod decision_store;
 mod incremental;
 pub mod instructions;
 pub mod memory;
+pub mod memory_records;
 mod memory_runtime;
 pub mod memory_trace;
 pub mod outline;
@@ -46,7 +48,7 @@ pub use context_ledger::{
     CacheClass, CacheEvidence, CompactionEvidence, ContextDecision, ContextDecisionReason,
     ContextLedger, ContextObservation, ContextObserver, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass, ContextTotals, ContextTransformEvidence, ContextTransformKind,
-    NullContextObserver, TokenRange, TokenizerIdentity,
+    MAX_CONTEXT_LEDGER_SEGMENTS, NullContextObserver, TokenRange, TokenizerIdentity,
 };
 pub use context_materialization::ContextMaterializationAudit;
 pub use context_port::{

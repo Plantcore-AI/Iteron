@@ -1,6 +1,10 @@
 //! Content-free audit of the world port's bounded context materialization.
 
 use crate::context_ledger::MAX_CONTEXT_LEDGER_SEGMENTS;
+use crate::context_provenance::{
+    CapturedContextMaterial, ContextMaterialUnavailableV1, MAX_CONTEXT_MATERIALS,
+    MAX_CONTEXT_PROVENANCE_BYTES, MaterialRender, MaterialSource,
+};
 use crate::{
     CacheClass, ContextDecision, ContextDecisionReason, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass,
@@ -16,6 +20,8 @@ use sha2::{Digest, Sha256};
 pub struct ContextMaterializationAudit {
     pub segments: Vec<ContextSegmentEvidence>,
     pub dropped: u32,
+    pub materials: Vec<CapturedContextMaterial>,
+    pub dropped_materials: u32,
 }
 
 pub(crate) struct AuditedGrantBuilder<'a> {
@@ -24,6 +30,8 @@ pub(crate) struct AuditedGrantBuilder<'a> {
     audit: ContextMaterializationAudit,
     bytes: usize,
     next_ordinal: u32,
+    retained_material_bytes: usize,
+    max_segments: usize,
 }
 
 impl<'a> AuditedGrantBuilder<'a> {
@@ -34,6 +42,12 @@ impl<'a> AuditedGrantBuilder<'a> {
             audit: ContextMaterializationAudit::default(),
             bytes: 0,
             next_ordinal: 0,
+            retained_material_bytes: 0,
+            max_segments: iteron_tunables::param_integer(
+                "protocol.context.max_context_segments",
+                MAX_CONTEXT_SEGMENTS,
+            )
+            .min(MAX_CONTEXT_SEGMENTS),
         }
     }
 
@@ -42,16 +56,31 @@ impl<'a> AuditedGrantBuilder<'a> {
     }
 
     pub(crate) fn push(&mut self, text: String, trust: Trust, source: ContextSource) {
-        if text.is_empty() {
-            return;
-        }
+        let mut render = MaterialRender::default();
+        render.append(
+            MaterialSource::unavailable(
+                source_class(source),
+                ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+            ),
+            &text,
+        );
+        self.push_materialized(render, trust, source);
+    }
+
+    pub(crate) fn push_materialized(
+        &mut self,
+        render: MaterialRender,
+        trust: Trust,
+        source: ContextSource,
+    ) {
+        let text = &render.text;
         let ordinal = self.next_ordinal;
         self.next_ordinal = self.next_ordinal.saturating_add(1);
         let bytes_before = text.len();
-        let admitted = if self.segments.len() == MAX_CONTEXT_SEGMENTS {
+        let admitted = if self.segments.len() >= self.max_segments {
             String::new()
         } else {
-            bounded_text(&text, self.remaining_bytes())
+            bounded_text(text, self.remaining_bytes())
         };
         let decision = if admitted.is_empty() {
             ContextDecision::Rejected
@@ -70,6 +99,33 @@ impl<'a> AuditedGrantBuilder<'a> {
             }
         };
         let effective_trust = trust.min(self.request.trust_ceiling);
+        let retained_prefix_bytes = if admitted.len() == text.len() {
+            text.len()
+        } else {
+            admitted.len().saturating_sub("\n… (truncated)".len())
+        };
+        self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(render.dropped);
+        for mut material in render.admit(ordinal, &admitted, retained_prefix_bytes, effective_trust)
+        {
+            if self.audit.materials.len() == MAX_CONTEXT_MATERIALS {
+                self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(1);
+                continue;
+            }
+            if material.captured_bytes()
+                > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+            {
+                material = material.without_retained_source();
+            }
+            // Rendered fragments are individually bounded by the same grant byte ceiling.
+            if material.captured_bytes()
+                > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+            {
+                self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(1);
+                continue;
+            }
+            self.retained_material_bytes += material.captured_bytes();
+            self.audit.materials.push(material);
+        }
         if self.audit.segments.len() == MAX_CONTEXT_LEDGER_SEGMENTS {
             self.audit.dropped = self.audit.dropped.saturating_add(1);
         } else {
@@ -178,5 +234,34 @@ mod tests {
         assert_eq!(audit.segments[0].bytes_after, 32);
         assert_eq!(audit.segments[1].decision, ContextDecision::Rejected);
         assert_eq!(audit.segments[1].bytes_after, 0);
+    }
+
+    #[test]
+    fn smaller_segment_ceiling_rejects_excess_material_without_invalidating_the_grant() {
+        for ceiling in [0, 1, 2, MAX_CONTEXT_SEGMENTS] {
+            let request = request(4_096);
+            let mut builder = AuditedGrantBuilder::new(&request);
+            // Installed parameters are immutable and process-wide. Exercise the captured
+            // ceiling directly without changing other concurrently running tests.
+            builder.max_segments = ceiling;
+            for ordinal in 0..=ceiling {
+                builder.push(
+                    format!("turn-{ordinal}\n"),
+                    Trust::Workspace,
+                    ContextSource::Transcript,
+                );
+            }
+            let (grant, audit) = builder.finish();
+            grant.validate_for(&request).unwrap();
+            assert_eq!(grant.segments.len(), ceiling);
+            assert_eq!(
+                audit.segments.last().unwrap().decision,
+                ContextDecision::Rejected
+            );
+            assert_eq!(audit.segments.last().unwrap().bytes_after, 0);
+            for (ordinal, segment) in grant.segments.iter().enumerate() {
+                assert_eq!(segment.text, format!("turn-{ordinal}\n"));
+            }
+        }
     }
 }

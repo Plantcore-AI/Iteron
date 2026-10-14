@@ -405,9 +405,12 @@ fn without_receipt_downgrade(source: &str) -> String {
 
 fn staged_output_is_valid(source: &str) -> bool {
     cli_machine_record_shapes(source.as_bytes()).is_ok()
-        && super::cli_parse::parse_cli_output_source(source)
-            .and_then(|file| super::cli_exact::validate(&file))
-            .is_ok()
+        && super::machine_owner::current_scope(
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
+            source.as_bytes(),
+        )
+        .and_then(|file| super::cli_exact::validate(&file))
+        .is_ok()
 }
 
 #[test]

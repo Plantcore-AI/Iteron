@@ -95,6 +95,7 @@ impl Supervisor {
         rows: u16,
         cols: u16,
         launch: InstalledProcessLaunchPolicy,
+        confine: bool,
     ) -> Result<ProcessSnapshot, ActionError> {
         let policy = self.policy();
         self.start_with_mode(
@@ -104,7 +105,7 @@ impl Supervisor {
             cols,
             launch,
             policy,
-            true,
+            confine,
             super::max_job_runtime_secs(),
         )
         .await
@@ -301,7 +302,9 @@ impl Supervisor {
         for result in results {
             match result {
                 Ok(snapshot) => snapshots.push(snapshot),
-                Err(ActionError::Definite(error)) => failures.push(error),
+                Err(ActionError::Definite(error) | ActionError::Refused(_, error)) => {
+                    failures.push(error)
+                }
                 Err(ActionError::Unknown(error)) => {
                     unknown = true;
                     failures.push(error);
@@ -374,9 +377,10 @@ impl Supervisor {
                 .iter()
                 .find_map(|(id, job)| job.is_reconciled_terminal().then_some(*id))
             else {
-                return Err(ActionError::Definite(format!(
-                    "job table is full ({max_job_records} retained records)"
-                )));
+                return Err(ActionError::Refused(
+                    iteron_protocol::refusal::RefusalReasonV1::ObservationLimit,
+                    format!("job table is full ({max_job_records} retained records)"),
+                ));
             };
             state.jobs.remove(&id);
         }
@@ -386,12 +390,16 @@ impl Supervisor {
             .filter(|job| !job.is_reconciled_terminal())
             .count();
         if active >= max_active_jobs {
-            return Err(ActionError::Definite(format!(
-                "active process limit reached ({max_active_jobs})"
-            )));
+            return Err(ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::ObservationLimit,
+                format!("active process limit reached ({max_active_jobs})"),
+            ));
         }
         if state.next_sequence == EXHAUSTED_JOB_SEQUENCE {
-            return Err(ActionError::Definite("job ID space exhausted".into()));
+            return Err(ActionError::Refused(
+                iteron_protocol::refusal::RefusalReasonV1::ObservationLimit,
+                "job ID space exhausted".into(),
+            ));
         }
         let id = JobId {
             instance: self.instance,
@@ -442,9 +450,30 @@ impl Drop for ExecYieldCancellationGuard {
 
 fn spawn_error(error: SandboxError) -> ActionError {
     match error {
-        SandboxError::Unsupported | SandboxError::Profile(_) => {
-            ActionError::Definite(error.to_string())
-        }
+        SandboxError::Unsupported => ActionError::Refused(
+            iteron_protocol::refusal::RefusalReasonV1::SandboxUnavailable,
+            error.to_string(),
+        ),
+        SandboxError::Profile(_) => ActionError::Refused(
+            iteron_protocol::refusal::RefusalReasonV1::SandboxProfileRefused,
+            error.to_string(),
+        ),
+        #[cfg(windows)]
+        SandboxError::WindowsLaunch(ref launch) if launch.not_dispatched() => ActionError::Refused(
+            match launch.refusal_origin() {
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Isolation) => {
+                    iteron_protocol::refusal::RefusalReasonV1::SandboxProfileRefused
+                }
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Resource) => {
+                    iteron_protocol::refusal::RefusalReasonV1::ResourceUnavailable
+                }
+                Some(iteron_support::owned_windows_job::WindowsLaunchFailureOrigin::Unknown)
+                | None => iteron_protocol::refusal::RefusalReasonV1::Unknown,
+            },
+            error.to_string(),
+        ),
+        #[cfg(windows)]
+        SandboxError::WindowsLaunch(_) => ActionError::Unknown(error.to_string()),
         SandboxError::Spawn(_) => ActionError::Unknown(format!(
             "persistent process spawn outcome is unknown; Iteron will not retry automatically: {error}"
         )),
@@ -783,4 +812,136 @@ fn controller_closed(id: JobId) -> ActionError {
     ActionError::Unknown(format!(
         "job `{id}` controller closed before an authoritative response"
     ))
+}
+
+#[cfg(test)]
+mod refusal_provenance_tests {
+    use super::*;
+    use iteron_protocol::refusal::{RefusalOriginV1, RefusalReasonV1};
+    #[test]
+    fn native_sandbox_branch_preserves_source_without_interpreting_the_error_text() {
+        for (error, expected) in [
+            (
+                SandboxError::Unsupported,
+                RefusalReasonV1::SandboxUnavailable,
+            ),
+            (
+                SandboxError::Profile("administrator denied secret=value".into()),
+                RefusalReasonV1::SandboxProfileRefused,
+            ),
+        ] {
+            let captured = super::super::action_result::<serde_json::Value>(
+                "exact-native-call".into(),
+                Err(spawn_error(error)),
+            );
+            assert_eq!(captured.refusal_reason(), Some(expected));
+            assert_eq!(
+                captured.refusal_reason().unwrap().origin(),
+                RefusalOriginV1::OsSandbox
+            );
+            assert!(
+                matches!(captured.execution, crate::ToolExecution::Definite(result) if result.is_error)
+            );
+        }
+        let unknown = super::super::action_result::<serde_json::Value>(
+            "exact-native-call".into(),
+            Err(spawn_error(SandboxError::Spawn(
+                "OS sandbox refused".into(),
+            ))),
+        );
+        assert!(
+            unknown.refusal_reason().is_none(),
+            "foreign spawn text is not native source proof"
+        );
+        assert!(matches!(
+            unknown.execution,
+            crate::ToolExecution::Unknown(_)
+        ));
+    }
+    #[test]
+    fn actual_zero_active_quota_refuses_before_allocating_a_job_identity() {
+        let supervisor = Supervisor::new().unwrap();
+        let before = lock(&supervisor.state).next_sequence;
+        let captured = super::super::action_result::<serde_json::Value>(
+            "exact-native-call".into(),
+            supervisor.reserve_id(0).map(|_| serde_json::Value::Null),
+        );
+        assert_eq!(
+            captured.refusal_reason(),
+            Some(RefusalReasonV1::ObservationLimit)
+        );
+        assert_eq!(lock(&supervisor.state).next_sequence, before);
+        assert!(lock(&supervisor.state).jobs.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn native_windows_scope_refusal_and_opaque_create_failure_have_distinct_sources() {
+        use iteron_support::owned_windows_job::{OwnedWindowsPipes, WindowsSandboxLaunch};
+        use iteron_support::windows_process_isolation::WindowsIsolationPolicy;
+        let root = std::env::temp_dir().join(format!(
+            "iteron-process-refusal-source-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let scratch = root.join("created-scratch");
+        let executable = std::env::current_exe().unwrap();
+        let wrong_workspace = std::fs::File::open(&executable).unwrap();
+        let error = match WindowsSandboxLaunch::prepare(
+            WindowsIsolationPolicy {
+                workspace: &root,
+                scratch: &scratch,
+                executable: &executable,
+                environment: &[],
+                write_roots: &[],
+                read_only_roots: &[],
+                allow_egress: false,
+            },
+            Some(&wrong_workspace),
+        )
+        .await
+        {
+            Ok(_) => panic!("a held executable file cannot authorize a workspace directory"),
+            Err(error) => error,
+        };
+        assert!(error.not_dispatched() && error.cleanup_known());
+        let captured = super::super::action_result::<serde_json::Value>(
+            "exact-scope-refusal".into(),
+            Err(spawn_error(SandboxError::WindowsLaunch(Box::new(error)))),
+        );
+        assert_eq!(
+            captured.refusal_reason(),
+            Some(RefusalReasonV1::SandboxProfileRefused)
+        );
+        assert!(matches!(
+            captured.execution,
+            crate::ToolExecution::Definite(_)
+        ));
+        assert!(!scratch.exists());
+        let error = OwnedWindowsPipes::spawn_with_isolation(
+            &root.join("missing.exe"),
+            &[],
+            &root,
+            &[],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.not_dispatched() && error.cleanup_known());
+        let captured = super::super::action_result::<serde_json::Value>(
+            "exact-create-refusal".into(),
+            Err(spawn_error(SandboxError::WindowsLaunch(Box::new(error)))),
+        );
+        assert_eq!(captured.refusal_reason(), Some(RefusalReasonV1::Unknown));
+        assert!(matches!(
+            captured.execution,
+            crate::ToolExecution::Definite(_)
+        ));
+        drop(wrong_workspace);
+        std::fs::remove_dir(&root).unwrap();
+    }
 }

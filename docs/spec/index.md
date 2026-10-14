@@ -1,5 +1,10 @@
 # 技术规格 (Specification)
 
+Standalone Iteron 的普通 coding 产品路径和当前状态 owner 见
+[Architecture](../architecture.md) 与 [Runtime owners](runtime-owners.md)。下文的
+checkpoint、训练和进化章节描述可选扩展及其目标契约；普通 turn 的模型、工具、控制与
+终态由上述核心路径承担。这些章节的存在不代表默认启用扩展或已经完成生产验收。
+
 本节是 Iteron 的**完整技术规格**：一份自包含、正式的规范性文档，定义了这套可训练 Agent-Harness 基座的体系结构、接口与进化边界。它比 *Concepts* 章节更完整、更规范（带 RFC-2119 的 MUST/SHOULD/MAY 约定），面向要实现、扩展或评审本系统的工程师。
 
 ## 命题

@@ -1,7 +1,7 @@
 //! Byte-level verification and private filesystem primitives for plugin packages.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File};
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -256,26 +256,6 @@ fn collect_files(
     Ok(())
 }
 
-pub(super) fn copy_tree(source: &Path, destination: &Path) -> Result<(), PackageError> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let target = destination.join(entry.file_name());
-        if kind.is_dir() {
-            fs::create_dir(&target)?;
-            copy_tree(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            fs::copy(entry.path(), target)?;
-        } else {
-            return Err(invalid(
-                &entry.path(),
-                "symlinks and special files are not admitted",
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>, std::io::Error> {
     let file = File::open(path)?;
     let mut bytes = Vec::new();
@@ -287,25 +267,6 @@ pub(super) fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>, std::io::
         ));
     }
     Ok(bytes)
-}
-
-pub(super) fn write_new_private(path: &Path, bytes: &[u8]) -> Result<(), PackageError> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
-}
-
-pub(super) fn sync_dir(path: &Path) -> Result<(), PackageError> {
-    File::open(path)?.sync_all()?;
-    Ok(())
 }
 
 fn invalid(path: &Path, reason: impl Into<String>) -> PackageError {

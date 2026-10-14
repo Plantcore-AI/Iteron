@@ -1,0 +1,2249 @@
+//! Explicit re-attach presentation. The service process owns every runtime and physical task.
+//! Returning, losing a socket or dropping this UI never submits drain/stop or owns a server handle.
+use super::{
+    App, block, draw, notification,
+    product_projection::ProductProjection,
+    remote_transport::Transport,
+    remote_turn_start::{Poll as StartPoll, StartReply, StartRequest},
+    terminal_input::{ReadResult, TerminalInput},
+    terminal_lifecycle::TermGuard,
+    theme, ui_safe_text,
+};
+use anyhow::{Context, Result, bail};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use iteron_protocol::{
+    SubmissionId, SubmissionLifecycleState,
+    product_contract::{ProductEventsPageV1, ThreadSnapshotV1, TurnStateV1},
+    resident_service::{RESIDENT_SERVICE_VERSION, ResidentServiceViewV1},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use serde_json::{Value, json};
+use std::net::SocketAddr;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+const MAX_DRAFT_BYTES: usize = 64 * 1024;
+const MAX_PENDING_COMMANDS: usize = 8;
+const POLL_PERIOD: Duration = Duration::from_millis(250);
+const REPLY_DEADLINE: Duration = Duration::from_secs(5);
+
+fn poll_period() -> Duration {
+    iteron_tunables::param_duration("cli.tui.remote.poll_period", POLL_PERIOD)
+        .clamp(Duration::from_millis(5), Duration::from_secs(5))
+}
+
+struct Input {
+    receiver: mpsc::Receiver<std::io::Result<ReadResult>>,
+    stop: Arc<AtomicBool>,
+    task: Option<std::thread::JoinHandle<()>>,
+}
+impl Input {
+    fn start() -> Self {
+        let (sender, receiver) = mpsc::channel(32);
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = stop.clone();
+        let task = std::thread::spawn(move || {
+            let mut input = TerminalInput::default();
+            while !done.load(Ordering::Acquire) {
+                match input.read(Duration::from_millis(50)) {
+                    Ok(Some(event)) => {
+                        if sender.blocking_send(Ok(event)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = sender.blocking_send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            receiver,
+            stop,
+            task: Some(task),
+        }
+    }
+}
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.receiver.close();
+        self.stop.store(true, Ordering::Release);
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
+    }
+}
+enum Kind {
+    Snapshot,
+    Events,
+    Start,
+    Submit {
+        draft: String,
+        revision: u64,
+    },
+    Control,
+    ScopedControl {
+        run: iteron_protocol::RunId,
+    },
+    Approval {
+        prompt: SubmissionId,
+    },
+    Models,
+    Settings {
+        run: iteron_protocol::RunId,
+        show: bool,
+    },
+    FinalEvidence {
+        run: iteron_protocol::RunId,
+        detailed: bool,
+    },
+    Sessions {
+        run: iteron_protocol::RunId,
+        generation: u64,
+        append: bool,
+    },
+    SessionsRepair {
+        run: iteron_protocol::RunId,
+        generation: u64,
+    },
+    SessionsActivity {
+        run: iteron_protocol::RunId,
+        generation: u64,
+    },
+    SessionsChanges {
+        run: iteron_protocol::RunId,
+        generation: u64,
+    },
+    Refusals {
+        run: iteron_protocol::RunId,
+    },
+    Inputs,
+    McpResponse {
+        request_id: u64,
+        run: iteron_protocol::RunId,
+    },
+    ArtifactList {
+        prefix: String,
+        run: iteron_protocol::RunId,
+    },
+    ArtifactChunk {
+        generation: u64,
+    },
+    Stop,
+}
+struct AcceptedDraft {
+    id: SubmissionId,
+    draft: String,
+    revision: u64,
+}
+struct Request {
+    id: u64,
+    kind: Kind,
+    deadline: Instant,
+}
+struct View {
+    service: ResidentServiceViewV1,
+    snapshot: Option<ThreadSnapshotV1>,
+    product: ProductProjection,
+    pending: Option<Request>,
+    queued: std::collections::VecDeque<(Value, Kind)>,
+    models: Option<Value>,
+    sessions: super::remote_sessions::Sessions,
+    product_cursor: u64,
+    poll_events: bool,
+    poll_inputs: bool,
+    last_terminal: Option<(
+        iteron_protocol::RunId,
+        iteron_protocol::product_contract::ProductTurnId,
+        u64,
+    )>,
+    final_needed: bool,
+    settings_needed: bool,
+    last_live_seq: u64,
+    accepted: Option<AcceptedDraft>,
+    start: Option<StartRequest>,
+    expected_submission: Option<SubmissionId>,
+    artifact: Option<(iteron_protocol::RunId, super::artifact_view::Transfer)>,
+}
+impl View {
+    fn scope(&self) -> Value {
+        json!({"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id})
+    }
+    fn queue(&mut self, control: Value, kind: Kind) -> Result<()> {
+        if self.queued.len() >= MAX_PENDING_COMMANDS {
+            bail!("remote control queue is busy; draft retained");
+        }
+        self.queued.push_back((control, kind));
+        Ok(())
+    }
+    fn product(&mut self, command: Value, kind: Kind) -> Result<()> {
+        self.queue(json!({"type":"product_v1","command":command}), kind)
+    }
+    fn snapshot_request(&mut self) -> Result<()> {
+        self.product(
+            json!({"type":"thread_read","thread_id":self.service.scope.thread_id}),
+            Kind::Snapshot,
+        )
+    }
+    fn events_request(&mut self) -> Result<()> {
+        self.product(json!({"type":"events_read","thread_id":self.service.scope.thread_id,"after":self.product_cursor}),Kind::Events)
+    }
+    fn inputs_request(&mut self) -> Result<()> {
+        self.queue(json!({"type":"mcp_inputs_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"command":{"action":"read"}}}),Kind::Inputs)
+    }
+    fn final_request(&mut self, detailed: bool) -> Result<()> {
+        self.queue(json!({"type":"host_final_evidence_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::FinalEvidence{run:self.service.current_run_id.clone(),detailed})
+    }
+    fn settings_request(&mut self, show: bool) -> Result<()> {
+        self.queue(
+            json!({"type":"inventory_v1","query":{"kind":"overview","limit":1}}),
+            Kind::Settings {
+                run: self.service.current_run_id.clone(),
+                show,
+            },
+        )
+    }
+    fn sessions_request(
+        &mut self,
+        cursor: Option<String>,
+        generation: u64,
+        append: bool,
+    ) -> Result<()> {
+        self.queue(
+            json!({"type":"thread_lifecycle_v1","command":{"type":"list","cursor":cursor,"limit":super::session_picker::session_picker_page_size()}}),
+            Kind::Sessions { run: self.service.current_run_id.clone(), generation, append },
+        )
+    }
+    fn sessions_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+            return Ok(true);
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.sessions.clear(app);
+            return self.interrupt().map(|()| false);
+        }
+        if let Some(update) = app.pickers.key(key.code, key.modifiers) {
+            match update.event {
+                super::picker::PickerEvent::Accept(super::picker::PickAction::AdoptRun(run)) => {
+                    self.sessions.clear(app);
+                    self.queue(
+                        json!({"type":"session_navigate_v1","command":{"action":"resume","thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id,"target_run_id":run}}),
+                        Kind::Control,
+                    )?;
+                }
+                super::picker::PickerEvent::Cancel => self.sessions.clear(app),
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+    fn sessions_poll(&mut self, app: &App) -> Result<bool> {
+        if self.pending.is_some() || !self.queued.is_empty() {
+            return Ok(false);
+        }
+        if let Some(cursor) = self.sessions.next_page(app) {
+            self.sessions_request(Some(cursor), self.sessions.generation(), true)?;
+            return Ok(true);
+        }
+        if self.sessions.activity_due(app) && self.snapshot.is_some() {
+            self.queue(
+                json!({"type":"activity_center_v1","command":{"action":"list","thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),
+                Kind::SessionsActivity { run: self.service.current_run_id.clone(), generation: self.sessions.generation() },
+            )?;
+            self.sessions.activity_started();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    fn mcp_key(&mut self, app: &mut App, key: crossterm::event::KeyEvent) -> Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('d') {
+            return Ok(true);
+        }
+        let reject = key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c'));
+        if reject || (key.code == KeyCode::Enter && key.modifiers.is_empty()) {
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(|request| matches!(&request.kind, Kind::McpResponse { .. }))
+                || self
+                    .queued
+                    .iter()
+                    .any(|(_, kind)| matches!(kind, Kind::McpResponse { .. }))
+            {
+                bail!("input response is awaiting callback handoff");
+            }
+            let (request_id, answer) = app
+                .mcp_form
+                .remote_answer(reject)
+                .map_err(anyhow::Error::msg)?;
+            let command = iteron_protocol::client_mcp_input::McpInputCommandV1 {
+                thread_id: self.service.scope.thread_id.clone(),
+                run_id: self.service.current_run_id.clone(),
+                command: iteron_protocol::client_mcp_input::McpInputActionV1::Respond {
+                    request_id,
+                    answer,
+                },
+            };
+            command.validate().map_err(anyhow::Error::msg)?;
+            self.queue(
+                json!({"type":"mcp_inputs_v1","command":command}),
+                Kind::McpResponse {
+                    request_id,
+                    run: self.service.current_run_id.clone(),
+                },
+            )?;
+            app.status = "input response queued · callback handoff not yet observed".into();
+            if ctrl && key.code == KeyCode::Char('c') && self.active_turn().is_some() {
+                self.interrupt()?;
+            }
+        } else {
+            super::mcp_input::edit_key(app, key.code, key.modifiers);
+        }
+        Ok(false)
+    }
+    fn active_turn(&self) -> Option<iteron_protocol::product_contract::ProductTurnId> {
+        self.snapshot
+            .as_ref()?
+            .turn
+            .as_ref()
+            .filter(|v| v.state == TurnStateV1::Running)
+            .map(|v| v.turn_id)
+    }
+    fn interrupt(&mut self) -> Result<()> {
+        let turn = self
+            .active_turn()
+            .context("no observed active turn to interrupt")?;
+        self.product(json!({"type":"turn_interrupt","thread_id":self.service.scope.thread_id,"turn_id":turn}),Kind::Control)
+    }
+    fn submit(&mut self, app: &mut App) -> Result<bool> {
+        let draft = app.editor.text();
+        let text = draft.trim();
+        if text.is_empty() {
+            return Ok(false);
+        }
+        if draft.len() > MAX_DRAFT_BYTES {
+            bail!("draft exceeds the remote composer's 64 KiB bound");
+        }
+        if matches!(text, "/quit" | "/detach" | "/exit") {
+            return Ok(true);
+        }
+        if text == "/stop-service" {
+            self.queue(json!({"type":"resident_service_v1","command":{"action":"stop","scope":self.service.scope}}),Kind::Stop)?;
+            app.editor.clear();
+            return Ok(false);
+        }
+        if text == "/help" {
+            app.note(block::NoticeLevel::Info,"Attached service · /detach leaves work running · Esc interrupts the observed turn · /stop-service stops the service. /activity [attach|stop TYPE ID] /agents [COMMAND] /status /settings /permissions /config /models [offset] /model provider:model /artifacts [SHA prefix] /extensions /side question /inputs /input request-id JSON /evidence /refusals /sessions [cursor] /new /resume run-id");
+            app.editor.clear();
+            return Ok(false);
+        }
+        if text.starts_with('/') {
+            let (verb, arg) = text.split_once(' ').unwrap_or((text, ""));
+            let scope = self.scope();
+            let control = match verb {
+                "/activity" => {
+                    let command = super::activity_center::parse(
+                        arg,
+                        self.service.scope.thread_id.clone(),
+                        self.service.current_run_id.clone(),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    json!({"type":"activity_center_v1","command":command})
+                }
+                "/agents" => {
+                    let command = super::persistent_agents::parse(
+                        app,
+                        if arg.is_empty() { "list" } else { arg },
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    command.validate().map_err(anyhow::Error::msg)?;
+                    json!({"type":"agents_v1","command":command})
+                }
+                "/status" | "/diagnostics" => json!({"type":"operator_status"}),
+                "/settings" => {
+                    self.settings_request(true)?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/permissions" if arg.is_empty() => {
+                    json!({"type":"inventory_v1","query":{"kind":"permissions"}})
+                }
+                "/config" if arg.is_empty() => {
+                    json!({"type":"inventory_v1","query":{"kind":"effective_config"}})
+                }
+                "/refusals" => {
+                    self.queue(json!({"type":"refusals_v1","command":{"thread_id":self.service.scope.thread_id,"run_id":self.service.current_run_id}}),Kind::Refusals{run:self.service.current_run_id.clone()})?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/evidence" => {
+                    self.final_request(true)?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/sessions" => {
+                    if arg.len() > 1024 || arg.chars().any(char::is_control) {
+                        bail!("session cursor exceeds its host bound");
+                    }
+                    let generation = self
+                        .sessions
+                        .begin(app, self.service.current_run_id.clone());
+                    self.sessions_request(
+                        (!arg.is_empty()).then(|| arg.to_owned()),
+                        generation,
+                        false,
+                    )?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+
+                "/artifacts" => {
+                    self.queue(json!({"type":"artifacts_v1","command":{"type":"list","thread_id":scope["thread_id"]}}), Kind::ArtifactList { prefix: arg.to_owned(), run: self.service.current_run_id.clone() })?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/extensions" => {
+                    json!({"type":"ordinary_extensions_v1","command":{"action":"read","thread_id":scope["thread_id"],"run_id":scope["run_id"],"offset":0,"limit":16}})
+                }
+                "/inputs" => {
+                    self.inputs_request()?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/input" => {
+                    let (id, body) = arg
+                        .split_once(' ')
+                        .context("use /input request-id [field values] or reject")?;
+                    let id = id
+                        .parse::<u64>()
+                        .context("invalid input request identity")?;
+                    let answer = if body == "reject" {
+                        json!({"action":"reject"})
+                    } else {
+                        let values: Vec<iteron_protocol::client_mcp_input::McpInputValueV1> =
+                            serde_json::from_str(body).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "input values must be a JSON array of field_index/content"
+                                )
+                            })?;
+                        json!({"action":"approve","values":values})
+                    };
+                    // No response value is added to the transcript, prompt history or observations.
+                    json!({"type":"mcp_inputs_v1","command":{"thread_id":scope["thread_id"],"run_id":scope["run_id"],"command":{"action":"respond","request_id":id,"answer":answer}}})
+                }
+                "/side" => {
+                    use iteron_protocol::client_interaction::{SideActionV1, SideCommandV1};
+                    let command = SideCommandV1 {
+                        thread_id: self.service.scope.thread_id.clone(),
+                        run_id: self.service.current_run_id.clone(),
+                        command: match super::control_submission::side_request_for(arg) {
+                            crate::app_server::SideRequest::Status => SideActionV1::Status {},
+                            crate::app_server::SideRequest::Close => SideActionV1::Close {},
+                            crate::app_server::SideRequest::Ask(text) => SideActionV1::Ask { text },
+                        },
+                    };
+                    command.validate().map_err(anyhow::Error::msg)?;
+                    json!({"type":"side_v1","command":command})
+                }
+                "/new" => {
+                    json!({"type":"session_navigate_v1","command":{"action":"new","thread_id":scope["thread_id"],"run_id":scope["run_id"]}})
+                }
+                "/resume" => {
+                    json!({"type":"session_navigate_v1","command":{"action":"resume","thread_id":scope["thread_id"],"run_id":scope["run_id"],"target_run_id":arg}})
+                }
+                "/models" => {
+                    let offset = if arg.is_empty() {
+                        0
+                    } else {
+                        arg.parse::<u32>().context("invalid model page")?
+                    };
+                    self.queue(json!({"type":"inventory_v1","query":{"kind":"models","offset":offset,"limit":100}}),Kind::Models)?;
+                    app.editor.clear();
+                    return Ok(false);
+                }
+                "/model" => {
+                    let (provider, model) = arg
+                        .split_once(':')
+                        .context("use /model provider:model after /models")?;
+                    let inventory = self
+                        .models
+                        .as_ref()
+                        .context("read /models before selecting a route")?;
+                    let row = inventory["records"]
+                        .as_array()
+                        .context("model inventory unavailable")?
+                        .iter()
+                        .find(|row| {
+                            row["provider_id"] == provider
+                                && row["model_id"] == model
+                                && row["selectable"] == true
+                        })
+                        .context("route is not selectable in the captured model page")?;
+                    let selection = iteron_protocol::client_inventory::ClientModelSelectionV1 {
+                        inventory_digest_sha256: inventory["inventory_digest_sha256"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                        provider_id: provider.into(),
+                        model_id: model.into(),
+                        catalog_digest_sha256: row["catalog_digest_sha256"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                        capability_digest_sha256: row["capability_digest_sha256"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                    };
+                    selection.validate().map_err(anyhow::Error::msg)?;
+                    json!({"type":"select_model_v1","selection":selection})
+                }
+                _ => bail!("unknown attached-client command; use /help"),
+            };
+            let kind = if matches!(
+                verb,
+                "/activity"
+                    | "/agents"
+                    | "/side"
+                    | "/status"
+                    | "/diagnostics"
+                    | "/permissions"
+                    | "/config"
+            ) {
+                Kind::ScopedControl {
+                    run: self.service.current_run_id.clone(),
+                }
+            } else {
+                Kind::Control
+            };
+            self.queue(control, kind)?;
+            app.editor.clear();
+            return Ok(false);
+        }
+        if self.accepted.is_some()
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|request| matches!(&request.kind, Kind::Submit { .. } | Kind::Start))
+            || self
+                .queued
+                .iter()
+                .any(|(_, kind)| matches!(kind, Kind::Submit { .. } | Kind::Start))
+        {
+            bail!("the prior submission is awaiting its host receipt; draft retained");
+        }
+        let now = Instant::now();
+        if let Some(start) = &mut self.start
+            && start.matches(
+                &self.service.scope.thread_id,
+                &self.service.current_run_id,
+                &draft,
+            )
+        {
+            start.retry(now);
+            let command = start.command();
+            self.product(command, Kind::Start)?;
+            return Ok(false);
+        }
+        if self
+            .start
+            .as_ref()
+            .is_some_and(|start| !start.can_replace())
+        {
+            bail!("the prior start is unconfirmed; retain or retry its draft, or select /new");
+        }
+        if let Some(turn) = self.active_turn() {
+            self.product(
+                json!({"type":"turn_steer","thread_id":self.service.scope.thread_id,"turn_id":turn,"text":draft}),
+                Kind::Submit { draft, revision: app.editor.draft_revision() },
+            )?;
+            self.start = None;
+        } else {
+            let start = StartRequest::new(
+                self.service.scope.thread_id.clone(),
+                self.service.current_run_id.clone(),
+                draft,
+                app.editor.draft_revision(),
+                now,
+                poll_period(),
+            )
+            .map_err(anyhow::Error::msg)?;
+            self.product(start.command(), Kind::Start)?;
+            self.start = Some(start);
+        }
+        Ok(false)
+    }
+    fn poll_start(&mut self, app: &mut App, now: Instant) -> Result<bool> {
+        if self.pending.is_some() || !self.queued.is_empty() {
+            return Ok(false);
+        }
+        let Some(start) = &mut self.start else {
+            return Ok(false);
+        };
+        match start.poll(now) {
+            StartPoll::Query => {
+                let command = start.command();
+                self.product(command, Kind::Start)?;
+                Ok(true)
+            }
+            StartPoll::Expired => {
+                app.status =
+                    "start remains unconfirmed · draft retained; automatic observation stopped"
+                        .into();
+                Ok(false)
+            }
+            StartPoll::Idle => Ok(false),
+        }
+    }
+    fn accept_draft(
+        &mut self,
+        app: &mut App,
+        id: SubmissionId,
+        draft: String,
+        revision: u64,
+        starts_turn: bool,
+    ) {
+        if starts_turn || self.active_turn().is_none() {
+            self.expected_submission = Some(id);
+            if app.run.submission_id() != Some(id) {
+                app.run.submission_accepted(id, Instant::now());
+            }
+        }
+        self.accepted = Some(AcceptedDraft {
+            id,
+            draft,
+            revision,
+        });
+        let known = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .submissions
+                .iter()
+                .find(|receipt| receipt.submission_id == id)
+                .map(|receipt| receipt.state)
+        });
+        if let Some(state) = known {
+            self.observe_submission(app, id, state);
+        }
+        app.status = "submission accepted · awaiting application".into();
+    }
+    fn approval_key(&mut self, app: &mut App, code: KeyCode) -> Result<()> {
+        if app.permission_prompt.awaiting_response()
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|request| matches!(&request.kind, Kind::Approval { .. }))
+            || self
+                .queued
+                .iter()
+                .any(|(_, kind)| matches!(kind, Kind::Approval { .. }))
+        {
+            return Ok(());
+        }
+        if let super::permission_prompt::ApprovalInput::Answer { approved, remember } =
+            app.permission_prompt.key(code)
+        {
+            let prompt = app
+                .permission_prompt
+                .read()
+                .context("approval prompt unavailable")?
+                .id;
+            let turn = self
+                .active_turn()
+                .context("approval no longer has an observed active turn")?;
+            self.product(json!({"type":"approval_respond","thread_id":self.service.scope.thread_id,"turn_id":turn,"approval_id":prompt,"approved":approved,"remember":remember}), Kind::Approval { prompt })?;
+        }
+        Ok(())
+    }
+    fn observe_submission(
+        &mut self,
+        app: &mut App,
+        id: SubmissionId,
+        state: SubmissionLifecycleState,
+    ) {
+        let observation = app.run.observe_receipt(id, state);
+        if matches!(
+            observation,
+            super::run_presentation::ReceiptObservation::Refused
+        ) && self.expected_submission == Some(id)
+        {
+            self.expected_submission = None;
+        }
+        if self.accepted.as_ref().is_none_or(|draft| draft.id != id) {
+            return;
+        }
+        if !matches!(
+            state,
+            SubmissionLifecycleState::Applied
+                | SubmissionLifecycleState::Rejected
+                | SubmissionLifecycleState::Expired
+        ) {
+            return;
+        }
+        let draft = self.accepted.take().expect("same id checked above");
+        if self.start.as_ref().is_some_and(|start| {
+            start.matches(
+                &self.service.scope.thread_id,
+                &self.service.current_run_id,
+                &draft.draft,
+            )
+        }) {
+            self.start = None;
+        }
+        if state == SubmissionLifecycleState::Applied {
+            app.push_user(draft.draft);
+            if app.editor.draft_revision() == draft.revision {
+                let _ = app.editor.take_submit();
+            }
+        } else {
+            app.panel(
+                "◇",
+                "submission not applied · retained text",
+                vec![block::PanelRow::Note(ui_safe_text(&draft.draft))],
+            );
+        }
+    }
+    fn reply(&mut self, app: &mut App, id: u64, reply: Value) -> Result<()> {
+        let Some(pending) = self.pending.take() else {
+            bail!("unsolicited remote control reply");
+        };
+        if pending.id != id {
+            bail!("remote control reply identity changed");
+        }
+        match pending.kind {
+            Kind::Snapshot => {
+                let snapshot: ThreadSnapshotV1 = serde_json::from_value(reply["thread"].clone())
+                    .context("thread observation unavailable")?;
+                if snapshot.contract_version
+                    != iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+                    || snapshot.thread_id != self.service.scope.thread_id
+                {
+                    bail!("thread observation changed service scope");
+                }
+                if snapshot.run_id != self.service.current_run_id {
+                    self.service.current_run_id = snapshot.run_id.clone();
+                    self.models = None;
+                    app.persistent_agent_views.clear();
+                    super::remote_settings::Settings::invalidate(app);
+                    self.queued.clear();
+                    self.accepted = None;
+                    self.start = None;
+                    self.queued.retain(|(_, kind)| !matches!(kind, Kind::Start));
+                    self.expected_submission = None;
+                    self.artifact = None;
+                    self.last_terminal = None;
+                    self.final_needed = false;
+                    self.settings_needed = true;
+                    app.clear_mcp_inputs();
+                    self.sessions.clear(app);
+                    app.artifact_viewer.close();
+                    app.telemetry.observe_remote_cost(None);
+                    app.history.clear();
+                    app.history.bind_selected_run(&snapshot.run_id);
+                    app.run.select_verified_run();
+                }
+                self.product.select_run(app, snapshot.run_id.clone());
+                app.product.observe_snapshot(&snapshot);
+                for receipt in &snapshot.submissions {
+                    self.observe_submission(app, receipt.submission_id, receipt.state);
+                }
+                if let Some(turn) = &snapshot.turn
+                    && turn.state == TurnStateV1::Running
+                    && !app.run.running()
+                    && let Some(id) = turn.submission_id
+                {
+                    app.run.submission_accepted(id, Instant::now());
+                }
+                app.session_name = format!(
+                    "Attached · {} · {}",
+                    &self.service.scope.service_id[..8],
+                    ui_safe_text(&snapshot.run_id.0)
+                );
+                self.snapshot = Some(snapshot);
+                self.poll_events = true;
+            }
+            Kind::Events => {
+                let page: ProductEventsPageV1 = serde_json::from_value(reply["page"].clone())
+                    .context("product content observation unavailable")?;
+                if page.thread_id != self.service.scope.thread_id || page.events.len() > 64 {
+                    bail!("product page scope or bound changed");
+                }
+                let terminal = page.latest_terminal.clone();
+                let source = page
+                    .events
+                    .iter()
+                    .filter_map(|event| event.source_event_seq)
+                    .max()
+                    .unwrap_or(0);
+                for event in &page.events {
+                    if event.run_id == self.service.current_run_id
+                        && let iteron_protocol::product_contract::ProductEventKindV1::Submission {
+                            receipt,
+                        } = &event.event
+                    {
+                        self.observe_submission(app, receipt.submission_id, receipt.state);
+                    }
+                }
+                self.product.ingest_page(app, page, source);
+                self.product_cursor = self.product.cursor();
+                if let Some(terminal) = terminal {
+                    let matches = self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.turn.as_ref())
+                        .is_some_and(|turn| {
+                            turn.turn_id == terminal.turn_id
+                                && self
+                                    .expected_submission
+                                    .is_none_or(|expected| turn.submission_id == Some(expected))
+                        });
+                    if terminal.thread_id == self.service.scope.thread_id
+                        && terminal.run_id == self.service.current_run_id
+                        && terminal.event_seq > 0
+                        && matches
+                    {
+                        let identity = (
+                            terminal.run_id.clone(),
+                            terminal.turn_id,
+                            terminal.event_seq,
+                        );
+                        if self.last_terminal.as_ref() != Some(&identity) {
+                            self.last_terminal = Some(identity);
+                            self.final_needed = true;
+                            self.settings_needed = true;
+                        }
+                        app.finish_text_boundary();
+                        if let Some(text) = app.product.take_terminal() {
+                            app.reconcile_terminal_assistant(&text);
+                        }
+                        app.flush_text();
+                        app.flush_think();
+                        app.permission_prompt.clear();
+                        app.settle_unfinished_tools();
+                        app.run.run_ended(Instant::now());
+                        self.expected_submission = None;
+                        app.status = "completed · backend remains available".into();
+                    }
+                }
+                self.poll_events = false;
+                self.poll_inputs = true;
+            }
+            Kind::Start => {
+                let start = self
+                    .start
+                    .as_mut()
+                    .context("turn-start request custody unavailable")?;
+                match start
+                    .reply(&reply, Instant::now())
+                    .map_err(anyhow::Error::msg)?
+                {
+                    StartReply::Accepted(id) => {
+                        let draft = start.draft.clone();
+                        let revision = start.revision;
+                        self.accept_draft(app, id, draft, revision, true);
+                    }
+                    StartReply::Pending => {
+                        app.status =
+                            "start pending · draft retained; observing the same request".into();
+                    }
+                    StartReply::Unconfirmed => {
+                        app.status =
+                            "start admission unconfirmed · draft retained; no automatic retry"
+                                .into();
+                    }
+                    StartReply::Refused => {
+                        app.status = if start.can_replace() {
+                            "start refused before registration · draft retained"
+                        } else {
+                            "start refused · prior admission unconfirmed; draft retained"
+                        }
+                        .into();
+                    }
+                }
+            }
+            Kind::Submit { draft, revision } => {
+                if reply["type"] == "control_queued_v1" {
+                    let id = reply["submission_id"]
+                        .as_u64()
+                        .filter(|id| *id > 0)
+                        .context("submission receipt unavailable")?;
+                    self.accept_draft(app, SubmissionId(id), draft, revision, false);
+                } else {
+                    show_reply(app, &reply);
+                }
+            }
+            Kind::FinalEvidence { run, detailed } => {
+                if run == self.service.current_run_id {
+                    let render = if detailed {
+                        super::final_evidence::remote_details
+                    } else {
+                        super::final_evidence::remote
+                    };
+                    render(
+                        app,
+                        &reply,
+                        &self.service.scope.thread_id,
+                        &self.service.scope.tenant,
+                        &run,
+                    );
+                }
+                self.final_needed = false;
+            }
+            Kind::Sessions {
+                run,
+                generation,
+                append,
+            } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                match self.sessions.page(app, &reply, append) {
+                    Ok(super::remote_sessions::Page::Applied) => {}
+                    Ok(super::remote_sessions::Page::Restart) => {
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "session index changed; reading the newest page",
+                        );
+                        self.sessions_request(None, generation, false)?;
+                    }
+                    Ok(super::remote_sessions::Page::Repair) => {
+                        self.queue(
+                            json!({"type":"thread_lifecycle_v1","command":{"type":"reindex","thread_id":self.service.scope.thread_id,"run_id":run}}),
+                            Kind::SessionsRepair { run, generation },
+                        )?;
+                    }
+                    Err(reason) => {
+                        self.sessions.clear(app);
+                        app.note(block::NoticeLevel::Warn, reason);
+                    }
+                }
+            }
+            Kind::SessionsRepair { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                if reply["type"] != "thread_reindexed_v1" {
+                    self.sessions.clear(app);
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "service session index repair unconfirmed; reopen to retry",
+                    );
+                } else {
+                    if reply["unavailable"].as_u64().is_some_and(|count| count > 0) {
+                        app.note(
+                            block::NoticeLevel::Warn,
+                            "some retained sessions were unavailable to the host index repair",
+                        );
+                    }
+                    self.sessions_request(None, generation, false)?;
+                }
+            }
+            Kind::SessionsActivity { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                let Some(snapshot) = self
+                    .snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.run_id == run)
+                else {
+                    self.sessions.activity_finished();
+                    return Ok(());
+                };
+                self.sessions.activity(app, &reply, snapshot);
+                self.queue(
+                    json!({"type":"artifacts_v1","command":{"type":"list","thread_id":self.service.scope.thread_id}}),
+                    Kind::SessionsChanges { run, generation },
+                )?;
+            }
+            Kind::SessionsChanges { run, generation } => {
+                if run != self.service.current_run_id
+                    || !self.sessions.matches(app, &run, generation)
+                {
+                    return Ok(());
+                }
+                if let Some(snapshot) = self
+                    .snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.run_id == run)
+                {
+                    self.sessions.changes(app, &reply, snapshot);
+                } else {
+                    self.sessions.activity_finished();
+                }
+            }
+            Kind::Refusals { run } => {
+                if run == self.service.current_run_id {
+                    super::refusal::remote(
+                        app,
+                        &reply,
+                        &self.service.scope.thread_id,
+                        &self.service.scope.tenant,
+                        &run,
+                    );
+                }
+            }
+            Kind::Inputs => {
+                if reply["type"] == "mcp_inputs_snapshot_v1" {
+                    let snapshot: iteron_protocol::client_mcp_input::McpInputsSnapshotV1 =
+                        serde_json::from_value(reply["snapshot"].clone())
+                            .map_err(|_| anyhow::anyhow!("input observation shape invalid"))?;
+                    let was_waiting = app.mcp_form.is_waiting();
+                    if let Err(reason) = app.mcp_form.observe_remote(
+                        &snapshot,
+                        &self.service.scope.thread_id,
+                        &self.service.current_run_id,
+                    ) {
+                        app.note(block::NoticeLevel::Warn, reason);
+                    } else if !was_waiting && app.mcp_form.is_waiting() {
+                        app.status = "MCP server is waiting for your input".into();
+                        self.sessions.clear(app);
+                        app.artifact_viewer.close();
+                    } else if was_waiting && !app.mcp_form.is_waiting() {
+                        app.status = "input callback closed · tool completion not inferred".into();
+                    }
+                }
+                self.poll_inputs = false;
+            }
+            Kind::McpResponse { request_id, run } => {
+                if run != self.service.current_run_id {
+                    return Ok(());
+                }
+                if reply["type"] == "mcp_input_response_v1"
+                    && reply["thread_id"] == self.service.scope.thread_id.0
+                    && reply["run_id"] == run.0
+                    && reply["request_id"].as_u64() == Some(request_id)
+                    && matches!(reply["state"].as_str(), Some("answered" | "rejected"))
+                {
+                    app.mcp_form.remote_handoff(request_id);
+                    app.status =
+                        "input callback handoff observed · tool completion not inferred".into();
+                } else {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "input callback handoff was refused or unconfirmed; retained form",
+                    );
+                }
+            }
+            Kind::ArtifactList { prefix, run } => {
+                if run != self.service.current_run_id {
+                    return Ok(());
+                }
+                if prefix.is_empty() {
+                    super::artifacts::render_listing(app, &reply);
+                } else {
+                    app.artifact_viewer.begin_remote();
+                    match super::artifact_view::Transfer::select(
+                        self.service.scope.thread_id.clone(),
+                        &prefix,
+                        &reply,
+                    ) {
+                        Ok(transfer) => {
+                            if self
+                                .queue(
+                                    json!({"type":"artifacts_v1","command":transfer.command()}),
+                                    Kind::ArtifactChunk {
+                                        generation: app.artifact_viewer.generation(),
+                                    },
+                                )
+                                .is_ok()
+                            {
+                                self.artifact = Some((run, transfer));
+                            } else {
+                                app.artifact_viewer.unavailable("artifact read queue is busy; retry after pending commands finish");
+                            }
+                        }
+                        Err(reason) => app.artifact_viewer.unavailable(reason),
+                    }
+                }
+            }
+            Kind::ArtifactChunk { generation } => {
+                if !app.artifact_viewer.is_open() || app.artifact_viewer.generation() != generation
+                {
+                    self.artifact = None;
+                    return Ok(());
+                }
+                let Some((run, mut transfer)) = self.artifact.take() else {
+                    app.artifact_viewer
+                        .unavailable("artifact transfer unavailable");
+                    return Ok(());
+                };
+                if run != self.service.current_run_id {
+                    app.artifact_viewer.close();
+                    return Ok(());
+                }
+                match transfer.accept(&reply) {
+                    Ok(true) => {
+                        if let Err(reason) = app.artifact_viewer.finish_remote(transfer, run) {
+                            app.artifact_viewer.unavailable(reason);
+                        }
+                    }
+                    Ok(false) => {
+                        if self
+                            .queue(
+                                json!({"type":"artifacts_v1","command":transfer.command()}),
+                                Kind::ArtifactChunk { generation },
+                            )
+                            .is_ok()
+                        {
+                            self.artifact = Some((run, transfer));
+                        } else {
+                            app.artifact_viewer.unavailable(
+                                "artifact read queue is busy; retry after pending commands finish",
+                            );
+                        }
+                    }
+                    Err(reason) => app.artifact_viewer.unavailable(reason),
+                }
+            }
+            Kind::Approval { prompt } => {
+                if reply["type"] == "control_queued_v1" {
+                    let id = reply["submission_id"]
+                        .as_u64()
+                        .filter(|id| *id > 0)
+                        .context("approval response receipt unavailable")?;
+                    app.permission_prompt
+                        .response_queued(prompt, SubmissionId(id));
+                    app.status = "approval response queued · awaiting application".into();
+                } else {
+                    show_reply(app, &reply);
+                }
+            }
+            Kind::Models => {
+                show_reply(app, &reply);
+                self.models = Some(reply);
+            }
+            Kind::Settings { run, show } => {
+                if run == self.service.current_run_id {
+                    match super::remote_settings::Settings::capture(&reply, &run) {
+                        Ok(settings) => settings.apply(app, show),
+                        Err(reason) => app.note(block::NoticeLevel::Warn, reason),
+                    }
+                    self.settings_needed = false;
+                }
+            }
+            Kind::Stop => {
+                show_reply(app, &reply);
+                if reply["type"] == "resident_service_stop_v1" {
+                    app.status = "service stop requested · cleanup not yet observed".into();
+                }
+            }
+            Kind::ScopedControl { run } => {
+                if run == self.service.current_run_id {
+                    show_reply(app, &reply);
+                }
+            }
+            Kind::Control => {
+                if reply["type"] == "state" {
+                    self.settings_needed = true;
+                }
+                if reply["type"] == "session_navigated_v1" {
+                    let navigation: iteron_protocol::session_navigation::SessionNavigationReplyV1 =
+                        serde_json::from_value(reply["navigation"].clone())
+                            .context("session navigation observation unavailable")?;
+                    if navigation.version != 1
+                        || navigation.thread_id != self.service.scope.thread_id
+                        || navigation.origin_run_id != self.service.current_run_id
+                    {
+                        bail!("session navigation scope changed");
+                    }
+                    self.service.current_run_id = navigation.run_id.clone();
+                    self.snapshot = None;
+                    self.models = None;
+                    app.persistent_agent_views.clear();
+                    super::remote_settings::Settings::invalidate(app);
+                    self.accepted = None;
+                    self.start = None;
+                    self.queued.retain(|(_, kind)| !matches!(kind, Kind::Start));
+                    self.expected_submission = None;
+                    self.artifact = None;
+                    self.last_terminal = None;
+                    self.final_needed = false;
+                    self.settings_needed = true;
+                    app.clear_mcp_inputs();
+                    self.sessions.clear(app);
+                    app.artifact_viewer.close();
+                    app.history.bind_selected_run(&navigation.run_id);
+                    app.run.select_verified_run();
+                    super::session_adoption::project_host_transcript(app, &navigation.transcript);
+                    self.product.select_run(app, navigation.run_id);
+                } else {
+                    show_reply(app, &reply);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+/// Historical machine events have a presentation cursor but no physical run identity. They are
+/// not projected by a reattach client. Its Product pages carry the actual thread/run/item scope.
+fn ignore_unscoped_event(_event: &Value) {}
+fn show_reply(app: &mut App, reply: &Value) {
+    if let Ok(refusal) =
+        serde_json::from_value::<iteron_protocol::refusal::HostRefusalV1>(reply["refusal"].clone())
+    {
+        super::refusal::show_with_detail(
+            app,
+            &refusal,
+            reply["message"].as_str().unwrap_or_default(),
+        );
+        return;
+    }
+    if reply["type"] == "activity_center_v1" {
+        super::activity_center::render(app, reply);
+        return;
+    }
+    if matches!(
+        reply["type"].as_str(),
+        Some("agents_v1" | "agent_observation_v1" | "agent_v1")
+    ) {
+        super::persistent_agents::render(app, reply);
+        return;
+    }
+    let text = serde_json::to_string(reply).unwrap_or_else(|_| "observation unavailable".into());
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    app.panel(
+        "◇",
+        "service reply",
+        vec![block::PanelRow::Note(ui_safe_text(&text[..end]))],
+    );
+    if end < text.len() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "reply display clipped; the host read port remains available",
+        );
+    }
+}
+
+/// Cached host metadata only; no provider, plugin or filesystem initialization is requested.
+async fn initial_settings(
+    transport: &mut Transport,
+    run: &iteron_protocol::RunId,
+) -> Result<super::remote_settings::Settings> {
+    let id = transport
+        .control(json!({"type":"inventory_v1","query":{"kind":"overview","limit":1}}))
+        .await?;
+    tokio::time::timeout(REPLY_DEADLINE, async {
+        for _ in 0..4096 {
+            let frame = transport
+                .next()
+                .await?
+                .context("service closed during settings observation")?;
+            if frame["type"] == "control_reply" && frame["request_id"] == id {
+                return super::remote_settings::Settings::capture(&frame["reply"], run)
+                    .map_err(anyhow::Error::msg);
+            }
+            if frame["type"] == "error" {
+                bail!("service refused settings observation");
+            }
+        }
+        bail!("settings observation exceeded the finite frame budget")
+    })
+    .await
+    .context("installed service settings observation timed out")?
+}
+
+pub(crate) async fn run(endpoint: SocketAddr, expected_service_id: String) -> Result<()> {
+    use std::io::IsTerminal as _;
+    if !std::io::stdout().is_terminal() {
+        bail!("attach requires an interactive terminal");
+    }
+    if expected_service_id.len() != 64
+        || !expected_service_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        bail!("attach requires the service identity printed by the listener");
+    }
+    let mut transport = Transport::connect(endpoint).await?;
+    let id = transport
+        .control(json!({"type":"resident_service_v1","command":{"action":"read"}}))
+        .await?;
+    let service = tokio::time::timeout(REPLY_DEADLINE, async {
+        for _ in 0..4096 {
+            let frame = transport
+                .next()
+                .await?
+                .context("service closed during attachment")?;
+            if frame["type"] == "control_reply" && frame["request_id"] == id {
+                return serde_json::from_value::<ResidentServiceViewV1>(
+                    frame["reply"]["service"].clone(),
+                )
+                .context("resident service observation unavailable");
+            }
+            if frame["type"] == "error" {
+                bail!("service refused attachment");
+            }
+        }
+        bail!("service attachment exceeded the finite frame budget")
+    })
+    .await
+    .context("resident service observation timed out")??;
+    service.scope.validate().map_err(anyhow::Error::msg)?;
+    if service.version != RESIDENT_SERVICE_VERSION
+        || service.scope.service_id != expected_service_id
+        || service.scope.thread_id != transport.thread
+        || service.endpoint != endpoint
+        || service.stopping
+        || service.shutdown_completed
+    {
+        bail!("listener identity, endpoint or lifecycle does not match the selected service");
+    }
+    let initial_settings = initial_settings(&mut transport, &service.current_run_id).await?;
+    let environment = theme::capabilities::Environment::capture();
+    let detected = theme::Theme::detect_with(environment, None);
+    let mut app = App::new_with_detected_theme(detected);
+    initial_settings.apply(&mut app, false);
+    app.telemetry.observe_remote_cost(None);
+    app.status = "attached · /detach leaves backend work running".into();
+    app.keymap_status = "attached client".into();
+    app.history.bind_selected_run(&service.current_run_id);
+    let guard = TermGuard::new()?;
+    let (termination_tx, mut termination_rx) = mpsc::channel::<()>(1);
+    #[cfg(unix)]
+    let mut signal_tasks = Vec::new();
+    #[cfg(not(unix))]
+    let signal_tasks = Vec::new();
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+            let mut signal = signal(kind).context("attach termination signal unavailable")?;
+            let keyboard = guard.keyboard_restorer();
+            let sender = termination_tx.clone();
+            signal_tasks.push(tokio::spawn(async move {
+                signal.recv().await;
+                super::terminal_lifecycle::restore_terminal(&keyboard);
+                let _ = sender.send(()).await;
+            }));
+        }
+    }
+    struct SignalTasks(Vec<tokio::task::JoinHandle<()>>);
+    impl Drop for SignalTasks {
+        fn drop(&mut self) {
+            for task in &self.0 {
+                task.abort();
+            }
+        }
+    }
+    let _signals = SignalTasks(signal_tasks);
+    let _termination_tx = termination_tx;
+    let (writer, _notifications) = notification::LiveTerminalWriter::stdout();
+    let mut terminal = Terminal::new(CrosstermBackend::new(writer))?;
+    let mut input = Input::start();
+    let mut view = View {
+        service,
+        snapshot: None,
+        product: ProductProjection::remote(),
+        pending: None,
+        queued: std::collections::VecDeque::new(),
+        models: None,
+        sessions: Default::default(),
+        product_cursor: 0,
+        poll_events: false,
+        poll_inputs: false,
+        last_terminal: None,
+        final_needed: false,
+        settings_needed: false,
+        last_live_seq: 0,
+        accepted: None,
+        start: None,
+        expected_submission: None,
+        artifact: None,
+    };
+    view.snapshot_request()?;
+    let mut tick = tokio::time::interval(poll_period());
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        if view.pending.is_none()
+            && let Some((control, kind)) = view.queued.pop_front()
+        {
+            let deadline = if matches!(&kind, Kind::Start) {
+                view.start
+                    .as_ref()
+                    .context("turn-start request custody unavailable")?
+                    .deadline()
+            } else {
+                Instant::now() + REPLY_DEADLINE
+            };
+            if matches!(&kind, Kind::Start) && Instant::now() >= deadline {
+                if let Some(start) = &mut view.start {
+                    start.stop_observing();
+                }
+                app.status =
+                    "start dispatch unconfirmed · draft retained; observation deadline ended"
+                        .into();
+            } else {
+                let id = transport.control(control).await?;
+                view.pending = Some(Request { id, kind, deadline });
+            }
+        }
+        app.artifact_viewer.poll(&view.service.current_run_id);
+        if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
+            view.sessions.clear(&mut app);
+        }
+        terminal.draw(|frame| draw(frame, &mut app))?;
+        tokio::select! {
+            _=termination_rx.recv()=>break,
+            frame=transport.next()=>{
+                let Some(frame)=frame?else{app.status="service connection closed; completion was not inferred".into();break;};
+                match frame["type"].as_str() {
+                    Some("control_reply")=>view.reply(&mut app,frame["request_id"].as_u64().context("reply identity unavailable")?,frame["reply"].clone())?,
+                    Some("event")|Some("result")=>{
+                        let seq=frame["seq"].as_u64().filter(|v|*v>view.last_live_seq).context("service presentation sequence did not advance")?;view.last_live_seq=seq;
+                        // Frozen machine frames lack Product turn scope. Neither an old result
+                        // nor an old tool event can mutate this selected run or release input.
+                        if frame["type"]=="event" {ignore_unscoped_event(&frame["event"]);}
+                    },
+                    Some("error")=>{show_reply(&mut app,&frame);},
+                    _=>{},
+                }
+            },
+            incoming=input.receiver.recv()=>{
+                let Some(incoming)=incoming else{break;};
+                let ReadResult::Event(event)=incoming?else{continue;};
+                match event {
+                    Event::Key(key) if key.kind!=KeyEventKind::Release=>{
+                        if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() { app.artifact_viewer.close(); }
+                        if app.artifact_viewer.is_open() && !key.modifiers.contains(KeyModifiers::CONTROL) {app.artifact_viewer.key(key.code);continue;}
+                        if key.modifiers.contains(KeyModifiers::CONTROL) { app.artifact_viewer.close(); }
+                        if app.mcp_form.is_waiting() {
+                            match view.mcp_key(&mut app,key) {Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())};
+                            continue;
+                        }
+                        if app.pickers.has_remote_sessions() && app.permission_prompt.read().is_none() {
+                            match view.sessions_key(&mut app,key) {Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())};
+                            continue;
+                        }
+                        if app.permission_prompt.read().is_some() {
+                            view.sessions.clear(&mut app);
+                            if let Err(error) = view.approval_key(&mut app, key.code) { app.note(block::NoticeLevel::Warn, error.to_string()); }
+                            continue;
+                        }
+                        if key.modifiers.contains(KeyModifiers::CONTROL)&&matches!(key.code,KeyCode::Char('d')){break;}
+                        if key.modifiers.contains(KeyModifiers::CONTROL)&&matches!(key.code,KeyCode::Char('c')) {
+                            if view.active_turn().is_some(){if let Err(error)=view.interrupt(){app.note(block::NoticeLevel::Warn,error.to_string());}}else{break;}
+                        } else {match key.code {
+                            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL)=>app.editor.newline(),
+                            KeyCode::Enter=>match view.submit(&mut app){Ok(true)=>break,Ok(false)=>{},Err(error)=>app.note(block::NoticeLevel::Warn,error.to_string())},
+                            KeyCode::Esc=>if view.active_turn().is_some(){if let Err(error)=view.interrupt(){app.note(block::NoticeLevel::Warn,error.to_string());}}else{break;},
+                            KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL|KeyModifiers::ALT)=>{if app.editor.text().len()<MAX_DRAFT_BYTES{app.editor.insert(c);}},
+                            KeyCode::Backspace=>app.editor.backspace(),KeyCode::Delete=>app.editor.delete(),KeyCode::Left=>app.editor.left(),KeyCode::Right=>app.editor.right(),
+                            KeyCode::Home=>app.editor.home(),KeyCode::End=>app.editor.end(),KeyCode::Up=>app.editor.history_prev(),KeyCode::Down=>app.editor.history_next(),
+                            KeyCode::PageUp=>app.scroll_up(10),KeyCode::PageDown=>app.scroll_down(10),_=>{},
+                        }}
+                    },
+                    Event::Paste(text) if app.mcp_form.is_waiting()=>super::mcp_input::handle_paste(&mut app,&text),
+                    Event::Paste(text) if app.pickers.has_remote_sessions()=>{app.pickers.paste(&text);},
+                    Event::Paste(text)=>{if app.editor.text().len().saturating_add(text.len())<=MAX_DRAFT_BYTES{app.editor.insert_str(&crate::editor::sanitize_foreign_text(&text));}else{app.note(block::NoticeLevel::Warn,"paste exceeds the bounded remote draft; retained current text");}},
+                    _=>{},
+                }
+            },
+            _=tick.tick()=>{
+                if let Some(request) = &view.pending && Instant::now() > request.deadline {
+                    if matches!(&request.kind, Kind::Start) {
+                        if let Some(start) = &mut view.start { start.stop_observing(); }
+                        // Keep correlation for a late reply. No new command or request key is
+                        // dispatched while this transport outcome remains unconfirmed.
+                        app.status = "start reply timed out · draft retained; delivery unconfirmed".into();
+                    } else { bail!("remote reply timed out; command delivery/continuation is unconfirmed"); }
+                }
+                if view.pending.is_none()&&view.queued.is_empty(){if view.poll_start(&mut app,Instant::now())?{}else if view.final_needed{view.final_request(false)?;}else if view.settings_needed{view.settings_request(false)?;}else if view.poll_inputs{view.inputs_request()?;}else if view.sessions_poll(&app)?{}else if view.poll_events{view.events_request()?;}else{view.snapshot_request()?;}}
+            },
+        }
+    }
+    // No process handle, runtime Drop, Op::Drain, service stop or provider constructor is here.
+    drop(input);
+    drop(terminal);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn attached_owner_controls_keep_actual_arguments_and_scope_in_the_public_activity_contract() {
+        let mut app = App::new();
+        let mut view = view();
+        for (text, verb, target) in [
+            (
+                "/activity attach process proc-native-1",
+                "inspect",
+                "proc-native-1",
+            ),
+            (
+                "/activity stop process proc-native-1",
+                "stop",
+                "proc-native-1",
+            ),
+        ] {
+            app.editor.clear();
+            app.editor.insert_str(text);
+            assert!(!view.submit(&mut app).unwrap());
+            let (wire, kind) = view.queued.pop_front().unwrap();
+            assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
+            assert_eq!(wire["command"]["action"], verb);
+            assert_eq!(wire["command"]["target"]["job_id"], target);
+            assert_eq!(wire["command"]["thread_id"], "thread");
+            assert_eq!(wire["command"]["run_id"], "run");
+            let parsed: iteron_protocol::activity_control::ActivityControlV1 =
+                serde_json::from_value(wire["command"].clone()).unwrap();
+            assert_eq!(parsed.is_read_only(), verb == "inspect");
+        }
+        for (text, action) in [("/side status", "status"), ("/side close", "close")] {
+            app.editor.clear();
+            app.editor.insert_str(text);
+            view.submit(&mut app).unwrap();
+            let (wire, _) = view.queued.pop_front().unwrap();
+            assert_eq!(wire["command"]["command"]["action"], action);
+            assert!(wire["command"]["command"]["text"].is_null());
+        }
+        app.editor.insert_str("/agents interrupt 7");
+        assert!(
+            view.submit(&mut app).is_err(),
+            "no observed epoch cannot dispatch an interrupt"
+        );
+        assert!(view.queued.is_empty());
+        assert_eq!(app.editor.text(), "/agents interrupt 7");
+        app.editor.clear();
+        app.editor
+            .insert_str("/agents followup 7 continue this task");
+        view.submit(&mut app).unwrap();
+        let (wire, _) = view.queued.pop_front().unwrap();
+        let command: iteron_protocol::client_agent_control::ClientAgentControlV1 =
+            serde_json::from_value(wire["command"].clone()).unwrap();
+        assert!(
+            matches!(command,iteron_protocol::client_agent_control::ClientAgentControlV1::Command {
+            command:iteron_protocol::agent_control::AgentCommandV1::FollowupTask { agent_id, .. }, ..
+        } if agent_id.0 == 7)
+        );
+    }
+    #[test]
+    fn closed_or_foreign_run_control_reply_never_relabels_a_new_selected_run() {
+        let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
+        let mut view = view();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::ScopedControl {
+                run: iteron_protocol::RunId("old".into()),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"activity_center_v1","data":{"activities":[]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
+        assert!(view.queued.is_empty());
+        app.editor.insert_str("/status");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(wire["type"], "operator_status");
+        assert!(matches!(kind, Kind::ScopedControl { run } if run.0 == "run"));
+    }
+    #[test]
+    fn explicit_evidence_request_retains_detail_after_automatic_observation() {
+        let mut app = App::new();
+        let before = app.history.blocks().len();
+        let mut view = view();
+        let reply = json!({
+            "type": "host_final_evidence_v1",
+            "thread_id": view.service.scope.thread_id,
+            "run_id": view.service.current_run_id,
+            "source": "actual_host_receipt", "historical_recovery": false,
+            "evidence": {
+                "tenant": view.service.scope.tenant,
+                "run_id": view.service.current_run_id,
+                "first_turn": 0, "final_turn": 0, "source_seq": 8,
+                "observed_tool_completions": 0, "observed_tool_failures": 0,
+                "configured_check": "not_observed", "configured_check_source_seq": null,
+                "effects_known": true, "write_capable_effect_admitted": false,
+                "coverage": "live_invocation", "workspace_diff_inspected": false,
+                "test_suite_identity_verified": false, "correction": null
+            }
+        });
+        for (expected, detailed) in [false, true, true].into_iter().enumerate() {
+            if detailed {
+                app.editor.insert_str("/evidence");
+                view.submit(&mut app).unwrap();
+            } else {
+                view.final_request(false).unwrap();
+            }
+            let (_, kind) = view.queued.pop_front().unwrap();
+            view.pending = Some(Request {
+                id: 1,
+                kind,
+                deadline: Instant::now() + REPLY_DEADLINE,
+            });
+            view.reply(&mut app, 1, reply.clone()).unwrap();
+            assert_eq!(app.history.blocks().len(), before + expected);
+            if detailed {
+                let text = app.history.blocks().last().unwrap().to_text();
+                assert!(text.contains("Completion checks"));
+                assert!(text.contains("tool completions"));
+            }
+        }
+        assert!(!app.run.running());
+    }
+
+    #[test]
+    fn settings_request_keeps_current_run_and_late_reply_cannot_apply_to_new_run() {
+        let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
+        let mut view = view();
+        app.editor.insert_str("/settings");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(wire["type"], "inventory_v1");
+        assert_eq!(wire["query"]["kind"], "overview");
+        assert!(matches!(kind, Kind::Settings { run, show:true } if run.0 == "run"));
+        app.model = "new-selected-model".into();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Settings {
+                run: iteron_protocol::RunId("previous".into()),
+                show: true,
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"client_inventory_v1","records":[]}),
+        )
+        .unwrap();
+        assert_eq!(app.model, "new-selected-model");
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
+        assert!(view.queued.is_empty());
+    }
+    fn view() -> View {
+        View {
+            service: ResidentServiceViewV1 {
+                version: 1,
+                scope: iteron_protocol::resident_service::ResidentServiceScopeV1 {
+                    service_id: "a".repeat(64),
+                    thread_id: iteron_protocol::SessionId("thread".into()),
+                    tenant: iteron_protocol::TenantId::default(),
+                    workspace_sha256: "b".repeat(64),
+                },
+                endpoint: "127.0.0.1:12345".parse().unwrap(),
+                current_run_id: iteron_protocol::RunId("run".into()),
+                stopping: false,
+                shutdown_completed: false,
+            },
+            snapshot: None,
+            product: ProductProjection::remote(),
+            pending: None,
+            queued: Default::default(),
+            models: None,
+            sessions: Default::default(),
+            product_cursor: 0,
+            poll_events: false,
+            poll_inputs: false,
+            last_terminal: None,
+            final_needed: false,
+            settings_needed: false,
+            last_live_seq: 0,
+            accepted: None,
+            start: None,
+            expected_submission: None,
+            artifact: None,
+        }
+    }
+    fn start_receipt(wire: &Value, state: &str, id: Option<u64>) -> Value {
+        json!({"type":"turn_start_receipt_v2", "contract_version":iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
+            "request_key":wire["command"]["request_key"], "thread_id":wire["command"]["thread_id"],
+            "state":state, "submission_id":id, "run_id":id.map(|_| "run"),
+            "turn_id":id.map(|_| 1), "window_closed":false})
+    }
+    #[test]
+    fn start_v2_pending_lookup_retains_exact_draft_until_actual_applied_receipt() {
+        let mut app = App::new();
+        let mut view = view();
+        let task = "  后续任务\n";
+        app.editor.insert_str(task);
+        view.submit(&mut app).unwrap();
+        assert!(
+            view.submit(&mut app).is_err(),
+            "queued start cannot mint a second key"
+        );
+        assert_eq!(view.queued.len(), 1);
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        assert!(matches!(&kind, Kind::Start));
+        assert_eq!(wire["command"]["text"], task);
+        let decoded: iteron_protocol::product_contract::ProductControlV1 =
+            serde_json::from_value(wire["command"].clone()).unwrap();
+        assert!(matches!(
+            decoded,
+            iteron_protocol::product_contract::ProductControlV1::TurnStart { .. }
+        ));
+        iteron_record::turn_start_store::prepare(
+            wire["command"]["request_key"].as_str().unwrap(),
+            &view.service.scope.thread_id,
+            task,
+        )
+        .unwrap();
+        view.pending = Some(Request {
+            id: 1,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, start_receipt(&wire, "pending", None))
+            .unwrap();
+        assert!(view.accepted.is_none());
+        assert!(!app.run.running());
+        assert_eq!(app.editor.text(), task);
+        assert!(
+            view.poll_start(&mut app, Instant::now() + Duration::from_millis(300))
+                .unwrap()
+        );
+        let (lookup, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(
+            lookup, wire,
+            "pending lookup retains key, scope and exact text"
+        );
+        view.pending = Some(Request {
+            id: 2,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 2, start_receipt(&wire, "running", Some(7)))
+            .unwrap();
+        assert!(app.run.running());
+        assert_eq!(app.editor.text(), task);
+        assert!(
+            !app.history
+                .blocks()
+                .iter()
+                .any(|block| matches!(&block.kind, block::BlockKind::User(_)))
+        );
+        view.observe_submission(&mut app, SubmissionId(8), SubmissionLifecycleState::Applied);
+        assert!(view.accepted.is_some());
+        app.editor.clear();
+        app.editor.insert_str("a newer draft");
+        view.observe_submission(&mut app, SubmissionId(7), SubmissionLifecycleState::Applied);
+        assert!(view.start.is_none());
+        assert!(view.accepted.is_none());
+        assert_eq!(app.editor.text(), "a newer draft");
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .filter(|block| matches!(&block.kind, block::BlockKind::User(text) if text == task))
+                .count(),
+            1
+        );
+        app.run.run_ended(Instant::now());
+        app.editor.clear();
+        app.editor.insert_str(task);
+        view.submit(&mut app).unwrap();
+        assert_ne!(
+            view.queued.front().unwrap().0["command"]["request_key"],
+            wire["command"]["request_key"],
+            "a new explicit task after application owns a new identity"
+        );
+    }
+    #[test]
+    fn start_unknown_never_automatically_retries_and_explicit_retry_keeps_key() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("retained task");
+        view.submit(&mut app).unwrap();
+        let (wire, kind) = view.queued.pop_front().unwrap();
+        view.pending = Some(Request {
+            id: 1,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, start_receipt(&wire, "admission_unknown", None))
+            .unwrap();
+        assert_eq!(app.editor.text(), "retained task");
+        assert!(view.accepted.is_none());
+        assert!(
+            !view
+                .poll_start(&mut app, Instant::now() + Duration::from_secs(6))
+                .unwrap()
+        );
+        assert!(view.queued.is_empty());
+        view.submit(&mut app).unwrap();
+        assert_eq!(view.queued.front().unwrap().0, wire);
+        assert!(view.submit(&mut app).is_err());
+        assert_eq!(view.queued.len(), 1);
+    }
+    #[test]
+    fn verified_navigation_retires_old_start_identity_and_queued_lookup() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("old task");
+        view.submit(&mut app).unwrap();
+        let old_key = view.queued.front().unwrap().0["command"]["request_key"].clone();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Control,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app, 1, json!({"type":"session_navigated_v1","navigation":{
+            "version":1,"thread_id":"thread","origin_run_id":"run","run_id":"new-run","fresh":true,
+            "provider_id":"provider","model_id":"model","effort":"medium","context_window_tokens":null,
+            "messages":0,"turns":0,"checkpoint_digest_sha256":"a".repeat(64),"blocked":null,"substituted_route":null,
+            "transcript":{"source":"verified_record","total_blocks":0,"omitted_blocks":0,"blocks":[]}
+        }})).unwrap();
+        assert!(view.start.is_none());
+        assert!(view.queued.is_empty());
+        assert!(view.snapshot.is_none());
+        view.submit(&mut app).unwrap();
+        assert_ne!(
+            view.queued.front().unwrap().0["command"]["request_key"],
+            old_key
+        );
+    }
+    #[test]
+    fn queued_reply_does_not_claim_application_and_exact_receipt_preserves_new_draft() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("the original task");
+        let revision = app.editor.draft_revision();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Submit {
+                draft: "the original task".into(),
+                revision,
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"control_queued_v1","submission_id":7}),
+        )
+        .unwrap();
+        assert_eq!(app.editor.text(), "the original task");
+        assert!(
+            app.run.running(),
+            "the actual SQ receipt reserves input until real host termination"
+        );
+        view.observe_submission(&mut app, SubmissionId(8), SubmissionLifecycleState::Applied);
+        assert!(view.accepted.is_some());
+        app.editor.clear();
+        app.editor.insert_str("new draft");
+        view.observe_submission(&mut app, SubmissionId(7), SubmissionLifecycleState::Applied);
+        assert!(view.accepted.is_none());
+        assert_eq!(app.editor.text(), "new draft");
+        assert!(app.history.blocks().iter().any(
+            |block| matches!(&block.kind,block::BlockKind::User(text) if text=="the original task")
+        ));
+    }
+    #[test]
+    fn refused_submission_keeps_owned_text_and_never_dispatches_drain_on_detach() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("retained task");
+        view.accepted = Some(AcceptedDraft {
+            id: SubmissionId(5),
+            draft: "retained task".into(),
+            revision: app.editor.draft_revision(),
+        });
+        view.observe_submission(
+            &mut app,
+            SubmissionId(5),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert_eq!(app.editor.text(), "retained task");
+        assert!(!app.run.running());
+        app.editor.clear();
+        app.editor.insert_str("/detach");
+        assert!(view.submit(&mut app).unwrap());
+        assert!(view.queued.is_empty());
+    }
+    #[test]
+    fn actual_rejection_releases_only_unadmitted_submission_and_accepts_the_next_identity() {
+        let mut app = App::new();
+        let mut view = view();
+        app.editor.insert_str("first");
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Submit {
+                draft: "first".into(),
+                revision: app.editor.draft_revision(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"control_queued_v1","submission_id":4}),
+        )
+        .unwrap();
+        assert!(app.run.running());
+        view.observe_submission(
+            &mut app,
+            SubmissionId(99),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(app.run.running());
+        view.observe_submission(
+            &mut app,
+            SubmissionId(4),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(!app.run.running());
+        assert!(view.expected_submission.is_none());
+        assert_eq!(app.editor.text(), "first");
+        app.editor.clear();
+        app.editor.insert_str("second");
+        view.pending = Some(Request {
+            id: 2,
+            kind: Kind::Submit {
+                draft: "second".into(),
+                revision: app.editor.draft_revision(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            2,
+            json!({"type":"control_queued_v1","submission_id":5}),
+        )
+        .unwrap();
+        view.observe_submission(
+            &mut app,
+            SubmissionId(5),
+            SubmissionLifecycleState::Admitted,
+        );
+        view.observe_submission(
+            &mut app,
+            SubmissionId(5),
+            SubmissionLifecycleState::Rejected,
+        );
+        assert!(
+            app.run.running(),
+            "a rejected receipt cannot undo actual prior admission"
+        );
+        assert_eq!(view.expected_submission, Some(SubmissionId(5)));
+    }
+
+    #[test]
+    fn delayed_old_machine_event_after_navigation_cannot_contaminate_selected_run() {
+        let mut app = App::new();
+        let mut view = view();
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        view.service.current_run_id = iteron_protocol::RunId("new-run".into());
+        app.history.clear();
+        app.history.bind_selected_run(&view.service.current_run_id);
+        view.product
+            .select_run(&mut app, view.service.current_run_id.clone());
+        let before = app.history.revision();
+        ignore_unscoped_event(
+            &json!({"type":"tool_start","tool_use_id":"old-call","name":"write_file","args":{"path":"old-run.txt"}}),
+        );
+        ignore_unscoped_event(
+            &json!({"type":"tool_end","tool_use_id":"old-call","ok":true,"output":"old secret output"}),
+        );
+        ignore_unscoped_event(&json!({"type":"run_done"}));
+        assert_eq!(app.history.revision(), before);
+        assert!(app.run.running());
+        use iteron_protocol::product_contract::{
+            ItemContentChannelV1, ItemKindV1, ItemStateV1, ProductEventKindV1, ProductEventV1,
+            ProductEventsPageV1, ProductTurnId,
+        };
+        let make = |seq, run: &str, event| ProductEventV1 {
+            event_seq: seq,
+            source_event_seq: Some(seq),
+            thread_id: view.service.scope.thread_id.clone(),
+            run_id: iteron_protocol::RunId(run.into()),
+            turn_id: Some(ProductTurnId(1)),
+            item_id: Some("same-item-id".into()),
+            event,
+        };
+        let page = ProductEventsPageV1 {
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
+            thread_id: view.service.scope.thread_id.clone(),
+            requested_after: 0,
+            oldest_available: 1,
+            latest_cursor: 5,
+            next_cursor: 5,
+            latest_terminal: None,
+            gap: None,
+            events: vec![
+                make(
+                    1,
+                    "old-run",
+                    ProductEventKindV1::ItemStarted {
+                        kind: ItemKindV1::ToolCall,
+                        title: Some("write_file".into()),
+                    },
+                ),
+                make(
+                    2,
+                    "old-run",
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::ToolOutput,
+                        content: "old secret output".into(),
+                    },
+                ),
+                make(
+                    3,
+                    "new-run",
+                    ProductEventKindV1::ItemStarted {
+                        kind: ItemKindV1::ToolCall,
+                        title: Some("read_file".into()),
+                    },
+                ),
+                make(
+                    4,
+                    "new-run",
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::ToolOutput,
+                        content: "same scoped public bytes".into(),
+                    },
+                ),
+                make(
+                    5,
+                    "new-run",
+                    ProductEventKindV1::ItemEnded {
+                        state: ItemStateV1::Completed,
+                    },
+                ),
+            ],
+        };
+        view.product.ingest_page(&mut app, page, 5);
+        let text = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<String>();
+        assert!(text.contains("same scoped public bytes"));
+        assert!(!text.contains("old secret output"));
+        assert!(!text.contains("write_file"));
+    }
+    #[tokio::test]
+    async fn remote_artifact_download_preserves_all_chunks_and_cancelled_scope_is_not_reused() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let bytes = format!("{}REMOTE-ARTIFACT-TAIL", "x".repeat(100_000)).into_bytes();
+        let descriptor = iteron_protocol::client_artifact::ClientArtifactDescriptorV1 {
+            artifact_id: hex::encode(Sha256::digest(&bytes)),
+            schema: "iteron.fixture.v1".into(),
+            mime_type: "text/plain".into(),
+            bytes: bytes.len() as u64,
+            complete: true,
+            required_capability: iteron_protocol::Capability::ReadOnly,
+            source_event_seq: 23,
+        };
+        let mut app = App::new();
+        let mut view = view();
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::ArtifactList {
+                prefix: descriptor.artifact_id[..12].into(),
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"artifacts_v1","contract_version":1,"artifacts":[descriptor]}),
+        )
+        .unwrap();
+        let mut offset = 0;
+        for (index, bytes) in bytes.chunks(64 * 1024).enumerate() {
+            let (request, kind) = view.queued.pop_front().unwrap();
+            assert_eq!(request["command"]["artifact_id"], descriptor.artifact_id);
+            assert_eq!(request["command"]["offset"], offset);
+            let end = offset + bytes.len();
+            view.pending = Some(Request {
+                id: index as u64 + 2,
+                kind,
+                deadline: Instant::now() + REPLY_DEADLINE,
+            });
+            view.reply(&mut app,index as u64+2,json!({"type":"artifact_chunk_v1","contract_version":1,"artifact":descriptor,"offset":offset,"next_offset":end,"eof":end==descriptor.bytes as usize,"content_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})).unwrap();
+            offset = end;
+        }
+        assert_eq!(offset, bytes.len());
+        assert!(view.artifact.is_none());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !app.artifact_viewer.poll(&view.service.current_run_id) {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for _ in 0..bytes.len().div_ceil(8192) - 1 {
+            app.artifact_viewer.key(KeyCode::Right);
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 100)).unwrap();
+        terminal
+            .draw(|frame| super::super::artifact_view::render(frame, &app.artifact_viewer))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("REMOTE-ARTIFACT-TAIL"));
+        assert!(screen.contains("SHA-256 verified"));
+        let generation = app.artifact_viewer.generation();
+        app.artifact_viewer.close();
+        view.pending = Some(Request {
+            id: 4,
+            kind: Kind::ArtifactChunk { generation },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            4,
+            json!({"type":"artifact_chunk_v1","artifact":{"source_event_seq":999}}),
+        )
+        .unwrap();
+        assert!(!app.artifact_viewer.is_open());
+        assert!(view.artifact.is_none());
+        assert!(view.queued.is_empty());
+        view.pending = Some(Request {
+            id: 5,
+            kind: Kind::ArtifactList {
+                prefix: descriptor.artifact_id.clone(),
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.service.current_run_id = iteron_protocol::RunId("new".into());
+        view.reply(
+            &mut app,
+            5,
+            json!({"type":"artifacts_v1","contract_version":1,"artifacts":[descriptor]}),
+        )
+        .unwrap();
+        assert!(!app.artifact_viewer.is_open());
+        assert!(view.queued.is_empty());
+    }
+    #[test]
+    fn attached_modal_callback_ack_is_scoped_and_detach_never_rejects_the_pending_request() {
+        let mut app = App::new();
+        let initial_history = app
+            .history
+            .blocks()
+            .iter()
+            .map(|block| block.to_text())
+            .collect::<Vec<_>>();
+        let mut view = view();
+        let snapshot = json!({"version":1,"thread_id":view.service.scope.thread_id,"run_id":view.service.current_run_id,"revision":1,"pending":[{"request_id":6,"server_display":"alpha","tool_display":"profile","fields":[{"field_index":0,"prompt":"Enter name","schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}],"prompt_complete":true}],"closed":[],"omitted_closed":0});
+        view.pending = Some(Request {
+            id: 1,
+            kind: Kind::Inputs,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(
+            &mut app,
+            1,
+            json!({"type":"mcp_inputs_snapshot_v1","snapshot":snapshot}),
+        )
+        .unwrap();
+        assert!(app.mcp_form.is_waiting());
+        super::super::mcp_input::handle_paste(&mut app, r#"{"name":"private-response"}"#);
+        assert!(
+            view.mcp_key(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            )
+            .unwrap()
+        );
+        assert!(view.queued.is_empty());
+        assert!(app.mcp_form.is_waiting());
+        view.mcp_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(app.mcp_form.is_waiting());
+        assert!(app.editor.text().is_empty());
+        assert_eq!(
+            app.history
+                .blocks()
+                .iter()
+                .map(|block| block.to_text())
+                .collect::<Vec<_>>(),
+            initial_history
+        );
+        assert!(
+            view.mcp_key(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            )
+            .is_err()
+        );
+        let (command, kind) = view.queued.pop_front().unwrap();
+        assert_eq!(
+            command["command"]["command"]["answer"]["values"][0]["content"]["name"],
+            "private-response"
+        );
+        view.pending = Some(Request {
+            id: 2,
+            kind,
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app,2,json!({"type":"mcp_input_response_v1","thread_id":view.service.scope.thread_id,"run_id":"foreign","request_id":6,"state":"answered"})).unwrap();
+        assert!(app.mcp_form.is_waiting());
+        view.pending = Some(Request {
+            id: 3,
+            kind: Kind::McpResponse {
+                request_id: 6,
+                run: view.service.current_run_id.clone(),
+            },
+            deadline: Instant::now() + REPLY_DEADLINE,
+        });
+        view.reply(&mut app,3,json!({"type":"mcp_input_response_v1","thread_id":view.service.scope.thread_id,"run_id":view.service.current_run_id,"request_id":6,"state":"answered"})).unwrap();
+        assert!(!app.mcp_form.is_waiting());
+        assert!(!app.run.running());
+        assert!(app.status.contains("completion not inferred"));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .all(|block| !block.to_text().contains("private-response"))
+        );
+    }
+}

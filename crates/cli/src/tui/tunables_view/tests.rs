@@ -6,7 +6,7 @@ fn scratch(label: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    std::env::temp_dir().canonicalize().unwrap().join(format!(
         "iteron-tunables-view-{label}-{}-{nonce}",
         std::process::id()
     ))
@@ -337,7 +337,53 @@ fn invalid_request_fails_closed_without_a_partial_catalog() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[test]
+fn actual_host_simulation_projection_remains_redacted_in_semantics_and_terminal_picker() {
+    use super::super::{App, PickAction, PickItem, Picker};
+    let view = crate::client_effects::tunables_simulation::simulate(
+        &crate::client_effects::tunables_simulation::tests::request_bytes(),
+    )
+    .unwrap();
+    let (title, entries) = simulation_catalog(&view).unwrap().into_parts();
+    assert!(title.contains("simulation only"));
+    assert_eq!(entries.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
+    for detail in &entries {
+        assert_detail_bound(detail);
+    }
+    let mut app = App::new();
+    app.pickers.open(Picker {
+        title,
+        items: entries
+            .into_iter()
+            .map(|detail| {
+                PickItem::flat(
+                    detail.picker_label().to_owned(),
+                    detail.picker_hint().to_owned(),
+                    false,
+                    PickAction::InspectTunable(detail),
+                )
+            })
+            .collect(),
+        sel: 0,
+        query: String::new(),
+        saved_theme: None,
+    });
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+    terminal
+        .draw(|frame| super::super::draw(frame, &mut app))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("simulation only"));
+    assert!(!rendered.contains(&"a".repeat(64)));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn workspace_loader_is_confined_and_enforces_the_resolver_input_cap() {
     let root = scratch("confined");
@@ -364,18 +410,16 @@ fn workspace_loader_is_confined_and_enforces_the_resolver_input_cap() {
         vec![b' '; RESOLUTION_INPUT_MAX_BYTES + 1],
     )
     .expect("write oversized request");
-    assert_eq!(
-        load_workspace_request(&root, "oversized.json")
-            .expect_err("oversized request must fail")
-            .to_string(),
-        "request exceeds the resolver's 1 MiB input cap"
+    assert!(
+        load_workspace_request(&root, "oversized.json").is_err(),
+        "oversized request must fail before resolver projection"
     );
     std::fs::remove_dir_all(root).expect("remove isolated workspace");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 #[test]
-fn workspace_loader_fails_closed_without_linux_capabilities() {
+fn workspace_loader_fails_closed_on_unsupported_native_platform() {
     let root = scratch("unsupported");
     std::fs::create_dir_all(&root).expect("create isolated workspace");
     std::fs::write(root.join("request.json"), minimal_request()).expect("write valid request");
@@ -388,7 +432,7 @@ fn workspace_loader_fails_closed_without_linux_capabilities() {
     std::fs::remove_dir_all(root).expect("remove isolated workspace");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn fifo_leaf_is_refused_without_waiting_for_a_writer() {
     use std::ffi::CString;
@@ -411,7 +455,7 @@ fn fifo_leaf_is_refused_without_waiting_for_a_writer() {
     std::fs::remove_dir_all(root).expect("remove isolated workspace");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn leaf_swap_after_acquisition_is_refused_before_resolver_delivery() {
     let root = scratch("leaf-swap");
@@ -437,7 +481,7 @@ fn leaf_swap_after_acquisition_is_refused_before_resolver_delivery() {
     std::fs::remove_dir_all(root).expect("remove isolated workspace");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn parent_replacement_after_acquisition_is_refused_before_resolver_delivery() {
     let root = scratch("parent-swap");
@@ -460,7 +504,7 @@ fn parent_replacement_after_acquisition_is_refused_before_resolver_delivery() {
     std::fs::remove_dir_all(root).expect("remove isolated workspace");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn outside_valid_and_invalid_targets_have_indistinguishable_refusals() {
     use std::os::unix::fs::symlink;

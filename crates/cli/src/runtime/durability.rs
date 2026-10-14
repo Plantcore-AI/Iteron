@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 /// Retain at most one UTF-8 scalar beyond the interrupted-stream display limit. That extra
 /// scalar lets `strict_utf8_head` mark truncation without buffering an unbounded provider stream.
 pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, max_bytes: usize) {
@@ -18,16 +19,7 @@ pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, m
 /// snapshot at all, so the audit argument stays present and content-free.
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
 
-/// Why an effect settled `Unknown`. Only `Unobserved` gates future submissions; see
-/// [`Agent::settle_kernel_effect_with_cause`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum UnknownCause {
-    /// Nobody observed a terminal — the crash window the at-most-once gate exists for.
-    Unobserved,
-    /// The operator cancelled it. Recorded, never auto-retried, but not a reason to refuse
-    /// everything they type next.
-    OperatorCancelled,
-}
+pub(super) use super::effect_journal_owner::UnknownCause;
 
 impl Agent {
     /// Admit the compatibility Stop hook to the session-owned observer without putting arbitrary
@@ -141,7 +133,8 @@ impl Agent {
                     self.ui(UiEvent::Phase(phase));
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
             }
@@ -150,11 +143,7 @@ impl Agent {
 
     pub(super) fn ensure_record_healthy(&self) -> Result<(), KernelError> {
         if self.record_failed {
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::other(
-                    "provider admission cannot continue after the durable record failed",
-                ),
-            )));
+            return Err(KernelError::Record(self.rollout.unavailable_error()));
         }
         Ok(())
     }
@@ -165,49 +154,6 @@ impl Agent {
         kind: EventKind,
     ) -> Result<(), KernelError> {
         self.emit_durable_seq(turn, kind).map(|_| ())
-    }
-
-    /// Commit the final visible phase and run terminal as one semantic batch. `Done` is last by
-    /// construction, so `Rollout::append_batch` takes exactly one full terminal barrier and the UI
-    /// cannot observe Idle without the authoritative terminal in the same confirmed prefix.
-    pub(super) fn emit_durable_run_terminal(
-        &mut self,
-        turn: TurnId,
-        outcome: String,
-    ) -> Result<(), KernelError> {
-        let events = [
-            Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::Phase { phase: Phase::Idle },
-            },
-            Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::Done { outcome },
-            },
-        ];
-        let fsync_started = Instant::now();
-        let appended = self.rollout.append_batch(&events);
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
-        match appended {
-            Ok(sequences) if sequences.len() == events.len() => Ok(()),
-            Ok(_) => {
-                self.record_failed = true;
-                self.diagnostic_record_append_failed();
-                Err(KernelError::Record(
-                    iteron_record::RecordError::InvalidAppendBatch {
-                        reason: "run terminal batch returned an incomplete sequence receipt",
-                    },
-                ))
-            }
-            Err(error) => {
-                self.record_failed = true;
-                self.diagnostic_record_append_failed();
-                Err(KernelError::Record(error))
-            }
-        }
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow
@@ -232,6 +178,7 @@ impl Agent {
                         EventKind::EffectIntent { .. }
                     )
                     | (DurableAppendFault::ToolDone, EventKind::ToolDone { .. })
+                    | (DurableAppendFault::Compaction, EventKind::Compaction { .. })
                     | (
                         DurableAppendFault::SubagentFinished,
                         EventKind::SubagentFinished { .. } | EventKind::SubagentFinishedV2 { .. }
@@ -255,7 +202,7 @@ impl Agent {
         }
         let turn_started_at_us =
             matches!(&kind, EventKind::TurnStart).then(|| self.rollout.segment_elapsed_us());
-        let event = Event {
+        let mut event = Event {
             seq: Seq::ZERO,
             turn,
             kind,
@@ -266,12 +213,15 @@ impl Agent {
             .record_fsync_latency_us(elapsed_us(fsync_started));
         match appended {
             Ok(seq) => {
+                event.seq = seq;
+                self.turn_publications.observe_committed(&event);
                 if let Some(started_at_us) = turn_started_at_us {
                     self.observe_policy_turn_start(turn, started_at_us);
                 }
                 Ok(seq)
             }
             Err(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 Err(KernelError::Record(error))
@@ -297,6 +247,7 @@ impl Agent {
     pub(super) fn effect_boundary_failed(&mut self, error: effects::BrokerError) -> KernelError {
         match error {
             effects::BrokerError::Record(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 KernelError::Record(error)
             }
@@ -310,7 +261,18 @@ impl Agent {
         turn: TurnId,
         class: effect_class::EffectClass,
     ) -> usize {
-        self.effect_admissions.next_ordinal(turn, class)
+        self.effect_journal.next_ordinal(turn, class)
+    }
+
+    /// Mint one physical billing identity from the same restored Provider effect allocator.
+    pub(super) fn next_provider_effect_identity(
+        &mut self,
+        turn: TurnId,
+    ) -> Result<(usize, u32), KernelError> {
+        let ordinal = self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
+        let physical =
+            super::provider_effect_identity::physical_attempt_for_provider_ordinal(ordinal)?;
+        Ok((ordinal, physical))
     }
 
     /// Open a non-registry effect: admit the identity and fsync its write-ahead intent.
@@ -324,40 +286,20 @@ impl Agent {
         class: effect_class::EffectClass,
         ordinal: usize,
         capability: Capability,
-        mut audit_arguments: serde_json::Value,
+        audit_arguments: serde_json::Value,
     ) -> Result<effects::EffectTicket, KernelError> {
-        let provider_route_attempt = if class == effect_class::EffectClass::Provider {
-            let route_id = audit_arguments
-                .get("route_id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or(KernelError::InvalidRouteMetadata {
-                    field: "provider_route_attempt.route_id",
-                    reason: "provider effect audit projection omitted the selected route",
-                })?;
-            let physical_attempt = audit_arguments
-                .get("physical_attempt")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or(KernelError::InvalidRouteMetadata {
-                    field: "provider_route_attempt.physical_attempt",
-                    reason: "provider effect audit projection omitted a bounded physical ordinal",
-                })?;
-            let identity = route_attempt_accounting::route_attempt_identity(
-                route_id,
-                physical_attempt,
-                self.active_provider_cost_reservation(),
-            )?;
-            // The typed identity above is the durable route evidence. Raw provider/model strings
-            // are operator-controlled and can contain paths or credential-like material, so the
-            // generic audit projection must not persist a second, unsafe copy.
-            if let Some(arguments) = audit_arguments.as_object_mut() {
-                arguments.remove("route_id");
-                arguments.remove("model");
-            }
-            Some(identity)
-        } else {
-            None
-        };
+        if class == effect_class::EffectClass::Provider {
+            let workspace = self.workspace.clone();
+            return self.provider_attempt_journal().open(
+                &workspace,
+                provider_attempt_journal::ProviderIntent {
+                    turn,
+                    ordinal,
+                    capability,
+                    audit: audit_arguments,
+                },
+            );
+        }
         let effect = effects::BrokeredEffect {
             turn,
             effect_id: effect_class::effect_id(turn, class, ordinal),
@@ -366,12 +308,8 @@ impl Agent {
             capability,
             audit_arguments,
             workspace: effect_workspace(&self.workspace),
-            provider_route_attempt,
+            provider_route_attempt: None,
         };
-        // `EffectIntent` is appended by the kernel broker rather than `emit_durable_seq`, so the
-        // focused durability fault must be injected at this exact production boundary.  Keeping
-        // the seam here proves that no executor/provider call can exist after an intent fsync
-        // failure, and lets the caller close any pre-dispatch monetary reservation as known zero.
         #[cfg(test)]
         if self.fail_next_durable_append == Some(DurableAppendFault::EffectIntent) {
             self.fail_next_durable_append = None;
@@ -381,14 +319,27 @@ impl Agent {
                 std::io::Error::other("injected durable effect-intent append failure"),
             )));
         }
-        let Agent {
-            rollout,
-            effect_admissions,
-            ..
-        } = self;
-        match effects::open_effect(rollout, effect_admissions, effect) {
-            Ok(ticket) => Ok(ticket),
-            Err(error) => Err(self.effect_boundary_failed(error)),
+        let started = Instant::now();
+        let opened = self.effect_journal.open(&mut self.rollout, effect);
+        self.ledger.record_fsync_latency_us(elapsed_us(started));
+        opened.map_err(|error| self.effect_boundary_failed(error))
+    }
+
+    pub(super) fn provider_attempt_journal(
+        &mut self,
+    ) -> provider_attempt_journal::ProviderAttemptJournal<'_> {
+        let financial = self.provider_financial_context();
+        let pricing_now = self.pricing_now();
+        provider_attempt_journal::ProviderAttemptJournal {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            ledger: &mut self.ledger,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            financial,
+            pricing_now,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
         }
     }
 
@@ -416,147 +367,43 @@ impl Agent {
         settlement: effects::Settlement,
         cause: UnknownCause,
     ) -> Result<(), KernelError> {
-        let became_unknown = matches!(&settlement, effects::Settlement::Unknown(..))
-            && matches!(cause, UnknownCause::Unobserved);
-        match effects::settle_effect(&mut self.rollout, ticket, settlement) {
-            Ok(()) => {
-                if became_unknown {
-                    self.live_unresolved_effects = self.live_unresolved_effects.saturating_add(1);
-                }
-                Ok(())
-            }
-            Err(error) => Err(self.effect_boundary_failed(error)),
+        if ticket.provider_route_attempt().is_some() {
+            return self
+                .provider_attempt_journal()
+                .settle(ticket, settlement, cause);
         }
+        let started = Instant::now();
+        let committed = self
+            .effect_journal
+            .settle(&mut self.rollout, ticket, settlement, cause);
+        self.ledger.record_fsync_latency_us(elapsed_us(started));
+        committed.map_err(|error| self.effect_boundary_failed(error))
     }
 
-    /// Run one lifecycle hook across the effect boundary.
-    ///
-    /// A hook is an operator-configured process the kernel starts, which makes it an externally
-    /// visible effect by every definition the boundary uses. Before #16 it was the largest
-    /// unbrokered class in the kernel — the comment beside the PostToolUse call site said so in as
-    /// many words — so a crash between spawning a hook and returning left no durable trace that
-    /// anything had been started.
-    ///
-    /// # Why a returning hook is a *proven* terminal
-    ///
-    /// `Hooks::run` always returns: a command that cannot spawn, exits non-zero, or overruns its
-    /// timeout is reaped and reported as "no opinion". So when it returns, the process lifecycle is
-    /// closed and the terminal is proven, even though the hook's *verdict* may be unknown — those
-    /// are different questions and only the first belongs to the boundary. The genuinely
-    /// unprovable case is the one the boundary already covers: if this process dies between the
-    /// intent and the terminal, recovery finds a pending intent and journals `EffectUnknown`.
-    ///
-    /// # Why a boundary failure is not swallowed here
-    ///
-    /// Every existing call site wrote `let _ = self.hooks.run(...)`, because a hook's opinion is
-    /// advisory. A *boundary* failure is not: it means either the durable log is broken or a caller
-    /// asked for an unrecordable dispatch, and continuing would report a clean outcome over a
-    /// broken audit trail.
-    pub(super) async fn brokered_hook(
-        &mut self,
-        turn: TurnId,
-        event: HookEvent,
-        context_json: &str,
-    ) -> Result<hooks::HookDecision, KernelError> {
-        // Per EVENT, not per hook map: a run with only a `Stop` hook configured has nothing to say
-        // about `PreToolUse`, so brokering it would append an intent and a terminal (and pay their
-        // barriers) to call zero commands. The boundary still covers every dispatch that can
-        // actually start a process, which is the only thing it was ever protecting.
-        if self.hooks.is_empty_for(event) {
-            return Ok(hooks::HookDecision::Allow);
-        }
-        let hook_journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; command was not started".into(),
-            )
-        })?;
-        let matched = u64::try_from(self.hooks.commands(event).len()).unwrap_or(u64::MAX);
-        self.lifecycle_event(
-            "hook.matched",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(matched),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "hook.started",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(matched),
-                ..LifecyclePayload::default()
-            },
-        );
-        let hook_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::Hook, Some(turn));
-        let class = effect_class::EffectClass::Hook;
-        let ordinal = self.next_effect_ordinal(turn, class);
-        let effect = KernelEffect {
+    /// Assemble concrete independent hook, journal, measurement and projection owners. No
+    /// executor receives mutable Agent state or provider/permission authority.
+    pub(super) fn hook_execution(&mut self, turn: TurnId) -> hook_execution::HookExecution<'_> {
+        let scope = hook_execution::HookExecutionScope {
             turn,
-            class,
-            ordinal,
-            capability: Capability::CodeExecuting,
-            audit_arguments: serde_json::json!({ "event": event.key() }),
             workspace: self.workspace.as_path(),
+            hooks: &self.hooks,
+            command_journal: self.hook_effect_journal.clone(),
+            interrupt: self.control.interrupt().cloned(),
+            drain: self.control.drain().clone(),
+            activity: self.activity.clone(),
+            emitter: self.lifecycle_emitter.clone(),
+            dispatcher: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
         };
-        let hook_cancel = self.interrupt.clone();
-        let hook_drain = self.drain.clone();
-        let Agent {
-            rollout,
-            effect_admissions,
-            hooks,
-            ..
-        } = self;
-        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || {
-            Box::pin(async move {
-                effects::EffectDisposition::Definite {
-                    terminal: effect_done_terminal(turn, class, ordinal),
-                    value: hooks
-                        .run_cancellable_journaled_report(
-                            event,
-                            context_json,
-                            hook_cancel.as_deref(),
-                            Some(hook_drain.as_ref()),
-                            &hook_journal,
-                        )
-                        .await,
-                }
-            })
-        })
-        .await;
-        match outcome {
-            Ok(outcome) => {
-                let report = outcome.into_value();
-                let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
-                    "hook.blocked"
-                } else if report.timed_out > 0 {
-                    "hook.timed_out"
-                } else if report.failed > 0 {
-                    "hook.failed"
-                } else {
-                    "hook.completed"
-                };
-                self.lifecycle_event(
-                    terminal,
-                    Some(turn),
-                    LifecyclePayload {
-                        count: Some(u64::from(report.completed)),
-                        magnitude: Some(u64::from(report.timed_out)),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                if report.failed > 0 || report.timed_out > 0 {
-                    hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                } else {
-                    hook_activity.complete();
-                }
-                Ok(report.decision)
-            }
-            Err(error) => {
-                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                Err(self.effect_boundary_failed(error))
-            }
+        hook_execution::HookExecution {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            record_failed: &mut self.record_failed,
+            ledger: &mut self.ledger,
+            diagnostics: &self.diagnostics,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
+            scope,
         }
     }
 
@@ -574,54 +421,6 @@ impl Agent {
             .await
     }
 
-    /// Ask a canonical Gate for its decision without projecting the protected source event yet.
-    /// Tool admission uses this form: the subsequent admitted/refused tool boundary publishes
-    /// `tool.call_proposed` exactly once with the final effect correlation.
-    pub(super) async fn brokered_lifecycle_gate_decision(
-        &mut self,
-        turn: TurnId,
-        event_id: &'static str,
-        payload: LifecyclePayload,
-    ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        let correlation = self.lifecycle_correlation(Some(turn));
-        self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, false)
-            .await
-    }
-
-    pub(super) async fn admit_tool_lifecycle_gate(
-        &mut self,
-        turn: TurnId,
-        tool: &str,
-    ) -> Result<Option<String>, KernelError> {
-        let report = self
-            .brokered_lifecycle_gate_decision(
-                turn,
-                "tool.call_proposed",
-                LifecyclePayload {
-                    reason_code: Some(tool.to_owned()),
-                    ..LifecyclePayload::default()
-                },
-            )
-            .await?;
-        Ok(match report.decision {
-            hooks::HookDecision::Allow => None,
-            hooks::HookDecision::Deny(reason) => Some(reason),
-        })
-    }
-
-    pub(super) async fn brokered_child_lifecycle_gate(
-        &mut self,
-        turn: TurnId,
-        event_id: &'static str,
-        subagent_id: &str,
-        payload: LifecyclePayload,
-    ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        let mut correlation = self.lifecycle_correlation(Some(turn));
-        correlation.subagent_id = Some(iteron_protocol::SubagentId(subagent_id.to_owned()));
-        self.brokered_lifecycle_gate_correlated(turn, event_id, correlation, payload, true)
-            .await
-    }
-
     async fn brokered_lifecycle_gate_correlated(
         &mut self,
         turn: TurnId,
@@ -630,113 +429,10 @@ impl Agent {
         payload: LifecyclePayload,
         project_source: bool,
     ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        debug_assert_eq!(
-            iteron_protocol::lifecycle::event_spec(event_id).map(|spec| spec.hook_capability),
-            Some(iteron_protocol::HookCapability::Gate)
-        );
         if project_source {
             self.lifecycle_event_with_correlation(event_id, correlation, payload);
         }
-        if self.hooks.is_empty_for_lifecycle(event_id) {
-            return Ok(hooks::LifecycleHookReport {
-                decision: hooks::HookDecision::Allow,
-                matched: 0,
-                completed: 0,
-                failed: 0,
-                timed_out: 0,
-                augmentations: Vec::new(),
-            });
-        }
-        let hook_journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; gate command was not started".into(),
-            )
-        })?;
-        let class = effect_class::EffectClass::Hook;
-        let ordinal = self.next_effect_ordinal(turn, class);
-        let effect = KernelEffect {
-            turn,
-            class,
-            ordinal,
-            capability: Capability::CodeExecuting,
-            audit_arguments: serde_json::json!({ "event": event_id }),
-            workspace: self.workspace.as_path(),
-        };
-        self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
-        self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
-        let hook_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::Hook, Some(turn));
-        let context = serde_json::json!({
-            "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
-            "event_id": event_id,
-            "turn_id": turn.0,
-        })
-        .to_string();
-        let hook_cancel = self.interrupt.clone();
-        let hook_drain = self.drain.clone();
-        let Agent {
-            rollout,
-            effect_admissions,
-            hooks,
-            ..
-        } = self;
-        let result = broker_kernel_effect(rollout, effect_admissions, effect, || {
-            Box::pin(async move {
-                match hooks
-                    .run_lifecycle_cancellable_journaled(
-                        event_id,
-                        &context,
-                        hook_cancel.as_deref(),
-                        Some(hook_drain.as_ref()),
-                        &hook_journal,
-                    )
-                    .await
-                {
-                    Ok(report) => effects::EffectDisposition::Definite {
-                        terminal: effect_done_terminal(turn, class, ordinal),
-                        value: Ok(report),
-                    },
-                    Err(reason) => effects::EffectDisposition::Definite {
-                        terminal: effect_failed_terminal(turn, class, ordinal, reason),
-                        value: Err(reason),
-                    },
-                }
-            })
-        })
-        .await;
-        let report = match result {
-            Ok(result) => result
-                .into_value()
-                .map_err(|reason| KernelError::ContextResolution(reason.to_owned()))?,
-            Err(error) => {
-                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                return Err(self.effect_boundary_failed(error));
-            }
-        };
-        let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
-            "hook.blocked"
-        } else if report.timed_out > 0 {
-            "hook.timed_out"
-        } else if report.failed > 0 {
-            "hook.failed"
-        } else {
-            "hook.completed"
-        };
-        self.lifecycle_event(
-            terminal,
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::from(report.completed)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if report.failed > 0 || report.timed_out > 0 {
-            hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-        } else {
-            hook_activity.complete();
-        }
-        Ok(report)
+        self.hook_execution(turn).lifecycle(event_id).await
     }
 
     /// Export the run's telemetry projection across the effect boundary (#105).
@@ -846,10 +542,10 @@ impl Agent {
         };
         let Agent {
             rollout,
-            effect_admissions,
+            effect_journal,
             ..
         } = self;
-        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || async move {
+        let outcome = broker_kernel_effect(rollout, effect_journal, effect, || async move {
             match sink.send(&payload).await {
                 telemetry::TelemetrySendOutcome::Accepted => effects::EffectDisposition::Definite {
                     terminal: effect_done_terminal(turn, class, ordinal),
@@ -921,151 +617,19 @@ impl Agent {
         }
     }
 
+    #[cfg(test)]
     /// Refuse blind replay across the edit/process crash window. A durable intent without a
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
     pub(super) fn guard_unresolved_effects(&mut self) -> Result<(), KernelError> {
-        // An in-process follow-up retains both the authoritative working transcript and every
-        // unknown registry effect observed since this Agent was constructed. Re-hashing the full
-        // append-only rollout here made normal interactive turns linear in session age. A fresh
-        // process, explicit resume, or missing working set still performs the complete recovery
-        // fold below; that is the only time memory is not an adequate gate.
-        if !self.recovery_effect_replay_required {
-            return if self.live_unresolved_effects == 0 {
-                Ok(())
-            } else {
-                Err(KernelError::UnknownEffects {
-                    count: self.live_unresolved_effects,
-                })
-            };
+        let result = self
+            .effect_journal
+            .guard_recovery(&mut self.rollout, &mut self.ledger);
+        if let Err(KernelError::Record(error)) = &result {
+            self.rollout.retain_failure(error);
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
         }
-        let events = replay_logical_rollout(self.rollout.path())?;
-        let journal = effects::EffectJournal::replay(&events)?;
-        // At-most-once has to survive the process boundary, not just the turn loop: a resumed run
-        // must not be able to re-mint an identity the previous process already admitted.
-        self.effect_admissions = effect_admission::EffectAdmissions::from_journal(&journal);
-        let newly_unknown = journal.pending();
-        // A historical provider intent without the pre-dispatch route identity cannot be repaired
-        // honestly: inventing a route digest would turn "unknown identity" into false accounting.
-        // Decode remains compatible, but production recovery fails closed before appending any
-        // terminal or admitting new work.
-        if newly_unknown.iter().any(|pending| {
-            pending.tool == effect_class_label(effect_class::EffectClass::Provider)
-                && pending.provider_route_attempt.is_none()
-        }) {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "provider_route_attempt",
-                reason: "pending legacy provider intent has no pre-dispatch route identity",
-            });
-        }
-        for pending in &newly_unknown {
-            let provider_route_attempt = pending
-                .provider_route_attempt
-                .clone()
-                .map(route_attempt_accounting::crash_recovery_accounting);
-            self.emit_durable(
-                pending.turn,
-                EventKind::EffectUnknown {
-                    id: pending.id.clone(),
-                    tool: pending.tool.clone(),
-                    reason: "recovery found a durable intent without a durable tool result; automatic retry is forbidden".into(),
-                    provider_route_attempt,
-                },
-            )?;
-        }
-        let count = journal.unknown_requiring_reconciliation().saturating_add(
-            newly_unknown
-                .iter()
-                .filter(|pending| effect_journal::kind_blocks_resume(&pending.tool))
-                .count(),
-        );
-        self.live_unresolved_effects = count;
-        self.recovery_effect_replay_required = false;
-        if count > 0 {
-            return Err(KernelError::UnknownEffects { count });
-        }
-        Ok(())
-    }
-
-    /// Record a transcript message AND push it onto the working set — the two must stay in
-    /// lockstep so the rollout is a complete, resumable record.
-    /// Durably preserve what a failed turn had already streamed (I-39).
-    ///
-    /// A mid-stream disconnect used to return before the assistant message was appended, so every
-    /// token the operator had watched arrive was destroyed by the failure that interrupted it —
-    /// ambiguous transport failures are not retried, so a connection reset, a VPN drop and the
-    /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
-    /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
-    /// at all.
-    ///
-    /// This is that channel, and it writes two different things for two different readers:
-    /// the bounded coalesced delta prefix records what began appearing on screen, and the
-    /// interrupted assistant message is what resume and rewind replay into the next request.
-    /// Both are bounded, both are emitted only on
-    /// this path, and neither claims usage: **no billing semantics change here**. An append
-    /// failure is swallowed on purpose — the provider error is the one worth reporting, and
-    /// losing the record of a partial answer must not also lose the reason it was partial.
-    pub(super) fn preserve_interrupted_stream(
-        &mut self,
-        turn: TurnId,
-        messages: &mut Vec<Message>,
-        text: &str,
-        thinking: &str,
-    ) {
-        if text.is_empty() && thinking.is_empty() {
-            return;
-        }
-        let max_bytes = iteron_tunables::param_integer(
-            "cli.runtime.interrupted_stream_max_bytes",
-            INTERRUPTED_STREAM_MAX_BYTES,
-        )
-        .min(INTERRUPTED_STREAM_MAX_BYTES);
-        if !thinking.is_empty() {
-            let _ = self.emit_durable(
-                turn,
-                EventKind::Thinking {
-                    delta: strict_utf8_head(thinking, max_bytes),
-                },
-            );
-        }
-        if text.is_empty() {
-            return;
-        }
-        let delta = strict_utf8_head(text, max_bytes);
-        let _ = self.emit_durable(
-            turn,
-            EventKind::Text {
-                delta: delta.clone(),
-            },
-        );
-        // The marker is inside the text, not beside it: an assistant message that resume replays
-        // must tell the model where its own answer stopped, and a sibling field would be dropped
-        // the moment the transcript is serialized for a provider.
-        let interrupted = Message {
-            role: Role::Assistant,
-            content: vec![Block::Text {
-                text: format!("{delta}\n\n{INTERRUPTED_STREAM_MARKER}"),
-            }],
-        };
-        let _ = self.commit_message(turn, messages, interrupted);
-    }
-
-    pub(super) fn commit_message(
-        &mut self,
-        turn: TurnId,
-        messages: &mut Vec<Message>,
-        m: Message,
-    ) -> Result<(), KernelError> {
-        // The working transcript is a projection of durable state, never a parallel authority.
-        // If append/fsync fails, do not let the model-visible state advance past the journal.
-        self.emit_durable(turn, EventKind::Message { message: m.clone() })?;
-        if let Some(trust) = Trust::governing(m.content.iter().filter_map(|block| match block {
-            Block::ToolResult(result) => Some(result.trust),
-            _ => None,
-        })) {
-            self.observed_trust = self.observed_trust.min(trust);
-        }
-        messages.push(m);
-        Ok(())
+        result
     }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "iteron-extension-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+iteron-protocol = { path = "../protocol" }
+iteron-provider = { path = "../provider" }
+iteron-tools = { path = "../tools" }
+iteron-obs = { path = "../obs" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+iteron-tools = { path = "../tools", features = ["test-helper"] }
+tokio.workspace = true

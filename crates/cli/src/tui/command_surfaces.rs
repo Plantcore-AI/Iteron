@@ -1,3 +1,4 @@
+use super::picker::MAX_PICKER_QUERY_CHARS;
 use super::*;
 
 /// Initial picker focus when no actionable, current, or enabled row exists at all. The first row is
@@ -17,7 +18,7 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
     argument: &str,
     runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
 ) {
-    if app.running || app.pending.is_some() {
+    if app.run.running() || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before browsing tunables",
@@ -31,17 +32,12 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
             "usage: /tunables load <workspace-relative-request.json>",
         );
         return;
-    } else if let Some(path) = argument.strip_prefix("load ") {
-        match tunables_view::load_workspace_request(session.workspace(), path.trim()) {
-            Ok(catalog) => (catalog, String::new()),
-            Err(error) => {
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("tunables simulation refused: {error}"),
-                );
-                return;
-            }
-        }
+    } else if argument.starts_with("load ") {
+        app.note(
+            block::NoticeLevel::Err,
+            "submit /tunables load through the session control",
+        );
+        return;
     } else if argument == "registry" {
         (tunables_view::registry_catalog(), String::new())
     } else {
@@ -67,6 +63,10 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
             argument.chars().take(MAX_PICKER_QUERY_CHARS).collect(),
         )
     };
+    open_tunables_catalog(app, catalog, &initial_query);
+}
+
+fn open_tunables_catalog(app: &mut App, catalog: tunables_view::Catalog, initial_query: &str) {
     let (title, entries) = catalog.into_parts();
     let items = entries
         .into_iter()
@@ -86,10 +86,10 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
         query: String::new(),
         saved_theme: None,
     };
-    picker.append_query_text(&initial_query);
+    picker.append_query_text(initial_query);
     let visible = picker.visible_indices();
     picker.normalize_selection(&visible);
-    app.picker = Some(picker);
+    app.pickers.open(picker);
 }
 
 /// Build a picker's items, pre-selecting the current value, and open it — refusing (with a Notice)
@@ -97,10 +97,10 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
 pub(super) fn open_picker(
     app: &mut App,
     session: &Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     kind: &str,
 ) {
-    if app.running || app.pending.is_some() {
+    if app.run.running() || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before opening a picker",
@@ -125,7 +125,11 @@ pub(super) fn open_picker(
         }
         "mode" => (
             "Permission mode",
-            mode_picker_items(session.permission_mode(), session.permission_rules()),
+            mode_picker_items(
+                session.permission_mode(),
+                session.permission_rules(),
+                session.bypass_permissions(),
+            ),
         ),
         "permissions" => (
             "Permissions",
@@ -144,7 +148,7 @@ pub(super) fn open_picker(
                 })
                 .collect();
             let saved = app.theme.clone();
-            app.picker = Some(Picker {
+            app.pickers.open(Picker {
                 title: "Theme".into(),
                 items,
                 sel: 0,
@@ -157,7 +161,7 @@ pub(super) fn open_picker(
     };
     let sel = initial_picker_selection(&items);
     expand_selection_ancestors(&mut items, sel);
-    app.picker = Some(Picker {
+    app.pickers.open(Picker {
         title: title.into(),
         items,
         sel,
@@ -214,6 +218,7 @@ pub(super) fn expand_selection_ancestors(items: &mut [PickItem], selection: usiz
     }
 }
 
+#[cfg(test)]
 pub(super) fn ensure_real_workspace_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
     if Path::new(name).components().count() != 1 {
         return Err("directory name must be one workspace component".into());
@@ -262,7 +267,7 @@ pub(super) fn export_transcript(
     requested: &str,
 ) -> Result<PathBuf, String> {
     let bytes = transcript_export::body(blocks, selected_ids)?;
-    transcript_export::export_bytes(
+    crate::client_effects::export_fixture(
         workspace,
         requested,
         &bytes,
@@ -273,15 +278,14 @@ pub(super) fn export_transcript(
 
 pub(super) fn schedule_transcript_viewer_effect(
     app: &mut App,
-    workspace: &Path,
-    rollout_path: &Path,
+    session: &Session,
     supervisor: &mut transcript_effect::Supervisor,
     effect: transcript_viewer::Effect,
 ) {
     let snapshot_revision = effect.snapshot_revision();
     app.transcript_viewer
-        .reconcile_if_changed(&app.transcript, app.transcript_revision);
-    if snapshot_revision != app.transcript_revision {
+        .reconcile_if_changed(app.history.blocks(), app.history.revision());
+    if snapshot_revision != app.history.revision() {
         app.transcript_viewer
             .set_notice("transcript changed before the effect snapshot was captured");
         return;
@@ -317,10 +321,19 @@ pub(super) fn schedule_transcript_viewer_effect(
                 transcript_viewer::ExportScope::Filtered => "core-transcript-filtered.md",
                 transcript_viewer::ExportScope::All => "core-transcript.md",
             };
+            let Some(port) = app
+                .history
+                .selected_run()
+                .and_then(|run| session.client.transcript_export_port(run))
+            else {
+                app.transcript_viewer.set_notice(
+                    "selected transcript source is unavailable or changed; refresh before export",
+                );
+                return;
+            };
             transcript_effect::Request::Export {
-                workspace: workspace.to_path_buf(),
-                rollout_path: rollout_path.to_path_buf(),
-                blocks: app.transcript.clone(),
+                port,
+                blocks: app.history.snapshot(),
                 selected_ids: ids,
                 requested: requested.into(),
                 collision: transcript_export::CollisionPolicy::Versioned,
@@ -343,7 +356,7 @@ pub(super) fn open_transcript_viewer(
     query: &str,
 ) {
     app.transcript_viewer
-        .open(query, &app.transcript, app.transcript_revision);
+        .open(query, app.history.blocks(), app.history.revision());
     if let Some(label) = supervisor.label() {
         app.transcript_viewer.begin_effect(label);
     }
@@ -351,8 +364,7 @@ pub(super) fn open_transcript_viewer(
 
 pub(super) fn schedule_slash_export(
     app: &mut App,
-    workspace: &Path,
-    rollout_path: &Path,
+    session: &Session,
     supervisor: &mut transcript_effect::Supervisor,
     requested: &str,
     collision: transcript_export::CollisionPolicy,
@@ -364,10 +376,20 @@ pub(super) fn schedule_slash_export(
         );
         return;
     }
+    let Some(port) = app
+        .history
+        .selected_run()
+        .and_then(|run| session.client.transcript_export_port(run))
+    else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "selected transcript source is unavailable or changed; refresh before export",
+        );
+        return;
+    };
     let request = transcript_effect::Request::Export {
-        workspace: workspace.to_path_buf(),
-        rollout_path: rollout_path.to_path_buf(),
-        blocks: app.transcript.clone(),
+        port,
+        blocks: app.history.snapshot(),
         selected_ids: None,
         requested: requested.into(),
         collision,
@@ -383,24 +405,101 @@ pub(super) fn schedule_slash_export(
     }
 }
 
+fn settle_pending_control(app: &mut App, control: &transcript_effect::ControlCompletion) {
+    let label = control.kind.label();
+    if app.status == format!("{label} pending…") {
+        // The actual completion ends this presentation's pending state. A later turn or
+        // command may already own the footer, so only replace this exact pending label.
+        let state = match &control.reply {
+            None => "reply unavailable",
+            Some(
+                app_server::ControlReply::Refused(_)
+                | app_server::ControlReply::RefusedWithOrigin { .. },
+            ) => "refused",
+            _ => "settled",
+        };
+        app.status = format!("{label} {state}");
+    }
+}
+
 pub(super) fn apply_transcript_effect_event(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     event: transcript_effect::Event,
 ) {
     if let Some(shell) = event.shell {
+        if shell
+            .source_run
+            .as_ref()
+            .is_some_and(|run| app.history.selected_run() != Some(run))
+        {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!(
+                    "shell receipt belongs to prior run {}; current transcript was retained",
+                    shell.source_run.as_ref().expect("checked source").0
+                ),
+            );
+            return;
+        }
+
+        if let Some(reason) = shell.refusal {
+            let refusal = iteron_protocol::refusal::HostRefusalV1 {
+                reason,
+                source: None,
+                tool: Some("operator_shell".into()),
+                tool_use_id: None,
+                effects: match shell.outcome {
+                    crate::client_effects::shell::ShellOutcome::NotStarted => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::NotDispatched
+                    }
+                    crate::client_effects::shell::ShellOutcome::OutcomeUnknown => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::Unknown
+                    }
+                    crate::client_effects::shell::ShellOutcome::Completed => {
+                        iteron_protocol::refusal::RefusalEffectStateV1::Settled
+                    }
+                },
+            };
+            super::refusal::show(app, &refusal);
+        }
         app.push_shell_card(&shell.command, shell.body, shell.ok, shell.code);
         return;
     }
     if let Some(control) = event.control {
+        settle_pending_control(app, &control);
         match (control.kind, control.reply) {
+            (transcript_effect::ControlKind::Lab, Some(app_server::ControlReply::Lab(receipt))) => {
+                experiment_lab::render(app, session, *receipt)
+            }
+            (
+                transcript_effect::ControlKind::TunablesSimulation,
+                Some(app_server::ControlReply::TunablesSimulation(receipt)),
+            ) => {
+                if session.client.thread_snapshot_v1().is_none_or(|scope| {
+                    scope.thread_id != receipt.thread_id || scope.run_id != receipt.run_id
+                }) {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "tunables simulation belongs to a previous session",
+                    );
+                } else {
+                    match tunables_view::simulation_catalog(&receipt.view) {
+                        Ok(catalog) => open_tunables_catalog(app, catalog, ""),
+                        Err(error) => app.note(
+                            block::NoticeLevel::Err,
+                            format!("tunables simulation refused: {error}"),
+                        ),
+                    }
+                }
+            }
             (
                 transcript_effect::ControlKind::Compact,
                 Some(app_server::ControlReply::Compacted { report, snapshot }),
             ) => {
-                app.cost = snapshot.cost.clone();
-                app.last_turn_usage = snapshot.last_turn_usage;
+                app.telemetry.refresh_economics(&snapshot);
+                app.telemetry.invalidate_request(&snapshot);
                 session.adopt(*snapshot);
                 app.push(
                     fg(Color::Green),
@@ -482,20 +581,12 @@ pub(super) fn apply_transcript_effect_event(
                     provider_id: selection.provider_id.clone(),
                     model_id: snapshot.model.clone(),
                 };
-                app.route = app.route.reselect(directory, &applied);
-                app.model_context_window = context_window_tokens;
+                app.route = directory.route_view(&applied, app.route.limits.clone());
+                app.telemetry.bind_model_capacity(context_window_tokens);
                 if changed {
                     clear_last_turn_telemetry_from(app, &snapshot);
                 }
                 session.adopt(*snapshot);
-                let persisted_provider = applied.provider_id.clone();
-                let persisted_model = applied.model_id.clone();
-                std::mem::drop(tokio::task::spawn_blocking(move || {
-                    crate::config::update_user_config(move |config| {
-                        crate::config::apply_setting(config, "provider", &persisted_provider)?;
-                        crate::config::apply_setting(config, "model", &persisted_model)
-                    })
-                }));
                 app.note(
                     block::NoticeLevel::Ok,
                     format!(
@@ -509,105 +600,6 @@ pub(super) fn apply_transcript_effect_event(
                         "switching model re-reads the history uncached (new prefix cache)",
                     );
                 }
-            }
-            (
-                transcript_effect::ControlKind::Adopt {
-                    fresh,
-                    events,
-                    selection,
-                    substituted,
-                    context_window_tokens,
-                    ..
-                },
-                Some(app_server::ControlReply::Adopted {
-                    adopted,
-                    snapshot,
-                    tunables_checkpoint,
-                    compaction_trigger_tokens,
-                    blocked,
-                }),
-            ) => {
-                project_recorded_transcript(app, &events);
-                session.adopt_run(
-                    adopted.rollout_path.clone(),
-                    *tunables_checkpoint,
-                    compaction_trigger_tokens,
-                    (*snapshot).clone(),
-                );
-                // The exact title is hydrated off-thread elsewhere; the run id is an immediate,
-                // truthful cache and avoids a record read on this completion path.
-                app.session_name = if fresh {
-                    "New session".into()
-                } else {
-                    adopted.run_id.clone()
-                };
-                app.mode = snapshot.mode;
-                app.effort = snapshot.effort;
-                app.model = snapshot.model.clone();
-                app.cost = snapshot.cost.clone();
-                app.turns = if fresh { 0 } else { adopted.turns };
-                app.route = app.route.reselect(
-                    directory,
-                    &ModelSelection {
-                        provider_id: selection.provider_id.clone(),
-                        model_id: snapshot.model.clone(),
-                    },
-                );
-                app.model_context_window = context_window_tokens;
-                clear_last_turn_telemetry_from(app, &snapshot);
-                app.status = if fresh {
-                    "ready".into()
-                } else {
-                    format!("idle · resumed {}", adopted.run_id)
-                };
-                if let Some(reason) = substituted {
-                    app.note(
-                        block::NoticeLevel::Warn,
-                        format!(
-                            "{reason}; this session continues on {}:{}",
-                            selection.provider_id, selection.model_id
-                        ),
-                    );
-                }
-                app.note(
-                    block::NoticeLevel::Ok,
-                    if fresh {
-                        format!(
-                            "new session {} · left {}",
-                            adopted.run_id, adopted.previous_run_id
-                        )
-                    } else {
-                        format!(
-                            "resumed {} here · {} · {} · {}:{} · left {}",
-                            adopted.run_id,
-                            block::plural(adopted.messages, "message"),
-                            block::plural(adopted.turns as usize, "turn"),
-                            selection.provider_id,
-                            snapshot.model,
-                            adopted.previous_run_id
-                        )
-                    },
-                );
-                if let Some(reason) = blocked {
-                    app.note(block::NoticeLevel::Err, reason);
-                    app.prepare_resume_handoff(&adopted.run_id);
-                    app.status = "idle · resume needs a new terminal".into();
-                }
-            }
-            (
-                transcript_effect::ControlKind::Adopt { run_id, .. },
-                Some(app_server::ControlReply::Refused(reason)),
-            ) => {
-                app.note(block::NoticeLevel::Err, reason);
-                app.prepare_resume_handoff(&run_id);
-                app.status = "idle · resume needs a new terminal".into();
-            }
-            (transcript_effect::ControlKind::Adopt { .. }, _) => {
-                app.status = "idle · session not resumed".into();
-                app.note(
-                    block::NoticeLevel::Warn,
-                    "session adoption ended without a usable runtime reply",
-                );
             }
             (
                 transcript_effect::ControlKind::OperatorStatus {
@@ -683,6 +675,115 @@ pub(super) fn apply_transcript_effect_event(
                 transcript_effect::ControlKind::Memory,
                 Some(app_server::ControlReply::Memory(reply)),
             ) => command_dispatch::render_memory_reply(app, reply),
+            (
+                transcript_effect::ControlKind::PersistentAgents,
+                Some(app_server::ControlReply::PersistentAgents(value)),
+            ) => super::persistent_agents::render(app, &value),
+            (
+                transcript_effect::ControlKind::LiveWorkflow,
+                Some(app_server::ControlReply::LiveWorkflow(value)),
+            ) => super::live_workflows::render(app, &value),
+            (
+                transcript_effect::ControlKind::OrdinaryExtensions,
+                Some(app_server::ControlReply::OrdinaryExtensions(value)),
+            ) => super::ordinary_extensions::render(app, session, &value),
+            (
+                transcript_effect::ControlKind::PluginManagement,
+                Some(app_server::ControlReply::PluginManagement(value)),
+            ) => super::plugins::render(app, &value),
+            (
+                transcript_effect::ControlKind::ActivityCenter,
+                Some(app_server::ControlReply::ActivityCenter(value)),
+            ) => super::activity_center::render(app, &value),
+            (
+                transcript_effect::ControlKind::Inventory,
+                Some(app_server::ControlReply::Inventory(value)),
+            ) => super::inventory::render(app, &value),
+            (
+                transcript_effect::ControlKind::ThreadLifecycle,
+                Some(app_server::ControlReply::ThreadLifecycle(value)),
+            ) => {
+                if value["type"] == "thread_history_v1" {
+                    if value["active"] == true
+                        && let Some(title) = value["title"].as_str()
+                    {
+                        app.session_name = ui_safe_text(title);
+                    }
+                    app.panel(
+                        "≡",
+                        "thread history",
+                        vec![
+                            kv("run", value["run_id"].as_str().unwrap_or("?")),
+                            kv("title", value["title"].as_str().unwrap_or("?")),
+                            kv("archived", &value["archived"].to_string()),
+                            kv("pinned", &value["pinned"].to_string()),
+                        ],
+                    );
+                } else if value["type"] == "thread_trace_v1" {
+                    super::session_inspection::render_trace(app, &value);
+                } else if value["type"] == "thread_inspection_v1" {
+                    super::session_inspection::render(app, &value);
+                } else if value["type"] == "thread_export_v1" {
+                    app.push(dim(), ui_safe_text(value["content"].as_str().unwrap_or("")));
+                } else {
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "thread {} permanently erased",
+                            value["run_id"].as_str().unwrap_or("?")
+                        ),
+                    );
+                }
+            }
+            (
+                transcript_effect::ControlKind::ToolRule { tool, verdict },
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                session.adopt(*snapshot);
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("tool rule {tool}: {verdict:?}"),
+                );
+            }
+            (
+                transcript_effect::ControlKind::ProjectInit,
+                Some(app_server::ControlReply::ProjectInit(receipt)),
+            ) => {
+                if session
+                    .client
+                    .thread_snapshot_v1()
+                    .is_none_or(|scope| scope.run_id != receipt.source_run)
+                {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "project initialization receipt belongs to a prior host run",
+                    );
+                    return;
+                }
+                let mut rows = Vec::new();
+                for entry in receipt.entries {
+                    let status = match entry.status {
+                        crate::client_effects::project_init::InitStatus::Created => "created",
+                        crate::client_effects::project_init::InitStatus::Existing => {
+                            "already exists; preserved"
+                        }
+                        crate::client_effects::project_init::InitStatus::NotPublished => {
+                            "not published"
+                        }
+                        crate::client_effects::project_init::InitStatus::PublicationUnknown => {
+                            "result unknown; do not retry yet"
+                        }
+                    };
+                    rows.push(kv(entry.name, status));
+                }
+                if let Some(refusal) = receipt.refusal {
+                    rows.push(block::PanelRow::Note(refusal.into()));
+                }
+                app.panel("+", "project initialization", rows);
+            }
+            (_, Some(app_server::ControlReply::RefusedWithOrigin { message, refusal })) => {
+                super::refusal::show_with_detail(app, &refusal, &message)
+            }
             (kind, Some(app_server::ControlReply::Refused(reason))) => {
                 let action = kind.label();
                 let prefix = if control.cancellation_requested {
@@ -692,7 +793,7 @@ pub(super) fn apply_transcript_effect_event(
                 };
                 app.note(
                     block::NoticeLevel::Warn,
-                    format!("{action} {prefix}: {reason}"),
+                    format!("{action} {prefix} (source unavailable): {reason}"),
                 );
             }
             (_, Some(app_server::ControlReply::State(snapshot))) => session.adopt(*snapshot),
@@ -719,21 +820,6 @@ pub(super) fn apply_transcript_effect_event(
         | transcript_effect::Disposition::OutcomeUnknown => block::NoticeLevel::Warn,
     };
     app.note(level, message);
-}
-
-/// Create an initialization file without a check/write race and make its contents durable before
-/// reporting success. Existing files are never overwritten.
-pub(super) fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
 }
 
 /// Render the catalog the resident runtime can actually execute. The session fact is captured once
@@ -777,17 +863,42 @@ pub(super) fn show_agent_catalog(app: &mut App, session: &Session) {
 /// pointing at blocks that no longer exist.
 pub(super) fn clear_conversation(app: &mut App) {
     let live_workflow_blocks = app.workflow_monitor.live_blocks();
-    app.transcript
-        .retain(|block| live_workflow_blocks.contains(&block.id));
+    app.history
+        .retain_ids(&live_workflow_blocks.into_iter().collect());
     app.workflow_monitor.clear_finished();
     app.mark_transcript_changed();
-    app.tool_index.clear();
-    app.workflow_index.clear();
-    app.cur_text.clear();
-    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-    app.cur_doc_revision = app.cur_text_revision;
-    app.cur_doc = None;
-    app.cur_think.clear();
-    app.render_cache.clear();
+    app.tools.clear_revealed();
+    app.history.clear_workflow_bindings();
+    app.assistant.reset();
+    app.geometry.clear();
     app.push(dim(), "transcript cleared");
+}
+
+#[cfg(test)]
+mod control_completion_tests {
+    use super::*;
+
+    #[test]
+    fn actual_control_completion_ends_pending_without_overwriting_later_footer() {
+        let mut app = App::new();
+        app.status = "tunables simulation pending…".into();
+        let mut completion = transcript_effect::ControlCompletion {
+            kind: transcript_effect::ControlKind::TunablesSimulation,
+            reply: Some(app_server::ControlReply::Refused(
+                crate::client_effects::workspace_read::SAFE_READ_REFUSAL.into(),
+            )),
+            cancellation_requested: false,
+        };
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "tunables simulation refused");
+
+        app.status = "tunables simulation pending…".into();
+        completion.reply = None;
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "tunables simulation reply unavailable");
+
+        app.status = "a later runtime turn is active".into();
+        settle_pending_control(&mut app, &completion);
+        assert_eq!(app.status, "a later runtime turn is active");
+    }
 }

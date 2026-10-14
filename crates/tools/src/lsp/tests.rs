@@ -60,7 +60,7 @@ fn one_tool_schema_exposes_the_three_typed_queries() {
 #[test]
 fn live_lsp_tools_are_effecting_code_execution_not_pure_reads() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
-    if cfg!(any(target_os = "linux", target_os = "macos")) {
+    if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         assert_eq!(registry.purity_of("lsp_query"), Some(Purity::Effecting));
         assert_eq!(
             registry.capability_of("lsp_query"),
@@ -137,7 +137,7 @@ fn language_server_content_is_untrusted_even_when_confinement_succeeds() {
 }
 
 #[tokio::test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
     let registry = Registry::coding_agent("/tmp/lsp-registration-only").unwrap();
     let result = registry
@@ -152,7 +152,7 @@ async fn unsupported_live_surface_refuses_without_promoting_peer_output() {
     assert!(!result.content.contains("/tmp/"));
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 #[tokio::test]
 async fn unsupported_platform_does_not_advertise_a_guaranteed_to_fail_tool() {
     let registry = Registry::coding_agent(env!("CARGO_MANIFEST_DIR")).unwrap();

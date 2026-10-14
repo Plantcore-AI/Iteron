@@ -1,0 +1,7 @@
+{
+  "fact": {
+    "message_seq": 2,
+    "type": "answer_available"
+  },
+  "kind": "turn_publication_v1"
+}

@@ -20,7 +20,6 @@ const EFFORT_APPLICATION_SIGNATURE: &str = "pub enum EffortApplication {";
 const EVAL_CONTRACT_SOURCE: &str = "crates/eval/src/contract.rs";
 const EVAL_KERNEL_TAX_SIGNATURE: &str = "pub struct CliKernelTax {";
 const CLI_EFFORT_APPLICATION_SIGNATURE: &str = "enum CliEffortApplication {";
-const RUNTIME_SOURCE: &str = "crates/cli/src/runtime.rs";
 
 #[derive(Debug, PartialEq, Eq)]
 struct KernelTaxRustShape {
@@ -363,9 +362,13 @@ pub(super) fn validate_cli_source_bindings(
         );
     }
 
-    let runtime_source = read_bounded(root, RUNTIME_SOURCE, MAX_SOURCE_BYTES)?;
-    let runtime_text = std::str::from_utf8(&runtime_source)
-        .with_context(|| format!("schema source '{RUNTIME_SOURCE}' is not UTF-8"))?;
+    let runtime_source =
+        super::frontend_owner::runtime_scope(super::semantics::graph::SourceView::Candidate {
+            root,
+        })?
+        .to_token_stream()
+        .to_string();
+    let runtime_text = runtime_source.as_str();
     require_serde_authority(
         runtime_text,
         "pub struct WorkflowTaskUi {",

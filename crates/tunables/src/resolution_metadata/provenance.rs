@@ -132,7 +132,7 @@ pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/workflow/src/schema_retry.rs")]), // 66 schema_retry_jitter
     source!(Builtin, Builtin, "crates/provider/src/catalog.rs"), // 67 provider_connect_tls_timeout
     source!(Builtin, Builtin, "crates/cli/src/image_input/decode.rs"), // 68 multimodal_input_admission_decode_envelope
-    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/app_server/backpressure.rs")]), // 69 app_server_sq_eq_backpressure
+    source!([(UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/queue_policy.rs")]), // 69 app_server_sq_eq_backpressure
     source!(Builtin, Builtin, "crates/cli/src/providers.rs"), // 70 provider_discovery_account_probe_cache_policy
     source!(OperatorInput, Operator, "iteron_protocol::Op"), // 71 operator_prompt_stream
     source!(Catalog, Repository, "crates/cli/src/main.rs"), // 72 builtin_prompt_corpus

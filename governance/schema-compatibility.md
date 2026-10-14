@@ -115,3 +115,34 @@ The policy is intentionally stricter than tolerant JSON parsing:
 Changing this policy format requires an explicit policy-format migration. Reducing the
 deprecation runway, deleting a public surface, weakening a shim, rewriting a frozen fixture, or
 silently reusing a schema version is rejected.
+
+## Captured pixels and native child context
+
+`native_child_context_captured_v1` is an additive host journal tag. Its bounded typed
+`NativeChildContextV1` publication and exact sequence are recovery evidence, not a client
+configuration grant or a replacement native transport. Published machine schemas 4 and 8
+project `UiEvent`; this record emits no new machine tag. There is no schema 9 machine
+producer: record-envelope fixture version 9 is a separate historical corpus version.
+
+Captured pixels use `message_v2` and `compaction_v2` when they enter the durable transcript.
+The writer refuses `tool_image` nested inside the old `message`/`compaction` tags, whose
+released Block vocabulary cannot parse it. Ordinary records retain their old tags and bytes.
+Current replay, redaction and private-content traversal consume both vocabularies; an older
+reader skips the new top-level tags as `Unknown`, without retaining their opaque payload.
+Skipping is not permission to continue execution or to reconstruct omitted context or pixels.
+
+The v0.0.26 release has no persistent AgentController. New controller snapshots and engine
+bindings use strict decoding and integrity commitments; missing optional fields retain old
+candidate bytes, but populated native fields cannot be dropped or rehashed for an older
+candidate. Back up the complete run, private-content store and controller namespace before
+upgrade. A rollback executable may inspect supported historical projections in read-only mode;
+it must not resume a modern installed cohort or replace its journal. Restore a matching backup
+and executable for execution. Writable downgrade/recovery acceptance remains pending actual
+same-candidate tests; `Unknown` alone does not prove it.
+
+The canonical manifest and new fixture bytes are maintained source. `boundaries generate`
+validates them before regenerating ownership files; it does not author a schema contract.
+After source freeze, run the maintained `schema-compat check-base --base REV` and
+`schema-compat check-release --base REV` checks, retaining the immutable published contract
+as the latter's base. A pinned validator that predates a source-owner relocation needs an
+explicit reviewed source bridge; the candidate cannot mint migration authority for itself.

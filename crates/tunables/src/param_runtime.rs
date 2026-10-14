@@ -37,7 +37,15 @@ pub enum ParamInstallError {
         param: String,
         reason: String,
     },
+    UnsupportedOverride {
+        param: String,
+        reason: String,
+    },
     DuplicateParam(String),
+    OwnerConstraint {
+        family: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +154,13 @@ impl std::fmt::Display for ParamInstallError {
             ),
             Self::Domain { param, reason } => write!(formatter, "parameter `{param}`: {reason}"),
             Self::WrongType { param, reason } => write!(formatter, "parameter `{param}`: {reason}"),
+            Self::UnsupportedOverride { param, reason } => {
+                write!(formatter, "parameter `{param}`: {reason}")
+            }
             Self::DuplicateParam(id) => write!(formatter, "parameter `{id}` is assigned twice"),
+            Self::OwnerConstraint { family, reason } => {
+                write!(formatter, "parameter owner `{family}`: {reason}")
+            }
         }
     }
 }
@@ -288,11 +302,22 @@ pub fn install_param_overrides(
                     param: id.clone(),
                     reason: violation.to_string(),
                 },
+                ParamValueViolation::UnsupportedOverride { .. } => {
+                    ParamInstallError::UnsupportedOverride {
+                        param: id.clone(),
+                        reason: violation.to_string(),
+                    }
+                }
             })?;
         if table.insert(id.clone(), value).is_some() {
             return Err(ParamInstallError::DuplicateParam(id));
         }
     }
+    crate::param_authority::validate(table.iter().map(|(id, value)| (id.as_str(), value)))
+        .map_err(|(family, reason)| ParamInstallError::OwnerConstraint {
+            family: family.to_owned(),
+            reason,
+        })?;
     let count = table.len();
     OVERRIDES
         .set(table)

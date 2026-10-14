@@ -37,7 +37,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
 
     // Newest transcript runs become the leftmost tabs. The WorkflowEngine card wins over the
     // temporary native compatibility card when both describe the same migrated built-in run.
-    for entry in app.transcript.iter().rev() {
+    for entry in app.history.blocks().iter().rev() {
         let block::BlockKind::WorkflowRun(card) = &entry.kind else {
             continue;
         };
@@ -143,7 +143,7 @@ pub(super) fn workflow_panel_runs(app: &App) -> Vec<workflows_panel::Run> {
         });
     }
 
-    for entry in app.transcript.iter().rev() {
+    for entry in app.history.blocks().iter().rev() {
         let block::BlockKind::Workflow(card) = &entry.kind else {
             continue;
         };

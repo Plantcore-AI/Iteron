@@ -12,7 +12,7 @@ pub(crate) fn persist(
     run_id: &str,
     snapshot: &RunGenesisPolicyBundleSnapshot,
 ) -> anyhow::Result<()> {
-    if !super::valid_run_id(run_id) {
+    if !super::run_store::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
     iteron_record::policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
@@ -32,7 +32,7 @@ pub(crate) fn persist(
         );
     }
 
-    let dir = super::run_dir(workflows_dir, run_id);
+    let dir = super::run_store::run_dir(workflows_dir, run_id);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(POLICY_CHECKPOINT_FILE);
     match std::fs::OpenOptions::new()
@@ -64,10 +64,10 @@ pub(crate) fn load(
     workflows_dir: &Path,
     run_id: &str,
 ) -> anyhow::Result<RunGenesisPolicyBundleSnapshot> {
-    if !super::valid_run_id(run_id) {
+    if !super::run_store::valid_run_id(run_id) {
         anyhow::bail!("invalid workflow run id `{run_id}`");
     }
-    let path = super::run_dir(workflows_dir, run_id).join(POLICY_CHECKPOINT_FILE);
+    let path = super::run_store::run_dir(workflows_dir, run_id).join(POLICY_CHECKPOINT_FILE);
     load_path(&path).map_err(|error| {
         anyhow::anyhow!(
             "workflow `{run_id}` has no usable immutable policy checkpoint at {}: {error}",

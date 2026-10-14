@@ -25,7 +25,8 @@ pub(super) fn render(
     rows.push(kv("effort requested", session.effort().label()));
     rows.push(kv(
         "effort applied · last observed",
-        &app.effort_application
+        &app.telemetry
+            .effort()
             .map_or_else(|| "not observed yet".to_owned(), effort_application_detail),
     ));
     rows.extend([

@@ -28,6 +28,13 @@ In particular, listing a model never implicitly grants tool calling, token limit
 semantic effort, or image input. A provider catalog field dedicated to image support is retained
 as model-level evidence; a generic model id is not.
 
+Capability snapshots may include the optional [`data_policy`](configuration.md#model_capabilities)
+declaration. It is covered by the snapshot and bundle content stamps and applies only to the
+snapshot's API root and matching model family. Public inventories distinguish a metadata-snapshot
+declaration from an operator declaration and from unknown facts. The shipped document does not
+assert a data policy for routes whose reviewed snapshot has none. Neither a policy declaration
+nor its content stamp establishes provider enforcement.
+
 For example, after preparing and reviewing a complete replacement:
 
 ```sh

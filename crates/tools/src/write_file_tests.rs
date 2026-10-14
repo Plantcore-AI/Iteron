@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Memo, Registry};
 use iteron_protocol::{Capability, Purity, ToolUse};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -41,6 +42,8 @@ fn editing_only_registry(root: &Path) -> Registry {
         observation_focus: Default::default(),
         process_launch_policy: Default::default(),
         workspace_boundary: false,
+        // Ordinary operator registry: no inherited child write scope has been installed.
+        inherited_write_scope: Default::default(),
         process_control: None,
         lsp_control: None,
         deferred_tool_catalog: None,
@@ -209,7 +212,9 @@ async fn confined_write_rejects_parent_swap_before_creation_without_outside_dire
     let root = TestRoot::new("swap-before-create-root");
     let outside = TestRoot::new("swap-before-create-outside");
     std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
-    let target = root.0.join("subdir/deep/new.txt");
+    // The descriptor owner receives canonical targets from production resolve_in_root. Keep
+    // these direct fixtures in that namespace too, including Darwin's protected temp aliases.
+    let target = root.0.canonicalize().unwrap().join("subdir/deep/new.txt");
     let result = crate::confined_fs::ConfinedTarget::open(&root.0, &target, true);
     assert!(result.is_err());
     assert!(!outside.0.join("deep").exists());
@@ -222,7 +227,7 @@ async fn confined_write_rejects_parent_swap_before_temporary_allocation() {
     let root = TestRoot::new("swap-before-temp-root");
     let outside = TestRoot::new("swap-before-temp-outside");
     std::fs::create_dir(root.0.join("subdir")).unwrap();
-    let target_path = root.0.join("subdir/new.txt");
+    let target_path = root.0.canonicalize().unwrap().join("subdir/new.txt");
     let target = std::sync::Arc::new(
         crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
     );
@@ -240,7 +245,7 @@ async fn confined_write_rejects_parent_swap_before_rename_and_cleans_pinned_temp
     let root = TestRoot::new("swap-before-rename-root");
     let outside = TestRoot::new("swap-before-rename-outside");
     std::fs::create_dir(root.0.join("subdir")).unwrap();
-    let target_path = root.0.join("subdir/new.txt");
+    let target_path = root.0.canonicalize().unwrap().join("subdir/new.txt");
     let target = std::sync::Arc::new(
         crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
     );
@@ -295,13 +300,16 @@ async fn d3_01_g1_scaffolds_and_replaces_without_bash() {
         "pub fn answer() -> u8 { 42 }\n"
     );
 
-    let replaced = registry
-        .run(write_call(
-            "replace",
-            "src/generated/mod.rs",
-            "pub fn answer() -> u8 { 43 }\n",
-        ))
-        .await;
+    let mut replacement = write_call(
+        "replace",
+        "src/generated/mod.rs",
+        "pub fn answer() -> u8 { 43 }\n",
+    );
+    replacement.input["expected_sha256"] = serde_json::json!(format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(&canonical_file).unwrap())
+    ));
+    let replaced = registry.run(replacement).await;
     assert!(!replaced.is_error, "{}", replaced.content);
     assert_eq!(
         std::fs::read_to_string(&canonical_file).unwrap(),

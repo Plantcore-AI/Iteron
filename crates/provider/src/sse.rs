@@ -17,7 +17,9 @@
 //! (`event:` / `data:` pairs), so it is unit-testable against a recorded fixture and is the
 //! same code that would replay a recorded stream (ADR-006 promise (b)).
 
-use crate::UsageReport;
+use crate::{
+    DecodeCode as Code, DecodeDiagnostic, DecodeField as Field, ProviderError, UsageReport,
+};
 use iteron_protocol::{Block, ProviderState, StopReason, StopReasonCode, ToolUse, Usage};
 
 /// Cache token counts an Anthropic `message_start` may omit entirely. Absence means the request
@@ -96,6 +98,7 @@ enum Building {
 /// this struct exists to prevent, see Errors.md 2026-07-10). Feed frames as they arrive; get
 /// `StreamItem`s out incrementally, preserving mid-stream `ToolUseComplete`.
 pub struct StreamParser {
+    frame_index: u64,
     route_scope: String,
     blocks: Vec<Block>,
     native_blocks: Vec<serde_json::Value>,
@@ -105,8 +108,8 @@ pub struct StreamParser {
     native_replay_complete: bool,
     // An invalid tool JSON may be the expected consequence of a max_tokens cut. Defer the
     // verdict until message_delta supplies the stop reason; any other terminal reason fails.
-    pending_tool_error: Option<String>,
-    pending_native_error: Option<String>,
+    pending_tool_error: Option<ParserFailure>,
+    pending_native_error: Option<ParserFailure>,
     usage: Usage,
     message_start_seen: bool,
     output_usage_seen: bool,
@@ -140,6 +143,7 @@ impl StreamParser {
             return Err("Anthropic parser route scope was empty or invalid".into());
         }
         Ok(StreamParser {
+            frame_index: 0,
             route_scope,
             native_replay_complete: true,
             stop_reason: StopReason::EndTurn,
@@ -202,8 +206,32 @@ impl StreamParser {
 
     /// Feed one SSE frame; get any items it produced.
     pub fn push(&mut self, f: &SseFrame) -> Result<Vec<StreamItem>, String> {
+        self.next_frame(f).map_err(|error| error.message)
+    }
+
+    pub(crate) fn push_diagnostic(
+        &mut self,
+        f: &SseFrame,
+    ) -> Result<Vec<StreamItem>, ProviderError> {
+        self.next_frame(f)
+            .map_err(|error| ProviderError::InvalidResponse(error.diagnostic))
+    }
+
+    fn next_frame(&mut self, f: &SseFrame) -> Result<Vec<StreamItem>, ParserFailure> {
+        self.frame_index = self.frame_index.saturating_add(1);
+        self.push_inner(f).map_err(|mut error| {
+            error.diagnostic = error.diagnostic.at_frame(self.frame_index);
+            error
+        })
+    }
+
+    fn push_inner(&mut self, f: &SseFrame) -> Result<Vec<StreamItem>, ParserFailure> {
         if self.terminal {
-            return Err("Anthropic parser received a frame after message_stop".into());
+            return Err(ParserFailure::new(
+                Code::ProtocolSequence,
+                Field::SseEvent,
+                "Anthropic parser received a frame after message_stop",
+            ));
         }
         if f.event.len().saturating_add(f.data.len())
             > iteron_tunables::param_integer(
@@ -211,23 +239,31 @@ impl StreamParser {
                 MAX_SSE_FRAME_BYTES,
             )
         {
-            return Err(format!(
-                "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-            ));
+            return Err(format!("Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes").into());
         }
         let mut items = Vec::new();
-        let v: serde_json::Value =
-            serde_json::from_str(&f.data).map_err(|e| format!("bad data json: {e}"))?;
+        let v: serde_json::Value = serde_json::from_str(&f.data)
+            .map_err(|error| ParserFailure::json(&error, Field::SseData, "bad data json"))?;
         match f.event.as_str() {
             "message_start" => {
                 if self.message_start_seen || self.content_blocks_seen != 0 || self.stop_reason_set
                 {
-                    return Err("Anthropic stream contained duplicate message_start usage".into());
+                    return Err(ParserFailure::new(
+                        Code::ProtocolSequence,
+                        Field::MessageUsage,
+                        "Anthropic stream contained duplicate message_start usage",
+                    ));
                 }
                 let usage = v
                     .pointer("/message/usage")
                     .and_then(serde_json::Value::as_object)
-                    .ok_or("message_start lacked a usage object")?;
+                    .ok_or_else(|| {
+                        ParserFailure::new(
+                            Code::InvalidType,
+                            Field::MessageUsage,
+                            "message_start lacked a usage object",
+                        )
+                    })?;
                 self.usage.input = required_usage_u64(usage, "input_tokens")?;
                 self.usage.cache_creation =
                     optional_usage_u64(usage, "cache_creation_input_tokens")?.unwrap_or(
@@ -245,21 +281,41 @@ impl StreamParser {
             }
             "content_block_start" => {
                 if !self.message_start_seen || self.stop_reason_set {
-                    return Err("content block started outside the message content phase".into());
+                    return Err(ParserFailure::new(
+                        Code::ProtocolSequence,
+                        Field::ContentBlock,
+                        "content block started outside the message content phase",
+                    ));
                 }
                 if self.building.is_some() {
-                    return Err("content block started before the prior block stopped".into());
+                    return Err(ParserFailure::new(
+                        Code::ProtocolSequence,
+                        Field::ContentBlock,
+                        "content block started before the prior block stopped",
+                    ));
                 }
-                let cb = v.get("content_block").ok_or("no content_block")?;
+                let cb = v.get("content_block").ok_or_else(|| {
+                    ParserFailure::new(Code::MissingField, Field::ContentBlock, "no content_block")
+                })?;
                 self.reserve_block()?;
                 let index = required_index(&v)?;
                 if index != self.content_blocks_seen as u64 {
-                    return Err("Anthropic content block index was not contiguous".into());
+                    return Err(ParserFailure::new(
+                        Code::ProtocolSequence,
+                        Field::Index,
+                        "Anthropic content block index was not contiguous",
+                    ));
                 }
                 let kind = cb
                     .get("type")
                     .and_then(serde_json::Value::as_str)
-                    .ok_or("content block lacked a type")?;
+                    .ok_or_else(|| {
+                        ParserFailure::new(
+                            Code::MissingField,
+                            Field::ContentBlockType,
+                            "content block lacked a type",
+                        )
+                    })?;
                 let building = match kind {
                     "text" => {
                         let text = required_event_string(cb, "text")?.to_string();
@@ -278,7 +334,11 @@ impl StreamParser {
                     "redacted_thinking" => {
                         let data = required_event_string(cb, "data")?.to_string();
                         if data.is_empty() {
-                            return Err("redacted_thinking started with empty data".into());
+                            return Err(ParserFailure::new(
+                                Code::InvalidValue,
+                                Field::Data,
+                                "redacted_thinking started with empty data",
+                            ));
                         }
                         self.reserve_output(data.len())?;
                         Building::RedactedThinking { data }
@@ -299,14 +359,25 @@ impl StreamParser {
                                     MAX_TOOL_ID_OR_NAME_BYTES,
                                 )
                         {
-                            return Err(
-                                "tool call id or name was empty or exceeded its bound".into()
-                            );
+                            return Err(ParserFailure::new(
+                                Code::InvalidValue,
+                                Field::ContentBlock,
+                                "tool call id or name was empty or exceeded its bound",
+                            ));
                         }
-                        let initial_input =
-                            cb.get("input").cloned().ok_or("tool_use lacked input")?;
+                        let initial_input = cb.get("input").cloned().ok_or_else(|| {
+                            ParserFailure::new(
+                                Code::MissingField,
+                                Field::ContentBlockInput,
+                                "tool_use lacked input",
+                            )
+                        })?;
                         if !initial_input.is_object() {
-                            return Err("tool_use input was not an object".into());
+                            return Err(ParserFailure::new(
+                                Code::InvalidType,
+                                Field::ContentBlockInput,
+                                "tool_use input was not an object",
+                            ));
                         }
                         let input_bytes = serde_json::to_vec(&initial_input)
                             .map_err(|_| "tool_use input could not be encoded")?
@@ -323,7 +394,13 @@ impl StreamParser {
                             initial_input,
                         }
                     }
-                    _ => return Err("unsupported Anthropic content block type".into()),
+                    _ => {
+                        return Err(ParserFailure::new(
+                            Code::InvalidValue,
+                            Field::ContentBlockType,
+                            "unsupported Anthropic content block type",
+                        ));
+                    }
                 };
                 self.building = Some(building);
                 self.building_index = Some(index);
@@ -332,16 +409,28 @@ impl StreamParser {
             "content_block_delta" => {
                 let index = required_index(&v)?;
                 if self.building_index != Some(index) {
-                    return Err("Anthropic content delta index did not match its open block".into());
+                    return Err(ParserFailure::new(
+                        Code::ConflictingValue,
+                        Field::Index,
+                        "Anthropic content delta index did not match its open block",
+                    ));
                 }
-                let d = v.get("delta").ok_or("no delta")?;
+                let d = v.get("delta").ok_or_else(|| {
+                    ParserFailure::new(Code::MissingField, Field::Delta, "no delta")
+                })?;
                 let delta_type = d.get("type").and_then(|x| x.as_str());
                 let additional = match delta_type {
                     Some("text_delta") => required_event_string(d, "text")?.len(),
                     Some("thinking_delta") => required_event_string(d, "thinking")?.len(),
                     Some("input_json_delta") => required_event_string(d, "partial_json")?.len(),
                     Some("signature_delta") => required_event_string(d, "signature")?.len(),
-                    _ => return Err("unsupported Anthropic content block delta".into()),
+                    _ => {
+                        return Err(ParserFailure::new(
+                            Code::InvalidValue,
+                            Field::Delta,
+                            "unsupported Anthropic content block delta",
+                        ));
+                    }
                 };
                 self.reserve_output(additional)?;
                 match (delta_type, self.building.as_mut()) {
@@ -359,7 +448,11 @@ impl StreamParser {
                         }),
                     ) => {
                         if *signature_started {
-                            return Err("thinking_delta followed a signature_delta".into());
+                            return Err(ParserFailure::new(
+                                Code::ProtocolSequence,
+                                Field::Delta,
+                                "thinking_delta followed a signature_delta",
+                            ));
                         }
                         let t = required_event_string(d, "thinking")?;
                         thinking.push_str(t);
@@ -376,7 +469,13 @@ impl StreamParser {
                         let delta = d
                             .get("signature")
                             .and_then(serde_json::Value::as_str)
-                            .ok_or("signature_delta lacked signature")?;
+                            .ok_or_else(|| {
+                                ParserFailure::new(
+                                    Code::MissingField,
+                                    Field::Signature,
+                                    "signature_delta lacked signature",
+                                )
+                            })?;
                         *signature_started = true;
                         signature.push_str(delta);
                         if signature.len()
@@ -387,7 +486,8 @@ impl StreamParser {
                         {
                             return Err(format!(
                                 "Anthropic thinking signature exceeded {MAX_SIGNATURE_BYTES} bytes"
-                            ));
+                            )
+                            .into());
                         }
                     }
                     (
@@ -402,20 +502,32 @@ impl StreamParser {
                             .as_object()
                             .is_some_and(|object| !object.is_empty())
                         {
-                            return Err(
-                                "tool_use mixed non-empty initial input with JSON deltas".into()
-                            );
+                            return Err(ParserFailure::new(
+                                Code::ConflictingValue,
+                                Field::ContentBlockInput,
+                                "tool_use mixed non-empty initial input with JSON deltas",
+                            ));
                         }
                         let partial = required_event_string(d, "partial_json")?;
                         json.push_str(partial);
                     }
-                    _ => return Err("Anthropic delta type did not match its open block".into()),
+                    _ => {
+                        return Err(ParserFailure::new(
+                            Code::ConflictingValue,
+                            Field::Delta,
+                            "Anthropic delta type did not match its open block",
+                        ));
+                    }
                 }
             }
             "content_block_stop" => {
                 let index = required_index(&v)?;
                 if self.building_index.take() != Some(index) {
-                    return Err("Anthropic content stop index did not match its open block".into());
+                    return Err(ParserFailure::new(
+                        Code::ConflictingValue,
+                        Field::Index,
+                        "Anthropic content stop index did not match its open block",
+                    ));
                 }
                 match self.building.take() {
                     Some(Building::Text(text)) => {
@@ -434,7 +546,12 @@ impl StreamParser {
                         if signature.is_empty() {
                             self.native_replay_complete = false;
                             self.pending_native_error = Some(
-                                "thinking block completed without a provider signature".into(),
+                                ParserFailure::new(
+                                    Code::MissingField,
+                                    Field::Signature,
+                                    "thinking block completed without a provider signature",
+                                )
+                                .at_frame(self.frame_index),
                             );
                         } else {
                             self.native_blocks.push(serde_json::json!({
@@ -460,17 +577,28 @@ impl StreamParser {
                                 Ok(input) => input,
                                 Err(error) => {
                                     self.native_replay_complete = false;
-                                    self.pending_tool_error = Some(format!(
-                                        "tool arguments were not valid JSON: {error}"
-                                    ));
+                                    self.pending_tool_error = Some(
+                                        ParserFailure::json(
+                                            &error,
+                                            Field::PartialJson,
+                                            "tool arguments were not valid JSON",
+                                        )
+                                        .at_frame(self.frame_index),
+                                    );
                                     return Ok(items);
                                 }
                             }
                         };
                         if !input.is_object() {
                             self.native_replay_complete = false;
-                            self.pending_tool_error =
-                                Some("tool call input was not a JSON object".into());
+                            self.pending_tool_error = Some(
+                                ParserFailure::new(
+                                    Code::InvalidType,
+                                    Field::ContentBlockInput,
+                                    "tool call input was not a JSON object",
+                                )
+                                .at_frame(self.frame_index),
+                            );
                             return Ok(items);
                         }
                         let tu = ToolUse { id, name, input };
@@ -481,12 +609,22 @@ impl StreamParser {
                         // THE flagship signal: emitted here, mid-stream, before message_stop.
                         items.push(StreamItem::ToolUseComplete(tu));
                     }
-                    None => return Err("content_block_stop arrived without an open block".into()),
+                    None => {
+                        return Err(ParserFailure::new(
+                            Code::ProtocolSequence,
+                            Field::Index,
+                            "content_block_stop arrived without an open block",
+                        ));
+                    }
                 }
             }
             "message_delta" => {
                 if !self.message_start_seen {
-                    return Err("message_delta arrived before message_start".into());
+                    return Err(ParserFailure::new(
+                        Code::ProtocolSequence,
+                        Field::SseEvent,
+                        "message_delta arrived before message_start",
+                    ));
                 }
                 if let Some(sr) = v.pointer("/delta/stop_reason").and_then(|x| x.as_str()) {
                     self.stop_reason = match sr {
@@ -512,26 +650,46 @@ impl StreamParser {
                     if self.output_usage_seen {
                         return Err("Anthropic stream contained duplicate output usage".into());
                     }
-                    self.usage.output = output
-                        .as_u64()
-                        .ok_or("message_delta output_tokens was not an unsigned integer")?;
+                    self.usage.output = output.as_u64().ok_or_else(|| {
+                        ParserFailure::new(
+                            Code::InvalidType,
+                            Field::OutputTokens,
+                            "message_delta output_tokens was not an unsigned integer",
+                        )
+                    })?;
                     self.output_usage_seen = true;
                 }
             }
             "message_stop" => {
                 if !self.stop_reason_set {
-                    return Err("message_stop arrived before a stop reason".into());
+                    return Err(ParserFailure::new(
+                        Code::MissingField,
+                        Field::StopReason,
+                        "message_stop arrived before a stop reason",
+                    ));
                 }
                 if !self.message_start_seen {
-                    return Err("message_stop arrived without message_start usage".into());
+                    return Err(ParserFailure::new(
+                        Code::MissingField,
+                        Field::MessageUsage,
+                        "message_stop arrived without message_start usage",
+                    ));
                 }
                 if !self.output_usage_seen {
-                    return Err("message_stop arrived without output token usage".into());
+                    return Err(ParserFailure::new(
+                        Code::MissingField,
+                        Field::OutputTokens,
+                        "message_stop arrived without output token usage",
+                    ));
                 }
                 if let Some(building) = self.building.take() {
                     self.building_index = None;
                     if self.stop_reason != StopReason::MaxTokens {
-                        return Err("stream ended with an unfinished content block".into());
+                        return Err(ParserFailure::new(
+                            Code::ProtocolSequence,
+                            Field::ContentBlock,
+                            "stream ended with an unfinished content block",
+                        ));
                     }
                     self.native_replay_complete = false;
                     // Preserve visible partial prose/reasoning, but never fabricate or dispatch a
@@ -567,7 +725,11 @@ impl StreamParser {
                     .any(|block| matches!(block, Block::ToolUse(_)));
                 match self.stop_reason {
                     StopReason::ToolUse if !has_tool_use => {
-                        return Err("tool_use stop reason contained no complete tool call".into());
+                        return Err(ParserFailure::new(
+                            Code::ConflictingValue,
+                            Field::StopReason,
+                            "tool_use stop reason contained no complete tool call",
+                        ));
                     }
                     // `end_turn` carrying a COMPLETE tool call is a known wire-compatibility shape,
                     // not a protocol violation: the block itself is whole, only the terminal label
@@ -589,9 +751,11 @@ impl StreamParser {
                     | StopReason::Unknown(_)
                         if has_tool_use =>
                     {
-                        return Err(
-                            "complete tool call disagreed with the Anthropic stop reason".into(),
-                        );
+                        return Err(ParserFailure::new(
+                            Code::ConflictingValue,
+                            Field::StopReason,
+                            "complete tool call disagreed with the Anthropic stop reason",
+                        ));
                     }
                     StopReason::EndTurn
                     | StopReason::ToolUse
@@ -623,7 +787,8 @@ impl StreamParser {
                                     MAX_ASSEMBLED_OUTPUT_BYTES
                                 )
                             )
-                        ));
+                        )
+                        .into());
                     }
                     self.blocks.insert(
                         0,
@@ -702,38 +867,112 @@ impl StreamParser {
     }
 }
 
-fn required_index(value: &serde_json::Value) -> Result<u64, String> {
-    value
-        .get("index")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| "Anthropic content event lacked a valid index".into())
+// Replay's historical String API is retained; live transports receive only the enum fields.
+struct ParserFailure {
+    message: String,
+    diagnostic: DecodeDiagnostic,
 }
 
-fn required_event_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str, String> {
-    value
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "Anthropic content event lacked a required string".into())
+impl ParserFailure {
+    fn new(code: Code, field: Field, message: &str) -> Self {
+        Self {
+            message: message.into(),
+            diagnostic: DecodeDiagnostic::new(code, field),
+        }
+    }
+
+    fn json(error: &serde_json::Error, field: Field, message: &str) -> Self {
+        Self {
+            message: message.into(),
+            diagnostic: DecodeDiagnostic::json(error, field),
+        }
+    }
+
+    fn at_frame(mut self, frame: u64) -> Self {
+        self.diagnostic = self.diagnostic.at_frame(frame);
+        self
+    }
+}
+
+impl From<String> for ParserFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            diagnostic: DecodeDiagnostic::new(Code::InvalidResponse, Field::Response),
+        }
+    }
+}
+
+impl From<&str> for ParserFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+fn required_index(value: &serde_json::Value) -> Result<u64, ParserFailure> {
+    let raw = value.get("index").ok_or_else(|| {
+        ParserFailure::new(
+            Code::MissingField,
+            Field::Index,
+            "Anthropic content event lacked a valid index",
+        )
+    })?;
+    raw.as_u64().ok_or_else(|| {
+        ParserFailure::new(
+            Code::InvalidType,
+            Field::Index,
+            "Anthropic content event lacked a valid index",
+        )
+    })
+}
+
+fn required_event_string<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, ParserFailure> {
+    let raw = value.get(field).ok_or_else(|| {
+        ParserFailure::new(
+            Code::MissingField,
+            Field::schema_key(field),
+            "Anthropic content event lacked a required string",
+        )
+    })?;
+    raw.as_str().ok_or_else(|| {
+        ParserFailure::new(
+            Code::InvalidType,
+            Field::schema_key(field),
+            "Anthropic content event lacked a required string",
+        )
+    })
 }
 
 fn required_usage_u64(
     usage: &serde_json::Map<String, serde_json::Value>,
     field: &str,
-) -> Result<u64, String> {
-    optional_usage_u64(usage, field)?
-        .ok_or_else(|| "Anthropic usage lacked a required token count".into())
+) -> Result<u64, ParserFailure> {
+    optional_usage_u64(usage, field)?.ok_or_else(|| {
+        ParserFailure::new(
+            Code::MissingField,
+            Field::schema_key(field),
+            "Anthropic usage lacked a required token count",
+        )
+    })
 }
 
 fn optional_usage_u64(
     usage: &serde_json::Map<String, serde_json::Value>,
     field: &str,
-) -> Result<Option<u64>, String> {
+) -> Result<Option<u64>, ParserFailure> {
     usage
         .get(field)
         .map(|value| {
-            value
-                .as_u64()
-                .ok_or_else(|| "Anthropic usage token count was not an unsigned integer".into())
+            value.as_u64().ok_or_else(|| {
+                ParserFailure::new(
+                    Code::InvalidType,
+                    Field::schema_key(field),
+                    "Anthropic usage token count was not an unsigned integer",
+                )
+            })
         })
         .transpose()
 }

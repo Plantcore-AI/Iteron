@@ -35,6 +35,34 @@ pub(super) struct PlantcoreRuntime {
     dispatch_gate: Option<Arc<DispatchGate>>,
 }
 
+impl PlantcoreRuntime {
+    pub(super) fn terminal(&self) -> Option<PlantcoreTerminal> {
+        self.pending_terminal
+    }
+
+    pub(super) async fn enter_external_dispatch(&self) -> Result<Option<DispatchPermit>, ()> {
+        match self.dispatch_gate.as_ref() {
+            Some(gate) => gate.enter().await.map(Some).ok_or(()),
+            None => Ok(None),
+        }
+    }
+
+    pub(super) fn observe_provider_attempt(
+        &mut self,
+        turn: iteron_protocol::TurnId,
+        accounting: &ProviderRouteAttemptAccounting,
+    ) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let turn_number = u64::from(turn.0);
+        if turn_number == 0 {
+            return Err("PlantCore provider turn must be positive");
+        }
+        record_provider_attempt(self, turn_number, accounting)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DispatchGatePhase {
     NotAdmitted,
@@ -363,10 +391,7 @@ impl Agent {
     pub(super) async fn enter_plantcore_external_dispatch(
         &self,
     ) -> Result<Option<DispatchPermit>, ()> {
-        match self.plantcore.dispatch_gate.as_ref() {
-            Some(gate) => gate.enter().await.map(Some).ok_or(()),
-            None => Ok(None),
-        }
+        self.plantcore.enter_external_dispatch().await
     }
 
     pub(super) async fn cross_plantcore_logical_turn_gate(&self) -> Result<(), ()> {
@@ -462,18 +487,11 @@ impl Agent {
         turn: iteron_protocol::TurnId,
         accounting: &ProviderRouteAttemptAccounting,
     ) -> Result<(), &'static str> {
-        if !self.plantcore.enabled {
-            return Ok(());
-        }
-        let turn_number = u64::from(turn.0);
-        if turn_number == 0 {
-            return Err("PlantCore provider turn must be positive");
-        }
-        record_provider_attempt(&mut self.plantcore, turn_number, accounting)
+        self.plantcore.observe_provider_attempt(turn, accounting)
     }
 
     pub(super) fn plantcore_terminal(&self) -> Option<PlantcoreTerminal> {
-        self.plantcore.pending_terminal
+        self.plantcore.terminal()
     }
 
     pub(crate) fn plantcore_usage_unavailable(&self) -> bool {
@@ -580,23 +598,30 @@ impl Agent {
         &mut self,
         input: serde_json::Value,
     ) -> Result<ArtifactDeclaration, String> {
-        if !self.plantcore.enabled {
+        self.plantcore.snapshot_artifact(input).await
+    }
+}
+
+impl PlantcoreRuntime {
+    pub(super) async fn snapshot_artifact(
+        &mut self,
+        input: serde_json::Value,
+    ) -> Result<ArtifactDeclaration, String> {
+        if !self.enabled {
             return Err("publish_artifact is available only in an admitted PlantCore Run".into());
         }
         let arguments: PublishArtifactArguments = serde_json::from_value(input)
             .map_err(|error| format!("invalid publish_artifact arguments: {error}"))?;
         validate_artifact_arguments(&arguments)?;
         let output_root = self
-            .plantcore
             .output_root
             .clone()
             .ok_or_else(|| "PlantCore output root is unavailable".to_owned())?;
         let artifact_policy = self
-            .plantcore
             .artifact_policy
             .clone()
             .ok_or_else(|| "PlantCore artifact policy is unavailable".to_owned())?;
-        let existing_artifacts = self.plantcore.artifacts.clone();
+        let existing_artifacts = self.artifacts.clone();
         let artifact = tokio::task::spawn_blocking(move || {
             snapshot_artifact(
                 &output_root,
@@ -607,8 +632,11 @@ impl Agent {
         })
         .await
         .map_err(|_| "artifact snapshot worker stopped unexpectedly".to_owned())??;
-        self.add_plantcore_artifact(artifact.clone())
-            .map_err(str::to_owned)?;
+        let policy = self
+            .artifact_policy
+            .as_ref()
+            .ok_or("PlantCore artifact policy is absent")?;
+        insert_artifact(&mut self.artifacts, policy, artifact.clone()).map_err(str::to_owned)?;
         Ok(artifact)
     }
 }
@@ -728,7 +756,7 @@ fn completed_product(assistant_text: &str, artifacts: &[ArtifactDeclaration]) ->
 
 fn validate_product_result(product: &ProductResult) -> Result<(), &'static str> {
     product.validate()?;
-    crate::output::v7_result(&PlantcoreTerminalOutcome::Done(product.clone()))
+    crate::machine_projection::v7_result(&PlantcoreTerminalOutcome::Done(product.clone()))
         .map(|_| ())
         .map_err(|_| "product result exceeds the canonical v7 event limit")
 }

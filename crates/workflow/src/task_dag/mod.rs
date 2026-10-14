@@ -29,6 +29,7 @@
 mod graph;
 mod hash;
 mod reducer;
+#[cfg(feature = "script-workflows")]
 pub(crate) mod runtime;
 mod shape;
 mod store;

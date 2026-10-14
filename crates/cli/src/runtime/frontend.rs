@@ -72,8 +72,21 @@ fn ui_event_heap_bytes(event: &UiEvent) -> usize {
 
 fn runtime_frontend_event_heap_bytes(event: &super::RuntimeFrontendEvent) -> usize {
     match event {
+        super::RuntimeFrontendEvent::Refusal(value) => ENVELOPE
+            .0
+            .saturating_add(value.tool.as_ref().map_or(0, String::len))
+            .saturating_add(value.tool_use_id.as_ref().map_or(0, String::len))
+            .saturating_add(value.source.as_ref().map_or(0, |source| {
+                source.tenant.0.len().saturating_add(source.run_id.0.len())
+            })),
         super::RuntimeFrontendEvent::Ui(event) => ui_event_heap_bytes(event),
         super::RuntimeFrontendEvent::Plantcore(_) => ENVELOPE.0.saturating_add(64 * 1024),
+        super::RuntimeFrontendEvent::TurnPublication(_) => ENVELOPE.0.saturating_add(512),
+        super::RuntimeFrontendEvent::HostFinalEvidence(fact) => ENVELOPE
+            .0
+            .saturating_add(512)
+            .saturating_add(fact.tenant.0.len())
+            .saturating_add(fact.run_id.0.len()),
     }
 }
 
@@ -241,11 +254,11 @@ impl FrontendChannelHealth {
         Self::observe(&self.ui_saturated)
     }
 
-    fn workflow_saturated(&self) -> u64 {
+    pub(super) fn workflow_saturated(&self) -> u64 {
         Self::observe(&self.workflow_saturated)
     }
 
-    fn ui_saturation_count(&self) -> u64 {
+    pub(super) fn ui_saturation_count(&self) -> u64 {
         self.ui_saturated.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -268,10 +281,14 @@ impl FrontendChannelHealth {
         event: UiEvent,
     ) -> bool {
         match event {
-            UiEvent::Text(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+            UiEvent::Text(text)
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
+            {
                 self.try_send_stream_delta(tx, text, false)
             }
-            UiEvent::Thinking(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+            UiEvent::Thinking(text)
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
+            {
                 self.try_send_stream_delta(tx, text, true)
             }
             event => self.try_send_bounded_ui(tx, event),
@@ -285,12 +302,12 @@ impl FrontendChannelHealth {
     ) -> bool {
         match event {
             super::RuntimeFrontendEvent::Ui(UiEvent::Text(text))
-                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
             {
                 self.try_send_runtime_delta(tx, text, false)
             }
             super::RuntimeFrontendEvent::Ui(UiEvent::Thinking(text))
-                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
             {
                 self.try_send_runtime_delta(tx, text, true)
             }
@@ -323,7 +340,7 @@ impl FrontendChannelHealth {
         while !remaining.is_empty() {
             let mut split = remaining
                 .len()
-                .min(crate::output::max_stream_ui_delta_bytes());
+                .min(crate::machine_projection::max_stream_ui_delta_bytes());
             while !remaining.is_char_boundary(split) {
                 split -= 1;
             }
@@ -356,6 +373,11 @@ impl FrontendChannelHealth {
                 refusal_must_fail_run(event),
             ),
             super::RuntimeFrontendEvent::Plantcore(_) => (true, true),
+            // These facts already have exact durable provenance and a recovery read port. A
+            // presentation refusal cannot retroactively change a confirmed terminal outcome.
+            super::RuntimeFrontendEvent::Refusal(_)
+            | super::RuntimeFrontendEvent::TurnPublication(_)
+            | super::RuntimeFrontendEvent::HostFinalEvidence(_) => (true, false),
         };
         if self.has_authoritative_pending() {
             let bytes = runtime_frontend_event_heap_bytes(&event);
@@ -403,7 +425,7 @@ impl FrontendChannelHealth {
         while !remaining.is_empty() {
             let mut split = remaining
                 .len()
-                .min(crate::output::max_stream_ui_delta_bytes());
+                .min(crate::machine_projection::max_stream_ui_delta_bytes());
             while !remaining.is_char_boundary(split) {
                 split -= 1;
             }
@@ -561,7 +583,7 @@ impl Agent {
     }
 
     pub(crate) fn interrupt_handle(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
-        self.interrupt.clone()
+        self.control.interrupt().cloned()
     }
 
     /// Settle the cooperative interrupt used by an idle, frontend-owned control request.
@@ -571,17 +593,11 @@ impl Agent {
     /// calls this only after that standalone request has produced its authoritative reply; normal
     /// turn interrupts remain owned by `finish_requested_control` and the EQ terminal event.
     pub(crate) fn settle_standalone_control_interrupt(&mut self) {
-        self.interrupt_requested = false;
-        self.force_cancel_requested = false;
-        self.force_cancel
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(interrupt) = &self.interrupt {
-            interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.control.clear_cancel_after_terminal();
     }
 
     pub(crate) fn drain_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.drain.clone()
+        self.control.drain().clone()
     }
 
     /// Install a cooperative interrupt flag. When it flips true (e.g. from a Ctrl-C handler),
@@ -589,20 +605,29 @@ impl Agent {
     /// effect is left half-committed and the run is resumable; the turn is not atomic with
     /// respect to the interrupt.
     pub fn set_interrupt(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.interrupt = Some(flag);
+        self.control.bind_interrupt(flag);
     }
 
-    /// Install the distinct escalated-cancellation authority. A frontend must set this only for an
-    /// explicit ForceCancel operation; cooperative Ctrl-C continues to use [`Self::set_interrupt`].
-    pub fn set_force_cancel(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.force_cancel = flag;
+    /// A child observes its caller-owned stop signal but cannot clear it at its own terminal.
+    pub(crate) fn inherit_interrupt(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.control.inherit_interrupt(flag);
+    }
+
+    /// Shared escalated cancellation remains asserted until its caller records actual shutdown.
+    pub(crate) fn inherit_force_cancel(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.control.inherit_force_cancel(flag);
     }
 
     /// Install the session drain flag. Provider streams and admitted tools race it at the same
     /// bounded polling boundary as interrupt; descendants also observe it at their safe points.
     pub fn set_drain(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.drain = flag;
-        self.owns_drain = true;
+        self.control.bind_drain(flag);
     }
 
     /// Install a typed diagnostic evidence port. Payloads are content-free and emissions are
@@ -645,6 +670,14 @@ impl Agent {
     }
 
     pub(crate) fn ui(&self, e: UiEvent) -> bool {
+        if let Some(owner) = &self.ordinary_extensions
+            && matches!(
+                &e,
+                UiEvent::Phase(_) | UiEvent::TurnEnd { .. } | UiEvent::Done(_)
+            )
+        {
+            owner.observe(self.operator_status_sources(), &e);
+        }
         let before = self.frontend_saturation.ui_saturation_count();
         let sent = self.frontend_saturation.try_send_frontend(
             self.resident_ui_tx.as_ref(),
@@ -666,10 +699,24 @@ impl Agent {
         sent
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     pub(crate) fn plantcore_ui(&self, event: super::PlantcoreUiEvent) -> bool {
         self.resident_ui_tx.as_ref().is_none_or(|tx| {
             self.frontend_saturation
                 .try_send_runtime(tx, super::RuntimeFrontendEvent::Plantcore(event))
+        })
+    }
+
+    pub(super) fn turn_publication_ui(
+        &self,
+        event: iteron_protocol::turn_publication::TurnPublicationEventV1,
+    ) -> bool {
+        if event.validate().is_err() || event.run_id != *self.rollout.run_id() {
+            return false;
+        }
+        self.resident_ui_tx.as_ref().is_none_or(|tx| {
+            self.frontend_saturation
+                .try_send_runtime(tx, super::RuntimeFrontendEvent::TurnPublication(event))
         })
     }
 
@@ -681,31 +728,6 @@ impl Agent {
         tx: tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>,
     ) {
         self.workflow_progress_tx = Some(tx);
-    }
-
-    pub(super) fn workflow_progress(&self, event: crate::workflow::WorkflowRunUiEvent) -> bool {
-        if let Some(tx) = &self.workflow_progress_tx {
-            match tx.try_send(event) {
-                Ok(()) => return true,
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    let count = self.frontend_saturation.workflow_saturated();
-                    if count.is_power_of_two() {
-                        self.lifecycle_event(
-                            "queue.overflow",
-                            Some(self.current_turn_id()),
-                            iteron_protocol::LifecyclePayload {
-                                count: Some(count),
-                                reason_code: Some("runtime_workflow".into()),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     pub(crate) fn frontend_channel_port(&self) -> FrontendChannelHealth {
@@ -746,7 +768,7 @@ impl Agent {
     /// crash-recovery continuation, so Ultracode may orchestrate it.
     pub async fn follow_up(&mut self, text: &str) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript().await?;
-        self.verify_attempts = 0;
+        self.verification_state.reset_attempts();
         self.run(text).await
     }
 
@@ -757,7 +779,7 @@ impl Agent {
         text: &str,
     ) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript().await?;
-        self.verify_attempts = 0;
+        self.verification_state.reset_attempts();
         self.run_with_images_mode(text, Vec::new(), false, None)
             .await
     }
@@ -773,12 +795,90 @@ impl Agent {
     /// strictly richer here; the record stays the authority for the paths that cross a process
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
-        let Some(working) = self.working_set.take() else {
-            // Nothing has run in this process yet, so the record is the only transcript there is.
+        let _foreground = self.rollout.foreground_activity()?;
+        if self.transcript_state.working().is_none() {
+            let live_owner = self.transcript_state.live_owner(&self.rollout);
+            let live_control = match (&self.persistent_agents, &self.persistent_mailbox) {
+                (Some(control), _) => Some(control.clone()),
+                // Resident Agents intentionally retain no strong host field. Their actual
+                // admitted mailbox still supplies the existing owner for this exact epoch.
+                (None, Some(mailbox)) => {
+                    if live_owner.is_none() {
+                        return Err(KernelError::AgentControl(
+                            iteron_agents::ControllerError::RecoveryRequired,
+                        ));
+                    }
+                    Some(
+                        mailbox
+                            .child_controller()
+                            .map_err(KernelError::AgentControl)?
+                            .0,
+                    )
+                }
+                (None, None) => None,
+            };
+            if let Some(control) = live_control
+                && let Some(owner) = live_owner
+            {
+                self.require_installed_cohort()?;
+                if let Some(mailbox) = &self.persistent_mailbox {
+                    let (_, active_owner) = mailbox
+                        .child_controller()
+                        .map_err(KernelError::AgentControl)?;
+                    if active_owner != owner {
+                        return Err(KernelError::AgentControl(
+                            iteron_agents::ControllerError::StaleEpoch,
+                        ));
+                    }
+                } else if control
+                    .inspect(iteron_agents::AgentActor::Agent(owner), owner)
+                    .map_err(KernelError::AgentControl)?
+                    .state
+                    != iteron_protocol::agent_control::AgentStateV1::Idle
+                {
+                    return Err(KernelError::AgentControl(
+                        iteron_agents::ControllerError::RecoveryRequired,
+                    ));
+                }
+                let recovered = self
+                    .effect_journal
+                    .guard_recovery(&mut self.rollout, &mut self.ledger);
+                if let Err(KernelError::Record(error)) = &recovered {
+                    self.rollout.retain_failure(error);
+                    self.record_failed = true;
+                    self.diagnostic_record_append_failed();
+                }
+                recovered?;
+                if !self.parent_effects_known() {
+                    return Err(KernelError::AgentControl(
+                        iteron_agents::ControllerError::RecoveryRequired,
+                    ));
+                }
+                // The writer lease and private live witness bind this exact current run. Rebuild
+                // only its verified transcript; controller, financial/policy owners and card
+                // epochs remain live. Public cross-owner set_resume stays prohibited.
+                let prior = Self::messages_from_rollout(self.rollout.path())?;
+                self.advance_turn().await?;
+                self.transcript_state
+                    .replace_restored(Some(reconcile_transcript(prior)));
+                self.effect_journal.retain_live_followup();
+                return Ok(());
+            }
+            // A failed intake can leave no working transcript even after the operator has
+            // committed and priced a new route. Verified adoption must still clear the card;
+            // re-authenticate that previously bound selection in its new epoch, through the
+            // host pricing port and a fresh WAL receipt, instead of restoring cached authority.
+            let reauthenticate_pricing = self.provider_selection.card().is_some();
             let path = self.rollout.path().to_path_buf();
             let prior = Self::messages_from_rollout(&path)?;
-            return self.set_resume(prior);
-        };
+            self.set_resume(prior)?;
+            if reauthenticate_pricing {
+                // Missing pricing stays unbound. Invalid pricing or a failed durable receipt
+                // refuses this submission; the ordinary finite-budget gate still precedes IO.
+                self.bind_selected_rate_card()?;
+            }
+            return Ok(());
+        }
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // Turn ids are canonical effect/correlation identities, not an invocation-local counter, so
         // the follow-up must open a NEW one exactly as `set_resume` does when it continues after the
@@ -790,11 +890,16 @@ impl Agent {
         // An interrupted or errored run can leave a trailing assistant message whose tool_use was
         // never answered. Repair it exactly as the replay path does, or the provider rejects the
         // next request.
-        self.resumed = Some(reconcile_transcript(working));
+        let working = self
+            .transcript_state
+            .take_working()
+            .expect("resident working transcript retained through the advance barrier");
+        self.transcript_state
+            .replace_restored(Some(reconcile_transcript(working)));
         // This transcript and its effect gate never crossed a process boundary. The next run must
         // not replay and re-hash the complete rollout merely because `resumed` is also the common
         // input slot used by explicit recovery.
-        self.recovery_effect_replay_required = false;
+        self.effect_journal.retain_live_followup();
         Ok(())
     }
 }

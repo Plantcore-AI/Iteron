@@ -1,3 +1,4 @@
+use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
 use super::*;
 
 /// Wall-clock stamp reported when the host clock reads before the Unix epoch; accounting keeps an
@@ -82,183 +83,37 @@ pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
 }
 
 impl Agent {
-    fn close_usd_if_physical_charge_is_unproved(&self, turn: TurnId) {
-        let physical_charge_known = self.usd_budget.as_ref().is_some_and(|budget| {
-            budget.has_known_provider_charge_for(self.rollout.tenant(), self.rollout.run_id(), turn)
-        });
-        if !physical_charge_known {
-            self.mark_usd_unknown();
-        }
-    }
-
-    /// Commit authoritative usage and its optional signed monetary projection before updating the
-    /// in-memory ledger. The pricing strategy is pure and injected; this code performs no price
-    /// lookup, filesystem read, network request, or extra provider call.
+    #[cfg(test)]
+    /// Publish the logical projection of an already sealed physical usage receipt.
     pub(super) fn complete_provider_turn(
         &mut self,
         turn: TurnId,
         usage: iteron_protocol::Usage,
         model_ms: u64,
-        projected_at_unix_secs: u64,
+        usage_evidence: &ProviderLogicalUsageEvidence,
         stream: StreamTiming,
         cache_creation_reported: bool,
     ) -> Result<(), KernelError> {
-        // A rate that is never charged cannot be misapplied, so an unreported cache-creation count
-        // only makes the turn unpriceable when the bound card actually bills for cache writes.
-        let unpriceable_cache_creation = !cache_creation_reported
-            && self.pricing.as_ref().is_some_and(|signed| {
-                signed.rate_card.rates.cache_creation_microusd_per_million > 0
-            });
-        let projection_identity = CostProjectionIdentity {
-            tenant_id: self.rollout.tenant().0.clone(),
-            run_id: self.rollout.run_id().0.clone(),
-            turn_id: turn.0,
-            provider_attempt: self.ledger.provider_attempts,
-            attribution: self.projection_attribution.clone(),
-        };
-        let projection = match (&self.pricing_port, &self.pricing) {
-            (Some(port), Some(rate_card)) if !unpriceable_cache_creation => Some(port.project(
-                rate_card,
-                projection_identity.clone(),
-                usage,
-                projected_at_unix_secs,
-            )),
-            _ => None,
-        };
-        if let Err(error) = self.emit_durable(
+        self.provider_usage_journal(turn).complete(
             turn,
-            EventKind::TurnEnd {
-                usage,
-                ttft_ms: stream.ttft_ms,
-                decode_ms: stream.decode_ms,
-                stream_items: stream.stream_items,
-            },
-        ) {
-            // The per-route terminal and exact charge are already durable/load-bearing. Losing
-            // this logical turn projection is a record failure, not uncertainty about billing.
-            self.close_usd_if_physical_charge_is_unproved(turn);
-            return Err(error);
-        }
-        if unpriceable_cache_creation {
-            // Say why, on the record, before the ledger reports an unpriced turn. A silent
-            // downgrade to "unknown" is indistinguishable from a missing rate card.
-            if let Err(error) = self.emit_durable(
-                turn,
-                EventKind::Notice {
-                    text: iteron_tunables::param_str(
-                        "cli.runtime.unpriceable_cache_creation_notice",
-                        UNPRICEABLE_CACHE_CREATION_NOTICE,
-                    )
-                    .into(),
-                },
-            ) {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error);
-            }
-            self.ui(UiEvent::Notice(
-                iteron_tunables::param_str(
-                    "cli.runtime.unpriceable_cache_creation_notice",
-                    UNPRICEABLE_CACHE_CREATION_NOTICE,
-                )
-                .into(),
-            ));
-        }
-        self.ledger.turn(&usage, model_ms);
-        let projection = match projection.transpose() {
-            Ok(projection) => projection,
-            Err(error) => {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error.into());
-            }
-        };
-        if let Some(projection) = &projection {
-            if let Err(error) = self.emit_durable(
-                turn,
-                EventKind::CostProjected {
-                    projection: projection.clone(),
-                },
-            ) {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error);
-            }
-            let Some(port) = &self.pricing_port else {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(KernelError::PricingLedger(
-                    "signed projection lost its pricing authority",
-                ));
-            };
-            let Some(rate_card) = &self.pricing else {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(KernelError::PricingLedger(
-                    "signed projection lost its bound rate card",
-                ));
-            };
-            match admit_verified_projection(
-                port.as_ref(),
-                rate_card,
-                &projection_identity,
-                projection,
-                &mut self.ledger,
-            ) {
-                Ok(()) => {}
-                Err(ProjectionAdmissionError::Pricing(error)) => {
-                    self.close_usd_if_physical_charge_is_unproved(turn);
-                    return Err(error.into());
-                }
-                Err(ProjectionAdmissionError::Ledger(reason)) => {
-                    self.close_usd_if_physical_charge_is_unproved(turn);
-                    return Err(KernelError::PricingLedger(reason));
-                }
-            }
-            // The logical projection remains the operator-facing turn/accounting evidence, but
-            // the shared hard ceiling was already charged by the physical route terminal before
-            // this point. Charging the winner here would count it twice after retry/fallback.
-        } else {
-            self.close_usd_if_physical_charge_is_unproved(turn);
-        }
-        Ok(())
+            usage,
+            model_ms,
+            usage_evidence,
+            stream,
+            cache_creation_reported,
+        )
     }
 
-    /// Record the billing evidence for one otherwise-successful provider response.
-    ///
-    /// A missing provider report is not a zero-token turn. Keep the durable `TurnStart`
-    /// unmatched so replay reaches the same `BillingEvidenceMissing` state, and continue with the
-    /// assistant transcript because the semantic response itself completed successfully.
     pub(super) fn record_provider_usage(
         &mut self,
         turn: TurnId,
         report: UsageReport,
         model_ms: u64,
-        projected_at_unix_secs: u64,
+        usage_evidence: &ProviderLogicalUsageEvidence,
         stream: StreamTiming,
     ) -> Result<Option<iteron_protocol::Usage>, KernelError> {
-        match report {
-            UsageReport::Complete(usage) | UsageReport::CacheCreationUnreported(usage) => {
-                self.complete_provider_turn(
-                    turn,
-                    usage,
-                    model_ms,
-                    projected_at_unix_secs,
-                    stream,
-                    report.cache_creation_reported(),
-                )?;
-                Ok(Some(usage))
-            }
-            UsageReport::Incomplete { .. } => {
-                if let Err(error) = self.emit_durable(
-                    turn,
-                    EventKind::Notice {
-                        text: INCOMPLETE_USAGE_NOTICE.into(),
-                    },
-                ) {
-                    self.mark_usd_unknown();
-                    return Err(error);
-                }
-                self.ledger.turn_without_usage(model_ms);
-                self.mark_usd_unknown();
-                Ok(None)
-            }
-        }
+        self.provider_usage_journal(turn)
+            .record(turn, report, model_ms, usage_evidence, stream)
     }
 
     pub(super) fn mark_usd_unknown(&self) {
@@ -271,49 +126,8 @@ impl Agent {
     /// removes an already-established ceiling and a larger replacement never widens it. This keeps
     /// source compatibility for existing callers while making post-construction mutation safe.
     pub(super) fn synchronize_usd_budget(&mut self) -> Result<(), KernelError> {
-        let proposed = self.budget.max_usd.map(usd_to_microusd_ceiling);
-        let current = self
-            .usd_budget
-            .as_ref()
-            .map(|budget| budget.ceiling_microusd());
-        let target = match (current, proposed) {
-            (None, None) => return Ok(()),
-            (Some(current), None) => current,
-            (None, Some(proposed)) => proposed,
-            (Some(current), Some(proposed)) => current.min(proposed),
-        };
-        let persisted = self.usd_budget_persisted_microusd;
-        if persisted.is_none_or(|ceiling| target < ceiling) {
-            let source = if persisted.is_some() {
-                RuntimePolicySource::Operator
-            } else {
-                RuntimePolicySource::Startup
-            };
-            let kind = EventKind::UsdCeilingChanged {
-                version: RuntimePolicyEventVersion::V1,
-                source,
-                max_microusd: target,
-            };
-            let sequence = self.emit_durable_seq(TurnId(self.seq_turn), kind.clone())?;
-            self.usd_budget_persisted_microusd = Some(target);
-            self.observe_runtime_policy_commit(
-                &kind,
-                sequence,
-                RuntimePolicyObservation::LiveCommit,
-            );
-        }
-        let created = self.usd_budget.is_none();
-        if let Some(shared) = &self.usd_budget {
-            shared.tighten_microusd(target);
-        } else {
-            self.usd_budget = Some(std::sync::Arc::new(SharedUsdBudget::from_microusd(target)));
-        }
-        if created {
-            let scoped = replay_scoped_rollout(self.rollout.path())?;
-            self.restore_usd_budget_from_route_receipts(&scoped)?;
-        }
-        self.budget.max_usd = self.effective_max_usd();
-        Ok(())
+        let turn = TurnId(self.seq_turn);
+        self.invocation_funding().synchronize(turn)
     }
 
     /// Genesis stores the effective ceiling in `RunStart`; reconcile memory first, then mark it
@@ -346,12 +160,9 @@ impl Agent {
             self.mark_usd_unknown();
         }
     }
-
-    pub(super) fn merge_child_ledger(&mut self, child: &Ledger) {
-        let child_unknown = matches!(child.cost_state(), CostState::Unknown { .. });
-        self.ledger.merge(child);
-        if child_unknown || matches!(self.ledger.cost_state(), CostState::Unknown { .. }) {
-            self.mark_usd_unknown();
-        }
-    }
 }
+
+pub(super) const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
+pub(super) const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
+pub(super) const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
+pub(super) const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;

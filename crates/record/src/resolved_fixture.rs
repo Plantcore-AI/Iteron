@@ -120,6 +120,13 @@ fn all_family_input() -> ResolutionInput {
                 "model" => ResolutionValue::Enum {
                     value: route.model_id.clone(),
                 },
+                // These derived policies retain canonical physical baselines, including the
+                // bootstrap owner's zero eager-discovery budget; generic schema samples do not.
+                id @ ("multimodal_input_admission_decode_envelope"
+                | "provider_discovery_account_probe_cache_policy") => {
+                    canonical_embedded_default(id)
+                        .expect("derived operational policy has a physical baseline")
+                }
                 // A Builtin declaration of a Literal family is an attestation of the immutable
                 // registry value, not a second configuration channel. Keep this shared fixture
                 // on the same global equality contract enforced by the online builder and the
@@ -239,12 +246,6 @@ fn all_family_input() -> ResolutionInput {
                 // A generic map sample cannot establish that bijection and must not be allowed
                 // to weaken the pre-provider inspection gate.
                 "binary_media_inspection_routing" => binary_media_inspection_policy(),
-                // Discovery executes before the general resolver. Its FixedHidden checkpoint
-                // entry therefore attests the binary bootstrap owner exactly; a shape-valid
-                // sample with different TTL/backoff values is deliberately rejected on resume.
-                "provider_discovery_account_probe_cache_policy" => {
-                    provider_discovery_bootstrap_policy()
-                }
                 // The generic decimal sampler deliberately selects each schema minimum. Runtime
                 // memory admission additionally requires a usable lexical owner: BM25 k1/limit
                 // and at least one fusion signal must be non-zero. Mirror that real owner rather
@@ -1239,33 +1240,6 @@ fn binary_media_inspection_policy() -> ResolutionValue {
             (
                 "max_input_bytes".to_owned(),
                 ResolutionValue::Integer { value: 25_165_824 },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    }
-}
-
-fn provider_discovery_bootstrap_policy() -> ResolutionValue {
-    ResolutionValue::Object {
-        fields: [
-            (
-                "eager_budget_milliseconds".to_owned(),
-                ResolutionValue::Integer { value: 1_500 },
-            ),
-            (
-                "positive_ttl_seconds".to_owned(),
-                ResolutionValue::Integer { value: 15 * 60 },
-            ),
-            (
-                "failure_backoff_base_seconds".to_owned(),
-                ResolutionValue::Integer { value: 60 },
-            ),
-            (
-                "failure_backoff_cap_seconds".to_owned(),
-                ResolutionValue::Integer {
-                    value: 24 * 60 * 60,
-                },
             ),
         ]
         .into_iter()

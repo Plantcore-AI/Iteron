@@ -11,7 +11,8 @@
 //! read as ordinary command errors rather than as a policy denial. The remaining ceilings are
 //! liveness ones — a wall clock and a retained-output bound (invariant #1) — not security ones.
 
-use crate::{Registry, ShellPolicy, ToolError, ToolExecution, effectfut};
+use crate::{CapturedToolExecution, Registry, ShellPolicy, ToolError, ToolExecution, capturedfut};
+use iteron_protocol::refusal::RefusalReasonV1;
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use iteron_sandbox::Confinement;
 #[cfg(test)]
@@ -145,7 +146,7 @@ pub(crate) fn register(
     let confine_execution = r.confine_execution_handle();
     let observation_policy = r.observation_tool_policy_handle();
     let process_launch_policy = r.process_launch_policy_handle();
-    r.register_external_effect(
+    r.register_external_effect_captured(
         ToolSpec {
             name: "bash".into(),
             description: bash_description().into(),
@@ -188,14 +189,14 @@ pub(crate) fn register(
             let observation_policy = observation_policy.clone();
             let process_launch_policy = process_launch_policy.clone();
             let supervisor = std::sync::Arc::clone(&supervisor);
-            effectfut::box_it(async move {
+            capturedfut::box_it(async move {
                 let id = call.id.clone();
                 let Some(shell_policy) = observation_policy.get().copied().map(|p| p.shell) else {
                     return ToolExecution::Definite(tool_result(
                         id,
                         "bash refused: immutable observation-tool policy was not installed".into(),
                         true,
-                    ));
+                    )).into();
                 };
                 let cmd = call
                     .input
@@ -203,12 +204,12 @@ pub(crate) fn register(
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 if cmd.is_empty() {
-                    return ToolExecution::Definite(tool_result(id, "empty command".into(), true));
+                    return CapturedToolExecution::from(ToolExecution::Definite(tool_result(id, "empty command".into(), true))).with_refusal(RefusalReasonV1::InvalidRequest);
                 }
                 let budget = match ShellOutputBudget::from_policy(shell_policy, &call.input) {
                     Ok(budget) => budget,
                     Err(error) => {
-                        return ToolExecution::Definite(tool_result(id, error, true));
+                        return CapturedToolExecution::from(ToolExecution::Definite(tool_result(id, error, true))).with_refusal(RefusalReasonV1::InvalidRequest);
                     }
                 };
                 let confine = confine_execution.load(std::sync::atomic::Ordering::Relaxed);
@@ -217,7 +218,7 @@ pub(crate) fn register(
                         id,
                         "bash refused: immutable process launch policy was not installed".into(),
                         true,
-                    ));
+                    )).into();
                 };
                 let yield_ms = call
                     .input
@@ -236,12 +237,15 @@ pub(crate) fn register(
                     )
                     .await
                 {
-                    Ok(receipt) => finish_streaming_exec(id, receipt, budget),
+                    Ok(receipt) => finish_streaming_exec(id, receipt, budget).into(),
                     Err(crate::process::ActionError::Definite(error)) => {
-                        ToolExecution::Definite(tool_result(id, error, true))
+                        ToolExecution::Definite(tool_result(id, error, true)).into()
+                    }
+                    Err(crate::process::ActionError::Refused(reason, error)) => {
+                        CapturedToolExecution::from(ToolExecution::Definite(tool_result(id, error, true))).with_refusal(reason)
                     }
                     Err(crate::process::ActionError::Unknown(error)) => {
-                        ToolExecution::Unknown(tool_result(id, error, true))
+                        ToolExecution::Unknown(tool_result(id, error, true)).into()
                     }
                 }
             })
@@ -401,6 +405,15 @@ fn finish_sandbox_run_with_budget(
         Ok(output) => output,
         Err(error @ (SandboxError::Unsupported | SandboxError::Profile(_))) => {
             return ToolExecution::Definite(tool_result(tool_use_id, error.to_string(), true));
+        }
+        #[cfg(windows)]
+        Err(SandboxError::WindowsLaunch(launch)) => {
+            let result = tool_result(tool_use_id, launch.to_string(), true);
+            return if launch.not_dispatched() {
+                ToolExecution::Definite(result)
+            } else {
+                ToolExecution::Unknown(result)
+            };
         }
         Err(SandboxError::Spawn(_)) => {
             // The backend may have crossed process spawn before a pipe/wait failure. Without a

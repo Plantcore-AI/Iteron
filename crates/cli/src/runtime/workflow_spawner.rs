@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use iteron_agents::AgentCatalog;
 use iteron_obs::PricingPort;
 use iteron_protocol::capability_set::CapabilitySet;
-use iteron_protocol::slot::StrategySlot;
 use iteron_protocol::{
     Budget, CostAttribution, Effort, Outcome, PermissionMode, PermissionRules, RunId, TenantId,
 };
@@ -61,8 +60,18 @@ fn child_provider_governor(
 }
 
 mod activity;
+mod agent_profile;
+pub(super) mod native_context;
+mod native_policy_source;
+pub(crate) use native_policy_source::NativePolicySource;
+mod agent_route_binding;
+pub(super) mod direct;
+#[cfg(all(test, unix))]
+#[path = "workflow_spawner/agent_route_binding_tests.rs"]
+mod native_route_tests;
 mod tunables;
-mod worktree;
+pub(super) mod worktree;
+mod writer_settlement;
 
 /// One terminal/journal-safe refusal line. This is the final choke point for child setup and
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
@@ -124,7 +133,12 @@ pub(crate) fn safe_agent_refusal(reason: &str) -> String {
 /// Everything a [`KernelSpawner`] needs to build children WITHOUT a live parent `Agent`. The CLI
 /// fills this once from the resolved provider/route/config, then hands it to [`KernelSpawner::new`].
 /// Every field is cheap to clone or share (the provider/pricing/stop handles are `Arc`s).
+#[derive(Clone)]
 pub struct KernelSpawnerContext {
+    pub(crate) native_context_reference:
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+    pub(crate) native_policy_source:
+        Result<Option<Arc<native_policy_source::NativePolicySource>>, &'static str>,
     /// Shared provider handle (ADR-001 fan-out: every child uses the SAME provider object).
     pub provider: Arc<dyn Provider>,
     /// Default model id; overridden per call by [`AgentCall::model`].
@@ -176,6 +190,7 @@ pub struct KernelSpawnerContext {
     /// Per-child bounded-loop ceilings. The engine's Governor bounds CONCURRENCY; this bounds each
     /// child's turns/wall/usd. Defaults to `iteron_agents::subagent_budget_ceiling()`.
     pub budget: Budget,
+    pub(super) execution_deadline: Option<std::time::Instant>,
     /// Optional declaration-order budget slices for a kernel-built fan. When present, spawn ordinal
     /// N receives slice N and an ordinal outside the schedule is refused, preserving one aggregate
     /// fan ceiling instead of multiplying a per-child ceiling by the number of `agent()` calls.
@@ -185,6 +200,8 @@ pub struct KernelSpawnerContext {
     /// back into the writer's shared accounting after the engine joins; standalone workflows have
     /// no live parent ledger and leave it unset.
     pub(super) child_ledgers: Option<ChildLedgerCollector>,
+    pub(super) kernel_workflow_ledgers:
+        Option<Arc<Mutex<super::kernel_workflow_ledgers::KernelWorkflowLedgers>>>,
     /// Typed terminal outcomes for the same parent reconciliation path. The workflow engine's JS
     /// value intentionally collapses every degraded child to `null`; the kernel still needs to
     /// distinguish operator drain/interrupt from budget, harness and provider failures in its
@@ -204,17 +221,6 @@ pub struct KernelSpawnerContext {
         crate::runtime_tunables::effective_mcp::EffectiveMcpSettings,
         crate::runtime_tunables::effective_mcp::McpCapabilityExposure,
     )>,
-    /// Pinned strategy/port set inherited by every child; child construction never falls back to
-    /// a different policy generation.
-    pub context_strategy: Arc<dyn StrategySlot>,
-    pub tool_policy: Arc<dyn StrategySlot>,
-    pub memory_strategy: Arc<dyn StrategySlot>,
-    /// `core/router`. A leaf child never orchestrates, so it never asks; it is inherited anyway so
-    /// a child is never constructed against a different policy generation than its parent.
-    pub router: Arc<dyn StrategySlot>,
-    pub planner: Arc<dyn StrategySlot>,
-    pub collaboration: Arc<dyn StrategySlot>,
-    pub scheduler: Arc<dyn StrategySlot>,
     pub retry_policy: iteron_sched::BackoffPolicy,
     /// Fail-closed single-writer/worktree/merge admission policy shared with tunable facts.
     pub writer_merge_policy: iteron_workflow::WriterMergePolicy,
@@ -225,10 +231,6 @@ pub struct KernelSpawnerContext {
     /// One merge/writer lane for the complete session lineage. The guard is held from worktree
     /// provisioning through child terminal, verification, merge, and cleanup.
     pub(super) writer_merge_lock: Arc<tokio::sync::Mutex<()>>,
-    pub verifier: Arc<dyn StrategySlot>,
-    /// `core/model_router`. The spawner supplies the parent's already-resolved route as evidence;
-    /// the slot may select it or refuse, but cannot invent an unbound provider route.
-    pub model_router: Arc<dyn StrategySlot>,
     pub context_port: Arc<dyn iteron_ctx::ContextPort>,
     pub deferred_tool_eager_limit: Option<usize>,
     pub context_budget_policy: iteron_ctx::ContextBudgetPolicy,
@@ -242,8 +244,7 @@ pub struct KernelSpawnerContext {
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
     /// inherits this same immutable set; it never performs filesystem discovery itself.
     pub agent_catalog: Arc<AgentCatalog>,
-    /// Policy projection pinned for the entire workflow lineage.
-    pub boot_bundle: Arc<iteron_agents::BootBundle>,
+    pub(crate) plugin_management: Option<Arc<crate::plugin_runtime::PluginManagementOwner>>,
     /// Complete typed policy generation behind the projection. The spawner and every child retain
     /// the same Arc so policy identities and implementations cannot drift independently.
     pub(crate) compiled_policy_bundle: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
@@ -285,17 +286,6 @@ impl KernelSpawnerContext {
         &mut self,
         compiled: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     ) {
-        let slots = compiled.slots();
-        self.context_strategy = slots.context.clone();
-        self.tool_policy = slots.tool_policy.clone();
-        self.memory_strategy = slots.memory.clone();
-        self.router = slots.router.clone();
-        self.planner = slots.planner.clone();
-        self.collaboration = slots.collaboration.clone();
-        self.scheduler = slots.scheduler.clone();
-        self.verifier = slots.verifier.clone();
-        self.model_router = slots.model_router.clone();
-        self.boot_bundle = compiled.boot_bundle();
         self.compiled_policy_bundle = compiled;
     }
 
@@ -370,6 +360,8 @@ impl KernelSpawnerContext {
         ]);
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         KernelSpawnerContext {
+            native_context_reference: None,
+            native_policy_source: Ok(None),
             provider,
             model,
             provider_id,
@@ -394,28 +386,23 @@ impl KernelSpawnerContext {
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
             budget: iteron_agents::subagent_budget_ceiling(),
+            execution_deadline: None,
             budget_slices: None,
             child_ledgers: None,
+            kernel_workflow_ledgers: None,
             child_outcomes: None,
             drain: None,
             model_context_window: None,
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
             standalone_mcp_policy: None,
-            context_strategy: compiled_policy_bundle.slots().context.clone(),
-            tool_policy: compiled_policy_bundle.slots().tool_policy.clone(),
-            memory_strategy: compiled_policy_bundle.slots().memory.clone(),
-            router: compiled_policy_bundle.slots().router.clone(),
-            planner: compiled_policy_bundle.slots().planner.clone(),
-            collaboration: compiled_policy_bundle.slots().collaboration.clone(),
-            scheduler: compiled_policy_bundle.slots().scheduler.clone(),
+
             retry_policy: iteron_sched::BackoffPolicy::default(),
             writer_merge_policy: iteron_workflow::WriterMergePolicy::default(),
             verify_command: None,
             verification_feedback: iteron_verify::VerificationFeedbackTailPolicy::default(),
             writer_merge_lock: Arc::new(tokio::sync::Mutex::new(())),
-            verifier: compiled_policy_bundle.slots().verifier.clone(),
-            model_router: compiled_policy_bundle.slots().model_router.clone(),
+
             context_port: Arc::new(iteron_ctx::DefaultContextPort),
             deferred_tool_eager_limit: None,
             context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
@@ -425,7 +412,8 @@ impl KernelSpawnerContext {
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
-            boot_bundle: compiled_policy_bundle.boot_bundle(),
+            plugin_management: None,
+
             compiled_policy_bundle,
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
@@ -467,7 +455,7 @@ impl KernelSpawner {
     /// A deterministic, filesystem-safe child run id: namespaced by the parent tenant+run+workflow
     /// (so two concurrent workflows never collide) and made unique per spawn by the monotone
     /// ordinal. Mirrors the char classes of the parent's private `subagent_run_id`.
-    fn mint_run_id(&self, ordinal: u64) -> RunId {
+    pub(super) fn mint_run_id(&self, ordinal: u64) -> RunId {
         let mut digest = Sha256::new();
         for value in [
             self.cx.tenant.0.as_bytes(),
@@ -507,11 +495,110 @@ impl KernelSpawner {
         self.build_child_in(call, ordinal, None)
     }
 
+    /// Host-only persistent identity. The ordinal and resume selection come from the controller,
+    /// never a workflow script/model path. Existing workflow construction stays fresh-only.
+    pub(super) fn build_persistent_child(
+        &self,
+        call: &AgentCall,
+        view: &iteron_protocol::agent_control::AgentViewV1,
+        writer_workspace: Option<&Path>,
+        execution: Option<&iteron_agents::AgentEngineExecution>,
+    ) -> Result<Agent, String> {
+        if let Some(binding) = execution {
+            self.validate_engine_execution(binding)?;
+        }
+        let prior_runtime = view.usage.turns > 1
+            || view.incarnation > 1
+            || view.usage.tokens > 0
+            || view.usage.cost_microusd > 0;
+        if prior_runtime {
+            let path = self
+                .cx
+                .runtime_state_dir
+                .join("subagents")
+                .join(format!("{}.jsonl", self.mint_run_id(view.agent_id.0).0));
+            if !path.is_file()
+                || std::fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
+            {
+                return Err(safe_agent_refusal(
+                    "existing persistent identity requires its durable runtime journal",
+                ));
+            }
+        }
+        // Narrow a configuration snapshot for this exact durable identity. The retained native
+        // generation is immutable and can construct concurrent children through its shared Arc.
+        let mut context = self.cx.clone();
+        context.budget.max_turns = context
+            .budget
+            .max_turns
+            .min(view.budget.turns.saturating_sub(view.reserved.turns));
+        context.budget.max_tokens = Some(
+            context
+                .budget
+                .max_tokens
+                .unwrap_or(view.budget.tokens.saturating_sub(view.reserved.tokens))
+                .min(view.budget.tokens.saturating_sub(view.reserved.tokens)),
+        );
+        context.budget.max_wall_secs = context
+            .budget
+            .max_wall_secs
+            .min(view.budget.wall_ms.div_ceil(1_000));
+        let ceiling = view
+            .budget
+            .cost_microusd
+            .saturating_sub(view.reserved.cost_microusd) as f64
+            / 1_000_000.0;
+        context.budget.max_usd = Some(context.budget.max_usd.unwrap_or(ceiling).min(ceiling));
+        KernelSpawner::new(context).build_child_in_mode(
+            call,
+            view.agent_id.0,
+            writer_workspace,
+            true,
+            execution,
+            None,
+        )
+    }
+
+    pub(super) fn build_direct_child(
+        &self,
+        identity: &direct::DirectChildIdentity,
+        agent_type: Option<&str>,
+    ) -> Result<Agent, String> {
+        let call = direct::profile_call(agent_type, identity.effort);
+        self.build_child_in_mode(&call, 0, None, false, None, Some(identity))
+    }
+
+    /// Refuse invalid or authority-widening profiles before consuming a child admission. The
+    /// catalog and native policy source are immutable for both this check and construction.
+    pub(super) fn validate_direct_child_profile(
+        &self,
+        identity: &direct::DirectChildIdentity,
+        agent_type: Option<&str>,
+    ) -> Result<(), String> {
+        let call = direct::profile_call(agent_type, identity.effort);
+        let definition = agent_profile::resolve_definition(&self.cx, &call)?;
+        if definition.is_isolated_writer() {
+            return Err("direct investigator cannot request isolated writer authority".into());
+        }
+        Ok(())
+    }
     fn build_child_in(
         &self,
         call: &AgentCall,
         ordinal: u64,
         writer_workspace: Option<&Path>,
+    ) -> Result<Agent, String> {
+        self.build_child_in_mode(call, ordinal, writer_workspace, false, None, None)
+    }
+
+    fn build_child_in_mode(
+        &self,
+        call: &AgentCall,
+        ordinal: u64,
+        writer_workspace: Option<&Path>,
+        resume_existing: bool,
+        execution: Option<&iteron_agents::AgentEngineExecution>,
+        direct: Option<&direct::DirectChildIdentity>,
     ) -> Result<Agent, String> {
         let cx = &self.cx;
 
@@ -529,44 +616,16 @@ impl KernelSpawner {
         call.validate_request_metadata()
             .map_err(|error| safe_agent_refusal(error.public_reason()))?;
 
-        // Case-sensitive catalog resolution is an authority decision. Unknown names fail before a
-        // rollout or provider effect exists; in particular, the historical magic name `writer`
-        // can no longer turn model-controlled data into a coding registry.
-        let requested_type = call.agent_type.as_deref().unwrap_or("generic");
-        let agent_def = cx
-            .agent_catalog
-            .get(requested_type)
-            .cloned()
-            .ok_or_else(|| "requested agent type is absent from the pinned catalog".to_string())?;
-        agent_def.validate().map_err(|reason| {
-            safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
-        })?;
-        cx.execution_policy
-            .per_agent_model
-            .validate_owner(&cx.provider_id, &cx.model)
-            .map_err(safe_agent_refusal)?;
-        cx.execution_policy
-            .per_agent_tool_profile
-            .validate_owner(&cx.permission_rules)
-            .map_err(safe_agent_refusal)?;
-        let role_routes = cx
-            .execution_policy
-            .role_specific_models
-            .validate_owner(&cx.agent_catalog, &cx.provider_id, &cx.model)
-            .map_err(safe_agent_refusal)?;
-        if agent_def.model.is_some() {
-            let bound_route = format!("{}:{}", cx.provider_id, cx.model);
-            let Some(admitted_route) = role_routes.get(requested_type) else {
-                return Err(safe_agent_refusal(
-                    "agent definition model override is absent from the pinned role-specific model map",
-                ));
-            };
-            if admitted_route != &bound_route {
-                return Err(safe_agent_refusal(
-                    "pinned role-specific model route has no bound provider instance",
-                ));
-            }
-        }
+        let profile = match direct {
+            // Direct effort belongs to the host's pinned subagent-effort owner. Selecting a
+            // profile narrows its tools; it does not replace that owner with Workflow effort.
+            Some(identity) => agent_profile::ResolvedAgentProfile {
+                definition: agent_profile::resolve_definition(cx, call)?,
+                effort: identity.effort,
+            },
+            None => agent_profile::resolve(cx, call)?,
+        };
+        let agent_def = profile.definition;
         let is_writer = agent_def.is_isolated_writer();
         if is_writer != writer_workspace.is_some() {
             return Err(safe_agent_refusal(
@@ -583,15 +642,26 @@ impl KernelSpawner {
             ));
         }
 
-        // Gather the complete bounded observation now, but evaluate it only after the child owns
-        // a durable rollout. A refusal is still a real trainable-policy decision and must not
-        // disappear merely because no provider turn will follow it.
+        // Resolve only already-held native routes. The actual decision receipt is published
+        // after child genesis, including refusal; pure selection starts no provider IO.
         let model_router_observation =
-            iteron_provider::catalog::ModelRouterObservation::single_route(
-                cx.model.clone(),
-                agent_def.model.clone(),
-                call.model.clone(),
-            );
+            agent_route_binding::observation(cx, agent_def.model.clone(), call.model.clone())
+                .map_err(|error| safe_agent_refusal(&error.to_string()))?;
+        let native_route = agent_route_binding::select(cx, &model_router_observation);
+        if let Ok(selected) = &native_route
+            && let Some(source) = cx
+                .native_policy_source
+                .as_ref()
+                .map_err(|reason| safe_agent_refusal(reason))?
+        {
+            source
+                .validate_selected(
+                    &agent_def.name,
+                    agent_def.model.as_deref(),
+                    &selected.identity,
+                )
+                .map_err(safe_agent_refusal)?;
+        }
 
         let mut registry = if is_writer {
             let mut registry = Registry::isolated_writer(child_workspace.clone())
@@ -609,7 +679,7 @@ impl KernelSpawner {
             let _effective_tools = crate::bundle_adapter::narrow_child_registry(
                 &mut registry,
                 &agent_def.tools,
-                &cx.boot_bundle,
+                cx.compiled_policy_bundle.boot_bundle_ref(),
             );
             registry
         };
@@ -660,16 +730,27 @@ impl KernelSpawner {
             );
         }
 
-        let sub_run = self.mint_run_id(ordinal);
-        let subagents_dir = cx.runtime_state_dir.join("subagents");
+        let sub_run = direct.map_or_else(
+            || self.mint_run_id(ordinal),
+            |identity| identity.run.clone(),
+        );
+        let subagents_dir = direct.map_or_else(
+            || cx.runtime_state_dir.join("subagents"),
+            |identity| identity.directory.clone(),
+        );
         let rollout = Rollout::open(&subagents_dir, &sub_run, cx.tenant.clone())
             .map_err(|_| "child session record could not be opened".to_string())?;
 
         let mut sub = Agent::new_with_tunables_pin(
-            cx.provider.clone(),
+            native_route
+                .as_ref()
+                .map_or_else(|_| cx.provider.clone(), |route| route.provider.clone()),
             registry,
             rollout,
-            cx.model.clone(),
+            native_route.as_ref().map_or_else(
+                |_| cx.model.clone(),
+                |route| route.identity.model_id.clone(),
+            ),
             agent_def.system.clone(),
             budget.clone(),
             tunables_pin,
@@ -683,12 +764,44 @@ impl KernelSpawner {
         // --- Non-durable inherited context. These private fields are set exactly as the in-crate
         //     parent paths set them (this module is a descendant of the crate root, so it shares
         //     `Agent`'s private surface); no new public setter is exposed for them. ---
-        sub.projection_attribution = Some(CostAttribution::WorkflowChild {
-            parent_run_id: cx.parent_run_id.clone(),
-            workflow_id: cx.workflow_id.clone(),
-            task_id: ordinal as u32,
-            sub_run: sub_run.0.clone(),
+        sub.projection_attribution = Some(match direct {
+            Some(_) => CostAttribution::DirectSubagent {
+                parent_run_id: cx.parent_run_id.clone(),
+                sub_run: sub_run.0.clone(),
+            },
+            None => match execution.map(|binding| &binding.origin) {
+                Some(iteron_agents::AgentEngineOrigin::DirectSubagent { parent }) => {
+                    CostAttribution::DirectSubagent {
+                        parent_run_id: parent.run.clone(),
+                        sub_run: sub_run.0.clone(),
+                    }
+                }
+                Some(iteron_agents::AgentEngineOrigin::WorkflowChild {
+                    parent,
+                    workflow_id,
+                    task_id,
+                }) => CostAttribution::WorkflowChild {
+                    parent_run_id: parent.run.clone(),
+                    workflow_id: workflow_id.clone(),
+                    task_id: *task_id,
+                    sub_run: sub_run.0.clone(),
+                },
+                None => CostAttribution::WorkflowChild {
+                    parent_run_id: cx.parent_run_id.clone(),
+                    workflow_id: cx.workflow_id.clone(),
+                    task_id: u32::try_from(ordinal)
+                        .map_err(|_| "child task identity is outside its bounded domain")?,
+                    sub_run: sub_run.0.clone(),
+                },
+            },
         });
+        if let Some(identity) = direct {
+            sub.run_deadline.bind_external(Some(identity.deadline));
+            sub.diagnostics = identity.diagnostics.clone();
+        }
+        if let Some(deadline) = cx.execution_deadline {
+            sub.run_deadline.bind_external(Some(deadline));
+        }
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
@@ -696,8 +809,14 @@ impl KernelSpawner {
         sub.telemetry = cx.telemetry.clone();
         sub.activity = cx.activity.clone();
         sub.token_calibration = cx.token_calibration.clone();
-        if cx.usd_budget.is_some() {
-            sub.usd_budget = cx.usd_budget.clone();
+        if let Some(parent) = &cx.usd_budget {
+            let ceiling = sub.usd_budget.as_ref().map_or_else(
+                || parent.ceiling_microusd(),
+                |budget| budget.ceiling_microusd(),
+            );
+            sub.usd_budget = Some(Arc::new(
+                SharedUsdBudget::child(ceiling, parent.clone()).map_err(safe_agent_refusal)?,
+            ));
         }
         sub.session_spawn_ledger = cx.session_spawn_ledger.clone();
         let child_capabilities = if is_writer {
@@ -729,19 +848,25 @@ impl KernelSpawner {
         sub.dependency_skill_dirs = cx.dependency_skill_dirs.clone();
         // A workflow child is exactly one level below the operator. The read-only registry has no
         // dispatch/workflow tool; depth remains a second defense if that registry evolves.
-        sub.delegation_depth = cx
-            .execution_policy
-            .spawn_depth
-            .ok_or_else(|| safe_agent_refusal("pinned spawn-depth policy is inactive"))?;
+        sub.delegation_depth = match direct {
+            Some(identity) => identity.depth,
+            None => cx
+                .execution_policy
+                .spawn_depth
+                .ok_or_else(|| safe_agent_refusal("pinned spawn-depth policy is inactive"))?,
+        };
         if let Some(drain) = &cx.drain {
-            sub.drain = drain.clone();
-            sub.owns_drain = false;
+            sub.control.inherit_drain(drain.clone());
         }
 
         // --- Public-surface inherited context ---
         sub.workspace = child_workspace.clone();
-        sub.model_context_window = cx.model_context_window;
-        sub.model_max_output_tokens = cx.model_max_output_tokens;
+        sub.model_context_window = native_route
+            .as_ref()
+            .map_or(cx.model_context_window, |route| route.context_window);
+        sub.model_max_output_tokens = native_route
+            .as_ref()
+            .map_or(cx.model_max_output_tokens, |route| route.output_cap);
         // Hooks are trusted operator-owned host policy, not capabilities offered to the model.
         // Dropping them here silently bypassed canonical Gate hooks for WorkflowEngine children.
         sub.install_hooks(cx.hooks.clone()).map_err(|error| {
@@ -754,6 +879,10 @@ impl KernelSpawner {
         sub.composition_environment_context = cx.environment_context.clone();
         sub.environment_context = cx.environment_context.clone();
         sub.bypass_permissions = cx.bypass_permissions;
+        if let Some(owner) = &cx.plugin_management {
+            sub.install_plugin_management(owner.clone())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        }
         sub.pin_agent_catalog((*cx.agent_catalog).clone())
             .map_err(|error| {
                 safe_agent_refusal(&format!(
@@ -764,24 +893,39 @@ impl KernelSpawner {
         // Installs the deny-list on the agent, its hooks, and (already, above) its registry.
         sub.set_sensitive_env_names(cx.sensitive_env_names.clone());
 
-        // --- Coherent fresh-run runtime policy, BEFORE any durable append (the rollout is still
-        //     empty here; route recording below is the first event). A leaf never orchestrates, so
-        //     `Ultracode` collapses to `Max` (max thinking budget, no fan). ---
-        let effort = cx
-            .execution_policy
-            .admit_child_effort(call.effort, &cx.effort_policy)
-            .map_err(safe_agent_refusal)?;
-        sub.configure_initial_runtime_policy(
-            effort,
-            cx.permission_mode,
-            cx.permission_rules.clone(),
-        )
-        .map_err(|error| {
-            safe_agent_refusal(&format!(
-                "child runtime policy rejected: {}",
-                error.public_summary()
-            ))
-        })?;
+        // These immutable execution owners belong to construction, before verified resume
+        // restores spent provider attempts. Their fresh-only setters must never be called on
+        // an admitted resident; the actual shared governor still owns the whole lineage.
+        if let Ok(routed) = &native_route {
+            sub.set_provider_controls(cx.provider_controls)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.install_fallback_provider_routes(routed.fallbacks.clone())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.install_shared_provider_governor(child_provider_governor(cx)?)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        }
+        // Verified cold replay needs the already-held pricing authority when it validates the
+        // recorded projections. Installing it after replay cannot repair an unpriced ledger.
+        if let Some(port) = &cx.pricing_port {
+            sub.set_pricing_port(port.clone());
+        }
+
+        // Fresh children configure policy before genesis. Existing child journals restore their
+        // recorded policy through set_resume below; configuring a new initial policy after any
+        // durable event correctly refuses, so it must never be used for a cold resident reopen.
+        if !resume_existing || sub.rollout.is_empty() {
+            sub.configure_initial_runtime_policy(
+                profile.effort,
+                cx.permission_mode,
+                cx.permission_rules.clone(),
+            )
+            .map_err(|error| {
+                safe_agent_refusal(&format!(
+                    "child runtime policy rejected: {}",
+                    error.public_summary()
+                ))
+            })?;
+        }
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -790,33 +934,39 @@ impl KernelSpawner {
                 "cli.runtime.workflow_spawner.clock_before_epoch_secs",
                 CLOCK_BEFORE_EPOCH_SECS,
             ));
-        let parent_run = iteron_protocol::RunId(cx.parent_run_id.clone());
-        sub.record_child_genesis_with_tunables(
-            &parent_run,
-            child_workspace.display().to_string(),
-            created_at,
-            tunables_config_digest,
-            Some(agent_def.execution_tag()),
-        )
-        .map_err(|error| {
-            safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
-        })?;
+        let parent_run = iteron_protocol::RunId(execution.map_or_else(
+            || cx.parent_run_id.clone(),
+            |binding| binding.origin.parent().run.clone(),
+        ));
+        if resume_existing && sub.rollout.next_sequence().0 > 0 {
+            let messages = Agent::messages_from_rollout(sub.rollout.path())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.set_resume(messages)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        } else {
+            sub.record_child_genesis_with_tunables(
+                &parent_run,
+                child_workspace.display().to_string(),
+                created_at,
+                tunables_config_digest,
+                Some(agent_def.execution_tag()),
+            )
+            .map_err(|error| {
+                safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
+            })?;
+        }
 
         let model_router_opportunity = sub
             .begin_policy_decision(super::policy_evidence::MODEL_ROUTER_SLOT, None)
             .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        let routed = match iteron_provider::catalog::ModelRouterStrategy::route_with(
-            cx.model_router.as_ref(),
-            &model_router_observation,
-            cx.authority_ceiling,
-        ) {
+        let routed = match native_route {
             Ok(routed) => {
                 let draft = super::policy_evidence::PolicyDecisionDraft::selected(
                     super::policy_evidence::MODEL_ROUTER_SLOT,
                     &[iteron_protocol::PolicyActionV1::ModelRouterBoundParentRoute],
                     iteron_protocol::PolicyActionV1::ModelRouterBoundParentRoute,
                     "iteron:model-router-features-v1",
-                    &(&model_router_observation, &routed.model),
+                    &(&model_router_observation, &routed.identity.model_id),
                     &"selected_model_must_have_caller_resolved_route_evidence",
                 )
                 .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
@@ -840,19 +990,26 @@ impl KernelSpawner {
                 return Err(safe_agent_refusal(&error.to_string()));
             }
         };
-        sub.model = routed.model;
+        if execution.is_some_and(|binding| {
+            binding.provider_id != routed.identity.provider_id
+                || binding.model_id != routed.identity.model_id
+                || binding.catalog_digest != routed.identity.catalog_digest
+                || binding.capability_digest != routed.identity.capability_digest
+                || binding.effort != profile.effort
+        }) {
+            return Err(
+                "actual native child route differs from its durable execution binding".into(),
+            );
+        }
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
         //     positive USD ceiling must be enforced. ---
-        if let Some(port) = &cx.pricing_port {
-            sub.set_pricing_port(port.clone());
-        }
         sub.record_model_selection(
-            cx.provider_id.clone(),
-            sub.model.clone(),
-            cx.catalog_digest.clone(),
-            cx.capability_digest.clone(),
+            routed.identity.provider_id,
+            routed.identity.model_id,
+            routed.identity.catalog_digest,
+            routed.identity.capability_digest,
         )
         .map_err(|error| {
             safe_agent_refusal(&format!(
@@ -860,16 +1017,6 @@ impl KernelSpawner {
                 error.public_summary()
             ))
         })?;
-        sub.set_provider_controls(cx.provider_controls)
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        sub.install_fallback_provider_routes(cx.fallback_provider_routes.clone())
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        let shared_governor = child_provider_governor(cx)?;
-        // The shared owner contains the complete composition-time route set. The child's actual
-        // fallback vector above remains its narrower route authority; cloning the owner here only
-        // shares load-bearing in-flight/quota/circuit state.
-        sub.install_shared_provider_governor(shared_governor)
-            .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         if cx.pricing_port.is_some() {
             let bound = sub.bind_selected_rate_card().map_err(|error| {
                 safe_agent_refusal(&format!(
@@ -992,14 +1139,24 @@ pub(crate) fn attach_workflow_telemetry(
     }
 }
 
+/// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
+/// beside the child registry's absence of `dispatch_agent`.
+pub(super) const MAX_DELEGATION_DEPTH: u8 = 1;
+
+#[cfg(test)]
+#[path = "workflow_spawner/fixture_memory_budget.rs"]
+mod fixture_memory_budget;
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use iteron_protocol::{Capability, EventKind};
     use iteron_provider::{ProviderError, StreamItem, TurnRequest, TurnResult};
+    #[cfg(feature = "script-workflows")]
     use iteron_workflow::{
         ProgressEvent, ProgressSink, RunId, RunSpec, WorkflowEngine, WorkflowState,
     };
+    #[cfg(feature = "script-workflows")]
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1020,11 +1177,13 @@ pub(super) mod tests {
         }
     }
 
+    #[cfg(feature = "script-workflows")]
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<ProgressEvent>>,
     }
 
+    #[cfg(feature = "script-workflows")]
     impl ProgressSink for RecordingSink {
         fn emit(&self, event: ProgressEvent) {
             self.events.lock().unwrap().push(event);
@@ -1129,7 +1288,7 @@ pub(super) mod tests {
             .err()
             .expect("an unavailable role model must refuse before spawning");
         assert!(
-            error.contains("model override is absent from the pinned role-specific model map"),
+            error.contains("agent definition model has no admitted native role route"),
             "{error}"
         );
         let _ = std::fs::remove_dir_all(root);
@@ -1238,6 +1397,7 @@ pub(super) mod tests {
         hooks: &Hooks,
         provider_id: &str,
         model_id: &str,
+        memory: Option<iteron_ctx::MemBudget>,
     ) -> iteron_tunables::ResolvedTunableSet {
         use iteron_tunables::{ConstraintValue, ResolutionValue};
 
@@ -1606,7 +1766,7 @@ pub(super) mod tests {
             .into_iter()
             .collect(),
         };
-        let queue = crate::app_server::AppServerQueuePolicy::owner();
+        let queue = crate::queue_policy::FrontendQueuePolicy::owner();
         let app_server_queue = ResolutionValue::Object {
             fields: [
                 (
@@ -1631,8 +1791,8 @@ pub(super) mod tests {
                     "cosmetic_overflow".into(),
                     ResolutionValue::Enum {
                         value: match queue.cosmetic_overflow() {
-                            crate::app_server::CosmeticOverflow::Drop => "drop",
-                            crate::app_server::CosmeticOverflow::Coalesce => "coalesce",
+                            crate::queue_policy::CosmeticOverflow::Drop => "drop",
+                            crate::queue_policy::CosmeticOverflow::Coalesce => "coalesce",
                         }
                         .into(),
                     },
@@ -1641,8 +1801,8 @@ pub(super) mod tests {
                     "authoritative_overflow".into(),
                     ResolutionValue::Enum {
                         value: match queue.authoritative_overflow() {
-                            crate::app_server::AuthoritativeOverflow::Wait => "wait",
-                            crate::app_server::AuthoritativeOverflow::Reject => "reject",
+                            crate::queue_policy::AuthoritativeOverflow::Wait => "wait",
+                            crate::queue_policy::AuthoritativeOverflow::Reject => "reject",
                         }
                         .into(),
                     },
@@ -1824,19 +1984,40 @@ pub(super) mod tests {
             }
         }
 
+        if let Some(memory) = memory {
+            super::fixture_memory_budget::install(&mut input, memory);
+        }
+
         let resolved = iteron_tunables::resolve(input)
             .expect("production-compatible integration fixture must resolve atomically");
         iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
             .expect("workflow test fixture must bind every effective fixed authority")
     }
 
-    pub(super) fn pin_context(root: &Path, context: &mut KernelSpawnerContext) {
+    pub(in crate::runtime) fn pin_context(root: &Path, context: &mut KernelSpawnerContext) {
+        pin_context_with_materialization(root, context, None);
+    }
+
+    pub(in crate::runtime) fn pin_context_with_memory(
+        root: &Path,
+        context: &mut KernelSpawnerContext,
+    ) {
+        let memory = context.context_materialization_policy.memory;
+        pin_context_with_materialization(root, context, Some(memory));
+    }
+
+    fn pin_context_with_materialization(
+        root: &Path,
+        context: &mut KernelSpawnerContext,
+        memory: Option<iteron_ctx::MemBudget>,
+    ) {
         let resolved = production_compatible_resolved_fixture(
             root,
             context.agent_catalog.as_ref(),
             &context.hooks,
             &context.provider_id,
             &context.model,
+            memory,
         );
         context.pin_resolved_tunables(&resolved).unwrap();
         let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(
@@ -1846,6 +2027,7 @@ pub(super) mod tests {
         .unwrap()
         .core;
         context.default_effort = effective.effort;
+        context.effort_policy = effective.effort_policy;
         context.execution_policy = effective.execution;
         context.retry_policy = effective.retry;
         context.provider_controls = effective.provider_governor.controls;
@@ -2136,6 +2318,80 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn direct_profile_narrows_tools_without_mutating_siblings() {
+        let root = scratch("direct-profile");
+        let catalog = discovered_catalog(&root);
+        let expected = catalog.get("reviewer").unwrap().execution_tag();
+        let spawner = KernelSpawner::new(context(&root, catalog));
+        let catalog_before = spawner.cx.agent_catalog.execution_digest();
+        std::fs::write(root.join("repo/evidence.txt"), "source evidence").unwrap();
+        let identity = |run: &str| direct::DirectChildIdentity {
+            run: iteron_protocol::RunId(run.into()),
+            directory: root.join("runs/subagents"),
+            depth: 1,
+            effort: spawner.cx.execution_policy.subagent_effort,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            diagnostics: Default::default(),
+        };
+        let generic = spawner
+            .build_direct_child(&identity("generic-direct"), None)
+            .unwrap();
+        spawner
+            .validate_direct_child_profile(&identity("narrow-direct"), Some("reviewer"))
+            .unwrap();
+        let narrow = spawner
+            .build_direct_child(&identity("narrow-direct"), Some("reviewer"))
+            .unwrap();
+        assert_eq!(
+            narrow
+                .registry
+                .specs()
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read_file"]
+        );
+        assert!(
+            generic
+                .registry
+                .specs()
+                .iter()
+                .any(|spec| spec.name == "list_dir")
+        );
+        assert_eq!(spawner.cx.agent_catalog.execution_digest(), catalog_before);
+        assert_eq!(narrow.budget.max_consecutive_tool_errors, 1);
+        assert_eq!(narrow.effort, spawner.cx.execution_policy.subagent_effort);
+        assert!(!narrow.authority_ceiling.contains(Capability::CodeExecuting));
+        let allowed = narrow
+            .registry
+            .run(iteron_protocol::ToolUse {
+                id: "allowed-read".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({"path":"evidence.txt"}),
+            })
+            .await;
+        assert!(!allowed.is_error, "{}", allowed.content);
+        assert!(allowed.content.contains("source evidence"));
+        let refused = narrow
+            .registry
+            .run(iteron_protocol::ToolUse {
+                id: "unadvertised-list".into(),
+                name: "list_dir".into(),
+                input: serde_json::json!({"path":"."}),
+            })
+            .await;
+        assert!(
+            refused.is_error,
+            "the allowlist must be enforced, not just advertised"
+        );
+        assert!(iteron_record::replay(narrow.rollout.path()).unwrap().iter().any(|event| matches!(
+            &event.kind, EventKind::RunStart { agent_definition_tag: Some(tag), .. } if tag == &expected
+        )));
+        drop((generic, narrow));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn adversarial_request_metadata_fails_before_rollout_or_provider_and_is_safe() {
         let root = scratch("refusals");
         let catalog = discovered_catalog(&root);
@@ -2187,6 +2443,7 @@ pub(super) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature = "script-workflows")]
     #[tokio::test]
     async fn request_refusals_are_safe_across_null_journal_and_progress_surfaces() {
         let root = scratch("refusal-surfaces");

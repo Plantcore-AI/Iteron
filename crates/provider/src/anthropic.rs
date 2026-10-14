@@ -2,11 +2,13 @@
 //! stream into `SseFrame`s and feeds them to the pure `sse` parser, so all the interesting
 //! logic stays testable without a network.
 
+use crate::decode::invalid;
 use crate::sse::{ANTHROPIC_CONTENT_BLOCKS_FORMAT, SseFrame, StreamItem, StreamParser};
 use crate::{
     AdapterKind, ApiRoot, CacheBreakpoint, CacheScope, EffortApplication, ErrorProfile, Provider,
     ProviderControlCapabilities, ProviderError, TurnRequest, TurnResult,
 };
+use crate::{DecodeCode as Code, DecodeField as Field};
 use futures_util::StreamExt;
 use iteron_protocol::{Block, Message, ProviderState, Role};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -171,7 +173,7 @@ impl Anthropic {
 
         let mut body = serde_json::json!({
             "model": req.model,
-            "max_tokens": req.max_tokens,
+            "max_tokens": self.physical_output_ceiling(req.into())?,
             "system": system,
             "tools": req.tools.anthropic().as_ref(),
             "messages": messages,
@@ -182,26 +184,39 @@ impl Anthropic {
         if req.thinking_budget > 0 && capabilities.extended_thinking {
             body["thinking"] =
                 serde_json::json!({"type":"enabled","budget_tokens": req.thinking_budget});
-            let headroom = u32::try_from(iteron_tunables::param_i128(
-                "provider.anthropic.thinking_output_headroom_tokens",
-                i128::from(iteron_tunables::param_integer(
-                    "provider.anthropic.thinking_output_headroom_tokens",
-                    THINKING_OUTPUT_HEADROOM_TOKENS,
-                )),
-            ))
-            .unwrap_or(iteron_tunables::param_integer(
-                "provider.anthropic.thinking_output_headroom_tokens",
-                THINKING_OUTPUT_HEADROOM_TOKENS,
-            ));
-            let need = req.thinking_budget.saturating_add(headroom);
-            if req.max_tokens < need {
-                body["max_tokens"] = serde_json::json!(need);
-            }
         }
         if capabilities.semantic_effort {
             body["output_config"] = serde_json::json!({"effort": req.reasoning_effort.label()});
         }
         Ok(body)
+    }
+
+    fn physical_output_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<u32, ProviderError> {
+        let capabilities = anthropic_request_capabilities(
+            self.error_profile,
+            self.api_root.as_str(),
+            &self.static_metadata,
+            budget.model,
+        );
+        if !capabilities.extended_thinking || budget.thinking_budget == 0 {
+            return crate::output_ceiling::requested(budget);
+        }
+        let headroom = u32::try_from(iteron_tunables::param_i128(
+            "provider.anthropic.thinking_output_headroom_tokens",
+            i128::from(iteron_tunables::param_integer(
+                "provider.anthropic.thinking_output_headroom_tokens",
+                THINKING_OUTPUT_HEADROOM_TOKENS,
+            )),
+        ))
+        .map_err(|_| {
+            ProviderError::Configuration(
+                "physical thinking headroom is outside its finite u32 range".into(),
+            )
+        })?;
+        crate::output_ceiling::extended_thinking(budget, capabilities.extended_thinking, headroom)
     }
 }
 
@@ -321,6 +336,7 @@ fn msg_to_json(
     cache_breakpoint: bool,
     input_images: &[iteron_protocol::ImageContent],
 ) -> Result<serde_json::Value, ProviderError> {
+    crate::tool_image::validate_message(m)?;
     let role = match m.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -358,9 +374,10 @@ fn msg_to_json(
             Block::ToolResult(r) => Some(serde_json::json!({
                 "type":"tool_result",
                 "tool_use_id": r.tool_use_id,
-                "content": r.content,
+                "content": crate::tool_image::anthropic_result_content(m,r),
                 "is_error": r.is_error,
             })),
+            Block::ToolImage(_)=>None,
         }))
         .collect();
     mark_cache_breakpoint(&mut content, cache_breakpoint);
@@ -380,6 +397,10 @@ fn image_target(
         .rev()
         .find_map(|(index, message)| {
             (message.role == Role::User
+                && !message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
                 && message
                     .content
                     .iter()
@@ -647,6 +668,7 @@ fn required_native_string<'a>(
 
 #[derive(Default)]
 struct AnthropicSseDecoder {
+    data_frames: u64,
     pending: Vec<u8>,
     cursor: usize,
 }
@@ -662,15 +684,15 @@ impl AnthropicSseDecoder {
                     MAX_SSE_FRAME_BYTES,
                 )
             {
-                return Err(ProviderError::Decode(format!(
-                    "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(self.data_frames.saturating_add(1)));
             }
             let block_start = self.cursor;
             let block_end = block_start.saturating_add(idx);
             let block =
                 std::str::from_utf8(&self.pending[block_start..block_end]).map_err(|_| {
-                    ProviderError::Decode("Anthropic stream contained invalid UTF-8".into())
+                    invalid(Code::InvalidUtf8, Field::SseData)
+                        .at_decode_frame(self.data_frames.saturating_add(1))
                 })?;
             self.cursor = block_end.saturating_add(separator_len);
             let mut event = String::new();
@@ -684,6 +706,7 @@ impl AnthropicSseDecoder {
             }
             let data = data_lines.join("\n");
             if !event.is_empty() && !data.is_empty() {
+                self.data_frames = self.data_frames.saturating_add(1);
                 frames.push(SseFrame { event, data });
             }
         }
@@ -693,9 +716,8 @@ impl AnthropicSseDecoder {
                 MAX_SSE_FRAME_BYTES,
             )
         {
-            return Err(ProviderError::Decode(format!(
-                "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-            )));
+            return Err(invalid(Code::LimitExceeded, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)));
         }
         if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
             self.pending.drain(..self.cursor);
@@ -706,16 +728,14 @@ impl AnthropicSseDecoder {
 
     fn finish(&self) -> Result<(), ProviderError> {
         let pending = std::str::from_utf8(&self.pending[self.cursor..]).map_err(|_| {
-            ProviderError::Decode(
-                "Anthropic stream ended with an incomplete or invalid UTF-8 code point".into(),
-            )
+            invalid(Code::InvalidUtf8, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1))
         })?;
         if pending.trim().is_empty() {
             Ok(())
         } else {
-            Err(ProviderError::Decode(
-                "Anthropic stream ended with an incomplete SSE frame".into(),
-            ))
+            Err(invalid(Code::ProtocolSequence, Field::SseData)
+                .at_decode_frame(self.data_frames.saturating_add(1)))
         }
     }
 }
@@ -743,6 +763,29 @@ fn split_frames(buf: &str) -> (Vec<SseFrame>, String) {
 
 #[async_trait::async_trait]
 impl Provider for Anthropic {
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        crate::usage_bounds::physical_input_ceiling(
+            &self.static_metadata,
+            self.api_root.as_str(),
+            model,
+        )
+    }
+    fn usage_bound_semantics(&self) -> crate::ProviderUsageBoundSemantics {
+        if self.error_profile == ErrorProfile::Anthropic
+            && self.api_root.as_str() == DEFAULT_API_ROOT
+        {
+            crate::ProviderUsageBoundSemantics::PartitionedInput
+        } else {
+            crate::ProviderUsageBoundSemantics::IndependentClasses
+        }
+    }
+
+    fn physical_output_token_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        self.physical_output_ceiling(budget).map(Some)
+    }
     fn control_capabilities(&self) -> ProviderControlCapabilities {
         let mut capabilities = ProviderControlCapabilities::default();
         if self.prompt_cache {
@@ -784,6 +827,20 @@ impl Provider for Anthropic {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(
+            req,
+            on_item,
+            &crate::request_capture::DisabledRequestObserver,
+        )
+        .await
+    }
+
+    async fn turn_observed(
+        &self,
+        req: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn crate::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         let transport = req.controls.transport;
         let deadline = Instant::now()
             .checked_add(transport.request_total)
@@ -793,12 +850,20 @@ impl Provider for Anthropic {
                 )
             })?;
         let client = self.client.client(transport)?;
+        let endpoint = self.api_root.endpoint("messages")?;
+        let bytes = crate::request_capture::prepare_json(
+            AdapterKind::AnthropicMessages,
+            endpoint.as_str(),
+            &self.body(req)?,
+            req,
+            observer,
+        )?;
         let mut request = client
-            .post(self.api_root.endpoint("messages")?)
+            .post(endpoint)
             .header("x-api-key", &self.key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
-            .json(&self.body(req)?);
+            .body(bytes);
         if let Some(header) = self
             .static_metadata
             .anthropic_effort_header(&req.model)
@@ -811,14 +876,15 @@ impl Provider for Anthropic {
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ProviderError::Timeout {
-                stage: crate::ProviderTimeoutStage::RequestTotal,
-            });
+            return Err(ProviderError::RequestDeadlineBeforeDispatch);
         }
         let header_timeout = remaining.min(iteron_tunables::param_duration(
             "provider.anthropic.response_header_timeout",
             RESPONSE_HEADER_TIMEOUT,
         ));
+        crate::request_capture::dispatching(observer)?;
+        let header_timeout =
+            crate::request_capture::remaining_before_send(deadline, header_timeout)?;
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Timeout {
@@ -884,6 +950,7 @@ impl Provider for Anthropic {
             .map_err(ProviderError::Configuration)?; // persistent across chunks
         let mut result: Option<TurnResult> = None;
         let mut total_stream_bytes = 0usize;
+        let mut frame_index = 0u64;
         let max_stream_bytes =
             iteron_tunables::param_usize("provider.anthropic.max_stream_bytes", MAX_STREAM_BYTES);
 
@@ -908,20 +975,20 @@ impl Provider for Anthropic {
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|e| ProviderError::Http(e.to_string()))?;
-            total_stream_bytes = total_stream_bytes
-                .checked_add(bytes.len())
-                .ok_or_else(|| ProviderError::Decode("stream byte counter overflow".into()))?;
+            total_stream_bytes = total_stream_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1))
+            })?;
             if total_stream_bytes > max_stream_bytes {
-                return Err(ProviderError::Decode(format!(
-                    "Anthropic stream exceeded {max_stream_bytes} bytes"
-                )));
+                return Err(invalid(Code::LimitExceeded, Field::SseData)
+                    .at_decode_frame(frame_index.saturating_add(1)));
             }
             let frames = decoder.push(&bytes)?;
             for frame in &frames {
+                frame_index = frame_index.saturating_add(1);
                 if result.is_some() {
-                    return Err(ProviderError::Decode(
-                        "Anthropic stream emitted data after message_stop".into(),
-                    ));
+                    return Err(invalid(Code::ProtocolSequence, Field::SseEvent)
+                        .at_decode_frame(frame_index));
                 }
                 if frame.event.len().saturating_add(frame.data.len())
                     > iteron_tunables::param_integer(
@@ -929,9 +996,9 @@ impl Provider for Anthropic {
                         MAX_SSE_FRAME_BYTES,
                     )
                 {
-                    return Err(ProviderError::Decode(format!(
-                        "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                    )));
+                    return Err(
+                        invalid(Code::LimitExceeded, Field::SseData).at_decode_frame(frame_index)
+                    );
                 }
                 // Anthropic can accept a request with HTTP 200 and then report overloads or
                 // other API failures in-band. Treat that as a first-class provider failure;
@@ -948,7 +1015,7 @@ impl Provider for Anthropic {
                 }
                 // Feed each frame to the persistent parser; mid-stream items (incl. the
                 // flagship ToolUseComplete) reach the callback as early as they exist.
-                for item in parser.push(frame).map_err(ProviderError::Decode)? {
+                for item in parser.push_diagnostic(frame)? {
                     if let StreamItem::TurnComplete {
                         blocks,
                         stop_reason,
@@ -980,6 +1047,27 @@ impl Provider for Anthropic {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_tool_pixels_are_nested_in_the_matching_tool_result() {
+        let message = crate::tool_image::message_fixture();
+        let image = crate::tool_image::fixture();
+        let out = super::msg_to_json(&message, "image-fixture", false, &[]).unwrap();
+        assert_eq!(out["content"].as_array().unwrap().len(), 1);
+        let result = &out["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "vision-call");
+        assert_eq!(result["content"][2]["type"], "image");
+        assert_eq!(
+            result["content"][2]["source"]["data"],
+            image.image.data.as_str()
+        );
+        assert!(
+            result["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("UNTRUSTED TOOL IMAGE")
+        );
+    }
     use super::*;
     use iteron_protocol::{ImageContent, ImageMediaType};
 
@@ -1267,6 +1355,31 @@ mod tests {
                 requested: iteron_protocol::ReasoningEffort::Medium
             }
         );
+    }
+
+    #[test]
+    fn output_ceiling_proves_the_actual_body_limit_for_known_and_unknown_models() {
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
+        for model in ["claude-sonnet-4-5", "claude-opus-4-6", "unknown-model"] {
+            let request = request(model);
+            let proven = provider
+                .physical_output_token_ceiling((&request).into())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                provider.body(&request).unwrap()["max_tokens"].as_u64(),
+                Some(u64::from(proven))
+            );
+        }
+        let mut overflowing = request("claude-sonnet-4-5");
+        overflowing.thinking_budget = u32::MAX;
+        assert!(
+            provider
+                .physical_output_token_ceiling((&overflowing).into())
+                .is_err()
+        );
+        assert!(provider.body(&overflowing).is_err());
     }
 
     #[test]

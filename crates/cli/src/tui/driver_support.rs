@@ -75,109 +75,10 @@ pub(super) fn byte_index(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
-/// Complete a relative path `partial` under `repo` for `@file` mentions. Returns up to 8 matching
-/// entries (dirs get a trailing '/'), skipping hidden/build dirs. Bounded (invariant #1).
+/// Native test adapter; production completion reads only through the host port.
+#[cfg(test)]
 pub(super) fn complete_path(repo: &std::path::Path, partial: &str) -> Vec<String> {
-    // Confine to the repo: a `..` or absolute partial would let `repo.join` escape the root (review).
-    if partial.contains("..") || std::path::Path::new(partial).is_absolute() {
-        return Vec::new();
-    }
-    let (dir_part, file_part) = match partial.rfind('/') {
-        Some(i) => (&partial[..=i], &partial[i + 1..]),
-        None => ("", partial),
-    };
-    let base = repo.join(dir_part);
-    let mut out = Vec::new();
-    for (name, is_dir) in cached_completion_directory(&base) {
-        if name.starts_with('.') && !file_part.starts_with('.') {
-            continue;
-        }
-        if matches!(name.as_str(), "target" | "node_modules" | ".git") {
-            continue;
-        }
-        if !name
-            .to_ascii_lowercase()
-            .starts_with(&file_part.to_ascii_lowercase())
-        {
-            continue;
-        }
-        out.push(format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }));
-        if out.len() >= 8 {
-            break;
-        }
-    }
-    out
-}
-
-const COMPLETION_DIRECTORY_CACHE_ENTRIES: usize = 32;
-const COMPLETION_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(1);
-
-fn completion_directory_cache_entries() -> usize {
-    iteron_tunables::param_integer(
-        "cli.tui.driver_support.completion_directory_cache_entries",
-        COMPLETION_DIRECTORY_CACHE_ENTRIES,
-    )
-    .max(1)
-}
-
-fn completion_directory_cache_ttl() -> Duration {
-    iteron_tunables::param_duration(
-        "cli.tui.driver_support.completion_directory_cache_ttl",
-        COMPLETION_DIRECTORY_CACHE_TTL,
-    )
-}
-type CompletionDirectoryEntry = (std::path::PathBuf, Instant, Vec<(String, bool)>);
-
-#[derive(Default)]
-struct CompletionDirectoryCache {
-    entries: VecDeque<CompletionDirectoryEntry>,
-}
-
-/// Cache the expensive read_dir/file-type/sort projection, not the typed prefix. Different
-/// keystrokes in the same directory therefore filter one retained list while the bounded one-second
-/// TTL still reveals newly-created files promptly.
-fn cached_completion_directory(base: &std::path::Path) -> Vec<(String, bool)> {
-    use std::sync::{Mutex, OnceLock};
-
-    static CACHE: OnceLock<Mutex<CompletionDirectoryCache>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(CompletionDirectoryCache::default()));
-    let now = Instant::now();
-    if let Ok(mut cache) = cache.lock()
-        && let Some(index) = cache.entries.iter().position(|(path, inserted, _)| {
-            path == base
-                && now.saturating_duration_since(*inserted) <= completion_directory_cache_ttl()
-        })
-        && let Some(entry) = cache.entries.remove(index)
-    {
-        let result = entry.2.clone();
-        cache.entries.push_back(entry);
-        return result;
-    }
-
-    let mut entries = std::fs::read_dir(base)
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            entry.file_type().ok().map(|kind| (name, kind.is_dir()))
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
-    if let Ok(mut cache) = cache.lock() {
-        cache.entries.retain(|(path, inserted, _)| {
-            path != base
-                && now.saturating_duration_since(*inserted) <= completion_directory_cache_ttl()
-        });
-        while cache.entries.len() >= completion_directory_cache_entries() {
-            cache.entries.pop_front();
-        }
-        cache
-            .entries
-            .push_back((base.to_path_buf(), now, entries.clone()));
-    }
-    entries
+    crate::client_effects::path_completion::fixture_complete(repo, partial)
 }
 
 pub(super) fn fg(c: Color) -> Style {
@@ -215,12 +116,7 @@ pub(super) const TOOL_REVEAL_DELAY: Duration = Duration::from_millis(300);
 /// Bound anti-flash bookkeeping independently from transcript retention. Reaching the cap reveals
 /// the oldest running tool early; it never drops lifecycle evidence.
 pub(super) const MAX_PENDING_TOOL_PROJECTIONS: usize = 64;
-/// Bound both visible pending lanes and the number of outstanding operations this frontend can put
-/// into the legacy runtime's channel before acknowledgement.
-pub(super) const MAX_PENDING_SUBMISSIONS: usize = 32;
-/// A single interactive follow-up is deliberately smaller than tool/model context limits. Oversize
-/// drafts stay in the editor so the operator can trim or save them instead of losing text.
-pub(super) const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
+pub(super) use super::input_lanes::MAX_SUBMISSION_BYTES;
 /// A burst of streamed deltas costs ONE frame: the loop wakes on the first delta of the burst and
 /// then holds the next draw for this long so the rest of the burst folds into it. Visible token
 /// latency is bounded by this interval instead of by a fixed input-poll period.
@@ -460,8 +356,8 @@ pub(super) fn apply_vim_action(app: &mut App, action: keymap::VimAction) {
         keymap::VimAction::WordRight => app.editor.word_right(),
         keymap::VimAction::Delete => app.editor.delete(),
         keymap::VimAction::Clear => app.editor.clear_recoverable(),
-        keymap::VimAction::HistoryPrevious if !app.running => app.editor.history_prev(),
-        keymap::VimAction::HistoryNext if !app.running => app.editor.history_next(),
+        keymap::VimAction::HistoryPrevious if !app.run.running() => app.editor.history_prev(),
+        keymap::VimAction::HistoryNext if !app.run.running() => app.editor.history_next(),
         keymap::VimAction::HistoryPrevious | keymap::VimAction::HistoryNext => {}
         keymap::VimAction::EnterVisual => app.vim_anchor = Some(app.editor.cursor()),
         keymap::VimAction::LeaveVisual => app.vim_anchor = None,
@@ -515,10 +411,6 @@ pub(super) fn reload_operator_keymap(
             *active = next;
             *external_editor_command = editor;
             vim.reset();
-            app.note(
-                block::NoticeLevel::Info,
-                "reloaded operator keymap and external-editor configuration",
-            );
             for warning in warnings {
                 app.note(block::NoticeLevel::Warn, warning);
             }

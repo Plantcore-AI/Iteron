@@ -471,6 +471,7 @@ mod tests {
             image_input_version: None,
             image_input_source: None,
             routing_objectives: None,
+            data_policy: None,
             version: None,
             source: None,
         });

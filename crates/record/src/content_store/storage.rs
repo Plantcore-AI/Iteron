@@ -272,6 +272,15 @@ pub(super) fn load_bytes_with_state(
     state: &RevocationState,
     digest: &ErasureContentDigest,
 ) -> Result<Vec<u8>, ContentStoreError> {
+    load_bytes_with_state_bounded(layout, state, digest, None)
+}
+
+pub(super) fn load_bytes_with_state_bounded(
+    layout: &Layout,
+    state: &RevocationState,
+    digest: &ErasureContentDigest,
+    remaining: Option<usize>,
+) -> Result<Vec<u8>, ContentStoreError> {
     if let Some(tombstone) = state.tombstone(digest) {
         return Err(ContentStoreError::Revoked {
             digest: digest.clone(),
@@ -284,11 +293,16 @@ pub(super) fn load_bytes_with_state(
         digest: digest.clone(),
         reason: "key_missing",
     })?;
-    let blob = read_limited(&blob_path, MAX_CONTENT_JSON_BYTES + 64).map_err(|_| {
-        ContentStoreError::Unresolved {
-            digest: digest.clone(),
-            reason: "blob_missing",
-        }
+    let blob = read_limited(
+        &blob_path,
+        remaining
+            .unwrap_or(MAX_CONTENT_JSON_BYTES)
+            .min(MAX_CONTENT_JSON_BYTES)
+            .saturating_add(64),
+    )
+    .map_err(|_| ContentStoreError::Unresolved {
+        digest: digest.clone(),
+        reason: "blob_missing",
     })?;
     let bytes = crypto::open(&key, &blob, &aad(layout, digest)).map_err(|_| {
         ContentStoreError::Unresolved {
@@ -297,6 +311,11 @@ pub(super) fn load_bytes_with_state(
         }
     })?;
     ensure_content_bound(&bytes)?;
+    if remaining.is_some_and(|remaining| bytes.len() > remaining) {
+        return Err(ContentStoreError::ContentTooLarge {
+            max: remaining.unwrap_or(0),
+        });
+    }
     if digest_bytes(&bytes) != *digest {
         return Err(ContentStoreError::Unresolved {
             digest: digest.clone(),

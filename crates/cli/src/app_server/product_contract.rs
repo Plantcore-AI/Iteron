@@ -13,6 +13,7 @@ use iteron_protocol::product_contract::{
     TerminalEvidenceV1, ThreadSnapshotV1, TurnSnapshotV1, TurnStateV1,
 };
 use iteron_protocol::{Outcome, RunId, SessionId, SubmissionId};
+use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +21,7 @@ use std::sync::{Arc, Mutex};
 /// The scan buffer is bounded; an overlong candidate is suppressed through its END marker.
 #[derive(Default)]
 struct ProductStreamScrubber {
-    token: crate::output::StreamingScrubber,
+    token: crate::machine_projection::StreamingScrubber,
     scan: String,
     candidate: bool,
     in_private_key: bool,
@@ -130,6 +131,23 @@ struct Projection {
     approval_prompt_complete: Option<(SubmissionId, bool)>,
     assistant_scrubber: ProductStreamScrubber,
     reasoning_scrubber: ProductStreamScrubber,
+    artifacts: super::client_artifacts::ArtifactCatalog,
+    publications: super::turn_publication::PublicationReader,
+    artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
+    maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
+    maintenance_gaps: u64,
+    mcp_inputs: Option<super::mcp_input_public::InputBinding>,
+    final_evidence: super::final_evidence::FinalEvidenceReader,
+    refusals: super::refusal_projection::RefusalReader,
+    export: Option<super::client_export::ExportBinding>,
+    submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
+    shell: Option<Arc<super::client_shell::ShellService>>,
+    project_init: Option<Arc<super::project_init::ProjectInitService>>,
+    model_preferences: Option<Arc<super::model_preferences::PreferenceService>>,
+    workspace_reads: Option<Arc<super::tunables_simulation::WorkspaceReadService>>,
+    lab: Option<Arc<super::experiment_lab::LabService>>,
+    completion: Option<super::path_completion::CompletionBinding>,
+    turn_starts: Option<Arc<super::turn_start::TurnStartService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -173,12 +191,389 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn observe_scoped_native_refusal(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        refusal: &iteron_protocol::refusal::HostRefusalV1,
+    ) -> bool {
+        self.with_mut(|projection| {
+            if projection
+                .snapshot
+                .as_ref()
+                .is_none_or(|scope| scope.thread_id != *thread || scope.run_id != *run)
+            {
+                return false;
+            }
+            projection.refusals.observe_local(refusal)
+        })
+    }
+
+    pub(super) fn refusals_v1(
+        &self,
+        command: iteron_protocol::client_refusal::RefusalsReadV1,
+    ) -> Value {
+        self.with_mut(|projection| {
+            if projection.snapshot.as_ref().is_none_or(|scope| {
+                scope.thread_id != command.thread_id || scope.run_id != command.run_id
+            }) {
+                return json!({"type":"refusals_refused_v1","reason_code":"scope_changed"});
+            }
+            projection.refusals.read(command)
+        })
+    }
+
+    pub(super) fn host_final_evidence_v1(
+        &self,
+        command: iteron_protocol::client_final_evidence::HostFinalEvidenceReadV1,
+    ) -> Value {
+        self.with_mut(|projection| {
+            if projection.snapshot.as_ref().is_none_or(|scope|scope.thread_id!=command.thread_id||scope.run_id!=command.run_id) {
+                return json!({"type":"host_final_evidence_refused_v1","reason_code":"scope_changed"});
+            }
+            projection.final_evidence.read(command)
+        })
+    }
+
+    pub(super) fn bind_mcp_input_owner(&self, owner: super::mcp_input::PendingInputs) {
+        self.with_mut(|projection| {
+            projection.mcp_inputs =
+                Some(super::mcp_input_public::InputBinding { owner, gate: None })
+        });
+    }
+    #[cfg(test)]
+    pub(super) fn bind_mcp_input_gate_for_test(&self, gate: Arc<tokio::sync::RwLock<()>>) {
+        self.with_mut(|projection| {
+            if let Some(binding) = projection.mcp_inputs.as_mut() {
+                binding.gate = Some(gate);
+            }
+        });
+    }
+    pub(super) fn mcp_input_binding(
+        &self,
+    ) -> Option<(ThreadSnapshotV1, super::mcp_input_public::InputBinding)> {
+        self.with_mut(|projection| {
+            Some((projection.snapshot.clone()?, projection.mcp_inputs.clone()?))
+        })
+    }
+    pub(super) async fn mcp_inputs_v1(
+        &self,
+        command: iteron_protocol::client_mcp_input::McpInputCommandV1,
+    ) -> serde_json::Value {
+        super::mcp_input_public::execute(self.clone(), command).await
+    }
+    pub(super) fn mcp_inputs_snapshot(
+        &self,
+    ) -> Option<iteron_protocol::client_mcp_input::McpInputsSnapshotV1> {
+        let (scope, binding) = self.mcp_input_binding()?;
+        Some(binding.owner.snapshot(&scope.thread_id, &scope.run_id))
+    }
+
+    pub(super) fn lab_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::experiment_lab::LabService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .lab
+                    .get_or_insert_with(|| Arc::new(super::experiment_lab::LabService::default()))
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_lab(&self) -> bool {
+        match self.with_mut(|projection| projection.lab.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+    pub(super) fn workspace_read_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::tunables_simulation::WorkspaceReadService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .workspace_reads
+                    .get_or_insert_with(|| {
+                        Arc::new(super::tunables_simulation::WorkspaceReadService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_workspace_reads(&self) -> bool {
+        match self.with_mut(|projection| projection.workspace_reads.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+    pub(super) fn bind_artifact_owner(&self, agent: &crate::runtime::Agent) {
+        if let Some(root) = agent.rollout.path().parent() {
+            self.with_mut(|projection| {
+                if projection
+                    .turn_starts
+                    .as_ref()
+                    .is_none_or(|service| !service.matches(root, agent.rollout.tenant()))
+                {
+                    projection.turn_starts =
+                        Some(Arc::new(super::turn_start::TurnStartService::new(
+                            root.to_owned(),
+                            agent.rollout.tenant().clone(),
+                        )));
+                }
+            });
+        }
+        let scope = agent.rollout.path().parent().map(|runs| {
+            crate::artifacts::ArtifactReadScope::capture(
+                runs.to_owned(),
+                agent.rollout.tenant().clone(),
+                agent.rollout.run_id().clone(),
+                agent.workspace.clone(),
+            )
+        });
+        let recovered = agent.recovered_turn_publications_v1().map_err(|_| ());
+        let maintenance_port = agent.advisory_maintenance_port();
+        let final_evidence = agent.host_final_evidence();
+        self.with_mut(|projection| {
+            projection.artifact_scope = scope;
+            if let Some(snapshot) = projection.snapshot.as_ref() {
+                projection.refusals.bind(
+                    snapshot.thread_id.clone(),
+                    agent.rollout.tenant().clone(),
+                    agent.rollout.run_id().clone(),
+                );
+                projection.final_evidence.bind(
+                    snapshot.thread_id.clone(),
+                    agent.rollout.tenant().clone(),
+                    agent.rollout.run_id().clone(),
+                    final_evidence,
+                );
+            }
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.completion.as_ref()
+            {
+                projection.completion = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.export.as_ref()
+                && !binding.matches_scope(&snapshot.thread_id, agent.rollout.run_id())
+            {
+                projection.export = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
+            projection.maintenance = projection.snapshot.as_ref().and_then(|snapshot| {
+                maintenance_port.map(|port| super::advisory_maintenance::MaintenanceBinding {
+                    thread_id: snapshot.thread_id.clone(),
+                    run_id: snapshot.run_id.clone(),
+                    port,
+                })
+            });
+            projection
+                .publications
+                .recover(agent.rollout.run_id(), recovered);
+        });
+    }
+
+    pub(super) async fn shutdown_shell(&self) -> bool {
+        let owner = self.with_mut(|projection| projection.shell.clone());
+        match owner {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+
+    pub(super) fn turn_start_service(&self) -> Option<Arc<super::turn_start::TurnStartService>> {
+        self.with_mut(|projection| projection.turn_starts.clone())
+    }
+    pub(super) fn bind_submission_exclusion(
+        &self,
+        exclusion: super::session_factory::SubmissionExclusion,
+    ) {
+        self.with_mut(|projection| projection.submission_exclusion = Some(Arc::new(exclusion)));
+    }
+    pub(super) fn preference_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::model_preferences::PreferenceService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .model_preferences
+                    .get_or_insert_with(|| {
+                        Arc::new(super::model_preferences::PreferenceService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(crate) fn model_preference_after(
+        &self,
+        revision: u64,
+    ) -> Option<super::model_preferences::PreferenceReceipt> {
+        self.with_mut(|projection| {
+            let current = projection.snapshot.as_ref()?;
+            let receipt = projection.model_preferences.as_ref()?.after(revision)?;
+            (receipt.thread_id == current.thread_id && receipt.run_id == current.run_id)
+                .then_some(receipt)
+        })
+    }
+    pub(super) fn model_preference_scoped(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        after: u64,
+    ) -> Result<Option<super::PreferenceReceipt>, &'static str> {
+        self.with_mut(|projection| {
+            if projection
+                .snapshot
+                .as_ref()
+                .is_none_or(|scope| &scope.thread_id != thread || &scope.run_id != run)
+            {
+                return Err("model preference observation belongs to a previous thread/run");
+            }
+            let receipt = projection
+                .model_preferences
+                .as_ref()
+                .and_then(|owner| owner.after(after));
+            Ok(receipt.filter(|receipt| &receipt.thread_id == thread && &receipt.run_id == run))
+        })
+    }
+    pub(super) async fn shutdown_model_preferences(&self) -> bool {
+        match self.with_mut(|projection| projection.model_preferences.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+    pub(super) fn project_init_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::project_init::ProjectInitService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .project_init
+                    .get_or_insert_with(|| {
+                        Arc::new(super::project_init::ProjectInitService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(super) async fn shutdown_project_init(&self) -> bool {
+        match self.with_mut(|projection| projection.project_init.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+    pub(super) fn shell_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::client_shell::ShellService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .shell
+                    .get_or_insert_with(|| Arc::new(super::client_shell::ShellService::default()))
+                    .clone(),
+            ))
+        })
+    }
+
+    pub(super) fn bind_export_owner(
+        &self,
+        agent: &crate::runtime::Agent,
+        activity: &super::activity_control::ActivitySurface,
+    ) {
+        self.with_mut(|projection| {
+            if let Some(binding) = projection.mcp_inputs.as_mut() {
+                binding.gate = Some(activity.client_effect_gate());
+            }
+        });
+        let binding = super::client_export::ExportBinding::capture(agent, self, activity);
+        self.with_mut(|projection| projection.export = binding);
+        let completion = super::path_completion::CompletionBinding::capture(agent, self, activity);
+        self.with_mut(|projection| projection.completion = completion);
+    }
+
+    pub(super) fn refresh_path_completion(&self, agent: &crate::runtime::Agent) {
+        self.with_mut(|projection| {
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.completion.as_ref()
+            {
+                projection.completion = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
+        });
+    }
+    pub(super) fn completion_binding(&self) -> Option<super::path_completion::CompletionBinding> {
+        self.with_mut(|projection| projection.completion.clone())
+    }
+    pub(super) fn completion_is_current(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        revision: u64,
+    ) -> bool {
+        self.with_mut(|projection| {
+            projection
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.thread_id == *thread && snapshot.run_id == *run)
+                && projection
+                    .completion
+                    .as_ref()
+                    .is_some_and(|binding| binding.matches(thread, run, revision))
+        })
+    }
+    pub(super) async fn shutdown_path_completions(&self) -> bool {
+        match self.completion_binding() {
+            Some(binding) => binding.shutdown().await,
+            None => true,
+        }
+    }
+
+    pub(super) fn export_binding(&self) -> Option<super::client_export::ExportBinding> {
+        self.with_mut(|projection| projection.export.clone())
+    }
+
     fn with_mut<R>(&self, action: impl FnOnce(&mut Projection) -> R) -> R {
         let mut guard = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         action(&mut guard)
+    }
+
+    /// Serializes a small host installation with identity replacement. The callback must not
+    /// perform filesystem I/O, await, or re-enter this reader.
+    pub(super) fn with_current_identity<R>(
+        &self,
+        thread_id: &SessionId,
+        run_id: &RunId,
+        install: impl FnOnce() -> R,
+    ) -> Option<R> {
+        self.with_mut(|projection| {
+            projection
+                .snapshot
+                .as_ref()
+                .filter(|snapshot| &snapshot.thread_id == thread_id && &snapshot.run_id == run_id)
+                .map(|_| install())
+        })
     }
 
     pub(super) fn bind_identity(&self, thread_id: SessionId, run_id: RunId) {
@@ -190,6 +585,13 @@ impl ContractReader {
             {
                 return;
             }
+            projection.maintenance = None;
+            projection.maintenance_gaps = 0;
+            projection.artifact_scope = None;
+            projection.artifacts.bind_thread(&thread_id);
+            projection
+                .publications
+                .bind(thread_id.clone(), run_id.clone());
             projection.snapshot = Some(ThreadSnapshotV1 {
                 contract_version: PRODUCT_CONTRACT_VERSION,
                 thread_id,
@@ -257,7 +659,12 @@ impl ContractReader {
             {
                 return false;
             }
+            projection.maintenance = None;
+            projection.maintenance_gaps = 0;
             if let Some(snapshot) = projection.snapshot.as_mut() {
+                projection
+                    .publications
+                    .bind(snapshot.thread_id.clone(), run_id.clone());
                 snapshot.run_id = run_id;
                 snapshot.turn = None;
                 snapshot.submissions.clear();
@@ -297,7 +704,112 @@ impl ContractReader {
         event: &ServerEvent,
         terminal_spill_bytes: Option<usize>,
     ) {
-        self.with_mut(|projection| projection.observe(seq, event, terminal_spill_bytes));
+        self.with_mut(|projection| {
+            if let ServerEvent::TurnPublication(publication) = event {
+                projection.publications.observe(publication);
+            }
+            projection.observe(seq, event, terminal_spill_bytes);
+        });
+    }
+
+    pub(super) fn turn_publications_v1(
+        &self,
+        command: iteron_protocol::turn_publication::TurnPublicationReadV1,
+    ) -> serde_json::Value {
+        self.with_mut(|projection| projection.publications.read(command))
+    }
+
+    pub(super) fn note_maintenance_gap(&self) {
+        self.with_mut(|projection| {
+            projection.maintenance_gaps = projection.maintenance_gaps.saturating_add(1)
+        });
+    }
+    pub(super) fn maintenance_gaps(&self) -> serde_json::Value {
+        self.with_mut(|projection| {
+            serde_json::json!({
+                "thread_id": projection.snapshot.as_ref().map(|snapshot| &snapshot.thread_id),
+                "run_id": projection.snapshot.as_ref().map(|snapshot| &snapshot.run_id),
+                "presentation_gaps": projection.maintenance_gaps,
+            })
+        })
+    }
+
+    pub(super) fn maintenance_binding(
+        &self,
+    ) -> Option<super::advisory_maintenance::MaintenanceBinding> {
+        self.with_mut(|projection| projection.maintenance.clone())
+    }
+
+    pub(super) fn maintenance_v1(
+        &self,
+        command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
+    ) -> serde_json::Value {
+        super::advisory_maintenance::read(self, command)
+    }
+
+    pub(super) fn artifacts_v1(
+        &self,
+        command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
+    ) -> serde_json::Value {
+        // Never hold the event projection lock across disk hydration or content-graph validation.
+        let (resident, scope, identity) = self.with_mut(|projection| {
+            (
+                projection.artifacts.read(command.clone()),
+                projection.artifact_scope.clone(),
+                projection
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| (snapshot.thread_id.clone(), snapshot.run_id.clone())),
+            )
+        });
+        let Some((thread, run)) = identity else {
+            return resident;
+        };
+        if command.thread_id() != &thread {
+            return resident;
+        }
+        let durable = scope.and_then(|scope| scope.read(&thread, command.clone()).ok());
+        let retained_catalog_available = durable.is_some();
+        match command {
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::Read { .. } => durable
+                .unwrap_or_else(|| {
+                    let mut reply = resident;
+                    reply["provenance"] = serde_json::json!("resident_public_event");
+                    reply
+                }),
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { .. } => {
+                let mut reply = durable.unwrap_or_else(|| serde_json::json!({
+                    "type":"artifacts_v1", "contract_version":iteron_protocol::client_artifact::CLIENT_ARTIFACT_VERSION,
+                    "artifacts":[], "evicted_artifacts":0,
+                }));
+                let mut resident_ids = Vec::new();
+                if let (Some(entries), Some(legacy)) = (
+                    reply["artifacts"].as_array_mut(),
+                    resident["artifacts"].as_array(),
+                ) {
+                    for entry in legacy {
+                        if !entries
+                            .iter()
+                            .any(|known| known["artifact_id"] == entry["artifact_id"])
+                        {
+                            entries.push(entry.clone());
+                            resident_ids.push(entry["artifact_id"].clone());
+                        }
+                    }
+                }
+                reply["resident_artifact_ids"] = serde_json::json!(resident_ids);
+                // These identify the captured owner used for this read, not a later selection.
+                // An empty fallback cannot establish that the retained manifest has no entries.
+                reply["thread_id"] = serde_json::json!(thread);
+                reply["run_id"] = serde_json::json!(run);
+                reply["retained_catalog_available"] = serde_json::json!(retained_catalog_available);
+                reply["retention"] = serde_json::json!("per_artifact_provenance");
+                reply["provenance"] =
+                    serde_json::json!("retained_owner_manifest_or_resident_public_event");
+                reply["resident_evicted_artifacts"] = resident["evicted_artifacts"].clone();
+                reply
+            }
+        }
     }
 
     pub(crate) fn snapshot(&self) -> Option<ThreadSnapshotV1> {
@@ -426,7 +938,7 @@ impl Projection {
             .as_ref()
             .and_then(|s| s.turn.as_ref())
             .map(|t| t.turn_id);
-        // Match `output::stream_event`'s public boundary: scrub the complete source value before
+        // Match `machine_projection::stream_event`'s public boundary: scrub the complete source value before
         // any chunking, so a token crossing an 8 KiB product chunk is still recognized. Tool
         // inputs are recursively scrubbed before serialization at their call site below.
         let redacted = iteron_record::redact::scrub(content);
@@ -607,6 +1119,12 @@ impl Projection {
         };
         snapshot.source_event_seq = seq;
         match event {
+            ServerEvent::Refusal(refusal) => {
+                self.refusals.observe(seq, refusal);
+            }
+            ServerEvent::HostFinalEvidence(fact) => {
+                self.final_evidence.observe(fact);
+            }
             ServerEvent::Submission {
                 id,
                 state,
@@ -692,7 +1210,27 @@ impl Projection {
                 }
                 self.approval_prompt_complete = None;
             }
-            ServerEvent::Ui(UiEvent::ToolEnd { id, ok, output, .. }) => {
+            ServerEvent::Ui(UiEvent::ToolEnd {
+                id,
+                ok,
+                output,
+                diff,
+                ..
+            }) => {
+                let redacted = iteron_record::redact::scrub(output);
+                self.artifacts.publish(
+                    seq,
+                    "tool_output",
+                    "text/plain; charset=utf-8",
+                    redacted.as_bytes(),
+                );
+                if let Some(diff) = diff
+                    && let Ok(value) = serde_json::to_value(diff)
+                    && let Ok(bytes) = serde_json::to_vec(&scrub_json(&value))
+                {
+                    self.artifacts
+                        .publish(seq, "file_diff", "application/json", &bytes);
+                }
                 if let Some((_, item_id)) =
                     self.tool_sources.iter().rfind(|(source, _)| source == id)
                 {
@@ -856,6 +1394,18 @@ impl Projection {
                 }
                 self.flush_streams(seq);
                 let outcome = summary.terminal.outcome();
+                if matches!(outcome, Outcome::Done)
+                    && terminal_spill_bytes.is_none()
+                    && !summary.assistant_text.is_empty()
+                {
+                    let answer = iteron_record::redact::scrub(&summary.assistant_text);
+                    self.artifacts.publish(
+                        seq,
+                        "final_answer",
+                        "text/markdown; charset=utf-8",
+                        answer.as_bytes(),
+                    );
+                }
                 // `RunEnded` repairs cosmetic stream loss for the legacy EQ. Publish its exact
                 // final assistant text as a separate replacement channel before item closure.
                 // A spilled or oversized terminal is explicitly non-exact in this bounded view.
@@ -1000,6 +1550,31 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_run_rebinding_drops_old_retained_artifact_scope_before_installing_the_new_owner() {
+        let reader = ContractReader::default();
+        let thread = SessionId("session-r".into());
+        let run = RunId("r".into());
+        reader.bind_identity(thread.clone(), run.clone());
+        reader.with_mut(|projection| {
+            projection.artifact_scope = Some(crate::artifacts::ArtifactReadScope::capture(
+                std::path::PathBuf::new(),
+                iteron_protocol::TenantId("tenant".into()),
+                run.clone(),
+                std::path::PathBuf::new(),
+            ));
+        });
+        reader.bind_identity(thread.clone(), run);
+        assert!(reader.with_mut(|projection| projection.artifact_scope.is_some()));
+        reader.bind_identity(thread.clone(), RunId("next-run".into()));
+        assert!(reader.with_mut(|projection| projection.artifact_scope.is_none()));
+        let reply = reader.artifacts_v1(
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { thread_id: thread },
+        );
+        assert_eq!(reply["run_id"], "next-run");
+        assert_eq!(reply["retained_catalog_available"], false);
+    }
 
     fn terminal_event(outcome: Outcome, error: Option<&str>) -> ServerEvent {
         ServerEvent::RunEnded {

@@ -21,12 +21,16 @@
 //!   - **Linux** (bubblewrap mount/PID/network namespaces): implemented when a trusted system
 //!     `bwrap` can create the required namespaces; otherwise it refuses closed. Seccomp and
 //!     Landlock defense-in-depth are not implemented yet and must not be inferred from this API.
+//!   - **Windows** (LPAC token, exact retained filesystem grants and network capability): native
+//!     process creation verifies the applied token before resuming. The same Job owns process
+//!     lifetime; pipe and ConPTY transports preserve the sealed grant owner until real Job0.
 //!
 //! `egress` is a capability the caller must explicitly request, and granting it is an operator
 //! decision recorded above this crate (ADR-007 §2: network tests are a separate, gated escalation).
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -34,7 +38,11 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{Notify, mpsc, watch};
 
 pub mod bubblewrap;
+mod collected_child;
+mod owned_process_cleanup;
 mod persistent;
+#[cfg(windows)]
+mod persistent_windows;
 /// Pseudo-terminal transport for confined children. Unix-only: the whole module is `libc` ioctls,
 /// and the Windows equivalent is ConPTY (`CreatePseudoConsole`), a different API with different
 /// lifetime rules rather than a port of this one.
@@ -42,19 +50,33 @@ mod persistent;
 pub mod pty;
 #[cfg(unix)]
 mod pty_async;
+#[cfg(any(unix, windows))]
+mod pty_size;
+#[cfg(windows)]
+mod windows_launch_plan;
+#[cfg(windows)]
+mod windows_sandbox;
+#[cfg(windows)]
+pub mod pty {
+    pub use crate::pty_size::{MAX_WINDOW_DIMENSION, WindowSize};
+}
 pub mod seatbelt;
 
 pub use persistent::{
-    ConfinedProcess, ConfinedProcessControl, PersistentBackend, spawn_confined_process,
+    ConfinedProcess, ConfinedProcessControl, ConfinedProcessError, ConfinedProcessInput,
+    ConfinedProcessOutput, PersistentBackend, spawn_confined_process,
     spawn_confined_process_from_workspace,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use persistent_pty::{
     ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess, ConfinedPtyResize,
     spawn_confined_pty_process,
 };
 
 #[cfg(unix)]
+mod persistent_pty;
+#[cfg(windows)]
+#[path = "persistent_pty_windows.rs"]
 mod persistent_pty;
 
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +90,9 @@ pub enum SandboxError {
     Unsupported,
     #[error("sandbox spawn: {0}")]
     Spawn(String),
+    #[cfg(windows)]
+    #[error("sandbox owned Windows launch: {0}")]
+    WindowsLaunch(#[source] Box<iteron_support::owned_windows_job::WindowsJobLaunchError>),
     #[error("profile: {0}")]
     Profile(String),
 }
@@ -244,6 +269,8 @@ struct OutputObserverInner {
     chunk_tx: mpsc::Sender<OutputChunk>,
     terminal_tx: watch::Sender<Option<OutputTerminal>>,
     terminal_published: AtomicBool,
+    owned_group_cleanup_known: AtomicBool,
+    observe_owned_group_cleanup: AtomicBool,
     dropped_chunks: AtomicU64,
     cancelled: AtomicBool,
     cancel_notify: Notify,
@@ -319,6 +346,8 @@ impl OutputObserver {
                 chunk_tx,
                 terminal_tx,
                 terminal_published: AtomicBool::new(false),
+                owned_group_cleanup_known: AtomicBool::new(false),
+                observe_owned_group_cleanup: AtomicBool::new(false),
                 dropped_chunks: AtomicU64::new(0),
                 cancelled: AtomicBool::new(false),
                 cancel_notify: Notify::new(),
@@ -334,6 +363,20 @@ impl OutputObserver {
                 terminal_delivered: false,
             },
         )
+    }
+
+    /// Request an actual bounded cleanup observation for this process group. Ordinary observers do not enable it.
+    pub fn with_owned_group_cleanup(self) -> Self {
+        self.inner
+            .observe_owned_group_cleanup
+            .store(true, Ordering::Release);
+        self
+    }
+
+    /// True only after the real collector observes leader reap, both EOFs and absence of its owned group.
+    /// This does not prove arbitrary escaped processes or remote side effects.
+    pub fn owned_group_cleanup_known(&self) -> bool {
+        self.inner.owned_group_cleanup_known.load(Ordering::Acquire)
     }
 
     /// Request cancellation of the observed command. The sandbox collector performs the same
@@ -622,72 +665,24 @@ async fn drain_bounded<R: AsyncRead + Unpin>(
 pub fn configure_process_group(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
-    // No Windows equivalent is wired yet: process groups there mean job objects, which is #39's
-    // territory and unbuilt. Bind the parameter so a `-D warnings` build on windows-msvc does not
-    // fail on an unused argument.
+    // Windows launch is performed by the sealed suspended/Job constructor below. Setting a
+    // creation flag here would not by itself establish custody or descendant cleanup proof.
     #[cfg(not(unix))]
     let _ = command;
 }
 
-#[cfg(unix)]
-fn signal_process_group(pid: Option<u32>, signal: libc::c_int) {
-    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
-        // SAFETY: the child was spawned with process_group(0), so `-pid` addresses the child's
-        // group and cannot target the harness's own process group.
-        unsafe {
-            libc::kill(-pid, signal);
-        }
-    }
-}
-
-/// Last-resort cleanup for cancellation-by-future-drop. Tokio's `kill_on_drop` targets the direct
-/// child only; a shell can already have launched background descendants in the dedicated process
-/// group. The normal timeout path below remains graceful. This guard is armed only while the
-/// collector owns a live group and force-kills that group if an upper runtime layer drops the
-/// collector in response to Ctrl-C/Esc.
-struct ProcessGroupDropGuard {
-    #[cfg(unix)]
-    pid: Option<u32>,
-    armed: bool,
-}
-
-impl ProcessGroupDropGuard {
-    fn new(pid: Option<u32>) -> Self {
-        // The pid is only stored on Unix; naming it with a leading underscore suppresses the
-        // unused-variable warning on Windows without duplicating the call site.
-        let _pid = pid;
-        Self {
-            #[cfg(unix)]
-            pid: _pid,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ProcessGroupDropGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if self.armed {
-            signal_process_group(self.pid, libc::SIGKILL);
-        }
-    }
-}
-
-async fn terminate_with_grace(
-    child: &mut tokio::process::Child,
+async fn terminate_with_grace<C: collected_child::CollectedChild>(
+    child: &mut C,
+    group: &mut owned_process_cleanup::OwnedProcessGroup,
     observer: Option<&OutputObserver>,
 ) -> Option<std::process::ExitStatus> {
     let policy = process_signal_kill_escalation_policy();
     #[cfg(unix)]
     {
-        signal_process_group(child.id(), libc::SIGTERM);
+        group.signal_retained(libc::SIGTERM);
         match tokio::time::timeout(
             std::time::Duration::from_millis(policy.term_grace_milliseconds),
-            child.wait(),
+            group.wait_and_close(child),
         )
         .await
         {
@@ -699,15 +694,13 @@ async fn terminate_with_grace(
             }
             Err(_) => {}
         }
-        signal_process_group(child.id(), libc::SIGKILL);
     }
 
     // `start_kill` is the direct-child fallback on Unix and the only admitted primitive on other
     // platforms. The fixed reap ceiling prevents a hostile child from wedging shutdown forever.
-    let _ = child.start_kill();
     match tokio::time::timeout(
         std::time::Duration::from_secs(policy.post_kill_reap_seconds),
-        child.wait(),
+        group.kill_and_reap(child),
     )
     .await
     {
@@ -725,19 +718,36 @@ async fn terminate_with_grace(
 /// Ask the entire child process group to terminate, then force-kill and reap after a fixed grace.
 /// Helper processes such as hooks and stdio MCP servers must not wait without a ceiling.
 pub async fn terminate_process_group_and_reap(child: &mut tokio::process::Child) {
-    let _ = terminate_with_grace(child, None).await;
+    let mut group = owned_process_cleanup::OwnedProcessGroup::capture(child);
+    let _ = terminate_with_grace(child, &mut group, None).await;
 }
 
 /// Shared child collector for Seatbelt and bubblewrap. stdout and stderr are drained concurrently
 /// for the entire run. On timeout we signal the process group, force-kill/reap after one bounded
 /// grace, then give the now-closed pipes a short bounded window to flush already-written bytes.
+#[cfg(unix)]
 pub(crate) async fn collect_child_output(
-    mut child: tokio::process::Child,
-    mut stdout: tokio::process::ChildStdout,
-    mut stderr: tokio::process::ChildStderr,
+    child: tokio::process::Child,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
     conf: &Confinement,
 ) -> Result<RunOutput, SandboxError> {
-    let mut group_drop_guard = ProcessGroupDropGuard::new(child.id());
+    collect_owned_child_output(child, stdout, stderr, conf).await
+}
+
+async fn collect_owned_child_output<C, Out, Err>(
+    mut child: C,
+    mut stdout: Out,
+    mut stderr: Err,
+    conf: &Confinement,
+) -> Result<RunOutput, SandboxError>
+where
+    C: collected_child::CollectedChild,
+    Out: AsyncRead + Unpin + Send,
+    Err: AsyncRead + Unpin + Send,
+{
+    let owned_group = child.process_id();
+    let mut group_owner = owned_process_cleanup::OwnedProcessGroup::capture(&child);
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
     let mut err = BoundedCapture::with_limit(conf.max_output_bytes);
     let observer = conf.output_observer.clone();
@@ -765,7 +775,7 @@ pub(crate) async fn collect_child_output(
                     observer.as_ref(),
                     OutputStream::Stderr,
                 ),
-                child.wait(),
+                group_owner.wait_and_close(&mut child),
             );
             stdout_result.map_err(|e| SandboxError::Spawn(format!("read stdout: {e}")))?;
             stderr_result.map_err(|e| SandboxError::Spawn(format!("read stderr: {e}")))?;
@@ -788,34 +798,34 @@ pub(crate) async fn collect_child_output(
         }
     };
 
+    let pipes_known;
     let (timed_out, cancelled, status) = match completed {
         CollectionStop::Completed(status) => match status {
             Ok(status) => {
-                group_drop_guard.disarm();
+                pipes_known = true;
                 (false, false, Some(status))
             }
             Err(error) => {
                 if let Some(observer) = observer.as_ref() {
                     observer.finish_io_failure(None, false);
                 }
-                let _ = terminate_with_grace(&mut child, observer.as_ref()).await;
-                group_drop_guard.disarm();
+                let _ = terminate_with_grace(&mut child, &mut group_owner, observer.as_ref()).await;
                 return Err(error);
             }
         },
         reason @ (CollectionStop::TimedOut | CollectionStop::Cancelled) => {
-            let status = terminate_with_grace(&mut child, observer.as_ref()).await;
-            group_drop_guard.disarm();
+            let status =
+                terminate_with_grace(&mut child, &mut group_owner, observer.as_ref()).await;
             // The first drain futures were cancelled with the timeout, but their captures live
             // outside it. Resume both drains concurrently to retain buffered tail bytes and close
             // the pipes. This cleanup itself is bounded in case a hostile daemon escaped the group.
-            let _ = tokio::time::timeout(
+            let drained = tokio::time::timeout(
                 std::time::Duration::from_secs(iteron_tunables::param_integer(
                     "sandbox.lib.post_kill_drain_secs",
                     POST_KILL_DRAIN_SECS,
                 )),
                 async {
-                    let _ = tokio::join!(
+                    tokio::join!(
                         drain_bounded(
                             &mut stdout,
                             &mut out,
@@ -830,10 +840,11 @@ pub(crate) async fn collect_child_output(
                             observer.as_ref(),
                             OutputStream::Stderr,
                         ),
-                    );
+                    )
                 },
             )
             .await;
+            pipes_known = matches!(drained, Ok((Ok(()), Ok(()))));
             (
                 matches!(reason, CollectionStop::TimedOut),
                 matches!(reason, CollectionStop::Cancelled),
@@ -844,6 +855,7 @@ pub(crate) async fn collect_child_output(
 
     let (stdout, stdout_truncated) = out.finish("stdout", conf.max_output_bytes);
     let (stderr, stderr_truncated) = err.finish("stderr", conf.max_output_bytes);
+    let status_known = status.is_some();
     let output = RunOutput {
         exit_code: status
             .and_then(|status| status.code())
@@ -854,7 +866,21 @@ pub(crate) async fn collect_child_output(
         stderr_truncated,
         timed_out,
     };
+    let group_known = if observer.as_ref().is_some_and(|observer| {
+        observer
+            .inner
+            .observe_owned_group_cleanup
+            .load(Ordering::Acquire)
+    }) {
+        group_owner.confirm_shutdown(owned_group).await
+    } else {
+        false
+    };
     if let Some(observer) = observer {
+        observer.inner.owned_group_cleanup_known.store(
+            status_known && pipes_known && group_known,
+            Ordering::Release,
+        );
         observer.finish(&output, cancelled);
     }
     Ok(output)
@@ -886,6 +912,7 @@ pub trait Sandbox: Send + Sync {
 ///
 /// The confined path is not a superset of this one and this one is not a widened version of it.
 /// They are two postures, and `Confinement::unconfined` documents what selecting this surrenders.
+#[cfg(not(windows))]
 pub(crate) async fn run_direct(
     command: &str,
     conf: &Confinement,
@@ -918,7 +945,15 @@ pub(crate) async fn run_direct(
         publish_output_io_failure(conf, Some(OutputStream::Stderr));
         SandboxError::Spawn("child stderr was not piped".into())
     })?;
-    collect_child_output(child, stdout, stderr, conf).await
+    collect_owned_child_output(child, stdout, stderr, conf).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn run_direct(
+    command: &str,
+    conf: &Confinement,
+) -> Result<RunOutput, SandboxError> {
+    windows_sandbox::run(command, conf).await
 }
 
 /// Pick the best backend for this platform. An unconfined confinement never reaches a backend's
@@ -936,13 +971,19 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
         // is absent, so it is safe to select here.
         Box::new(bubblewrap::Bubblewrap::new())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        Box::new(windows_sandbox::WindowsSandbox)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         Box::new(Unsupported)
     }
 }
 
+#[cfg(any(not(windows), test))]
 const PREFERRED_CONFINED_SHELL: &str = "/bin/bash";
+#[cfg(any(not(windows), test))]
 const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
 
 /// Pick the shell a confined command is executed with. `/bin/bash` stays the preference — the tool
@@ -950,6 +991,7 @@ const FALLBACK_CONFINED_SHELL: &str = "/bin/sh";
 /// home is exactly the image that does not have it: Alpine and other BusyBox userlands ship only
 /// `/bin/sh`. Hardcoding bash there turned every `bash` tool call into a bare spawn failure inside
 /// an otherwise perfectly usable namespace, so resolve the interpreter instead of assuming it.
+#[cfg(any(not(windows), test))]
 fn select_confined_shell(preferred_exists: bool) -> &'static str {
     if preferred_exists {
         iteron_tunables::param_str(
@@ -969,13 +1011,20 @@ fn select_confined_shell(preferred_exists: bool) -> &'static str {
 pub fn confined_shell() -> &'static str {
     static SHELL: OnceLock<&'static str> = OnceLock::new();
     SHELL.get_or_init(|| {
-        select_confined_shell(
-            std::path::Path::new(iteron_tunables::param_str(
-                "sandbox.lib.preferred_confined_shell",
-                PREFERRED_CONFINED_SHELL,
-            ))
-            .exists(),
-        )
+        #[cfg(windows)]
+        {
+            "bash"
+        }
+        #[cfg(not(windows))]
+        {
+            select_confined_shell(
+                std::path::Path::new(iteron_tunables::param_str(
+                    "sandbox.lib.preferred_confined_shell",
+                    PREFERRED_CONFINED_SHELL,
+                ))
+                .exists(),
+            )
+        }
     })
 }
 
@@ -1036,8 +1085,23 @@ pub fn confine_env_with_exact(cmd: &mut tokio::process::Command, exact: &[String
     for name in exact {
         cmd.env_remove(name);
     }
+    for name in SHELL_STARTUP_ENV_NAMES {
+        cmd.env_remove(name);
+    }
+    let configured_names: Vec<_> = cmd
+        .as_std()
+        .get_envs()
+        .filter_map(|(key, _)| {
+            key.to_str()
+                .filter(|key| is_secret_env_key(key) || is_shell_startup_env_key(key))
+                .map(str::to_owned)
+        })
+        .collect();
+    for name in configured_names {
+        cmd.env_remove(name);
+    }
     for (k, _) in std::env::vars() {
-        if is_secret_env_key(&k) {
+        if is_secret_env_key(&k) || is_shell_startup_env_key(&k) {
             cmd.env_remove(&k);
         }
     }
@@ -1064,6 +1128,7 @@ pub fn bounded_child_environment(
                 return false;
             };
             !is_secret_env_key(key)
+                && !is_shell_startup_env_key(key)
                 && !blocked_names.iter().any(|name| name == key)
                 && !sensitive_env_names.iter().any(|name| name == key)
         })
@@ -1088,10 +1153,42 @@ fn encoded_len(value: &OsStr) -> usize {
 pub(crate) fn apply_confinement_environment(cmd: &mut tokio::process::Command, conf: &Confinement) {
     if let Some(environment) = &conf.child_environment {
         cmd.env_clear();
-        cmd.envs(environment.iter().cloned());
+        cmd.envs(
+            environment
+                .iter()
+                .filter(|(key, _)| {
+                    key.to_str()
+                        .is_some_and(|key| !is_shell_startup_env_key(key))
+                })
+                .cloned(),
+        );
     } else {
         confine_env_with_exact(cmd, &conf.sensitive_env_names);
     }
+}
+
+// Startup scripts, imported functions and loader injection would execute an additional command
+// before the operator-approved text. An explicit script/loader invocation remains possible as
+// part of the visible, conservatively classified command; ambient execution is never that grant.
+const SHELL_STARTUP_ENV_NAMES: [&str; 11] = [
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "PROMPT_COMMAND",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+];
+
+fn is_shell_startup_env_key(key: &str) -> bool {
+    SHELL_STARTUP_ENV_NAMES
+        .iter()
+        .any(|name| key.eq_ignore_ascii_case(name))
+        || key.starts_with("BASH_FUNC_")
 }
 
 /// Default-deny environment for trusted-config helper processes (MCP servers and hooks). These
@@ -1166,3 +1263,7 @@ mod env_tests;
 #[cfg(test)]
 #[path = "unconfined_pty_tests.rs"]
 mod unconfined_pty_tests;
+
+#[cfg(all(test, windows))]
+#[path = "windows_job_tests.rs"]
+mod windows_job_tests;

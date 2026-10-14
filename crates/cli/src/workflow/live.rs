@@ -1,6 +1,6 @@
 //! Terminal adapter for live workflow runs.
 
-use super::ui_safe_progress;
+use super::projection::ui_safe_progress;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use iteron_workflow::events::{ProgressEvent, ProgressSink};
 use iteron_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};

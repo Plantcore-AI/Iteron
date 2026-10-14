@@ -446,7 +446,7 @@ fn add_runtime_constraints(
         "submission_entries",
         ExternalCeiling::RunBudget,
         int(i64u(
-            crate::app_server::AppServerQueuePolicy::owner().submission_entries(),
+            crate::queue_policy::FrontendQueuePolicy::owner().submission_entries(),
             "app_server_sq_eq_backpressure",
         )?),
     )?;
@@ -456,7 +456,7 @@ fn add_runtime_constraints(
         "event_entries",
         ExternalCeiling::RunBudget,
         int(i64u(
-            crate::app_server::AppServerQueuePolicy::owner().event_entries(),
+            crate::queue_policy::FrontendQueuePolicy::owner().event_entries(),
             "app_server_sq_eq_backpressure",
         )?),
     )?;

@@ -1,0 +1,14 @@
+{
+  "admission": {
+    "body_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "deleted": false,
+    "message_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "record_id": "schema-memory",
+    "record_revision": 1,
+    "record_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "version": 1,
+    "workspace_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "kind": "memory_reference_admitted_v1"
+}

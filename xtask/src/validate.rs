@@ -12,6 +12,7 @@ pub struct Report {
 
 pub fn validate(root: &Path, registry: &Registry) -> Result<Report> {
     validate_registry(registry)?;
+    crate::architecture_contract::validate(root)?;
     validate_protocol_boundary(root, registry)?;
     let cli_result_authority = crate::schema_compat::validate_current(root)?;
     crate::conformance::validate(root)?;

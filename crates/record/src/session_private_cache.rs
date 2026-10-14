@@ -36,6 +36,9 @@ pub(super) struct StagedCache {
     seq: Seq,
     handle: PrivateContentHandle,
     manifest: Vec<u8>,
+    // Keep admission through retain: dropping the CAS lease between stage and commit must not
+    // allow a long lineage cleanup to start in the middle of newly admitted foreground work.
+    _publication: std::rc::Rc<crate::session_publication_admission::Publication>,
 }
 
 impl StagedCache {
@@ -128,6 +131,12 @@ fn stage(
     meta: &SessionMeta,
     surface: ContentReferenceSurface,
 ) -> Result<StagedCache, RecordError> {
+    let Some(publication) =
+        crate::session_publication_admission::publication(runs_dir, &meta.tenant)?
+    else {
+        let _ = crate::session_maintenance::enqueue(runs_dir.to_owned(), meta.clone());
+        return Err(ContentStoreError::Busy.into());
+    };
     let bytes = serde_json::to_vec(meta)?;
     if bytes.len() > crate::cache_io::MAX_SESSION_META_BYTES {
         return Err(std::io::Error::new(
@@ -158,6 +167,7 @@ fn stage(
         seq,
         handle,
         manifest,
+        _publication: publication,
     })
 }
 

@@ -304,7 +304,7 @@ where
                 economy.max_turn_prompt_tokens =
                     Some(economy.max_turn_prompt_tokens.unwrap_or(0).max(prompt));
             }
-            EventKind::Compaction { .. } => {
+            EventKind::Compaction { .. } | EventKind::CompactionV2 { .. } => {
                 timeline.token_economy.compactions =
                     timeline.token_economy.compactions.saturating_add(1);
             }

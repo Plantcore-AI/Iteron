@@ -748,3 +748,171 @@ async fn d3_07_acceptance_edit_preserves_crlf_and_bom() {
         "edit must retain the UTF-8 BOM and encode the edited line using the target's CRLF style"
     );
 }
+
+#[tokio::test]
+async fn list_and_glob_share_actual_nested_repository_ignore_rules() {
+    let root = TestRoot::new("nested-ignore");
+    std::fs::create_dir_all(root.0.join("src/nested")).unwrap();
+    std::fs::create_dir(root.0.join("ignored")).unwrap();
+    std::fs::write(
+        root.0.join(".gitignore"),
+        "*.tmp\n/ignored/\n!keep.tmp\nsrc/hidden.rs\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.0.join("src/.gitignore"),
+        "local.rs\n!hidden.rs\n/nested/\n",
+    )
+    .unwrap();
+    // A pruned parent's child rules must never be opened or allowed to resurrect its contents.
+    std::fs::write(root.0.join("ignored/.gitignore"), vec![b'a'; 65_537]).unwrap();
+    for path in [
+        "keep.tmp",
+        "drop.tmp",
+        "src/visible.rs",
+        "src/hidden.rs",
+        "src/local.rs",
+        "src/nested/deep.rs",
+        "ignored/private.rs",
+    ] {
+        std::fs::write(root.0.join(path), "actual file\n").unwrap();
+    }
+    let canonical = root.0.canonicalize().unwrap();
+    let registry = read_only_registry(&canonical);
+    let list = registry
+        .dispatch(list_call("list-ignore", serde_json::json!({"depth":3})))
+        .await;
+    let glob = registry
+        .dispatch(ToolUse {
+            id: "glob-ignore".into(),
+            name: "glob".into(),
+            input: serde_json::json!({"pattern":"**"}),
+        })
+        .await;
+    for result in [&list, &glob] {
+        assert!(!result.is_error, "{}", result.content);
+        for present in ["keep.tmp", "src/visible.rs", "src/hidden.rs"] {
+            assert!(
+                result.content.lines().any(|line| line == present),
+                "{}",
+                result.content
+            );
+        }
+        for absent in ["drop.tmp", "local.rs", "deep.rs", "private.rs", "ignored/"] {
+            assert!(!result.content.contains(absent), "{}", result.content);
+        }
+    }
+    let narrowed = registry
+        .dispatch(ToolUse {
+            id: "glob-narrowed".into(),
+            name: "glob".into(),
+            input: serde_json::json!({"path":"src", "pattern":"**/*.rs"}),
+        })
+        .await;
+    assert!(!narrowed.is_error, "{}", narrowed.content);
+    assert!(narrowed.content.contains("src/hidden.rs"));
+    assert!(!narrowed.content.contains("local.rs"));
+    let explicit = registry
+        .dispatch(read_call(
+            "read-ignored",
+            serde_json::json!({"path":"ignored/private.rs"}),
+        ))
+        .await;
+    assert!(!explicit.is_error, "{}", explicit.content);
+    assert!(explicit.content.contains("actual file"));
+}
+
+#[tokio::test]
+async fn repository_ignore_failure_is_explicit_and_host_search_keeps_existing_scope() {
+    let root = TestRoot::new("ignore-bound");
+    std::fs::write(root.0.join(".gitignore"), vec![b'a'; 65_537]).unwrap();
+    std::fs::write(root.0.join("visible.rs"), "repo\n").unwrap();
+    let canonical = root.0.canonicalize().unwrap();
+    let registry = read_only_registry(&canonical);
+    for (name, input) in [
+        ("list_dir", serde_json::json!({})),
+        ("glob", serde_json::json!({"pattern":"**"})),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: format!("bounded-{name}"),
+                name: name.into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains(".gitignore"));
+        assert!(!result.content.contains("visible.rs"));
+    }
+    std::fs::remove_file(root.0.join(".gitignore")).unwrap();
+    let outside = TestRoot::new("host-ignore");
+    std::fs::write(outside.0.join(".gitignore"), "outside.txt\n").unwrap();
+    std::fs::write(outside.0.join("outside.txt"), "host\n").unwrap();
+    let result = registry
+        .dispatch(ToolUse {
+            id: "host-glob".into(),
+            name: "glob".into(),
+            input: serde_json::json!({"path":outside.0, "pattern":"*.txt"}),
+        })
+        .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("outside.txt"));
+    let oversized = registry
+        .dispatch(ToolUse {
+            id: "oversized-glob".into(),
+            name: "glob".into(),
+            input: serde_json::json!({"pattern":"*".repeat(4097)}),
+        })
+        .await;
+    assert!(oversized.is_error);
+    assert!(oversized.content.contains("fixed 4096-byte"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn implicit_discovery_never_follows_ignore_sources_or_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+    let root = TestRoot::new("ignore-no-follow");
+    let outside = TestRoot::new("ignore-outside");
+    std::fs::write(outside.0.join("secret.txt"), "outside private bytes").unwrap();
+    std::fs::write(outside.0.join("ignore.txt"), "visible.rs\n").unwrap();
+    std::fs::write(root.0.join("visible.rs"), "repo\n").unwrap();
+    symlink(outside.0.join("ignore.txt"), root.0.join(".gitignore")).unwrap();
+    let canonical = root.0.canonicalize().unwrap();
+    let registry = read_only_registry(&canonical);
+    let refused = registry
+        .dispatch(list_call("ignore-link", serde_json::json!({})))
+        .await;
+    assert!(refused.is_error);
+    assert!(!refused.content.contains("outside private bytes"));
+    std::fs::remove_file(root.0.join(".gitignore")).unwrap();
+    symlink(&outside.0, root.0.join("outside-link")).unwrap();
+    for (name, input) in [
+        ("list_dir", serde_json::json!({"depth":3})),
+        ("glob", serde_json::json!({"pattern":"**"})),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: format!("no-follow-{name}"),
+                name: name.into(),
+                input,
+            })
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("visible.rs"));
+        assert!(!result.content.contains("outside-link"));
+        assert!(!result.content.contains("secret.txt"));
+    }
+}
+
+#[test]
+fn glob_matching_charges_one_finite_envelope_across_actual_candidates() {
+    let mut matcher = GlobPattern::new("**/*a*a*a*a*a*b").unwrap();
+    matcher.remaining = 50;
+    assert!(matcher.is_match(&"a".repeat(100)).is_err());
+    assert!(
+        matcher.is_match("b").is_err(),
+        "an exhausted owner cannot reset its work budget"
+    );
+    assert!(glob_match("**/?.rs", "源/文.rs"));
+}

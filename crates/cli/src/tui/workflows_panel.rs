@@ -340,7 +340,7 @@ fn footer(view: &View, width: u16, theme: &theme::Theme) -> Vec<Line<'static>> {
     } else {
         "tab run · arrows navigate · x stop · r resume · n prompt · q close"
     };
-    lines.push(Line::from(super::footer_spans(help, theme)));
+    lines.push(Line::from(super::frame_render::footer_spans(help, theme)));
     lines
 }
 

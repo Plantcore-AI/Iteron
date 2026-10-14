@@ -13,12 +13,12 @@ pub(super) fn visit_content_fields<E>(
         return Ok(());
     };
     match kind.as_str() {
-        "message" => {
+        "message" | "message_v2" => {
             if let Some(message) = event.get_mut("message") {
                 visit_message(message, &mut visit)?;
             }
         }
-        "compaction" => {
+        "compaction" | "compaction_v2" => {
             if let Some(messages) = event.get_mut("messages").and_then(Value::as_array_mut) {
                 for message in messages {
                     visit_message(message, &mut visit)?;
@@ -35,6 +35,11 @@ pub(super) fn visit_content_fields<E>(
         "tool_done" => {
             if let Some(result) = event.get_mut("result").and_then(Value::as_object_mut) {
                 member(result, "content", "tool_result", &mut visit)?;
+            }
+        }
+        "tool_image_observed_v1" => {
+            if let Some(observation) = event.get_mut("observation").and_then(Value::as_object_mut) {
+                visit_image(observation, &mut visit)?;
             }
         }
         "effect_intent" | "approval" => {
@@ -100,8 +105,19 @@ fn visit_message<E>(
             "provider_state" => member(block, "payload", "provider_state", visit)?,
             "tool_use" => member(block, "input", "tool_arguments", visit)?,
             "tool_result" => member(block, "content", "tool_result", visit)?,
+            "tool_image" => visit_image(block, visit)?,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn visit_image<E>(
+    observation: &mut Map<String, Value>,
+    visit: &mut impl FnMut(&'static str, &mut Value) -> Result<(), E>,
+) -> Result<(), E> {
+    if let Some(image) = observation.get_mut("image").and_then(Value::as_object_mut) {
+        member(image, "data", "tool_image", visit)?;
     }
     Ok(())
 }

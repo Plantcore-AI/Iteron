@@ -1,6 +1,7 @@
 //! Fail-closed summary coverage verification.
 
 use super::*;
+use iteron_protocol::{Block, Role};
 
 impl Agent {
     pub(super) async fn verify_compaction_summary(
@@ -57,7 +58,7 @@ impl Agent {
             return Err(KernelError::InferenceBudgetExhausted(reason));
         }
         let turn = TurnId(self.seq_turn);
-        let admission = self.admit_provider_dispatch(turn, &request).await?;
+        let (physical, admission) = self.admit_funded_provider_dispatch(turn, request).await?;
         let attempt = admission.attempt_guard;
         self.emit(
             turn,
@@ -69,19 +70,23 @@ impl Agent {
         let response = self
             .brokered_provider_turn(
                 turn,
-                &request,
+                physical,
                 &mut |_| {},
                 admission.primary_route_permit,
                 admission.use_hedge,
             )
             .await;
         match response {
-            Ok(response) => {
+            Ok(physical_response) => {
+                let super::provider_attempt_journal::ProviderPhysicalResponse {
+                    result: response,
+                    usage_evidence,
+                } = physical_response;
                 let complete = self.record_provider_usage(
                     turn,
                     response.usage,
                     started.elapsed().as_millis() as u64,
-                    attempt.projected_at_unix_secs(),
+                    &usage_evidence,
                     StreamTiming::default(),
                 )?;
                 self.emit_plantcore_turn_usage(turn)?;

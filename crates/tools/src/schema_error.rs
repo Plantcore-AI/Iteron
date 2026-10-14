@@ -7,6 +7,17 @@ pub(crate) enum ArgumentError {
     MissingRequired {
         field: String,
     },
+    UnknownField {
+        field: String,
+    },
+    StringTooLong {
+        field: String,
+        maximum: usize,
+    },
+    StringTooShort {
+        field: String,
+        minimum: usize,
+    },
     TypeMismatch {
         field: String,
         expected: &'static str,
@@ -15,6 +26,11 @@ pub(crate) enum ArgumentError {
     BelowMinimum {
         field: String,
         minimum: i64,
+        actual: Value,
+    },
+    AboveMaximum {
+        field: String,
+        maximum: i64,
         actual: Value,
     },
     TooFewItems {
@@ -52,6 +68,33 @@ impl ArgumentError {
                     Value::String(format!("missing required field `{field}`")),
                 );
             }
+            Self::UnknownField { field } => {
+                fields(&mut object, "unknown_field", field);
+                object.insert(
+                    "message".into(),
+                    Value::String(format!("object `{field}` contains an undeclared field")),
+                );
+            }
+            Self::StringTooLong { field, maximum } => {
+                fields(&mut object, "string_too_long", field);
+                object.insert("maximum".into(), Value::Number((*maximum).into()));
+                object.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "field `{field}` allows at most {maximum} Unicode characters"
+                    )),
+                );
+            }
+            Self::StringTooShort { field, minimum } => {
+                fields(&mut object, "string_too_short", field);
+                object.insert("minimum".into(), Value::Number((*minimum).into()));
+                object.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "field `{field}` needs at least {minimum} Unicode characters"
+                    )),
+                );
+            }
             Self::TypeMismatch {
                 field,
                 expected,
@@ -79,6 +122,21 @@ impl ArgumentError {
                     "message".into(),
                     Value::String(format!(
                         "field `{field}` must be at least {minimum}, but received {actual}"
+                    )),
+                );
+            }
+            Self::AboveMaximum {
+                field,
+                maximum,
+                actual,
+            } => {
+                fields(&mut object, "above_maximum", field);
+                object.insert("maximum".into(), Value::Number((*maximum).into()));
+                object.insert("actual".into(), actual.clone());
+                object.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "field `{field}` must be at most {maximum}, but received {actual}"
                     )),
                 );
             }

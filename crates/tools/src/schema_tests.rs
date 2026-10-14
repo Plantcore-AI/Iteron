@@ -34,6 +34,8 @@ fn built_in_tool_description_catalog_is_total_at_the_registry_boundary() {
     let registered: Vec<_> = registry.specs().into_iter().map(|spec| spec.name).collect();
     let published: Vec<_> = iteron_tunables::TOOL_TEXT_ARTIFACTS
         .iter()
+        // The publication is the union of built-ins; this registry contains only enabled ones.
+        .filter(|artifact| artifact.tool != WORKFLOW_TOOL || cfg!(feature = "script-workflows"))
         .map(|artifact| artifact.tool.to_owned())
         .collect();
     assert_eq!(
@@ -273,4 +275,248 @@ async fn supported_enum_is_enforced_before_external_dispatch() {
     assert!(!accepted.is_error, "{}", accepted.content);
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn coding_registry_admits_plan_schema_and_rejects_unknown_nested_and_overbound_arguments() {
+    let root = temp_root("plan-closed-schema");
+    let registry = Registry::coding_agent(&root).unwrap();
+    let inspect = registry
+        .dispatch(ToolUse {
+            id: "plan-inspect".into(),
+            name: "update_plan".into(),
+            input: serde_json::json!({"operation":"inspect"}),
+        })
+        .await;
+    assert_eq!(
+        inspect.content, "update_plan requires the resident durable task-plan owner",
+        "valid input reaches the actual registered host-only executor stub"
+    );
+    for (input, kind, field) in [
+        (
+            serde_json::json!({"operation":"inspect", "unexpected":true}),
+            "unknown_field",
+            "$",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "steps":[{"description":"bounded", "status":"pending", "unexpected":true}]}),
+            "unknown_field",
+            "steps[0]",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "steps":[{"description":"x".repeat(513), "status":"pending"}]}),
+            "string_too_long",
+            "steps[0].description",
+        ),
+        (
+            serde_json::json!({"operation":"replace", "obligations":vec!["bounded";33]}),
+            "too_many_items",
+            "obligations",
+        ),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: format!("plan-refused-{kind}-{field}"),
+                name: "update_plan".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        let error: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(error["error"], "invalid_tool_arguments");
+        assert_eq!(error["kind"], kind);
+        assert_eq!(error["field"], field);
+        assert_eq!(registry.memo_stats(), (0, 0));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn closed_string_schema_enforces_unicode_length_before_external_executor() {
+    let root = temp_root("closed-unicode");
+    let mut registry = Registry::read_only(&root).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    registry
+        .register_external(
+            ToolSpec {
+                name: "closed_probe".into(),
+                description: "closed bounded input".into(),
+                input_schema: serde_json::json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"text":{"type":"string","maxLength":2}},
+                    "required":["text"]
+                }),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                boxfut::box_it(async move { ok_result(call.id, "executed".into()) })
+            },
+        )
+        .unwrap();
+    let valid = registry
+        .dispatch(ToolUse {
+            id: "two-characters".into(),
+            name: "closed_probe".into(),
+            input: serde_json::json!({"text":"界界"}),
+        })
+        .await;
+    assert!(!valid.is_error);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let unknown_name = "caller-controlled-name".repeat(1024);
+    let mut unknown_input = serde_json::json!({"text":"ok"});
+    unknown_input
+        .as_object_mut()
+        .unwrap()
+        .insert(unknown_name.clone(), serde_json::Value::Bool(true));
+    for input in [serde_json::json!({"text":"界界界"}), unknown_input] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "closed-refused".into(),
+                name: "closed_probe".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        assert!(!result.content.contains(&unknown_name));
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn new_closed_schema_keywords_reject_open_unsupported_or_malformed_constraints() {
+    for input_schema in [
+        serde_json::json!({"type":"object","additionalProperties":true}),
+        serde_json::json!({"type":"object","additionalProperties":{"type":"string"}}),
+        serde_json::json!({"type":"string","additionalProperties":false}),
+        serde_json::json!({"type":"integer","maxLength":2}),
+        serde_json::json!({"type":"string","maxLength":-1}),
+        serde_json::json!({"type":"string","maxLength":2.5}),
+        serde_json::json!({"type":"string","maxLength":"2"}),
+        serde_json::json!({"type":"integer","minLength":1}),
+        serde_json::json!({"type":"string","minLength":-1}),
+        serde_json::json!({"type":"string","minLength":1.5}),
+        serde_json::json!({"type":"string","minLength":"1"}),
+        serde_json::json!({"type":"string","minLength":3,"maxLength":2}),
+        serde_json::json!({"type":"string","maximum":10}),
+        serde_json::json!({"type":"integer","maximum":2.5}),
+        serde_json::json!({"type":"integer","maximum":"2"}),
+        serde_json::json!({"type":"integer","maximum":u64::MAX}),
+        serde_json::json!({"type":"integer","minimum":3,"maximum":2}),
+        serde_json::json!({"type":"integer","exclusiveMaximum":2}),
+    ] {
+        let root = temp_root("closed-registration-refused");
+        let mut registry = Registry::read_only(&root).unwrap();
+        assert!(
+            registry
+                .register_external(
+                    ToolSpec {
+                        name: "invalid_closed_probe".into(),
+                        description: "must not register".into(),
+                        input_schema,
+                        purity: Purity::Pure,
+                        capability: Capability::ReadOnly,
+                    },
+                    |call, _| boxfut::box_it(async move { ok_result(call.id, String::new()) }),
+                )
+                .is_err()
+        );
+        assert!(registry.purity_of("invalid_closed_probe").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn bounded_host_schema_enforces_minimum_string_and_maximum_integer_before_executor() {
+    let root = temp_root("host-bounded-input");
+    let mut registry = Registry::read_only(&root).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    registry
+        .register_external(
+            ToolSpec {
+                name: "bounded_host_probe".into(),
+                description: "same enforced constraints used by resident agent tools".into(),
+                input_schema: serde_json::json!({
+                    "type":"object", "additionalProperties":false,
+                    "properties": {
+                        "request_id":{"type":"string","minLength":1,"maxLength":2},
+                        "timeout_ms":{"type":"integer","minimum":1,"maximum":60000}
+                    }, "required":["request_id","timeout_ms"]
+                }),
+                purity: Purity::Effecting,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                boxfut::box_it(async move { ok_result(call.id, "executed".into()) })
+            },
+        )
+        .unwrap();
+    for input in [
+        serde_json::json!({"request_id":"界","timeout_ms":1}),
+        serde_json::json!({"request_id":"界界","timeout_ms":60000}),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "bounded-valid".into(),
+                name: "bounded_host_probe".into(),
+                input,
+            })
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+    }
+    for (input, kind) in [
+        (
+            serde_json::json!({"request_id":"","timeout_ms":1}),
+            "string_too_short",
+        ),
+        (
+            serde_json::json!({"request_id":"界界界","timeout_ms":1}),
+            "string_too_long",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":0}),
+            "below_minimum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":60001}),
+            "above_maximum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":u64::MAX}),
+            "above_maximum",
+        ),
+        (
+            serde_json::json!({"request_id":"a","timeout_ms":1.5}),
+            "type_mismatch",
+        ),
+    ] {
+        let result = registry
+            .dispatch(ToolUse {
+                id: "bounded-refused".into(),
+                name: "bounded_host_probe".into(),
+                input,
+            })
+            .await;
+        assert!(result.is_error);
+        let error: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(error["kind"], kind);
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+    }
+    // Signed bounds must handle the full unsigned input domain without a lossy i64 cast.
+    let negative = serde_json::json!({"type":"integer","maximum":-1});
+    schema::validate_schema(&negative).unwrap();
+    assert!(schema::validate_arguments(&negative, &serde_json::json!(-1)).is_ok());
+    assert!(schema::validate_arguments(&negative, &serde_json::json!(i64::MIN)).is_ok());
+    for input in [serde_json::json!(0), serde_json::json!(u64::MAX)] {
+        assert!(matches!(
+            schema::validate_arguments(&negative, &input),
+            Err(schema_error::ArgumentError::AboveMaximum { .. })
+        ));
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

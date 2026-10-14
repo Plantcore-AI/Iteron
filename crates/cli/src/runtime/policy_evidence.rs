@@ -3,16 +3,17 @@
 use super::*;
 use iteron_protocol::{
     PolicyActionId, PolicyActionV1, PolicyDecisionDisposition, PolicyHarnessErrorCode,
-    PolicyHarnessOutcomeId, PolicyTerminalOutcome, PolicyVerifierOutcome, Usage, slot::SlotId,
+    PolicyTerminalOutcome, PolicyVerifierOutcome, slot::SlotId,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 pub(super) const CONTEXT_SLOT: &str = "core/context";
 pub(super) const TOOL_POLICY_SLOT: &str = "core/tool_policy";
 pub(super) const MEMORY_SLOT: &str = "core/memory";
-#[cfg(test)]
+#[cfg(all(test, feature = "script-workflows"))]
 pub(super) const ROUTER_SLOT: &str = "core/router";
-#[cfg(test)]
+#[cfg(all(test, feature = "script-workflows"))]
 pub(super) const PLANNER_SLOT: &str = "core/planner";
 pub(super) const COLLABORATION_SLOT: &str = "core/collaboration";
 pub(super) const SCHEDULER_SLOT: &str = "core/scheduler";
@@ -22,23 +23,6 @@ pub(super) const MODEL_ROUTER_SLOT: &str = "core/model_router";
 /// Propensity recorded for the action a deterministic slot selected: the built-in strategies do not
 /// sample, so the selected action was taken with probability one (1e6 parts per million).
 const DETERMINISTIC_PROPENSITY_PPM: u32 = 1_000_000;
-
-pub(super) struct PolicyTurnCounterBaseline {
-    usage: Usage,
-    provider_attempts: u32,
-    completed_turns: u32,
-}
-
-impl PolicyTurnCounterBaseline {
-    fn capture(ledger: &Ledger) -> Self {
-        let counters = ledger.reproducible_counters();
-        Self {
-            usage: counters.usage,
-            provider_attempts: counters.provider_attempts,
-            completed_turns: counters.completed_turns,
-        }
-    }
-}
 
 pub(super) struct PolicyDecisionDraft {
     eligible_actions: Vec<PolicyActionId>,
@@ -145,7 +129,7 @@ impl PolicyDecisionDraft {
         })
     }
 
-    fn into_input(self) -> policy_evidence_recorder::PolicyDecisionInput {
+    pub(super) fn into_input(self) -> policy_evidence_recorder::PolicyDecisionInput {
         policy_evidence_recorder::PolicyDecisionInput {
             eligible_actions: self.eligible_actions,
             selected_action: self.selected_action,
@@ -242,10 +226,8 @@ impl Agent {
 
     pub(super) fn observe_policy_turn_start(&mut self, turn: TurnId, started_at_us: u64) {
         if let Some(recorder) = self.policy_evidence.as_mut() {
-            recorder.observe_turn_start(turn, started_at_us);
-            self.policy_turn_cost_baseline = Some(self.ledger.cost_state());
-            self.policy_turn_counter_baseline =
-                Some(PolicyTurnCounterBaseline::capture(&self.ledger));
+            self.terminal_record
+                .observe_start(recorder, turn, started_at_us, &self.ledger);
         }
     }
 
@@ -259,59 +241,23 @@ impl Agent {
         if !self.ensure_policy_evidence()? {
             return Ok(());
         }
-        if self
-            .policy_evidence
-            .as_ref()
-            .is_some_and(|recorder| recorder.is_turn_terminal(turn))
-        {
-            self.policy_turn_cost_baseline = None;
-            self.policy_turn_counter_baseline = None;
-            return Ok(());
-        }
-        let now_us = self.rollout.segment_elapsed_us();
-        let current_cost = self.ledger.cost_state();
-        let cost_microusd =
-            policy_cost_delta_microusd(self.policy_turn_cost_baseline.as_ref(), &current_cost);
-        let (input_tokens, output_tokens) = policy_turn_tokens(
-            self.policy_turn_counter_baseline.as_ref(),
-            &self.ledger.reproducible_counters(),
-        );
-        let (join, latency_us) = {
-            let recorder = self.policy_evidence.as_ref().expect("ensured above");
-            (
-                recorder.turn_join(turn),
-                recorder.turn_latency_us(turn, now_us),
-            )
-        };
-        let input = policy_evidence_recorder::PolicyOutcomeInput {
+        let result = self.terminal_record.append_policy_outcome(
+            self.policy_evidence.as_mut().expect("ensured above"),
+            &mut self.rollout,
+            &mut self.ledger,
+            turn,
             terminal,
-            quality_micros: policy_quality_micros(terminal, verifier),
-            cost_microusd,
-            input_tokens,
-            output_tokens,
-            latency_us,
             verifier,
-            harness_error_code: harness_error_code.map(PolicyHarnessOutcomeId::single),
-        };
-        let mut recorder = self.policy_evidence.take().expect("ensured above");
-        let started = Instant::now();
-        let result = recorder.append_turn_outcome(&mut self.rollout, turn, &join, input);
-        self.ledger.record_fsync_latency_us(elapsed_us(started));
-        self.policy_evidence = Some(recorder);
-        let result = result
-            .map(|_| ())
-            .map_err(|error| self.policy_evidence_error(error));
-        if result.is_ok() {
-            self.policy_turn_cost_baseline = None;
-            self.policy_turn_counter_baseline = None;
-        }
-        result
+            harness_error_code,
+        );
+        result.map_err(|error| self.policy_evidence_error(error))
     }
 
     /// Close the session actor's policy-run segment exactly once. A later process resume validates
     /// this terminal segment and begins a new deterministic policy run rather than appending
     /// decisions after a terminal outcome.
     pub(crate) fn finalize_policy_run(&mut self) -> Result<(), KernelError> {
+        let _foreground = self.rollout.foreground_activity()?;
         if !self.ensure_policy_evidence()? {
             return Ok(());
         }
@@ -343,6 +289,7 @@ impl Agent {
     ) -> KernelError {
         match error.into_record_error() {
             Ok(error) => {
+                self.rollout.retain_failure(&error);
                 self.record_failed = true;
                 self.diagnostic_record_append_failed();
                 KernelError::Record(error)
@@ -365,11 +312,14 @@ fn digest_json<T: Serialize>(domain: &str, value: &T) -> Result<String, KernelEr
 
 pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErrorCode {
     match error {
-        KernelError::Provider(_) => PolicyHarnessErrorCode::ProviderError,
+        KernelError::AgentControl(_) => PolicyHarnessErrorCode::DelegationError,
+        KernelError::Provider(_)
+        | KernelError::ProviderAdmission(_)
+        | KernelError::ProviderRequestControl(_) => PolicyHarnessErrorCode::ProviderError,
         KernelError::Record(_) => PolicyHarnessErrorCode::RecordError,
-        KernelError::InvalidRouteMetadata { .. } | KernelError::InvalidRoute(_) => {
-            PolicyHarnessErrorCode::RouteError
-        }
+        KernelError::InvalidRouteMetadata { .. }
+        | KernelError::InvalidRoute(_)
+        | KernelError::ProviderControl(_) => PolicyHarnessErrorCode::RouteError,
         KernelError::ProviderRunNoticeLimit => PolicyHarnessErrorCode::ProviderNoticeLimit,
         KernelError::InvalidBudget(_) => PolicyHarnessErrorCode::BudgetError,
         KernelError::InferenceBudgetExhausted(reason) => policy_budget_harness_error_code(reason),
@@ -392,12 +342,16 @@ pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErr
         | KernelError::EnvironmentContextTooLarge { .. }
         | KernelError::EnvironmentContextAlreadyResolved
         | KernelError::ContextResolution(_)
+        | KernelError::SensitiveModelContext
+        | KernelError::ModelContextProjectionLimit
         | KernelError::ContextAlreadyResolved => PolicyHarnessErrorCode::ContextError,
         KernelError::AgentCatalogAlreadyResolved => PolicyHarnessErrorCode::AgentCatalogError,
         KernelError::TunablesAlreadyResolved | KernelError::TunablesNotResolved => {
             PolicyHarnessErrorCode::TunablesError
         }
-        KernelError::ToolingPolicy(_) => PolicyHarnessErrorCode::ToolingPolicyError,
+        KernelError::ToolingPolicy(_) | KernelError::OrdinaryExtension(_) => {
+            PolicyHarnessErrorCode::ToolingPolicyError
+        }
         KernelError::ExecutionPolicy(_) => PolicyHarnessErrorCode::ExecutionPolicyError,
         KernelError::ToolOutputSpill(_) => PolicyHarnessErrorCode::ToolOutputSpillError,
         KernelError::McpLifecycle(_) => PolicyHarnessErrorCode::McpLifecycleError,
@@ -416,59 +370,5 @@ pub(super) fn policy_budget_harness_error_code(reason: &str) -> PolicyHarnessErr
         "max_wall_secs" => PolicyHarnessErrorCode::BudgetMaxWallSecs,
         "verify_attempts" => PolicyHarnessErrorCode::BudgetVerifyAttempts,
         _ => PolicyHarnessErrorCode::BudgetError,
-    }
-}
-
-fn policy_cost_microusd(cost: &CostState) -> Option<u64> {
-    match cost {
-        CostState::Zero => Some(0),
-        CostState::Known {
-            amount_microusd, ..
-        } => Some(*amount_microusd),
-        CostState::Unknown { .. } => None,
-    }
-}
-
-fn policy_cost_delta_microusd(baseline: Option<&CostState>, current: &CostState) -> Option<u64> {
-    match (
-        baseline.and_then(policy_cost_microusd),
-        policy_cost_microusd(current),
-    ) {
-        (Some(before), Some(after)) => after.checked_sub(before),
-        (None, Some(0)) => Some(0),
-        _ => None,
-    }
-}
-
-fn policy_turn_tokens(
-    baseline: Option<&PolicyTurnCounterBaseline>,
-    current: &iteron_obs::ReproducibleCounters,
-) -> (Option<u64>, Option<u64>) {
-    let Some(baseline) = baseline else {
-        return (None, None);
-    };
-    let attempts = current
-        .provider_attempts
-        .checked_sub(baseline.provider_attempts);
-    let completions = current
-        .completed_turns
-        .checked_sub(baseline.completed_turns);
-    if attempts.is_none() || attempts != completions {
-        return (None, None);
-    }
-    (
-        current.usage.input.checked_sub(baseline.usage.input),
-        current.usage.output.checked_sub(baseline.usage.output),
-    )
-}
-
-const fn policy_quality_micros(
-    terminal: PolicyTerminalOutcome,
-    verifier: PolicyVerifierOutcome,
-) -> Option<i64> {
-    match (terminal, verifier) {
-        (PolicyTerminalOutcome::Succeeded, PolicyVerifierOutcome::Passed) => Some(1_000_000),
-        (_, PolicyVerifierOutcome::TestFailure) => Some(0),
-        _ => None,
     }
 }

@@ -32,6 +32,10 @@ pub(super) enum ClientFrame {
         session_id: Option<String>,
         #[serde(default)]
         product_contract_version: Option<u32>,
+        #[serde(default)]
+        observation_only: bool,
+        #[serde(default)]
+        live_only: bool,
     },
     Submit {
         protocol_version: u32,
@@ -278,12 +282,15 @@ mod tests {
             }
         ));
         let negotiated = format!(
-            r#"{{"type":"hello","bearer_token":"{token}","protocol_version":{version},"product_contract_version":1}}"#
+            r#"{{"type":"hello","bearer_token":"{token}","protocol_version":{version},"product_contract_version":{product_version}}}"#,
+            product_version = iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
         );
         assert!(matches!(
             parse(negotiated.as_bytes()).unwrap(),
             ClientFrame::Hello {
-                product_contract_version: Some(1),
+                product_contract_version: Some(
+                    iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+                ),
                 ..
             }
         ));
@@ -298,6 +305,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn product_turn_start_has_no_legacy_unkeyed_decode_path() {
+        let mut frame = serde_json::json!({"type":"control",
+            "protocol_version":iteron_protocol::PROTOCOL_VERSION,"request_id":9,
+            "control":{"type":"product_v1","command":{
+                "type":"turn_start","thread_id":"session-r","text":"original\n"}}});
+        assert!(parse(&serde_json::to_vec(&frame).unwrap()).is_err());
+        frame["control"]["command"]["request_key"] = serde_json::json!("client-key");
+        let decoded = parse(&serde_json::to_vec(&frame).unwrap()).unwrap();
+        assert!(matches!(decoded, ClientFrame::Control {
+            control: WireControl::ProductV1 {
+                command: iteron_protocol::product_contract::ProductControlV1::TurnStart {
+                    request_key, text, ..
+                }
+            }, ..
+        } if request_key == "client-key" && text == "original\n"));
     }
 
     #[tokio::test]

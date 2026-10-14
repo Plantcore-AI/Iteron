@@ -13,7 +13,7 @@ const MAX_BEARER_TOKEN_INPUT_BYTES: usize = BEARER_TOKEN_HEX_BYTES + 1;
 /// The loopback restriction keeps remote hosts out; this token keeps unrelated local processes
 /// from submitting operations to a more privileged Core process. It is intentionally absent from
 /// `argv`, environment, ready metadata, errors, and ordinary `Debug` output.
-pub(super) struct BearerToken(Zeroizing<[u8; BEARER_TOKEN_BYTES]>);
+pub(in crate::tui) struct BearerToken(Zeroizing<[u8; BEARER_TOKEN_BYTES]>);
 
 impl BearerToken {
     fn from_lower_hex(input: &[u8]) -> std::result::Result<Self, &'static str> {
@@ -29,6 +29,24 @@ impl BearerToken {
             decoded[index] = (high << 4) | low;
         }
         Ok(Self(decoded))
+    }
+
+    pub(in crate::tui) fn client_hello(&self) -> Zeroizing<Vec<u8>> {
+        use std::fmt::Write as _;
+        let mut input = Zeroizing::new(String::with_capacity(256));
+        input.push_str(r#"{"type":"hello","bearer_token":""#);
+        for byte in self.0.iter() {
+            write!(&mut *input, "{byte:02x}").expect("writing a String is infallible");
+        }
+        write!(
+            &mut *input,
+            r#"","protocol_version":{},"product_contract_version":{},"live_only":true}}"#,
+            iteron_protocol::PROTOCOL_VERSION,
+            iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION
+        )
+        .expect("writing a String is infallible");
+        input.push('\n');
+        Zeroizing::new(input.as_bytes().to_vec())
     }
 
     /// Compare all decoded bytes. Both operands have a fixed length, so no mismatch position
@@ -86,7 +104,7 @@ fn lower_hex_nibble(byte: u8) -> Option<u8> {
 
 /// Read exactly one parent-provided token to EOF. The one-byte excess allowance detects an
 /// overlong parent without ever allocating in proportion to its input.
-pub(super) async fn read_from_stdin() -> Result<BearerToken> {
+pub(in crate::tui) async fn read_from_stdin() -> Result<BearerToken> {
     tokio::task::spawn_blocking(|| {
         use std::io::Read as _;
 
@@ -109,6 +127,20 @@ pub(super) async fn read_from_stdin() -> Result<BearerToken> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attach_hello_uses_the_same_private_token_parser_and_no_command_authority() {
+        let token = BearerToken::from_lower_hex(&[b'a'; 64]).unwrap();
+        let encoded = token.client_hello();
+        assert_eq!(encoded.last(), Some(&b'\n'));
+        let decoded = super::super::input::parse(&encoded).unwrap();
+        assert!(matches!(decoded, super::super::input::ClientFrame::Hello {
+            bearer_token, protocol_version: iteron_protocol::PROTOCOL_VERSION,
+            product_contract_version: Some(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION), live_only: true,
+            observation_only: false, resume_from: None, session_id: None,
+        } if token.authorizes(&bearer_token)));
+        assert!(!format!("{token:?}").contains("aaaa"));
+    }
 
     #[test]
     fn token_shape_debug_and_comparison_do_not_disclose_the_capability() {

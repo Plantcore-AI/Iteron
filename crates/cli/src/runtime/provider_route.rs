@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 pub(super) struct ProviderDispatchAdmission {
     pub attempt_guard: ProviderAttemptGuard,
@@ -7,6 +8,14 @@ pub(super) struct ProviderDispatchAdmission {
 }
 
 impl Agent {
+    pub(super) fn provider_output_proof_required(&self) -> bool {
+        self.usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing())
+            || self.persistent_mailbox.is_some()
+            || self.persistent_agents.is_some()
+    }
+
     /// Unified provider-effect admission. Every model path, including operator compaction and
     /// orchestration helpers, must cross this check before a durable intent or transport call.
     pub(super) fn validate_provider_request_route(
@@ -14,41 +23,16 @@ impl Agent {
         request: &TurnRequest,
     ) -> Result<(), KernelError> {
         let capabilities = self.provider.control_capabilities();
-        let controls = if self.plantcore_runtime_enabled() {
+        let controls = if self.provider_extension_enabled() {
             request.controls
         } else {
             capabilities.adapt_optional_cache_breakpoint(request.controls)
         };
-        capabilities.validate(&controls).map_err(|error| {
-            KernelError::Provider(iteron_provider::ProviderError::Configuration(
-                error.to_string(),
-            ))
-        })?;
-        if let Some(selected) = &self.selected_route
-            && (self.model != selected.route.model_id || request.model != selected.route.model_id)
-        {
-            return Err(KernelError::InvalidRoute(
-                "request model changed without a durable model selection",
-            ));
-        }
-        if self.selected_route.is_some()
-            && self
-                .selected_provider
-                .as_ref()
-                .is_none_or(|selected| !std::sync::Arc::ptr_eq(selected, &self.provider))
-        {
-            return Err(KernelError::InvalidRoute(
-                "provider instance changed without a durable provider selection",
-            ));
-        }
-        if let Some(selected) = &self.selected_route
-            && self.pricing.is_some()
-            && self.provider.provider_instance_id() != Some(selected.route.provider_id.as_str())
-        {
-            return Err(KernelError::InvalidRoute(
-                "provider instance identity does not match the priced durable route",
-            ));
-        }
+        capabilities
+            .validate(&controls)
+            .map_err(KernelError::ProviderRequestControl)?;
+        self.provider_selection
+            .validate_request(&self.provider, &self.model, &request.model)?;
         Ok(())
     }
 
@@ -69,7 +53,7 @@ impl Agent {
         let mut hasher = Sha256::new();
         hasher.update(b"iteron.provider-run-notice-key.v1");
         field(&mut hasher, &self.rollout.run_id().0);
-        if let Some(selected) = &self.selected_route {
+        if let Some(selected) = self.provider_selection.selected() {
             field(&mut hasher, "durable-route");
             field(&mut hasher, &selected.route.provider_id);
             field(&mut hasher, &selected.route.model_id);
@@ -163,14 +147,14 @@ impl Agent {
             .usd_budget
             .as_ref()
             .is_some_and(|budget| budget.requires_pricing())
-            && (self.pricing_port.is_none()
-                || self.pricing.is_none()
+            && (self.provider_selection.pricing_port().is_none()
+                || self.provider_selection.card().is_none()
                 || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
         let projected_at_unix_secs = self.pricing_now();
-        if let Some(rate_card) = &self.pricing {
+        if let Some(rate_card) = self.provider_selection.card() {
             if projected_at_unix_secs < rate_card.rate_card.issued_at_unix_secs {
                 return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
             }
@@ -269,21 +253,7 @@ impl Agent {
     /// stream. Journalling them inside the boundary would manufacture an unknown effect out of a
     /// request that never left the process.
     pub(super) fn provider_dispatch_refusal(&self) -> Option<KernelError> {
-        let deadline = self.run_deadline?;
-        if deadline.saturating_duration_since(Instant::now()).is_zero() {
-            return Some(KernelError::Provider(
-                iteron_provider::ProviderError::DeadlineExceeded,
-            ));
-        }
-        let interrupted = self.drain.load(std::sync::atomic::Ordering::Relaxed)
-            || self.force_cancel.load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .interrupt
-                .as_ref()
-                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
-        interrupted.then_some(KernelError::Provider(
-            iteron_provider::ProviderError::Interrupted,
-        ))
+        self.control.provider_refusal(self.run_deadline.current())
     }
 
     /// One paid inference request, across the effect boundary.
@@ -307,28 +277,39 @@ impl Agent {
     pub(super) async fn brokered_provider_turn(
         &mut self,
         turn: TurnId,
-        request: &TurnRequest,
+        physical: super::provider_output_request::PhysicalProviderRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
-        mut primary_route_permit: Option<iteron_provider::AttemptPermit>,
+        primary_route_permit: Option<iteron_provider::AttemptPermit>,
         use_hedge: bool,
-    ) -> Result<iteron_provider::TurnResult, KernelError> {
-        let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
-        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
-            != iteron_provider::CacheBreakpoint::None;
+    ) -> Result<super::provider_attempt_journal::ProviderPhysicalResponse, KernelError> {
+        let estimated_input = self.context_estimator.estimate_uncached(
+            &physical.request.system,
+            &physical.request.messages,
+            &physical.request.tools,
+        );
+        let estimated_input_tokens = u64::try_from(
+            self.include_input_image_tokens(self.calibrated_context_estimate(estimated_input))
+                .total_tokens,
+        )
+        .unwrap_or(u64::MAX);
+        let mut route_turn = super::provider_route_turn::ProviderRouteTurn::new(
+            physical.request,
+            physical.requested_max_tokens,
+            self.provider.clone(),
+            self.governed_route_id(),
+            &self.fallback_provider_routes,
+            self.retry_policy,
+            iteron_provider::max_interactive_retry_after(),
+        );
+        route_turn.assign_route_permit(primary_route_permit);
+        let route_events = super::provider_route_events::ProviderRouteEvents {
+            turn,
+            lifecycle: self.lifecycle_emitter.clone(),
+            hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+            activity: self.activity.clone(),
+        };
         let class = effect_class::EffectClass::Provider;
-        let mut retry_index = 0u32;
-        let mut physical_attempt = 0u32;
-        let mut provider = self.provider.clone();
-        let mut route_id = self.governed_route_id();
-        let mut fallback_index = self
-            .fallback_provider_routes
-            .iter()
-            .position(|route| route.id() == route_id)
-            .map_or(0, |index| index.saturating_add(1));
-        let mut transition_reason: Option<&'static str> = None;
-        let mut jitter = iteron_sched::backoff::Jitter::new();
-        let mut first_attempt = true;
         loop {
             if let Some(refusal) = self.provider_dispatch_refusal() {
                 if let Some(budget) = &self.usd_budget {
@@ -345,76 +326,99 @@ impl Agent {
                 }
                 on_item(item);
             };
-            let (result, monetary_followup_safe) = if use_hedge {
+            let (result, monetary_followup_safe, usage_evidence) = if use_hedge {
+                let primary_permit = route_turn.take_route_permit();
+                let request_manifests = self.request_manifest_factory();
                 let dispatch = self
                     .execute_hedged_provider_turn(
                         turn,
-                        provider.clone(),
-                        &route_id,
-                        &governed_request,
-                        self.run_deadline.unwrap_or_else(|| {
+                        route_turn.provider(),
+                        route_turn.route_id(),
+                        route_turn.request(),
+                        self.run_deadline.current().unwrap_or_else(|| {
                             Instant::now()
                                 .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                                 .unwrap_or_else(Instant::now)
                         }),
-                        transition_reason,
-                        retry_index,
-                        physical_attempt,
-                        first_attempt,
-                        primary_route_permit.take(),
+                        route_turn.transition(),
+                        route_turn.retry_index(),
+                        route_turn.first_attempt(),
+                        primary_permit,
+                        &request_manifests,
                     )
                     .await?;
-                physical_attempt = physical_attempt.saturating_add(dispatch.scheduled_attempts);
+                route_turn.observe_hedged_identity(
+                    dispatch.last_physical_attempt,
+                    dispatch.scheduled_attempts,
+                )?;
                 let monetary_followup_safe = dispatch.monetary_followup_safe;
                 for item in dispatch.items {
                     guarded(item);
                 }
-                (dispatch.result, monetary_followup_safe)
+                (
+                    dispatch.result,
+                    monetary_followup_safe,
+                    super::provider_attempt_journal::ProviderLogicalUsageEvidence::HedgedAggregate,
+                )
             } else {
-                let route_permit = if first_attempt {
-                    primary_route_permit.take()
-                } else {
-                    self.admit_governed_route_attempt(turn, &route_id).await?
-                };
-                let dispatch_permit = match self.enter_plantcore_external_dispatch().await {
+                if !route_turn.first_attempt() {
+                    let permit = self
+                        .admit_governed_route_attempt(turn, route_turn.route_id())
+                        .await?;
+                    route_turn.assign_route_permit(permit);
+                }
+                let dispatch_permit = match self.enter_provider_extension_dispatch().await {
                     Ok(permit) => permit,
                     Err(()) => {
-                        drop(route_permit);
+                        drop(route_turn.take_route_permit());
                         if let Some(budget) = &self.usd_budget {
                             budget.settle_not_dispatched();
                         }
                         return Err(iteron_provider::ProviderError::Interrupted.into());
                     }
                 };
+                route_turn.assign_dispatch_permit(dispatch_permit);
                 if let Some(refusal) = self.provider_dispatch_refusal() {
-                    drop(dispatch_permit);
-                    drop(route_permit);
+                    drop(route_turn.take_dispatch_permit());
+                    drop(route_turn.take_route_permit());
                     if let Some(budget) = &self.usd_budget {
                         budget.settle_not_dispatched();
                     }
                     return Err(refusal);
                 }
-                if !first_attempt {
-                    self.reserve_provider_followup_if_needed(&governed_request)?;
+                if !route_turn.first_attempt() {
+                    self.reserve_provider_followup_if_needed(route_turn.request())?;
                 }
-                physical_attempt = physical_attempt.saturating_add(1);
-                let ordinal = self.next_effect_ordinal(turn, class);
-                let (objective_score, objective_evidence) = self.objective_rank_evidence(&route_id);
+                let (ordinal, physical) = match self.next_provider_effect_identity(turn) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        drop(route_turn.take_dispatch_permit());
+                        drop(route_turn.take_route_permit());
+                        if let Some(budget) = &self.usd_budget {
+                            budget.settle_not_dispatched();
+                        }
+                        return Err(error);
+                    }
+                };
+                route_turn.assign_identity(ordinal, physical);
+                let (objective_score, objective_evidence) =
+                    self.objective_rank_evidence(route_turn.route_id());
                 let broker_started = Instant::now();
                 let ticket = match self.open_kernel_effect(
                     turn,
                     class,
-                    ordinal,
+                    route_turn.ordinal(),
                     Capability::IrreversibleExternal,
                     serde_json::json!({
-                        "model": governed_request.model,
-                        "route_id": route_id,
-                        "route_transition": transition_reason,
-                        "messages": governed_request.messages.len(),
-                        "tools": governed_request.tools.len(),
-                        "max_tokens": governed_request.max_tokens,
-                        "physical_attempt": physical_attempt,
-                        "route_retry_index": retry_index,
+                        "model": route_turn.request().model,
+                        "route_id": route_turn.route_id(),
+                        "route_transition": route_turn.transition(),
+                        "messages": route_turn.request().messages.len(),
+                        "tools": route_turn.request().tools.len(),
+                        "max_tokens": route_turn.request().max_tokens,
+                        "requested_max_tokens": route_turn.requested_max_tokens(),
+                        "physical_attempt": route_turn.physical_attempt(),
+                        "route_retry_index": route_turn.retry_index(),
                         "route_objective_score_millionths": objective_score,
                         "route_objective_evidence": objective_evidence,
                     }),
@@ -425,330 +429,201 @@ impl Agent {
                         // Close the monetary reservation as a proved zero-dispatch outcome before
                         // the outer logical-attempt guard is dropped; otherwise its fail-safe Drop
                         // path would incorrectly poison the session as an unknown billed request.
-                        drop(route_permit);
+                        drop(route_turn.take_route_permit());
                         if let Some(budget) = &self.usd_budget {
                             budget.settle_not_dispatched();
                         }
                         return Err(error);
                     }
                 };
+                route_turn.assign_ticket(Some(ticket));
                 self.ledger
                     .record_broker_latency_us(elapsed_us(broker_started));
-                if first_attempt && let Err(error) = self.begin_provider_attempt_after_intent(turn)
+                if route_turn.first_attempt()
+                    && let Err(error) = self.begin_provider_attempt_after_intent(turn)
                 {
+                    let ticket = route_turn
+                        .take_ticket()
+                        .expect("provider intent was just opened");
                     let settlement = self.close_provider_intent_without_dispatch(
                         turn,
-                        ordinal,
-                        &route_id,
-                        physical_attempt,
+                        route_turn.ordinal(),
+                        route_turn.route_id(),
+                        route_turn.physical_attempt(),
                         ticket,
                         "logical provider turn could not become durable before dispatch",
                     );
-                    drop(route_permit);
+                    drop(route_turn.take_route_permit());
                     if let Some(budget) = &self.usd_budget {
                         budget.settle_not_dispatched();
                     }
                     settlement?;
                     return Err(error);
                 }
-                let result = execute_admitted_provider_turn(
-                    provider.clone(),
-                    self.run_deadline.unwrap_or_else(|| {
+                let request_observer = self.request_manifest_factory().for_ticket(
+                    route_turn
+                        .ticket()
+                        .expect("provider intent remains open before dispatch"),
+                    route_turn.request().max_tokens,
+                );
+                let result = execute_admitted_provider_turn_observed(
+                    route_turn.provider(),
+                    self.run_deadline.current().unwrap_or_else(|| {
                         Instant::now()
                             .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                             .unwrap_or_else(Instant::now)
                     }),
                     ProviderCancellation {
-                        interrupt: self.interrupt.clone(),
-                        force_cancel: self.force_cancel.clone(),
-                        drain: self.drain.clone(),
+                        interrupt: self.control.interrupt().cloned(),
+                        force_cancel: self.control.force_cancel().clone(),
+                        drain: self.control.drain().clone(),
                         attempt: None,
-                        allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
+                        allow_in_flight_past_deadline: self.provider_extension_enabled(),
                     },
-                    &governed_request,
+                    route_turn.request(),
                     &mut guarded,
+                    Some(request_observer.as_ref()),
                 )
                 .await;
-                let accounting = self.route_attempt_accounting(
-                    turn,
-                    &route_id,
-                    physical_attempt,
-                    &result,
-                    self.pricing_now(),
-                )?;
-                let monetary_followup_safe =
-                    route_attempt_accounting::monetary_followup_safe(&accounting);
+                let ticket = route_turn
+                    .take_ticket()
+                    .expect("provider intent remains open until settlement");
                 let broker_started = Instant::now();
-                self.settle_kernel_effect(
-                    ticket,
-                    provider_settlement(turn, ordinal, &result, accounting.clone()),
-                )?;
-                self.observe_plantcore_provider_attempt(turn, &accounting)
+                let (accounting, monetary_followup_safe, receipt) =
+                    self.provider_attempt_journal().settle_observed(
+                        ticket,
+                        super::provider_attempt_journal::ProviderObservedAttempt {
+                            route_id: route_turn.route_id(),
+                            result: &result,
+                        },
+                    )?;
+                self.observe_provider_extension_attempt(turn, &accounting)
                     .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                 self.commit_provider_route_charge(turn, &accounting)?;
                 self.ledger
                     .record_broker_latency_us(elapsed_us(broker_started));
-                self.observe_governed_route_attempt(turn, &route_id, &result, observed_rate_limit)?;
-                drop(route_permit);
-                drop(dispatch_permit);
-                (result, monetary_followup_safe)
-            };
-            first_attempt = false;
-            transition_reason = None;
-
-            if let Some(error) =
-                retryable_before_semantic_output_provider_error(&result, semantic_output_observed)
-                && retry_index.saturating_add(1) < self.retry_policy.max_attempts
-            {
-                self.admit_followup_after_route_attempt_set(monetary_followup_safe)?;
-                let random = jitter.next01();
-                let jitter_delay =
-                    iteron_sched::full_jitter(&self.retry_policy, retry_index, random);
-                let interactive_retry_ceiling = iteron_provider::max_interactive_retry_after();
-                if let Some(hint) = error.retry_after()
-                    && hint > interactive_retry_ceiling
-                {
-                    self.lifecycle_event(
-                        "model.retry_cancelled",
-                        Some(turn),
-                        LifecyclePayload {
-                            duration_us: Some(u64::try_from(hint.as_micros()).unwrap_or(u64::MAX)),
-                            reason_code: Some("retry_after_exceeds_interactive_ceiling".into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    return Err(iteron_provider::ProviderError::RetryAfterTooLong {
-                        retry_after_ms: u64::try_from(hint.as_millis()).unwrap_or(u64::MAX),
-                        limit_ms: u64::try_from(interactive_retry_ceiling.as_millis())
-                            .unwrap_or(u64::MAX),
-                    }
-                    .into());
-                }
-                let delay = error
-                    .retry_after()
-                    .map(|hint| hint.max(jitter_delay))
-                    .unwrap_or(jitter_delay);
-                self.lifecycle_event(
-                    "model.retry_scheduled",
-                    Some(turn),
-                    LifecyclePayload {
-                        count: Some(u64::from(retry_index.saturating_add(1))),
-                        duration_us: Some(u64::try_from(delay.as_micros()).unwrap_or(u64::MAX)),
-                        reason_code: Some("typed_transient_pre_stream_failure".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                self.activity.retry(
+                self.observe_governed_route_attempt(
                     turn,
-                    retry_index.saturating_add(1),
-                    self.retry_policy.max_attempts,
-                    delay,
-                );
-                let wait_started = Instant::now();
-                if let Err(cancelled) = self.wait_provider_retry(delay).await {
-                    self.lifecycle_event(
-                        "model.retry_cancelled",
-                        Some(turn),
-                        LifecyclePayload {
-                            count: Some(u64::from(retry_index.saturating_add(1))),
-                            duration_us: Some(elapsed_us(wait_started)),
-                            reason_code: Some("run_cancelled_during_backoff".into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    return Err(cancelled);
-                }
-                self.ledger.record_provider_retries(
-                    1,
-                    u64::try_from(delay.as_millis().max(1)).unwrap_or(u64::MAX),
-                );
-                retry_index = retry_index.saturating_add(1);
-                continue;
-            }
-
-            let Some(error) = result.as_ref().err() else {
-                return result;
-            };
-            let Some(failover_class) = self.admitted_failover(error, semantic_output_observed)
-            else {
-                return result;
-            };
-            let Some(index) = super::provider_governor_state::next_admitted_fallback_index(
-                &self.fallback_provider_routes,
-                fallback_index,
-                &governed_request,
-            ) else {
-                self.record_model_router_abstention(
-                    Some(turn),
-                    failover_class.label(),
-                    "fallback_chain_exhausted",
+                    route_turn.route_id(),
+                    &result,
+                    observed_rate_limit,
                 )?;
-                return result;
+                drop(route_turn.take_route_permit());
+                drop(route_turn.take_dispatch_permit());
+                (
+                    result,
+                    monetary_followup_safe,
+                    super::provider_attempt_journal::ProviderLogicalUsageEvidence::Single(receipt),
+                )
             };
-            if !monetary_followup_safe {
-                self.mark_usd_unknown();
-                return Err(KernelError::UnpricedUsdCeiling);
+            route_turn.settled();
+            let failover = result
+                .as_ref()
+                .err()
+                .and_then(|error| self.admitted_failover(error, semantic_output_observed));
+            match route_turn.next(
+                &result,
+                semantic_output_observed,
+                failover,
+                &self.fallback_provider_routes,
+            ) {
+                super::provider_route_turn::ProviderRouteNext::Retry { delay } => {
+                    self.admit_followup_after_route_attempt_set(monetary_followup_safe)?;
+                    route_events
+                        .wait_retry(
+                            super::provider_route_events::ProviderRetryWait {
+                                controls: &self.control,
+                                run_deadline: self.run_deadline.current(),
+                                ledger: &mut self.ledger,
+                            },
+                            super::provider_route_events::ProviderRetrySchedule {
+                                delay,
+                                attempt: route_turn.retry_index().saturating_add(1),
+                                limit: route_turn.max_attempts(),
+                            },
+                        )
+                        .await?;
+                    route_turn.retry_wait_completed();
+                    let financial = self.provider_financial_context();
+                    let funding =
+                        financial.output_funding(route_turn.route_id(), self.pricing_now())?;
+                    let mut request = route_turn.request().clone();
+                    request.max_tokens = route_turn.requested_max_tokens();
+                    let physical = super::provider_output_request::normalize_funded(
+                        route_turn.provider().as_ref(),
+                        request,
+                        self.provider_output_proof_required(),
+                        funding.as_ref(),
+                    )?;
+                    route_turn.rebind_followup(physical)?;
+                }
+                super::provider_route_turn::ProviderRouteNext::RetryCeiling { hint, ceiling } => {
+                    self.admit_followup_after_route_attempt_set(monetary_followup_safe)?;
+                    route_events.ceiling_refused(hint);
+                    return Err(
+                        super::provider_route_turn::ProviderRouteTurn::retry_ceiling_error(
+                            hint, ceiling,
+                        ),
+                    );
+                }
+                super::provider_route_turn::ProviderRouteNext::Fallback { index, class } => {
+                    if !monetary_followup_safe {
+                        self.mark_usd_unknown();
+                        return Err(KernelError::UnpricedUsdCeiling);
+                    }
+                    if self.usd_budget_exhausted() {
+                        return Err(KernelError::InferenceBudgetExhausted("max_usd"));
+                    }
+                    let candidate = &self.fallback_provider_routes[index];
+                    let mut candidate_request = route_turn.request().clone();
+                    candidate_request.model = candidate.route.model_id.clone();
+                    candidate_request.max_tokens = route_turn.requested_max_tokens();
+                    let physical =
+                        self.quote_candidate_provider_request(candidate, candidate_request)?;
+                    super::provider_route_turn::validate_fallback_request(
+                        candidate,
+                        &physical.request,
+                        estimated_input_tokens,
+                    )?;
+                    let failover_activity = route_events.failover();
+                    let next = self.activate_fallback_provider_route(turn, index, class)?;
+                    let controls = self.provider_controls_for(next.provider.as_ref());
+                    route_turn.selected_fallback(next, physical, index, class, controls);
+                    failover_activity.complete();
+                    self.admit_followup_after_route_attempt_set(true)?;
+                }
+                super::provider_route_turn::ProviderRouteNext::FallbackExhausted { class } => {
+                    self.record_model_router_abstention(
+                        Some(turn),
+                        class.label(),
+                        "fallback_chain_exhausted",
+                    )?;
+                    return result.map(|result| {
+                        super::provider_attempt_journal::ProviderPhysicalResponse {
+                            result,
+                            usage_evidence,
+                        }
+                    });
+                }
+                super::provider_route_turn::ProviderRouteNext::Terminal => {
+                    return result.map(|result| {
+                        super::provider_attempt_journal::ProviderPhysicalResponse {
+                            result,
+                            usage_evidence,
+                        }
+                    });
+                }
             }
-            if self.usd_budget_exhausted() {
-                return Err(KernelError::InferenceBudgetExhausted("max_usd"));
-            }
-            fallback_index = index.saturating_add(1);
-            let failover_activity = self
-                .activity
-                .span(super::turn_activity::ActivityStage::Failover, Some(turn));
-            let next = self.activate_fallback_provider_route(turn, index, failover_class)?;
-            failover_activity.complete();
-            provider = next.provider.clone();
-            route_id = next.id();
-            governed_request.model = next.route.model_id;
-            governed_request.controls = self.provider_controls_for(provider.as_ref());
-            governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
-                != iteron_provider::CacheBreakpoint::None;
-            self.admit_followup_after_route_attempt_set(true)?;
-            retry_index = 0;
-            jitter = iteron_sched::backoff::Jitter::new();
-            transition_reason = Some(failover_class.label());
         }
     }
-
-    pub(super) async fn wait_provider_retry(&self, delay: Duration) -> Result<(), KernelError> {
-        let deadline = Instant::now()
-            .checked_add(delay)
-            .unwrap_or_else(Instant::now);
-        loop {
-            if let Some(refusal) = self.provider_dispatch_refusal() {
-                return Err(refusal);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            tokio::time::sleep(remaining.min(iteron_tunables::param_duration(
-                "cli.runtime.provider_interrupt_poll_interval",
-                PROVIDER_INTERRUPT_POLL_INTERVAL,
-            )))
-            .await;
-        }
-    }
 }
 
-/// Execute one already-admitted physical provider request without retaining a borrow of the
-/// [`Agent`]. The streaming writer uses this shape so its callback can synchronously fsync policy
-/// evidence through the Agent-owned rollout before it constructs an early pure-tool future.
-///
-/// Route identity, budget, pricing, and the durable provider intent are validated by
-/// [`Agent::admit_provider_effect`] immediately before the caller snapshots these fields. Nothing
-/// in the callback can replace the provider, so repeating those checks here would add no authority;
-/// the single-attempt assertion remains defense in depth at dispatch.
-pub(super) struct ProviderCancellation {
-    pub(super) interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    pub(super) force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub(super) drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub(super) attempt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    pub(super) allow_in_flight_past_deadline: bool,
-}
-
-pub(super) async fn execute_admitted_provider_turn(
-    provider: std::sync::Arc<dyn Provider>,
-    deadline: Instant,
-    cancellation: ProviderCancellation,
-    request: &TurnRequest,
-    on_item: &mut (dyn FnMut(StreamItem) + Send),
-) -> Result<iteron_provider::TurnResult, KernelError> {
-    if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
-        return Err(KernelError::OpaqueProviderRetries);
-    }
-    if deadline.saturating_duration_since(Instant::now()).is_zero() {
-        return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
-    }
-    // This is shared by ordinary, auxiliary and hedged physical calls. A fallback/hedge can use a
-    // different adapter than the request's original route; never forward its unsupported hint or
-    // leave the legacy bit true (which some adapters interpret as an implicit rolling hint).
-    let controls = provider
-        .control_capabilities()
-        .adapt_optional_cache_breakpoint(request.controls);
-    let projected;
-    let request = if controls != request.controls {
-        projected = TurnRequest {
-            controls,
-            cache_system: controls.prompt_cache.breakpoint
-                != iteron_provider::CacheBreakpoint::None,
-            ..request.clone()
-        };
-        &projected
-    } else {
-        request
-    };
-    let mut cancels = vec![
-        cancellation.force_cancel.as_ref(),
-        cancellation.drain.as_ref(),
-    ];
-    if let Some(interrupt) = cancellation.interrupt.as_deref() {
-        cancels.push(interrupt);
-    }
-    if let Some(attempt_cancel) = cancellation.attempt.as_deref() {
-        cancels.push(attempt_cancel);
-    }
-    let turn = iteron_provider::turn_cancellable_any(
-        provider.as_ref(),
-        request,
-        on_item,
-        &cancels,
-        iteron_tunables::param_duration(
-            "cli.runtime.provider_interrupt_poll_interval",
-            PROVIDER_INTERRUPT_POLL_INTERVAL,
-        ),
-    );
-    if cancellation.allow_in_flight_past_deadline {
-        turn.await.map_err(KernelError::Provider)
-    } else {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::timeout(remaining, turn)
-            .await
-            .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
-            .map_err(KernelError::Provider)
-    }
-}
+// Existing ordinary/auxiliary/hedge call sites enter the same physical transport owner.
+pub(super) use super::provider_transport_attempt::{
+    ProviderCancellation, execute_admitted_provider_turn_observed,
+};
 
 /// Classify one paid physical attempt after it crosses the effect boundary.
-pub(super) fn provider_settlement(
-    turn: TurnId,
-    ordinal: usize,
-    result: &Result<iteron_provider::TurnResult, KernelError>,
-    accounting: iteron_protocol::ProviderRouteAttemptAccounting,
-) -> effects::Settlement {
-    let class = effect_class::EffectClass::Provider;
-    let id = effect_class::effect_id(turn, class, ordinal);
-    let tool = effect_class_label(class).to_string();
-    match result {
-        Ok(_) => effects::Settlement::Definite(EventKind::EffectDone {
-            id,
-            tool,
-            duration_ms: None,
-            provider_route_attempt: Some(accounting),
-        }),
-        Err(KernelError::Provider(error)) if provider_outcome_is_unobservable(error) => {
-            effects::Settlement::Definite(EventKind::EffectUnknown {
-                id,
-                tool,
-                reason: format!(
-                    "provider request was dispatched and produced no authoritative outcome ({}); \
-                     billing remains unknown and continuation requires separate budget admission",
-                    error.public_summary()
-                ),
-                provider_route_attempt: Some(accounting),
-            })
-        }
-        Err(error) => effects::Settlement::Definite(EventKind::EffectFailed {
-            id,
-            tool,
-            reason: strict_utf8_head(&error.public_summary(), EFFECT_REASON_MAX_BYTES),
-            duration_ms: None,
-            provider_route_attempt: Some(accounting),
-        }),
-    }
-}
-
 pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::ProviderError) -> bool {
     matches!(
         error,
@@ -758,6 +633,7 @@ pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::Provider
             | iteron_provider::ProviderError::Http(_)
             | iteron_provider::ProviderError::Stream(_)
             | iteron_provider::ProviderError::Decode(_)
+            | iteron_provider::ProviderError::InvalidResponse(_)
     )
 }
 
@@ -777,7 +653,10 @@ pub(super) fn provider_failure_stage(error: &KernelError) -> &'static str {
         KernelError::Provider(iteron_provider::ProviderError::ConnectFailed) => {
             "connect_failed_pre_acceptance"
         }
-        KernelError::Provider(iteron_provider::ProviderError::Decode(_)) => "decode",
+        KernelError::Provider(
+            iteron_provider::ProviderError::Decode(_)
+            | iteron_provider::ProviderError::InvalidResponse(_),
+        ) => "decode",
         KernelError::Provider(iteron_provider::ProviderError::Stream(_)) => "stream",
         KernelError::Provider(iteron_provider::ProviderError::Http(_)) => "transport",
         _ => "provider_error",

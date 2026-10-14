@@ -1,6 +1,94 @@
 # Architecture
 
-## Two diagrams, two questions
+## Ordinary coding runtime
+
+The ordinary product has one resident `Agent` execution path. CLI launch adapters and the
+App Server session host submit work to that path; terminal rendering and socket observers
+do not own another model/tool loop. The runtime imports shared command/event contracts and
+the pure machine projection, with no production dependency on TUI, App Server or CLI output.
+This direction is checked by `iteron-xtask boundaries check`.
+
+The following diagram names logical interfaces in the current source. Each arrow carries
+a command, a narrow execution port or an immutable observation; it does not grant access to
+another owner's mutable state.
+
+```mermaid
+flowchart TD
+    Front[CLI / TUI / external clients] -->|typed submissions and controls| Host[Launch and App Server adapters]
+    Host --> Ingress[SessionInbox / SessionControl / SubmittedTurnState]
+    Ingress --> Resident[Resident execution composition]
+    Resident --> Coordinator[CodingRunCoordinator]
+    Coordinator -->|borrows retained state| Driver[CodingRunDriver]
+    Resident --> Context[ContextInjection and ContextPort]
+    Coordinator --> Provider[CodingProviderExecution and native route ports]
+    Coordinator --> Tools[ToolRoundExecution and process owners]
+    Resident --> Terminal[RunFinalization and TerminalRecord]
+    Host -->|collaboration commands| Controller[AgentController and mailbox]
+    Scheduler[LiveWorkflowSession / WorkflowScheduler] -->|versioned controller port| Controller
+    Controller -->|owned resident epoch| Resident
+    Context --> Journal[WAL / effect / accounting owners]
+    Provider --> Journal
+    Tools --> Journal
+    Terminal --> Journal
+    Resident -->|bounded facts| Projection[Lifecycle and machine projections]
+    Projection --> Front
+```
+
+The table names current source ownership. An extracted file is useful only when its state,
+physical work or decision authority belongs to that owner; file size alone is not acceptance.
+`CodingRunDriver` retains the transcript, phase and physical obligations. The coordinator borrows
+that retained state and consumes concrete request/provider/tool/completion handoffs. Optional
+persistent agents and live workflow graphs enter the same resident child execution through their
+controller-owned identity, budget, mailbox and exact task leases; they do not install a second
+frontend execution loop.
+
+| Responsibility | Actual owner or interface | Input and output |
+| --- | --- | --- |
+| Resident ingress and controls | `runtime/session_inbox.rs`, `session_control.rs`, `submitted_turn_state.rs` | Identified submissions, product epoch, bounded pending steer and control observations. |
+| Request preparation | `runtime/request_preparation.rs`, `request_context_evidence.rs` | Admitted context and frozen tool/route inputs; prepared request or a bounded compaction candidate. |
+| Physical provider admission | `runtime/provider_dispatch.rs`, `provider_attempt_journal.rs` | Actual governor and financial admission; matching intent and logical start before transport; mailbox confirmation uses actual retained native input. |
+| Provider execution and settlement | `runtime/provider_execution_scope.rs`, `provider_round.rs`, `provider_followup.rs`, `provider_attempt_pump.rs` | One actual stream/declaration lifetime; settled physical receipts, bounded retries and explicit fallback. |
+| Tool admission and execution | `runtime/stream_tool_admission.rs`, `ordered_tool_call.rs`, `deferred_tool_batch.rs`, `early_tool_collection.rs` | Frozen operation permissions and actual effect intent; ordered known or unknown tool results. |
+| Captured provider directory | `providers/directory.rs`, `instance_factory.rs`, `selection_identity.rs` | Exact operator routes and current catalog/health facts; validated selection and pure identity. |
+| Provider caches | `providers/catalog_cache.rs`, `probe_cache.rs`, `cache_storage.rs`, `cache_writeback.rs` | Private scoped retained evidence and consumed best-effort writeback; no secret byte projection. |
+| Prepared mailbox input | `runtime/persistent_agents/prepared_mailbox.rs`, `request_manifest.rs` | Full native user-text fields and private host commitments; retained manifest before durable consumption before IO. |
+| Resident transcript | `runtime/session_transcript.rs` | Private restored/working projection; actual durable new-input receipt before consuming staged state. |
+| Coding invocation phases | `runtime/coding_run_driver.rs`, `coding_run_coordinator.rs`, `coding_response_phase.rs` | Retained transcript and provider/tool obligations; private consumed IO handoffs and actual response completion. |
+| Stable context installation | `runtime/context_injection.rs`, `context_injection_journal.rs` | Historical or live bounded source; required durable prefix receipt before installing cached bytes. |
+| Versioned captured pixels | `protocol/image_record.rs`, `runtime/tool_image_replay.rs` | New pixel vocabulary uses versioned message/compaction tags; actual current replay retains verified image provenance and order. |
+| Model response | `runtime/model_response.rs` | Provider stop reason and existing invocation state; continuation, answer candidate, bounded stop or refusal. |
+| Terminal and publication | `runtime/control_terminal.rs`, `run_finalization.rs`, `terminal_record.rs`, `turn_publication.rs` | Actual cleanup and committed terminal receipts; read-only answer/finalization facts. |
+| Persistent collaboration | `crates/agents`, `runtime/persistent_agents`, `workflow/live_session` | Host-bound identities, bounded mailbox and controller budgets; exact task/attempt receipts. |
+| Client transport | `app_server/session_host.rs`, `tui/headless/connection.rs`, protocol client commands | Resident Agent ownership, authenticated run-scoped commands and bounded observation subscriptions. |
+| Session construction and navigation | `cli_entry/`, `app_server/session_factory.rs`, `session_factory/` | Trusted host bootstrap, frozen provider directory and verified history; prepared native writer and route before observed adoption. |
+| Native client actions | `app_server/client_export.rs`, `client_shell.rs`, `project_init.rs`, `model_preferences.rs`, `path_completion.rs`, `client_effects/` | Host-captured policy, run scope and retained physical/submission leases; native completion, explicit unknown publication and scoped receipts. |
+| Shared presentation | `machine_projection.rs`, `machine_projection/` | Immutable runtime/protocol facts to the canonical machine schema; no provider, terminal or socket authority. |
+| TUI interaction | `tui/input_lanes.rs`, `completion_owner.rs`, `picker_owner.rs`, `attachment_owner.rs`, `session_navigation.rs` | Private input/picker/observation state and bounded attachment workers; immutable render views, typed host requests and observed receipts. |
+| Ordinary extension SDK | `crates/extension-sdk`, `runtime/ordinary_extensions.rs` | Inert descriptors, host-bound native tools/routes, text status and read-only lifecycle ports. |
+
+An ordinary assistant response completes through the normal answer/terminal path. There is
+no default completion verifier, two-human approval or high-assurance profile. The existing
+`--verify` command is an explicit operator choice. Ticket investigation and script workflows
+are separate optional compile features, disabled in the default build. Browser and native
+desktop tools require explicit operator configuration and an available native backend; tool
+registration does not start a driver. The native desktop backend targets macOS Mac2;
+`computer` also exposes the separate isolated browser viewport. Company-specific resident
+integration remains behind the default-off `legacy-plantcore` feature.
+
+Private session, provider, tool, journal and presentation state have distinct owners. Consumers
+read bounded projections or carry narrow temporary ports; they do not receive a mutable Agent
+as an extension callback. Durable publication, execution authority and observation delivery
+have different receipts: losing an observer cannot reverse a committed physical terminal.
+
+The ongoing runtime and TUI extraction is not yet a completed architecture acceptance claim.
+Rebuild the source inventory with `iteron-xtask architecture inventory`; current-candidate
+compiler, client/render, recovery, platform and performance evidence must accompany completion.
+
+## Optional checkpoint and evolution contracts
+
+The diagrams below describe the optional checkpoint and offline evolution system. The
+ordinary coding path above remains the product entry point. These target contracts do not
+add a research, work-order or promotion stage to an ordinary turn.
 
 The checkpoint surface answers **which admitted harness should this model-task
 cell use?**
@@ -72,9 +160,11 @@ transfer. Unsupported cells fall back to a pinned baseline.
 
 The workspace is divided into protocol, record, observability, provider, tools,
 sandbox, context, verification, MCP, scheduling, agents, kernel, CLI, evaluation,
-and evolution-contract crates. This is useful modularity, but the kernel still
-depends on concrete implementations and the CLI/TUI still participates in runtime
-composition. Iteron therefore does not yet claim microkernel conformance.
+and evolution-contract crates, with additional workflow, tunables, marketplace and ordinary
+extension SDK owners. The kernel still has concrete workspace dependencies on protocol and
+record. CLI host bootstrap and the App Server construct resident sessions; TUI and external
+clients consume queues, bounded views and scoped receipts. This remains a modular monolith,
+and these source boundaries alone do not establish microkernel conformance.
 
 The runtime also does not yet ship a first-class `TaskProfile`, checkpoint
 applicability index, or serving-time checkpoint selector. Existing

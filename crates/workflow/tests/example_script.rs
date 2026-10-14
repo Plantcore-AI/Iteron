@@ -1,3 +1,5 @@
+#![cfg(feature = "script-workflows")]
+
 //! The shipped example workflow script must run exactly as written.
 //!
 //! A repository whose documentation points at an example nobody executes is how the docs drifted in

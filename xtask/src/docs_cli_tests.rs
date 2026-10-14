@@ -12,7 +12,7 @@ fn repository_root() -> std::path::PathBuf {
 #[test]
 fn the_published_reference_matches_the_argument_parser() {
     check(&repository_root()).expect(
-        "docs/reference/cli.md drifted from crates/cli/src/main.rs; run \
+        "docs/reference/cli.md drifted from crates/cli/src/cli_entry/options.rs; run \
          `cargo run --locked -p iteron-xtask -- docs generate`",
     );
 }
@@ -51,6 +51,21 @@ fn every_shipped_flag_and_subcommand_appears() {
             "the generated reference omits `{shipped}`"
         );
     }
+}
+
+#[test]
+fn attach_requires_the_service_identity_while_serve_options_remain_optional() {
+    let rendered = render(&repository_root()).unwrap();
+    // The installed attach parser requires its scoped service identity. Advertising it as
+    // optional sends a documented command straight to a real clap admission error.
+    assert!(rendered.contains("`iteron attach <ENDPOINT> --service-id <SERVICE_ID>`"));
+    assert!(!rendered.contains("iteron attach <ENDPOINT> [--service-id <SERVICE_ID>]"));
+    // Existing default-valued and boolean named options retain their optional syntax.
+    assert!(rendered.contains("iteron serve [--listen <LISTEN>] [--client-approvals]"));
+    // Typed integer and enum defaults also remain optional; their Rust expressions are not
+    // advertised as literal CLI values.
+    assert!(rendered.contains("`iteron record receipts [--limit <LIMIT>]`"));
+    assert!(rendered.contains("`iteron mcp list [--format <FORMAT>]`"));
 }
 
 #[test]

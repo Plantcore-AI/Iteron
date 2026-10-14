@@ -5,6 +5,7 @@
 //! deadline, byte limit, protocol decision, kill, and reap. Provider output remains evidence only:
 //! this module has no activation, promotion, permission, or budget API.
 
+mod artifact_verification;
 mod process;
 mod wire;
 

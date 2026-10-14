@@ -1,3 +1,5 @@
+#![cfg(feature = "script-workflows")]
+
 //! Integration proofs for the three engine-depth features (design §2.5/§2.6 + review B2/B3), all
 //! with deterministic mock spawners (no network):
 //!   (a) schema-forced structured output validates + retries -> a validated object, and rejects a

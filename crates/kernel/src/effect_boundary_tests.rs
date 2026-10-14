@@ -679,8 +679,9 @@ fn replay_reconstructs_pending_and_unknown_across_every_class() {
 struct EffectPrimitive {
     /// Source substring that marks a dispatch.
     needle: &'static str,
-    /// Functions permitted to contain it. A declaration site counts as its own function.
-    allowed_in: &'static [&'static str],
+    /// Exact source/function owners permitted to contain it. Generic execute/run/create names
+    /// have no authority in another module; declaration sites belong to their own function.
+    owners: &'static [(&'static str, &'static str)],
     /// What a reviewer should do when this fails.
     guidance: &'static str,
 }
@@ -714,87 +715,146 @@ struct EffectPrimitive {
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_cancellable_journaled(",
-        allowed_in: &["run_legacy_hook"],
-        guidance: "a lifecycle hook starts an operator-controlled process; route it through \
-                   Agent::brokered_hook so it crosses the effect boundary",
+        owners: &[(
+            "crates/cli/src/app_server/lifecycle_control.rs",
+            "run_legacy_hook",
+        )],
+        guidance: "compatibility hook dispatch requires the actual HookEffectJournal",
+    },
+    EffectPrimitive {
+        needle: ".run_cancellable_journaled_report(",
+        owners: &[
+            ("crates/cli/src/runtime/hook_execution.rs", "compatibility"),
+            ("crates/cli/src/runtime/hook_execution.rs", "gate_batch"),
+            ("crates/cli/src/runtime/hook_execution.rs", "post_tools"),
+            (
+                "crates/cli/src/runtime/early_tool_gate.rs",
+                "run_lifecycle_gate",
+            ),
+            ("crates/cli/src/runtime/hooks.rs", "run_stop_hook_observer"),
+        ],
+        guidance: "canonical Hook execution keeps admitted tickets or its retained command journal before polling commands",
     },
     EffectPrimitive {
         needle: ".run_lifecycle_cancellable_journaled(",
-        allowed_in: &[
-            "brokered_lifecycle_gate_correlated",
-            "dispatch_one",
-            "gate_concurrent_deferred_batch",
-            "run_lifecycle_gate",
+        owners: &[
+            ("crates/cli/src/runtime/hook_execution.rs", "lifecycle"),
+            ("crates/cli/src/runtime/hook_execution.rs", "gate_batch"),
+            (
+                "crates/cli/src/runtime/early_tool_gate.rs",
+                "run_lifecycle_gate",
+            ),
+            ("crates/cli/src/runtime/lifecycle_hooks.rs", "dispatch_one"),
+            (
+                "crates/cli/src/app_server/lifecycle_control.rs",
+                "run_lifecycle_gate",
+            ),
         ],
-        guidance: "a lifecycle hook starts operator-controlled processes; synchronous gates use \
-                   the universal effect boundary, while bounded asynchronous observe/augment \
-                   dispatch must hold the fsynced HookEffectJournal before starting a command",
+        guidance: "lifecycle dispatch holds the actual durable HookEffectJournal; universal synchronous tickets stay with its caller",
     },
     EffectPrimitive {
-        needle: "registry.run_admitted_intent(",
-        allowed_in: &[
-            "drive_admitted",
-            "drive_admitted_loop",
-            "run_concurrent_deferred_batch",
+        needle: ".run_admitted_intent_captured(",
+        owners: &[
+            ("crates/cli/src/runtime/ordered_tool_call.rs", "execute"),
+            (
+                "crates/cli/src/runtime/deferred_batch_executor.rs",
+                "execute",
+            ),
         ],
-        guidance: "an admitted registry intent must be dispatched by \
-                   effects::execute_registry_tool, or opened and settled around it the way \
-                   run_concurrent_deferred_batch does when a batch runs concurrently — one \
-                   intent appended before the executor is entered, exactly one terminal after, \
-                   and the correlation id restored from the admitted call, never from the result",
+        guidance: "ordered execution owns its exact tool ticket; deferred execution consumes the already admitted ordered batch",
+    },
+    EffectPrimitive {
+        needle: ".dispatch_stream_intent_captured(",
+        owners: &[("crates/cli/src/runtime/stream_tool_admission.rs", "admit")],
+        guidance: "stream declarations open the actual ticket or pure ToolReady receipt before their captured future is admitted",
     },
     EffectPrimitive {
         needle: "iteron_provider::turn_cancellable_any(",
-        allowed_in: &["execute_admitted_provider_turn"],
-        guidance: "a provider request is a paid, externally visible effect; dispatch it through \
-                   execute_admitted_provider_turn only after its caller has durably opened the \
-                   exact provider route attempt",
+        owners: &[(
+            "crates/cli/src/runtime/provider_transport_attempt.rs",
+            "execute_admitted_provider_turn_observed",
+        )],
+        guidance: "physical provider IO follows the exact admitted request and paid attempt; legacy observation absence cannot authorize IO",
     },
     EffectPrimitive {
-        needle: "execute_admitted_provider_turn(",
-        allowed_in: &[
-            "execute_admitted_provider_turn",
-            "brokered_provider_turn",
-            "drive_admitted_loop",
-            "run_attempt",
+        needle: "iteron_provider::turn_cancellable_any_observed(",
+        owners: &[(
+            "crates/cli/src/runtime/provider_transport_attempt.rs",
+            "execute_admitted_provider_turn_observed",
+        )],
+        guidance: "the same physical request observer crosses its prepared/dispatching barrier before network dispatch",
+    },
+    EffectPrimitive {
+        needle: "execute_admitted_provider_turn_observed(",
+        owners: &[
+            (
+                "crates/cli/src/runtime/provider_transport_attempt.rs",
+                "execute_admitted_provider_turn_observed",
+            ),
+            ("crates/cli/src/runtime/provider_stream_attempt.rs", "run"),
+            (
+                "crates/cli/src/runtime/provider_route.rs",
+                "brokered_provider_turn",
+            ),
+            ("crates/cli/src/runtime/provider_hedge.rs", "run_attempt"),
         ],
-        guidance: "the admitted provider helper may only be declared once or called by the three \
-                   owners that durably open and settle an exact provider route attempt",
+        guidance: "Main, auxiliary and hedge attempts retain their own actual ticket/financial obligation before physical transport and settle that identity afterward",
     },
     EffectPrimitive {
         needle: "checkpoint_excluding_runtime_state(",
-        allowed_in: &["checkpoint_at_turn_end"],
-        guidance: "a checkpoint writes the workspace tree; it must be opened at the boundary before \
-                   the copy and settled after it",
+        owners: &[
+            ("crates/cli/src/runtime/workspace_checkpoint.rs", "create"),
+            (
+                "crates/cli/src/app_server/session_factory/workspace_rewind.rs",
+                "create_safety",
+            ),
+        ],
+        guidance: "turn checkpoint owns its intent/copy/terminal; native rewind safety capture requires the actual private captured permit and worker custody",
     },
     EffectPrimitive {
         needle: ".run_bounded_verify_observed(",
-        allowed_in: &["dispatch_verify"],
-        guidance: "a verifier oracle runs repository-controlled code; reach it through \
-                   Agent::run_verify, which owns the intent/terminal pair",
+        owners: &[(
+            "crates/cli/src/runtime/verification_execution.rs",
+            "dispatch_verify_task",
+        )],
+        guidance: "StrongVerificationGate owns its exact Verify ticket/task/dispatch/terminal sequence",
     },
     EffectPrimitive {
-        needle: "self.launch_workflow(",
-        allowed_in: &["drive_admitted", "drive_admitted_loop", "run_orchestrated"],
-        guidance: "an in-turn workflow launch fans out real children that spend budget; it crosses \
-                   the boundary under EffectClass::Workflow",
+        needle: ".dispatch_verify_task(",
+        owners: &[(
+            "crates/cli/src/runtime/verification_execution.rs",
+            "run_verify",
+        )],
+        guidance: "the optional verifier caller first fsyncs its ticket and binds the same physical task",
     },
     EffectPrimitive {
-        needle: ".run_child_with_control(",
-        allowed_in: &["spawn_subagent"],
-        guidance: "spawning a subagent is an effect of the parent; open the boundary before the \
-                   child runs",
+        needle: "crate::workflow::launch_prepared(",
+        owners: &[("crates/cli/src/runtime/workflow_execution.rs", "execute")],
+        guidance: "prepared workflow execution follows its real parent admission and retains the run handle until settlement",
+    },
+    EffectPrimitive {
+        needle: "child.run_leaf(&prompt)",
+        owners: &[(
+            "crates/cli/src/runtime/direct_child_execution.rs",
+            "native_child_future",
+        )],
+        guidance: "the private native child future is spawned only after run opens the actual direct ticket; run retains stop, join, cleanup and accounting custody",
+    },
+    EffectPrimitive {
+        needle: "children.direct(prompt, node, agent_type)",
+        owners: &[("crates/cli/src/runtime/direct_child_execution.rs", "run")],
+        guidance: "controller direct execution follows the admitted actual child epoch rather than a local counter",
     },
     EffectPrimitive {
         needle: "tokio::process::Command::new(",
-        allowed_in: &[
-            "run_one_with_sensitive_env_names",
-            "run_one_with_shell",
-            "run_plantcore_workspace_hook",
+        owners: &[
+            ("crates/cli/src/runtime/hooks.rs", "run_one_with_shell"),
+            (
+                "crates/cli/src/runtime/hooks.rs",
+                "run_plantcore_workspace_hook",
+            ),
         ],
-        guidance: "the kernel starts exactly one kind of child process directly — a hook — and it \
-                   does so behind Agent::brokered_hook. Anything else belongs in a world module \
-                   reached through the boundary",
+        guidance: "raw process construction remains only in these actual bounded journaled Hook helpers",
     },
 ];
 
@@ -823,11 +883,265 @@ fn collect_runtime_sources(directory: &std::path::Path, sources: &mut Vec<PathBu
         let path = entry.expect("runtime source entry must be readable").path();
         if path.is_dir() {
             collect_runtime_sources(&path, sources);
-        } else if path.extension().is_some_and(|extension| extension == "rs")
-            && path.file_name().is_none_or(|name| name != "tests.rs")
-        {
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
             sources.push(path);
         }
+    }
+}
+
+fn test_only_attribute(attribute: &str) -> bool {
+    attribute == "#[cfg(test)]"
+        || attribute == "#[test]"
+        || attribute == "#[tokio::test]"
+        || attribute.starts_with("#[tokio::test(")
+        || attribute
+            .strip_prefix("#[cfg(all(")
+            .and_then(|arguments| arguments.strip_suffix("))]"))
+            .is_some_and(|arguments| arguments.split(',').any(|argument| argument == "test"))
+}
+
+/// A filename cannot make physical code disappear. Only actual positive test-only module
+/// declarations (and their children) are excluded; a second production reference wins.
+fn test_only_source_paths(sources: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let mut edges = Vec::new();
+    for source in sources {
+        let raw = std::fs::read_to_string(source).expect("effect source readable");
+        let executable = executable_source(&raw);
+        let raw_lines: Vec<_> = raw.lines().collect();
+        let mut pending_test = false;
+        let mut declared_path = None;
+        let mut depth = 0_i32;
+        let mut test_regions = Vec::new();
+        let mut inline_modules: Vec<(String, i32)> = Vec::new();
+        let parent = source.parent().expect("source parent");
+        let module_root = if source
+            .file_name()
+            .is_some_and(|name| name == "mod.rs" || name == "lib.rs" || name == "main.rs")
+        {
+            parent.to_owned()
+        } else {
+            parent.join(source.file_stem().expect("source stem"))
+        };
+        for (index, line) in executable.lines().enumerate() {
+            let code = line.trim();
+            if code.is_empty() {
+                continue;
+            }
+            if code.starts_with("#[") {
+                pending_test |= test_only_attribute(&compact_source(code));
+                if code.starts_with("#[path") {
+                    declared_path = raw_lines[index]
+                        .trim()
+                        .strip_prefix("#[path = \"")
+                        .and_then(|literal| literal.strip_suffix("\"]"))
+                        .map(str::to_owned);
+                }
+                continue;
+            }
+            let declaration = if let Some(visibility) = code.strip_prefix("pub(") {
+                visibility.split_once(") ").map_or(code, |(_, rest)| rest)
+            } else {
+                code.strip_prefix("pub ").unwrap_or(code)
+            };
+            if code.starts_with("include!(")
+                && let Some(literal) = raw_lines[index]
+                    .trim()
+                    .strip_prefix("include!(\"")
+                    .and_then(|literal| literal.strip_suffix("\");"))
+            {
+                edges.push((
+                    source.clone(),
+                    parent.join(literal),
+                    pending_test || !test_regions.is_empty(),
+                ));
+            }
+            if let Some(module) = declaration.strip_prefix("mod ") {
+                let name: String = module
+                    .chars()
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                    .collect();
+                if !name.is_empty() && module.trim_end().ends_with(';') {
+                    let base = inline_modules
+                        .iter()
+                        .fold(module_root.clone(), |path, (name, _)| path.join(name));
+                    let target = match declared_path.take() {
+                        Some(path) if inline_modules.is_empty() => parent.join(path),
+                        Some(path) => base.join(path),
+                        None => {
+                            let flat = base.join(format!("{name}.rs"));
+                            if flat.is_file() {
+                                flat
+                            } else {
+                                base.join(&name).join("mod.rs")
+                            }
+                        }
+                    };
+                    edges.push((
+                        source.clone(),
+                        target,
+                        pending_test || !test_regions.is_empty(),
+                    ));
+                } else if !name.is_empty() && code.contains('{') {
+                    inline_modules.push((name, depth + 1));
+                }
+            }
+            let opens = line.matches('{').count() as i32;
+            let closes = line.matches('}').count() as i32;
+            if pending_test && opens != 0 {
+                test_regions.push(depth + 1);
+            }
+            depth += opens - closes;
+            if opens != 0 || code.ends_with(';') {
+                pending_test = false;
+                declared_path = None;
+            }
+            test_regions.retain(|level| depth >= *level);
+            inline_modules.retain(|(_, level)| depth >= *level);
+        }
+    }
+    let mut tests: BTreeSet<_> = edges
+        .iter()
+        .filter(|(_, _, test)| *test)
+        .map(|(_, target, _)| target.clone())
+        .collect();
+    let mut production: BTreeSet<_> = sources
+        .iter()
+        .filter(|path| {
+            path.ends_with("crates/cli/src/runtime.rs")
+                || path.ends_with("crates/cli/src/app_server.rs")
+                || KERNEL_SOURCES
+                    .iter()
+                    .any(|relative| path.ends_with(relative))
+        })
+        .cloned()
+        .collect();
+    // A module graph has at most this many edges; no unbounded fixed-point loop is needed.
+    for _ in 0..=edges.len() {
+        let before = (tests.len(), production.len());
+        for (parent, target, test) in &edges {
+            if *test || tests.contains(parent) {
+                tests.insert(target.clone());
+            }
+            if !test && production.contains(parent) {
+                production.insert(target.clone());
+            }
+        }
+        if before == (tests.len(), production.len()) {
+            break;
+        }
+    }
+    tests.retain(|path| !production.contains(path));
+    tests
+}
+
+#[test]
+fn exact_effect_owner_table_cannot_authorize_a_same_named_foreign_facade() {
+    for primitive in EFFECT_PRIMITIVES {
+        assert!(!primitive.owners.is_empty());
+        for (path, function) in primitive.owners {
+            assert!(primitive.owners.contains(&(*path, *function)));
+            assert!(
+                !primitive
+                    .owners
+                    .contains(&("crates/cli/src/runtime/unused_facade.rs", *function))
+            );
+        }
+    }
+    let source = "#[cfg(test)]\nuse fixture::Only;\npub(in crate::runtime) async fn create() {\n checkpoint_excluding_runtime_state();\n}\n#[cfg(all(unix, test))]\nmod tests { fn bait() { checkpoint_excluding_runtime_state(); } }";
+    let lines = production_lines(source);
+    let kept = lines
+        .iter()
+        .map(|(_, line)| *line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        kept.matches("checkpoint_excluding_runtime_state(").count(),
+        1
+    );
+    assert_eq!(
+        enclosing_functions(&lines).get(&4).map(String::as_str),
+        Some("create")
+    );
+    assert!(test_only_attribute("#[cfg(all(unix,test))]"));
+    assert!(!test_only_attribute("#[cfg(any(test,unix))]"));
+    assert!(!test_only_attribute("#[cfg(all(not(test),unix))]"));
+}
+
+#[test]
+fn source_exclusion_requires_actual_test_declarations_and_production_reference_wins() {
+    struct SourceTree(PathBuf);
+    impl Drop for SourceTree {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("remove source fixture");
+        }
+    }
+    let root = SourceTree(std::env::temp_dir().join(format!(
+        "iteron-effect-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    let files = [
+        (
+            "crates/cli/src/runtime.rs",
+            "#[cfg(test)]\ninclude!(\"runtime/tests.rs\");\n\
+             #[cfg(all(unix, test))]\n#[path = \"runtime/declared_fixture.rs\"]\nmod fixture;\n\
+             mod production_owner;\n\
+             #[cfg(test)]\n#[path = \"runtime/shared.rs\"]\nmod fixture_shared;\n\
+             #[path = \"runtime/shared.rs\"]\nmod production_shared;",
+        ),
+        ("crates/cli/src/runtime/tests.rs", "fn fixture() {}"),
+        (
+            "crates/cli/src/runtime/declared_fixture.rs",
+            "mod inherited_test;",
+        ),
+        (
+            "crates/cli/src/runtime/declared_fixture/inherited_test.rs",
+            "fn fixture() {}",
+        ),
+        (
+            "crates/cli/src/runtime/production_owner.rs",
+            "#[path = \"looks_like_tests.rs\"]\nmod actual;\n\
+             #[cfg(test)]\nmod nested_fixture;\n\
+             // #[cfg(test)]\n// include!(\"comment_bait.rs\");\n\
+             const BAIT: &str = r#\"#[cfg(test)]\ninclude!(\"literal_bait.rs\");\"#;",
+        ),
+        ("crates/cli/src/runtime/shared.rs", "fn actual() {}"),
+        (
+            "crates/cli/src/runtime/looks_like_tests.rs",
+            "fn actual() {}",
+        ),
+        (
+            "crates/cli/src/runtime/production_owner/nested_fixture.rs",
+            "fn fixture() {}",
+        ),
+        ("crates/cli/src/runtime/comment_bait.rs", "fn actual() {}"),
+        ("crates/cli/src/runtime/literal_bait.rs", "fn actual() {}"),
+    ];
+    for (relative, source) in files {
+        let path = root.0.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("source fixture parent");
+        std::fs::write(path, source).expect("source fixture");
+    }
+    let sources = runtime_source_paths(&root.0);
+    let excluded = test_only_source_paths(&sources);
+    for relative in [
+        "crates/cli/src/runtime/tests.rs",
+        "crates/cli/src/runtime/declared_fixture.rs",
+        "crates/cli/src/runtime/declared_fixture/inherited_test.rs",
+        "crates/cli/src/runtime/production_owner/nested_fixture.rs",
+    ] {
+        assert!(excluded.contains(&root.0.join(relative)), "{relative}");
+    }
+    for relative in [
+        "crates/cli/src/runtime/shared.rs",
+        "crates/cli/src/runtime/looks_like_tests.rs",
+        "crates/cli/src/runtime/comment_bait.rs",
+        "crates/cli/src/runtime/literal_bait.rs",
+    ] {
+        assert!(!excluded.contains(&root.0.join(relative)), "{relative}");
     }
 }
 
@@ -845,6 +1159,11 @@ fn effect_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
         .collect();
     sources.extend(runtime_source_paths(root));
     sources.push(root.join("crates/cli/src/app_server.rs"));
+    collect_runtime_sources(&root.join("crates/cli/src/app_server"), &mut sources);
+    sources.sort();
+    sources.dedup();
+    let tests = test_only_source_paths(&sources);
+    sources.retain(|path| !tests.contains(path));
     sources
 }
 
@@ -860,7 +1179,7 @@ fn production_lines(source: &str) -> Vec<(usize, &str)> {
     let mut depth: i32 = 0;
     let mut armed = false;
     for (index, line) in source.lines().enumerate() {
-        if !skipping && line.trim_start().starts_with("#[cfg(test)]") {
+        if !skipping && test_only_attribute(&compact_source(line)) {
             skipping = true;
             armed = false;
             depth = 0;
@@ -873,7 +1192,7 @@ fn production_lines(source: &str) -> Vec<(usize, &str)> {
                 armed = true;
             }
             depth += opens - closes;
-            if armed && depth <= 0 {
+            if (armed && depth <= 0) || (!armed && line.trim_end().ends_with(';')) {
                 skipping = false;
             }
             continue;
@@ -898,11 +1217,13 @@ fn enclosing_functions(lines: &[(usize, &str)]) -> BTreeMap<usize, String> {
 
 fn function_name(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    let rest = trimmed
-        .strip_prefix("pub(crate) ")
-        .or_else(|| trimmed.strip_prefix("pub(super) "))
-        .or_else(|| trimmed.strip_prefix("pub "))
-        .unwrap_or(trimmed);
+    let rest = if let Some(visibility) = trimmed.strip_prefix("pub(") {
+        visibility
+            .split_once(") ")
+            .map_or(trimmed, |(_, rest)| rest)
+    } else {
+        trimmed.strip_prefix("pub ").unwrap_or(trimmed)
+    };
     let rest = rest.strip_prefix("async ").unwrap_or(rest);
     let rest = rest.strip_prefix("fn ")?;
     let name: String = rest
@@ -912,12 +1233,465 @@ fn function_name(line: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Mask comments and literals before looking for executable ownership markers. In particular,
+/// an unused string mentioning a durable append must never authorize a physical dispatcher.
+fn executable_source(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = cursor;
+        let end = if bytes[cursor..].starts_with(b"//") {
+            bytes[cursor..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |offset| cursor + offset)
+        } else if bytes[cursor..].starts_with(b"/*") {
+            cursor += 2;
+            let mut depth = 1;
+            while cursor < bytes.len() && depth != 0 {
+                if bytes[cursor..].starts_with(b"/*") {
+                    depth += 1;
+                    cursor += 2;
+                } else if bytes[cursor..].starts_with(b"*/") {
+                    depth -= 1;
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+            }
+            cursor
+        } else if bytes[cursor] == b'r' {
+            let mut quote = cursor + 1;
+            while quote < bytes.len() && bytes[quote] == b'#' {
+                quote += 1;
+            }
+            if bytes.get(quote) != Some(&b'"') {
+                cursor += 1;
+                continue;
+            }
+            let hashes = quote - cursor - 1;
+            cursor = quote + 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'"'
+                    && bytes.get(cursor + 1..cursor + 1 + hashes) == Some(&bytes[start + 1..quote])
+                {
+                    cursor += 1 + hashes;
+                    break;
+                }
+                cursor += 1;
+            }
+            cursor
+        } else if bytes[cursor] == b'"' {
+            cursor += 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'\\' {
+                    cursor = (cursor + 2).min(bytes.len());
+                } else if bytes[cursor] == b'"' {
+                    cursor += 1;
+                    break;
+                } else {
+                    cursor += 1;
+                }
+            }
+            cursor
+        } else if bytes[cursor] == b'\''
+            && (bytes.get(cursor + 2) == Some(&b'\'')
+                || (bytes.get(cursor + 1) == Some(&b'\\') && bytes.get(cursor + 3) == Some(&b'\'')))
+        {
+            // Do not mask Rust lifetimes: unlike a character literal they have no closing quote.
+            cursor + if bytes[cursor + 1] == b'\\' { 4 } else { 3 }
+        } else {
+            cursor += 1;
+            continue;
+        };
+        for byte in &mut masked[start..end] {
+            if *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+        cursor = end;
+    }
+    String::from_utf8(masked).expect("masking complete comments/literals preserves UTF-8")
+}
+
+fn compact_source(source: &str) -> String {
+    source
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// Select an actual production method of the canonical imported owner. Comments, literals,
+/// fixture methods and an unrelated/unused Agent facade do not participate in this proof.
+fn verification_method(source: &str, wanted: &str) -> Result<String, &'static str> {
+    canonical_method(
+        source,
+        wanted,
+        "implStrongVerificationGate<'_>{",
+        Some("use super::strong_verification::StrongVerificationGate;"),
+    )
+    .map(|method| compact_source(&method))
+}
+
+/// Lexical extraction shared by the two exact owners below. Callers pin the complete canonical
+/// impl/import spelling; arbitrary names, facades, attributed code and fixture methods fail.
+fn canonical_method(
+    source: &str,
+    wanted: &str,
+    owner_signature: &str,
+    import: Option<&str>,
+) -> Result<String, &'static str> {
+    let source = executable_source(source);
+    let lines = production_lines(&source);
+    if let Some(import) = import {
+        let imports: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, line))| line.trim() == import)
+            .collect();
+        if imports.len() != 1
+            || (imports[0].0 != 0 && lines[imports[0].0 - 1].1.trim_start().starts_with("#["))
+        {
+            return Err("method must import its exact unconditional canonical owner");
+        }
+    }
+    let mut owner = None;
+    let mut depth = 0_i32;
+    let mut found = Vec::new();
+    let mut collecting: Option<(String, bool)> = None;
+    let mut pending_active_attribute = false;
+    let mut attribute_depth = 0_i32;
+    for (_, line) in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("#[") || attribute_depth != 0 {
+            let is_doc = trimmed.strip_prefix("#[doc").is_some_and(|suffix| {
+                suffix.chars().next().is_some_and(|character| {
+                    character.is_whitespace() || matches!(character, '=' | '(' | ']')
+                })
+            });
+            if attribute_depth == 0 && !is_doc {
+                pending_active_attribute = true;
+                if collecting.is_some() {
+                    return Err(
+                        "actual verifier executable markers cannot be conditional or attributed",
+                    );
+                }
+            }
+            attribute_depth += line.matches('[').count() as i32 - line.matches(']').count() as i32;
+            continue;
+        }
+        if pending_active_attribute
+            && (import == Some(trimmed)
+                || compact_source(trimmed) == owner_signature
+                || (owner
+                    .as_ref()
+                    .is_some_and(|(name, _)| name == owner_signature)
+                    && function_name(line).as_deref() == Some(wanted)))
+        {
+            return Err(
+                "actual verifier owner/import/method must be unconditional and free of active attributes",
+            );
+        }
+        pending_active_attribute = false;
+        if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
+            owner = Some((compact_source(trimmed), depth + 1));
+        }
+        if collecting.is_none()
+            && owner
+                .as_ref()
+                .is_some_and(|(name, level)| name == owner_signature && *level == depth)
+            && function_name(line).as_deref() == Some(wanted)
+        {
+            collecting = Some((String::new(), false));
+        }
+        if let Some((body, armed)) = &mut collecting {
+            body.push_str(line);
+            body.push('\n');
+            *armed |= line.contains('{');
+        }
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        if collecting.as_ref().is_some_and(|(_, armed)| *armed)
+            && owner.as_ref().is_some_and(|(_, level)| depth == *level)
+        {
+            found.push(collecting.take().expect("method collection exists").0);
+        }
+        if owner.as_ref().is_some_and(|(_, level)| depth < *level) {
+            owner = None;
+        }
+    }
+    if found.len() != 1 {
+        return Err(
+            "verifier method must have exactly one actual production StrongVerificationGate owner",
+        );
+    }
+    Ok(found.pop().expect("one method"))
+}
+
+fn validate_verifier_source_owner(source: &str) -> Result<(), &'static str> {
+    let run = verification_method(source, "run_verify")?;
+    if run.matches(".dispatch_verify_task(").count() != 1
+        || run.matches("self.journal.open(").count() != 1
+    {
+        return Err(
+            "each optional verification owns exactly one intent and one physical dispatcher",
+        );
+    }
+    let markers = [
+        "letclass=effect_class::EffectClass::Verify;",
+        "letticket=self.journal.open(",
+        "lettask=matchself.tasks.begin(self.journal.rollout.run_id(),&ticket)",
+        "letdispatch=self.dispatch_verify_task(command,Some(&task)).await;",
+        "self.journal.settle(ticket,settlement)?;",
+        "task.settled(known_terminal,&verdict,observed);",
+    ];
+    let mut previous = None;
+    for marker in markers {
+        let positions: Vec<_> = run.match_indices(marker).map(|(index, _)| index).collect();
+        if positions.len() != 1 || previous.is_some_and(|prior| positions[0] <= prior) {
+            return Err(
+                "actual Verify ticket/task/dispatch/terminal observations must remain unique and ordered",
+            );
+        }
+        previous = Some(positions[0]);
+    }
+    let dispatch = verification_method(source, "dispatch_verify_task")?;
+    let oracle = dispatch
+        .find("iteron_verify::TestOracle::new(")
+        .ok_or("actual verifier dispatcher must build the sandbox oracle")?;
+    let physical = "self.run_bounded_verify_observed(std::sync::Arc::new(oracle),Some(output_observer),Some(output_receiver),task,).await";
+    let positions: Vec<_> = dispatch
+        .match_indices(physical)
+        .map(|(index, _)| index)
+        .collect();
+    if positions.len() != 1
+        || positions[0] <= oracle
+        || dispatch.matches(".run_bounded_verify_observed(").count() != 1
+    {
+        return Err(
+            "native verifier dispatch must retain this exact admitted task and sandbox oracle",
+        );
+    }
+    Ok(())
+}
+
+fn verifier_primitive_owner(needle: &str, relative: &std::path::Path, enclosing: &str) -> bool {
+    let required = match needle {
+        ".run_bounded_verify_observed(" => "dispatch_verify_task",
+        ".dispatch_verify_task(" => "run_verify",
+        _ => return true,
+    };
+    relative == std::path::Path::new("crates/cli/src/runtime/verification_execution.rs")
+        && enclosing == required
+}
+
+fn validate_stream_source_owner(source: &str) -> Result<(), &'static str> {
+    let method = canonical_method(source, "admit", "impl<'a>StreamToolAdmission<'a>{", None)?;
+    let admit = compact_source(&method);
+    if !admit.starts_with("fnadmit(&mutself,index:usize,call:ToolUse)->Result<(),KernelError>{")
+        || admit.matches(".dispatch_stream_intent_captured(").count() != 1
+        || admit.matches("self.journal.open_tool(").count() != 1
+        || admit.matches(".append_ready(").count() != 1
+        || admit.matches("executor.spawn(").count() != 1
+    {
+        return Err("stream IO must have one actual private admission owner and physical handoff");
+    }
+    let purity =
+        "letpure=proposal.as_ref().is_ok_and(|proposal|proposal.intent.purity==Purity::Pure);";
+    if ["pure", "tickets", "source", "intent"]
+        .into_iter()
+        .any(|name| let_pattern_occurrences(&method, name) != 1)
+        || admit.matches("letpure=").count() != 1
+        || admit.matches(purity).count() != 1
+        || admit
+            .matches("letmuttickets=EarlyHookEffectTickets::default();")
+            .count()
+            != 1
+        || admit.matches("tickets.tool=").count() != 1
+    {
+        return Err("stream purity and ticket storage must come from the same exact proposal");
+    }
+    let open = admit
+        .find("tickets.tool=Some(self.journal.open_tool(")
+        .ok_or("streamed effect must open its exact tool intent")?;
+    // Comments/literals are already masked. The open is an unconditional statement in the
+    // top-level `if !pure` block, not a marker hidden behind a false or nested condition.
+    let mut blocks = Vec::new();
+    for (index, byte) in admit.as_bytes()[..open].iter().enumerate() {
+        match byte {
+            b'{' => blocks.push(index),
+            b'}' => {
+                blocks.pop();
+            }
+            _ => {}
+        }
+    }
+    if blocks.len() != 2
+        || blocks
+            .last()
+            .is_none_or(|index| !admit[..*index].ends_with("if!pure"))
+    {
+        return Err("nonpure stream calls must unconditionally open a tool intent in their branch");
+    }
+    let markers = [
+        "self.journal.record_decision(self.scope.turn,draft)?;",
+        "tickets.tool=Some(self.journal.open_tool(",
+        "letsource=match&tickets.tool{",
+        "Some(ticket)=>ticket.intent_sequence(),",
+        "None=>self.journal.append_ready(self.scope.turn,&declared,pure)?,",
+        "letpublication=self.scope.publication.for_call(&declared,source);",
+        "letfuture=self.scope.registry.dispatch_stream_intent_captured(intent);",
+        "lettask=executor.spawn(",
+    ];
+    let mut previous = None;
+    for marker in markers {
+        let positions: Vec<_> = admit
+            .match_indices(marker)
+            .map(|(index, _)| index)
+            .collect();
+        if positions.len() != 1 || previous.is_some_and(|prior| positions[0] <= prior) {
+            return Err(
+                "stream decision and exact intent/ToolReady receipt must precede executor IO",
+            );
+        }
+        previous = Some(positions[0]);
+    }
+    Ok(())
+}
+
+/// Count identifiers in real let patterns, including destructuring/if-let. Masked literals and
+/// identifier substrings do not count. A type/pattern we cannot distinguish refuses extra names.
+fn let_pattern_occurrences(source: &str, name: &str) -> usize {
+    let identifier = |character: char| character.is_alphanumeric() || character == '_';
+    source
+        .match_indices("let")
+        .filter(|(index, _)| {
+            source[..*index]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !identifier(c))
+                && source[*index + 3..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !identifier(c))
+        })
+        .map(|(index, _)| {
+            let pattern = source[index + 3..]
+                .split_once('=')
+                .map_or("", |(pattern, _)| pattern);
+            pattern
+                .split(|c: char| !identifier(c))
+                .filter(|token| *token == name)
+                .count()
+        })
+        .sum()
+}
+
+#[test]
+fn stream_source_guard_pins_real_admission_and_rejects_early_dispatch_or_facade_bait() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+            .expect("actual streamed-tool admission owner");
+    validate_stream_source_owner(&source).expect("real receipt-before-IO admission");
+    let dispatch = "let future = self.scope.registry.dispatch_stream_intent_captured(intent);";
+    assert!(source.contains(dispatch));
+    let early = source.replace(dispatch, "").replace(
+        "        let source = match &tickets.tool {",
+        &format!("        {dispatch}\n        let source = match &tickets.tool {{"),
+    );
+    for broken in [
+        early,
+        source.replace("impl<'a> StreamToolAdmission<'a> {", "impl Agent {"),
+        source.replace("    fn admit(", "    #[cfg(any())]\n    fn admit("),
+        source.replace("self.journal.open_tool(", "self.journal.undurable_tool("),
+        source.replace(".append_ready(", ".uncommitted_ready("),
+        source.replace("if !pure {", "if false {"),
+        source.replace("proposal.intent.purity == Purity::Pure", "true"),
+        source.replace("        if !pure {\n            let effect", "        let (pure,) = (true,);\n        if !pure {\n            let effect"),
+        source.replace("        let source = match &tickets.tool {", "        let (tickets,) = (EarlyHookEffectTickets::default(),);\n        let source = match &tickets.tool {"),
+        source.replace(
+            "Some(ticket) => ticket.intent_sequence(),",
+            "Some(_) => Seq(1),",
+        ),
+        source.replace("self.journal.open_tool(", "self.journal.undurable_tool(")
+            + "\n// tickets.tool = Some(self.journal.open_tool(\n",
+    ] {
+        assert!(validate_stream_source_owner(&broken).is_err());
+    }
+}
+
+#[test]
+fn verifier_source_guard_tracks_the_actual_ticket_owner_and_rejects_facade_or_literal_bait() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+            .expect("real production verifier owner");
+    validate_verifier_source_owner(&source).expect("actual optional verifier owner");
+    let call = "let dispatch = self.dispatch_verify_task(command, Some(&task)).await;";
+    assert!(source.contains(call));
+    for broken in [
+        source.replace("impl StrongVerificationGate<'_> {", "#[documentary]\nimpl StrongVerificationGate<'_> {"),
+        source.replace("use super::strong_verification::StrongVerificationGate;", "#[cfg(any())]\n\nuse super::strong_verification::StrongVerificationGate;"),
+        source.replace("impl StrongVerificationGate<'_> {", "#[cfg(any())]\n\nimpl StrongVerificationGate<'_> {"),
+        source.replace("    pub(super) async fn run_verify(", "    #[cfg_attr(any(), allow(dead_code))]\n    pub(super) async fn run_verify("),
+        source.replace("        let ticket = self.journal.open(", "        #[cfg(any())]\n        let ticket = self.journal.open("),
+        source.replace("let ticket = self.journal.open(", "let escaped = self.dispatch_verify_task(command, None).await; let ticket = self.journal.open("),
+        source.replace(call, "let dispatch = self.dispatch_verify_task(command, None).await;"),
+        source.replace("self.journal.settle(ticket, settlement)?;", "task.settled(known_terminal, &verdict, observed); self.journal.settle(ticket, settlement)?;"),
+        source.replace("impl StrongVerificationGate<'_> {", "impl Agent {"),
+        source.replace("use super::strong_verification::StrongVerificationGate;", "use evil::StrongVerificationGate;"),
+        source.replace("self.journal.open(", "self.journal.open_without_commit("),
+        source.replace("    pub(super) async fn run_verify(", "    #[cfg(test)]\n    pub(super) async fn run_verify("),
+    ] {
+        assert!(validate_verifier_source_owner(&broken).is_err());
+    }
+    let no_ticket = source.replace(
+        "let ticket = self.journal.open(",
+        "let ticket = self.journal.not_a_durable_open(",
+    );
+    let bait = no_ticket.replace("let class = effect_class::EffectClass::Verify;", "let bait = r###\"let ticket = self.journal.open(\"###; let class = effect_class::EffectClass::Verify;");
+    assert!(
+        validate_verifier_source_owner(&bait).is_err(),
+        "raw literal cannot claim a durable ticket"
+    );
+    assert!(!verifier_primitive_owner(
+        ".run_bounded_verify_observed(",
+        std::path::Path::new("crates/cli/src/runtime/verification.rs"),
+        "dispatch_verify_task"
+    ));
+    assert!(!verifier_primitive_owner(
+        ".dispatch_verify_task(",
+        std::path::Path::new("crates/cli/src/runtime/verification_execution.rs"),
+        "dispatch_verify"
+    ));
+}
+
 #[test]
 fn no_effect_producing_call_site_bypasses_the_boundary() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("kernel is two directories below the repository root");
+    let verifier_source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+            .expect("actual verifier execution owner must be readable");
+    validate_verifier_source_owner(&verifier_source)
+        .expect("actual verifier owner must retain ticket/task/dispatch/terminal order");
+    let stream_source =
+        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+            .expect("actual streamed-tool admission owner must be readable");
+    validate_stream_source_owner(&stream_source)
+        .expect("actual streamed tool must retain its decision and durable receipt before IO");
     let mut violations = Vec::new();
     let mut found: BTreeMap<&str, usize> = BTreeMap::new();
 
@@ -925,7 +1699,8 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
         let relative = path.strip_prefix(root).unwrap_or(&path).display();
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("kernel source {relative} must be readable: {error}"));
-        let lines = production_lines(&source);
+        let executable = executable_source(&source);
+        let lines = production_lines(&executable);
         let functions = enclosing_functions(&lines);
         for (number, line) in &lines {
             // A doc comment naming a primitive is documentation, not a dispatch.
@@ -941,11 +1716,28 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
                     .get(number)
                     .map(String::as_str)
                     .unwrap_or("<file scope>");
-                if !primitive.allowed_in.contains(&enclosing) {
+                let exact_verifier_owner = verifier_primitive_owner(
+                    primitive.needle,
+                    path.strip_prefix(root)
+                        .expect("effect source is in this workspace"),
+                    enclosing,
+                );
+                let owner = path
+                    .strip_prefix(root)
+                    .expect("effect owner is in the workspace");
+                if !primitive
+                    .owners
+                    .iter()
+                    .any(|(expected_path, expected_function)| {
+                        owner == std::path::Path::new(expected_path)
+                            && enclosing == *expected_function
+                    })
+                    || !exact_verifier_owner
+                {
                     violations.push(format!(
                         "{relative}:{number} dispatches `{}` inside `{enclosing}`, which is not one \
                          of {:?}. {}",
-                        primitive.needle, primitive.allowed_in, primitive.guidance
+                        primitive.needle, primitive.owners, primitive.guidance
                     ));
                 }
             }
@@ -980,11 +1772,15 @@ fn every_effect_class_is_reachable_from_a_dispatch_site() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("kernel is two directories below the repository root");
-    let production = runtime_source_paths(root)
+    let runtime = runtime_source_paths(root);
+    let tests = test_only_source_paths(&runtime);
+    let production = runtime
         .into_iter()
+        .filter(|path| !tests.contains(path))
         .map(|path| std::fs::read_to_string(path).expect("runtime source"))
         .map(|source| {
-            production_lines(&source)
+            let executable = executable_source(&source);
+            production_lines(&executable)
                 .into_iter()
                 .map(|(_, line)| line)
                 .collect::<Vec<_>>()

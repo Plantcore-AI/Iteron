@@ -24,6 +24,7 @@ pub(crate) struct RouteLimits {
 impl RouteLimits {
     /// Human rendering that never prints a raw `Option` debug: `None` is a policy statement
     /// ("no ceiling"), not a Rust value an operator should have to read.
+    #[cfg(test)]
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         vec![
             ("max_turns", self.max_turns.to_string()),
@@ -68,6 +69,16 @@ pub(crate) struct RouteView {
 }
 
 impl RouteView {
+    /// Strip source locators and endpoint path/userinfo before a view crosses into presentation.
+    pub(crate) fn presentation_only(mut self) -> Self {
+        self.api_root = status_api_root(&self.api_root);
+        self.blocked_reason = self
+            .blocked_reason
+            .as_deref()
+            .map(|reason| status_reason(reason, &self.credential));
+        self.credential = status_credential(&self.credential);
+        self
+    }
     /// The view before a route exists. Used only as the pre-attach value of a frontend's field;
     /// the composition root replaces it with the resolved route before the first frame.
     pub fn unresolved() -> Self {
@@ -141,12 +152,6 @@ impl RouteView {
             }),
             limits,
         }
-    }
-
-    /// Re-resolve for a new `(provider, model)` while keeping the run's effective limits. `/model`
-    /// uses this so a picker choice updates every display through the same one construction.
-    pub fn reselect(&self, directory: &ProviderDirectory, selection: &ModelSelection) -> Self {
-        Self::resolve(directory, selection, self.limits.clone())
     }
 
     /// `provider/model` for the statusline, with the vendor path prefix trimmed off the model.

@@ -1,4 +1,6 @@
 use super::*;
+use iteron_protocol::Block;
+use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
 
 const TOKEN_CALIBRATION_FILE: &str = "token-calibration-v1.json";
 const TOKEN_CALIBRATION_MAX_BYTES: u64 = 64 * 1024;
@@ -113,22 +115,10 @@ fn tool_projection_task(task: &str, posture: ToolProjectionPosture) -> &str {
     }
 }
 
-/// Active-task token count charged when the transcript holds no user text message to attribute.
-const NO_ACTIVE_TASK_TOKENS: usize = 0;
-
-/// Attachment token count charged when the turn carries no input-file evidence.
-const NO_ATTACHMENT_TOKENS: usize = 0;
-
-fn classify_active_task_attachments(
-    active_task_with_embedded_file: usize,
-    file_tokens: usize,
-    image_tokens: usize,
-) -> (usize, usize) {
-    let embedded_file_tokens = file_tokens.min(active_task_with_embedded_file);
-    (
-        active_task_with_embedded_file.saturating_sub(embedded_file_tokens),
-        embedded_file_tokens.saturating_add(image_tokens),
-    )
+#[cfg(test)]
+fn classify_active_task_attachments(active: usize, file: usize, image: usize) -> (usize, usize) {
+    let file = file.min(active);
+    (active.saturating_sub(file), file.saturating_add(image))
 }
 
 /// Per-submission guard for the component-budget recovery bridge. A successful recovery rearms
@@ -186,6 +176,28 @@ pub(super) struct TurnResultProjectionBudget {
 }
 
 impl TurnResultProjectionBudget {
+    pub(super) fn from_component_allowances(
+        policy: &iteron_ctx::ContextBudgetPolicy,
+        inspection: ContextBudgetInspection,
+        ordinary_calls: usize,
+        lsp_calls: usize,
+        visible_bytes: usize,
+    ) -> Self {
+        Self {
+            tool_result_bytes: policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::ToolResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
+                ordinary_calls,
+                visible_bytes,
+            ),
+            lsp_result_bytes: policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::LspResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::LspResults),
+                lsp_calls,
+                visible_bytes,
+            ),
+        }
+    }
     pub(super) fn visible_bytes_for(self, tool_name: &str) -> usize {
         match iteron_ctx::result_budget_class(tool_name) {
             iteron_ctx::ContextBudgetClass::LspResults => self.lsp_result_bytes,
@@ -195,6 +207,14 @@ impl TurnResultProjectionBudget {
 }
 
 impl ContextBudgetInspection {
+    pub(super) fn from_policy(
+        usage: iteron_ctx::ContextComponentUsage,
+        policy: iteron_ctx::ContextBudgetPolicy,
+    ) -> Self {
+        let violation = policy.admit_components(&usage).err();
+        Self { usage, violation }
+    }
+
     pub(super) fn violation(self) -> Option<iteron_ctx::ContextBudgetViolation> {
         self.violation
     }
@@ -244,8 +264,18 @@ impl ContextBudgetRecoveryStage {
 }
 
 impl Agent {
+    pub(super) fn begin_user_memory_decision(&mut self) {
+        if self.memory_workspace.is_none() {
+            return;
+        }
+        self.context_refresh_requested = true;
+        self.injected = None;
+        self.injected_trust = None;
+        self.context_source_evidence.clear();
+        self.registry.invalidate_pure_cache();
+    }
     pub(super) fn token_calibration_route(&self) -> (&str, &str) {
-        self.selected_route.as_ref().map_or_else(
+        self.provider_selection.selected().map_or_else(
             || {
                 (
                     self.provider.provider_instance_id().unwrap_or("unbound"),
@@ -261,42 +291,23 @@ impl Agent {
         )
     }
 
-    pub(super) fn calibrated_context_estimate(
-        &self,
-        mut estimate: ContextEstimate,
-    ) -> ContextEstimate {
-        let (provider_id, model_id) = self.token_calibration_route();
-        let conservative = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
-        let calibrated =
-            self.token_calibration
-                .calibrated_estimate(provider_id, model_id, conservative);
-        let calibrated = usize::try_from(calibrated).unwrap_or(usize::MAX);
-        let baseline = estimate.total_tokens;
-        if baseline == 0 || calibrated == baseline {
-            return estimate;
-        }
-        let scale = |value: usize| {
-            value
-                .saturating_mul(calibrated)
-                .saturating_add(baseline.saturating_sub(1))
-                / baseline
-        };
-        estimate.system_tokens = scale(estimate.system_tokens);
-        estimate.tool_tokens = scale(estimate.tool_tokens);
-        estimate.conversation_tokens = scale(estimate.conversation_tokens);
-        estimate.tool_result_tokens = scale(estimate.tool_result_tokens);
-        estimate.lsp_result_tokens = scale(estimate.lsp_result_tokens);
-        estimate.transcript_tokens = estimate
-            .conversation_tokens
-            .saturating_add(estimate.tool_result_tokens)
-            .saturating_add(estimate.lsp_result_tokens);
-        estimate.framing_tokens = scale(estimate.framing_tokens);
-        estimate.total_tokens = estimate
-            .system_tokens
-            .saturating_add(estimate.tool_tokens)
-            .saturating_add(estimate.transcript_tokens)
-            .saturating_add(estimate.framing_tokens);
-        estimate
+    pub(super) fn request_accounting(&self) -> request_accounting::RequestAccounting {
+        request_accounting::RequestAccounting::new(
+            self.context_source_evidence.segments(),
+            self.context_budget_policy,
+            self.token_calibration.clone(),
+            self.token_calibration_route(),
+            self.input_file_evidence,
+            self.input_image_evidence,
+        )
+    }
+
+    pub(super) fn calibrated_context_estimate(&self, estimate: ContextEstimate) -> ContextEstimate {
+        request_accounting::calibrated_estimate(
+            &self.token_calibration,
+            self.token_calibration_route(),
+            estimate,
+        )
     }
 
     /// Add the provider-visible image reserve after text calibration. Image-bearing turns do not
@@ -336,16 +347,6 @@ impl Agent {
             .push_back((turn, u64::try_from(tokens).unwrap_or(u64::MAX)));
     }
 
-    pub(super) fn take_token_estimate_baseline(&mut self, turn: TurnId) -> Option<u64> {
-        let index = self
-            .token_estimate_baselines
-            .iter()
-            .position(|(candidate, _)| *candidate == turn)?;
-        self.token_estimate_baselines
-            .remove(index)
-            .map(|(_, tokens)| tokens)
-    }
-
     pub(super) fn persist_token_calibration(&self) -> bool {
         if self.runtime_state_dir.as_os_str().is_empty() {
             return false;
@@ -356,22 +357,14 @@ impl Agent {
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes() {
             return false;
         }
-        let runtime_state_dir = self.runtime_state_dir.clone();
-        let emitter = self.lifecycle_emitter.clone();
-        let correlation = self.lifecycle_correlation(Some(TurnId(self.seq_turn)));
-        super::turn_maintenance::enqueue(move || {
-            if !persist_calibration_snapshot(runtime_state_dir, bytes)
-                && let Some(emitter) = emitter
-            {
-                let _ = emitter.emit(
-                    "context.tokenizer.error_calculated",
-                    correlation,
-                    LifecyclePayload {
-                        outcome_code: Some("calibration_persist_failed".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
+        let target = self.runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
+        self.advisory_maintenance_owner().is_some_and(|owner| {
+            owner.enqueue(
+                MaintenanceKindV1::TokenCalibration,
+                self.seq_turn,
+                &bytes,
+                &target,
+            )
         })
     }
 
@@ -385,103 +378,8 @@ impl Agent {
         messages: &[iteron_protocol::Message],
         estimate: &iteron_ctx::ContextEstimate,
     ) -> iteron_ctx::ContextComponentUsage {
-        let mut instruction_tokens = 0usize;
-        let mut memory_tokens = 0usize;
-        let mut injected_task_tokens = 0usize;
-        for segment in &self.context_source_evidence {
-            if !matches!(
-                segment.decision,
-                iteron_ctx::ContextDecision::Selected
-                    | iteron_ctx::ContextDecision::Truncated
-                    | iteron_ctx::ContextDecision::Compacted
-            ) {
-                continue;
-            }
-            let tokens = usize::try_from(segment.estimated_tokens).unwrap_or(usize::MAX);
-            match segment.source_class {
-                iteron_ctx::ContextSourceClass::OperatorInstructions
-                | iteron_ctx::ContextSourceClass::ProjectInstructions
-                | iteron_ctx::ContextSourceClass::DirectoryInstructions => {
-                    instruction_tokens = instruction_tokens.saturating_add(tokens);
-                }
-                iteron_ctx::ContextSourceClass::UserMemory
-                | iteron_ctx::ContextSourceClass::WorkspaceMemory
-                | iteron_ctx::ContextSourceClass::SessionMemory => {
-                    memory_tokens = memory_tokens.saturating_add(tokens);
-                }
-                iteron_ctx::ContextSourceClass::Environment
-                | iteron_ctx::ContextSourceClass::WorkspaceOutline
-                | iteron_ctx::ContextSourceClass::SkillIndex
-                | iteron_ctx::ContextSourceClass::SkillReference
-                | iteron_ctx::ContextSourceClass::WorkflowEvidence
-                | iteron_ctx::ContextSourceClass::SubagentEvidence
-                | iteron_ctx::ContextSourceClass::Steering
-                | iteron_ctx::ContextSourceClass::QueuedSubmission => {
-                    injected_task_tokens = injected_task_tokens.saturating_add(tokens);
-                }
-                _ => {}
-            }
-        }
-
-        let active_task_with_attachments = messages
-            .iter()
-            .rfind(|message| {
-                message.role == iteron_protocol::Role::User
-                    && message
-                        .content
-                        .iter()
-                        .any(|block| matches!(block, iteron_protocol::Block::Text { .. }))
-            })
-            .map(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(|block| match block {
-                        iteron_protocol::Block::Text { text } => {
-                            Some(self.context_estimator.estimate_text(text))
-                        }
-                        _ => None,
-                    })
-                    .fold(0usize, usize::saturating_add)
-            })
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.context_runtime.no_active_task_tokens",
-                NO_ACTIVE_TASK_TOKENS,
-            ));
-        let file_attachment_tokens = self
-            .input_file_evidence
-            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.context_runtime.no_attachment_tokens",
-                NO_ATTACHMENT_TOKENS,
-            ))
-            .min(active_task_with_attachments);
-        let image_attachment_tokens = self
-            .input_image_evidence
-            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(NO_ATTACHMENT_TOKENS);
-        let (active_task_tokens, attachment_tokens) = classify_active_task_attachments(
-            active_task_with_attachments,
-            file_attachment_tokens,
-            image_attachment_tokens,
-        );
-        let classified_system = instruction_tokens
-            .saturating_add(memory_tokens)
-            .saturating_add(injected_task_tokens);
-
-        iteron_ctx::ContextComponentUsage {
-            stable_prefix_tokens: estimate.system_tokens.saturating_sub(classified_system),
-            instruction_tokens,
-            task_context_tokens: injected_task_tokens.saturating_add(active_task_tokens),
-            memory_tokens,
-            transcript_tokens: estimate
-                .conversation_tokens
-                .saturating_sub(active_task_with_attachments),
-            attachment_tokens,
-            tool_schema_tokens: estimate.tool_tokens,
-            tool_result_tokens: estimate.tool_result_tokens,
-            lsp_result_tokens: estimate.lsp_result_tokens,
-        }
+        self.request_accounting()
+            .components(&self.context_estimator, messages, estimate)
     }
 
     /// Inspect the exact source-separated projection used by provider admission. The policy's
@@ -497,6 +395,7 @@ impl Agent {
         ContextBudgetInspection { usage, violation }
     }
 
+    #[cfg(test)]
     /// Allocate the remaining transcript-owned result budgets fairly across the calls emitted in
     /// this model turn. This runs after the provider terminal, when the complete call set is known,
     /// but before any result terminal is recorded or appended to the next request.
@@ -509,46 +408,15 @@ impl Agent {
             tool_output_spill::DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
             |store| store.visible_threshold_bytes(),
         );
-        let (ordinary, lsp) = calls
-            .iter()
-            .fold((0usize, 0usize), |(ordinary, lsp), call| {
-                if iteron_ctx::result_budget_class(&call.name)
-                    == iteron_ctx::ContextBudgetClass::LspResults
-                {
-                    (ordinary, lsp.saturating_add(1))
-                } else {
-                    (ordinary.saturating_add(1), lsp)
-                }
-            });
-        TurnResultProjectionBudget {
-            tool_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
-                iteron_ctx::ContextBudgetClass::ToolResults,
-                inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
-                ordinary,
-                configured_max,
-            ),
-            lsp_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
-                iteron_ctx::ContextBudgetClass::LspResults,
-                inspection.component_tokens(iteron_ctx::ContextBudgetClass::LspResults),
-                lsp,
-                configured_max,
-            ),
+        super::tool_result_projection::ToolResultProjectionPolicy {
+            budget: &self.context_budget_policy,
+            visible_bytes: configured_max,
+            inspection,
         }
+        .calculate(calls)
     }
 
-    pub(super) fn observe_tool_result_projection(&self, turn: TurnId, visible_bytes: usize) {
-        self.lifecycle_event(
-            "context.source.truncated",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(1),
-                magnitude: Some(u64::try_from(visible_bytes).unwrap_or(u64::MAX)),
-                reason_code: Some("tool_result_pressure_projection".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-    }
-
+    #[cfg(test)]
     /// Standard payload for component-triggered compaction. `magnitude` is the measured usage of
     /// the breached component at this stage and `count` is its fixed ceiling. Paired pre/post
     /// events therefore expose before/after tokens without recording transcript content.
@@ -562,24 +430,6 @@ impl Agent {
             magnitude: Some(u64::try_from(observed_tokens).unwrap_or(u64::MAX)),
             ..LifecyclePayload::default()
         }
-    }
-
-    /// Emit one non-gating recovery transition. `Considered` callers must use
-    /// `brokered_lifecycle_gate` with [`Self::context_budget_recovery_payload`] instead so Hooks
-    /// retain their existing ability to deny compaction. The terminal transition attributes
-    /// success/failure to the component budget without duplicating compaction's own terminal event.
-    pub(super) fn emit_context_budget_recovery_event(
-        &self,
-        turn: TurnId,
-        stage: ContextBudgetRecoveryStage,
-        violation: &iteron_ctx::ContextBudgetViolation,
-        observed_tokens: usize,
-    ) {
-        self.lifecycle_event(
-            stage.event_id(),
-            Some(turn),
-            Self::context_budget_recovery_payload(violation, observed_tokens),
-        );
     }
 
     /// Bind attachments to one admitted top-level submission. A route without verified image
@@ -680,7 +530,9 @@ impl Agent {
     /// resume) — it does NOT touch the disk, so the stable prefix is byte-stable across a run and a
     /// replay reproduces instructions, memory, and skills exactly.
     pub(super) fn effective_system(&self) -> String {
-        iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+        let mut system = iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref());
+        self.task_plan.append_context(&mut system);
+        system
     }
 
     /// The tool set advertised to the model for this turn.
@@ -970,275 +822,9 @@ impl Agent {
         Ok(())
     }
 
-    pub(super) fn proposed_durable_frontend_context(
-        &self,
-        genesis_environment: Option<&DurableEnvironmentContext>,
-    ) -> Option<DurableInstructionContext> {
-        let environment = genesis_environment.cloned().or_else(|| {
-            self.environment_context
-                .as_ref()
-                .map(|(text, trust)| DurableEnvironmentContext {
-                    text: text.clone(),
-                    trust: *trust,
-                })
-        });
-        match &self.instruction_context {
-            Some((text, trust)) => Some(DurableInstructionContext {
-                text: text.clone(),
-                trust: *trust,
-                environment,
-            }),
-            None if environment.is_some() => Some(DurableInstructionContext {
-                text: String::new(),
-                trust: Trust::Trusted,
-                environment,
-            }),
-            None => None,
-        }
-    }
-
     pub(super) fn clear_frontend_context_proposals(&mut self) {
         self.instruction_context = None;
         self.environment_context = None;
-    }
-
-    /// REC-INJECT (R5-review item 1; ADR-011 context seam). Resolve the complete context segment for
-    /// this run EXACTLY ONCE and record it, so replay re-materializes context from the record, never
-    /// from live instruction/memory/skill files. Idempotent: a follow-up keeps the cached segment.
-    pub(super) fn resolve_injection(
-        &mut self,
-        turn: TurnId,
-        task: &str,
-    ) -> Result<(), KernelError> {
-        if self.injected.is_some() {
-            return Ok(());
-        }
-        let resolution_started = Instant::now();
-        // Resume/replay: complete durable instruction bytes are authoritative. A legacy event has
-        // only memory/skills in `text`; combine it with the live proposal once, append an upgraded
-        // event before provider admission, and use that event on every later resume.
-        let recorded = self.recorded_context_history()?;
-        if !self.context_refresh_requested
-            && let Some((context_text, context_trust, durable_instructions)) = recorded.injection
-        {
-            if let Some(instructions) = durable_instructions {
-                let (text, trust) = iteron_ctx::assemble_recorded_context(
-                    &instructions,
-                    context_text,
-                    context_trust,
-                );
-                self.observe_recorded_context(turn, &text, trust);
-                self.injected = Some(text);
-                self.injected_trust = Some(trust);
-                self.clear_frontend_context_proposals();
-                return Ok(());
-            }
-            if let Some(instructions) =
-                self.proposed_durable_frontend_context(recorded.genesis_environment.as_ref())
-            {
-                self.emit_durable(
-                    turn,
-                    EventKind::ContextInjection {
-                        text: context_text.clone(),
-                        trust: context_trust,
-                        instructions: Some(instructions.clone()),
-                    },
-                )?;
-                let (text, trust) = iteron_ctx::assemble_recorded_context(
-                    &instructions,
-                    context_text,
-                    context_trust,
-                );
-                self.observe_recorded_context(turn, &text, trust);
-                self.injected = Some(text);
-                self.injected_trust = Some(trust);
-                self.clear_frontend_context_proposals();
-                return Ok(());
-            }
-            self.observe_recorded_context(turn, &context_text, context_trust);
-            self.injected = Some(context_text);
-            self.injected_trust = Some(context_trust);
-            self.clear_frontend_context_proposals();
-            return Ok(());
-        }
-
-        let durable_instructions = self.proposed_durable_frontend_context(
-            (!self.context_refresh_requested)
-                .then_some(recorded.genesis_environment.as_ref())
-                .flatten(),
-        );
-        let mut context_text = String::new();
-        let mut context_sources = Vec::with_capacity(2);
-
-        if let Some(ws) = self.memory_workspace.clone() {
-            // The frontend already owns instruction/environment gathering. Preserve that durable
-            // split while routing the remaining lexical-memory + skill-index selection through
-            // the pure frozen slot and the injected world adapter.
-            let context_opportunity =
-                self.begin_policy_decision(policy_evidence::CONTEXT_SLOT, Some(turn))?;
-            let resolved = match strategy_runtime::resolve_live_context(
-                self.context_strategy.as_ref(),
-                self.memory_strategy.as_ref(),
-                self.context_port.as_ref(),
-                strategy_runtime::LiveContextRequest {
-                    workspace: &ws,
-                    home_dir: self.context_home_dir.as_deref(),
-                    dependency_skill_dirs: &self.dependency_skill_dirs,
-                    turn,
-                    task,
-                    memory_benchmark_scope: self.memory_benchmark_scope,
-                    materialization: self.context_materialization_policy,
-                },
-            ) {
-                Ok(resolved) => {
-                    self.append_policy_decision(
-                        context_opportunity,
-                        policy_evidence::PolicyDecisionDraft::selected(
-                            policy_evidence::CONTEXT_SLOT,
-                            &[iteron_protocol::PolicyActionV1::ContextMaterialize],
-                            iteron_protocol::PolicyActionV1::ContextMaterialize,
-                            "iteron:context-features-v1",
-                            &(&resolved.policy_observation, &resolved.policy_plan),
-                            &"world_reads_remain_in_context_port",
-                        )?,
-                    )?;
-                    resolved
-                }
-                Err(error) => {
-                    self.append_policy_decision(
-                        context_opportunity,
-                        policy_evidence::PolicyDecisionDraft::abstained(
-                            policy_evidence::CONTEXT_SLOT,
-                            &[iteron_protocol::PolicyActionV1::ContextMaterialize],
-                            "iteron:context-features-v1",
-                            &(turn.0, task.len()),
-                            &"context_failure_is_fail_closed",
-                        )?,
-                    )?;
-                    return Err(KernelError::ContextResolution(error));
-                }
-            };
-            if let Some(audit) = &resolved.memory_audit {
-                use iteron_ctx::MemoryRecallDisposition;
-                if audit.disposition != MemoryRecallDisposition::NotInvokedScopeDenied {
-                    let memory_opportunity =
-                        self.begin_policy_decision(policy_evidence::MEMORY_SLOT, Some(turn))?;
-                    let eligible = [
-                        iteron_protocol::PolicyActionV1::MemoryNoRecall,
-                        iteron_protocol::PolicyActionV1::MemoryRecall,
-                    ];
-                    let features = (&audit.observation, &audit.selected, &audit.scores_ppm);
-                    let draft = match audit.disposition {
-                        MemoryRecallDisposition::Selected => {
-                            policy_evidence::PolicyDecisionDraft::selected(
-                                policy_evidence::MEMORY_SLOT,
-                                &eligible,
-                                if audit.selected.is_empty() {
-                                    iteron_protocol::PolicyActionV1::MemoryNoRecall
-                                } else {
-                                    iteron_protocol::PolicyActionV1::MemoryRecall
-                                },
-                                "iteron:memory-features-v1",
-                                &features,
-                                &"selection_is_bounded_to_gathered_candidates",
-                            )?
-                        }
-                        MemoryRecallDisposition::Abstained => {
-                            policy_evidence::PolicyDecisionDraft::abstained(
-                                policy_evidence::MEMORY_SLOT,
-                                &eligible,
-                                "iteron:memory-features-v1",
-                                &features,
-                                &"invalid_or_refused_memory_plans_inject_no_bodies",
-                            )?
-                        }
-                        MemoryRecallDisposition::NotInvokedScopeDenied => unreachable!(
-                            "outer scope denial is filtered before opening an opportunity"
-                        ),
-                    };
-                    self.append_policy_decision(memory_opportunity, draft)?;
-                }
-            }
-            let memory_benchmark_scope = self.memory_benchmark_scope;
-            self.observe_resolved_context(decision_observability::ResolvedContextObservation {
-                turn,
-                task,
-                segments: &resolved.segments,
-                materialization: &resolved.materialization_audit,
-                memory_audit: resolved.memory_audit.as_ref(),
-                memory_benchmark_scope: memory_benchmark_scope.as_ref(),
-                benchmark_memory_rejections: resolved.benchmark_memory_rejections,
-                elapsed_us: elapsed_us(resolution_started),
-            });
-            if !resolved.text.is_empty() {
-                context_sources.push(resolved.governing_trust);
-                context_text.push_str(&resolved.text);
-            }
-        }
-
-        let context_trust =
-            Trust::governing(context_sources).unwrap_or(if context_text.is_empty() {
-                Trust::Trusted
-            } else {
-                // Non-empty bytes without provenance are a bug, never Trusted by default.
-                Trust::Untrusted
-            });
-        let should_record = self.context_refresh_requested
-            || durable_instructions.is_some()
-            || !context_text.is_empty();
-        if should_record {
-            self.emit_durable(
-                turn,
-                EventKind::ContextInjection {
-                    text: context_text.clone(),
-                    trust: context_trust,
-                    instructions: durable_instructions.clone(),
-                },
-            )?;
-        }
-        let (text, trust) = match &durable_instructions {
-            Some(instructions) => {
-                let (text, trust) = iteron_ctx::assemble_recorded_context(
-                    instructions,
-                    context_text,
-                    context_trust,
-                );
-                (text, Some(trust))
-            }
-            None => (context_text, should_record.then_some(context_trust)),
-        };
-        self.injected = Some(text);
-        self.injected_trust = trust;
-        self.context_refresh_requested = false;
-        self.clear_frontend_context_proposals();
-        Ok(())
-    }
-
-    /// The last `ContextInjection` plus the latest inherited genesis environment snapshot, if any.
-    /// Reads one fork-aware logical projection, never live instruction, memory, clock, or Git
-    /// sources. Genesis is the crash-safe fallback only until ContextInjection becomes durable;
-    /// any record/replay failure propagates instead of reopening a live-context fallback.
-    pub(super) fn recorded_context_history(&self) -> Result<RecordedContextHistory, KernelError> {
-        // Route through the fork-aware loader (not a raw child-file replay) so a FORKED run finds
-        // the parent's recorded ContextInjection instead of silently re-deriving from live disk —
-        // the exact disk re-derivation REC-INJECT exists to prevent (code review).
-        let events = replay_logical_rollout(self.rollout.path())?;
-        let mut history = RecordedContextHistory::default();
-        for e in events {
-            match e.kind {
-                EventKind::RunStart {
-                    environment: Some(environment),
-                    ..
-                } => history.genesis_environment = Some(environment),
-                EventKind::ContextInjection {
-                    text,
-                    trust,
-                    instructions,
-                } => history.injection = Some((text, trust, instructions)),
-                _ => {}
-            }
-        }
-        Ok(history)
     }
 
     /// Coarse ADR-007 taint projection for the context that can influence the next proposal.
@@ -1248,6 +834,7 @@ impl Agent {
         let tool_trust = messages.iter().flat_map(|message| {
             message.content.iter().filter_map(|block| match block {
                 Block::ToolResult(result) => Some(result.trust),
+                Block::ToolImage(image) => Some(image.trust()),
                 _ => None,
             })
         });
@@ -1261,46 +848,10 @@ impl Agent {
     }
 }
 
-// Calibration is advisory and reproducible from future provider observations. Its disk writes
-// cannot delay input readiness; the bounded FIFO preserves the order of submitted snapshots.
-fn persist_calibration_snapshot(runtime_state_dir: std::path::PathBuf, bytes: Vec<u8>) -> bool {
-    use std::io::Write as _;
-    if std::fs::create_dir_all(&runtime_state_dir).is_err() {
-        return false;
-    }
-    let target = runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let temporary = runtime_state_dir.join(format!(
-        ".token-calibration-v1.{}.{}.tmp",
-        std::process::id(),
-        nonce
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let Ok(mut file) = options.open(&temporary) else {
-        return false;
-    };
-    let written = file
-        .write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .is_ok();
-    drop(file);
-    if !written || std::fs::rename(&temporary, &target).is_err() {
-        let _ = std::fs::remove_file(&temporary);
-        return false;
-    }
-    std::fs::File::open(&runtime_state_dir)
-        .and_then(|directory| directory.sync_all())
-        .is_ok()
-}
+pub(super) const IMAGE_INPUT_UNSUPPORTED_REASON: &str = "the selected model has no verified image-input capability, so attachments were not submitted; \
+if this route does accept images, declare it with `image_input: true` under that model in \
+`model_capabilities` in your config";
+pub(super) const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
 
 #[cfg(test)]
 mod context_budget_recovery_tests {

@@ -1,0 +1,278 @@
+# Resident public client controls
+
+The authenticated headless transport and interactive TUI address the same resident control
+owners. A control reply is a result from that owner; an SQ submission receipt remains a queue
+receipt and does not prove an authorized effect. Product contract version 2 adds durable,
+idempotent TurnStart admission. Generic SQ submissions retain their existing protocol.
+
+## TurnStart admission V2
+
+Negotiate `product_contract_version: 2` in the authenticated Hello. The existing `product_v1`
+control wrapper and read/event tags remain unchanged; `turn_start` now requires `request_key`,
+`thread_id` and `text`. An unkeyed start or an older product-contract handshake is rejected.
+
+Generate one UUIDv7 for each new start intent and reuse its complete key when retrying that
+intent. The canonical key is 101 ASCII bytes: lowercase UUIDv7, a colon, then lowercase SHA-256
+hex of `UUID raw 16 bytes || thread byte length u64 big-endian || exact thread UTF-8 bytes ||
+text byte length u64 big-endian || exact text UTF-8 bytes`. Text is not normalized or trimmed
+for identity. A changed thread or text with the original key returns `request_conflict` before
+time, capacity or rate checks. The key is an identity, not a credential or permission grant.
+
+`turn_start_receipt_v2` returns the request key, thread, state, `submission_id`, `run_id`,
+`turn_id` and `window_closed`. Pending and admission-unknown receipts have null identities.
+Only atomic durable admission proves a fixed identity; sequential or concurrent retries
+observe that identity without enqueuing or executing another turn. States are `pending`,
+`admitted`, `running`, `completed`, `interrupted`, `drained`, `budget_exhausted`, `stuck`,
+`failed`, `unknown` and `admission_unknown`. An unknown result never authorizes replay.
+Response loss or a service restart is recovered by retrying the original key and request;
+Answer text and detailed errors remain available through the existing thread/event reads.
+
+`turn_start_refused_v2` supplies `reason_code` and `definitely_unregistered`. Only a proven
+unregistered refusal permits the same intent to try admission again. Use a new UUIDv7 for an
+intentional new execution. Keys have a 30-minute window and five-minute future tolerance.
+The root/tenant authority retains at most 1,024 records, preserves unresolved thread occupancy,
+and persists its clock floor across cleanup and restart. Replies and lock waits have a five-second deadline,
+32 concurrent authority requests and a 64-per-second token bucket with burst 64. Capacity
+pressure preserves retained-key recovery; it never evicts an unexpired key to admit new work.
+Synchronous filesystem calls cannot be forcibly cancelled. Their ownership and concurrency
+remain bounded after a reply timeout, and a late admission cannot start fresh execution.
+
+## Permission prompts in an attached service
+
+The operator can select `iteron serve --client-approvals` to let authenticated compatible
+clients answer the existing permission prompts. This uses the same kernel decision owner as
+the local TUI. A connection, Hello or model output cannot enable this capability. The ordinary
+service and one-shot paths keep finite noninteractive refusal when a required approval is absent;
+explicit permission bypass retains its existing meaning.
+
+Product V1 reports the pending approval ID and the exact active turn. `approval_respond`
+requires both IDs and the authenticated thread. Its initial queue receipt does not prove the
+decision was applied. The later source-owned resolution settles the winning response; stale,
+duplicate and competing replies cannot grant a different turn. Interrupt and the admitted
+wall deadline cancel the same pending transaction. Detaching a terminal leaves the prompt with
+the independent service so another authorized client can answer before that deadline.
+
+## Compatibility and authority
+
+The kernel SQ/EQ version gate remains exact. A current client can request ordinary controls.
+An N-1 client can connect only with `"observation_only": true` in its authenticated Hello.
+The accepted Hello then includes `"client_access": "observe"`. Observation authority is fixed
+for that connection: sending a current-version Submit or mutation frame cannot upgrade it.
+Versions older than N-1 and future versions are refused. Bearer authorization runs before
+version diagnostics and capabilities are disclosed.
+
+Observers may request Product V1 reads, resident artifact reads, thread history reads/exports,
+job inventory/output pages, workflow inventory, MCP status, operator status and the turn-budget
+read. All mutation commands remain unavailable. Observers must ignore unknown event tags; an
+unknown control tag or field fails strict decoding. Control frames carry the version used in
+the authenticated Hello. Outbound frames advertise the server version.
+
+## Resident controls
+
+The existing effort, mode, capability-rule, compact and turn-budget controls are joined by:
+
+| Control tag | Resident owner |
+| --- | --- |
+| `set_tool_rule` | durable permission-policy transition |
+| `operator_status` | live provider/process/LSP/MCP/workflow owners and settled budget |
+| `workflows_list`, `workflows_cancel`, `workflows_resume` | session workflow supervisor |
+| `mcp_status`, `mcp_cancel`, `mcp_restart`, `mcp_stop` | attached MCP supervisors |
+| `memory_add`, `memory_update`, `memory_delete` | runtime memory Gate Hooks and effect owner |
+| `jobs_list`, `jobs_attach`, `jobs_write`, `jobs_stop`, `jobs_clean` | process supervisor |
+
+`set_tool_rule` takes a literal `tool` and `verdict` (`auto`, `ask`, `deny`). Names are 1–128
+ASCII bytes from `[A-Za-z0-9_.:-]`; a session retains at most 128 named rules. Operation names
+such as `bash:external` are exact names. Rules remain subject to Plan mode, capability ceilings
+and the runtime gate. The TUI uses `/permissions allow|ask|deny tool:NAME`; existing capability
+syntax remains available. Inventory is returned in the state reply's `permission_rules`.
+
+## Answer and finalization observations V1
+
+Send `{"type":"turn_publications_v1","command":{"type":"read","thread_id":"..."}}`.
+The reply contains a current-run snapshot of up to 256 recent content-free facts. Recovery is
+labelled `verified_record`, `unavailable` or `live_only`; the snapshot is bounded recent history.
+An exact authenticated thread mismatch is refused. The TUI reads this same snapshot through
+`/finalization`.
+
+`answer_available` names the earlier committed assistant Message after an actual final non-tool
+EndTurn. It does not claim the terminal succeeded, that every streamed byte was delivered, or
+that background maintenance finished. `turn_finalized` names the existing committed Done
+sequence and carries the closed runtime outcome and optional budget limit. Runtime turn IDs
+start at zero and are distinct from user-facing Product turn IDs. Their `source_seq` values are
+record sequences, independent of the transport replay cursor.
+
+Use `"type":"subscribe"` in that same command to opt into separate `turn_publication_v1`
+frames. The Subscribe reply is the recovery snapshot; deduplicate overlap by current run and
+record source sequence. The optional stream uses a 64-entry queue. A `turn_publication_gap`
+requires another Read to reconcile; it is never treated as successful delivery. These frames
+do not change the frozen legacy event/result cursor, and clients receive them only after an
+explicit subscription. RunEnded/result remains the separate resident input-readiness boundary.
+
+## History lifecycle V1
+
+Send `{"type":"thread_lifecycle_v1","command":{...}}`. Commands are `list`, `read`, `rename`,
+`pin`, `archive`, `export` and `delete`, with an exact `run_id` for per-thread operations. `list` takes a bounded opaque cursor and a page size
+of 1–100 (default 25); it reports an unavailable index or stale cursor explicitly. Requests never supply record
+store paths. The resident owner verifies the target's recorded tenant and canonical workspace
+before reading or changing presentation state. Another workspace or tenant is unavailable.
+Rename/pin/archive use the same presentation owner as the TUI session picker.
+
+Archive is reversible with `archived: false` and retains the journal. Permanent delete requires
+`confirm_permanent_erasure: true`, refuses the resident thread, active writers and retained fork
+ancestry/derivatives, and returns the existing durable erasure receipt. Permanent erasure has no
+undo. Its receipt supports crash recovery; recovery does not restore erased conversation bytes.
+Use archive when a session may need to be restored.
+
+Export returns verified, scrubbed JSON for one physical journal. Fork ancestry remains explicit
+in the genesis references. It refuses active writers, physical journals over 8 MiB, and export content
+over 1 MiB. This does not claim a recursively flattened fork export. TUI history mutations use
+the same controls: `/sessions rename RUN TITLE`, `archive RUN`, `unarchive RUN`, `pin RUN`,
+`unpin RUN`, `read RUN`, `export RUN`, and `delete RUN permanently`.
+
+## Persistent agent controls V1
+
+Send `{"type":"agents_v1","command":{...}}`. `enable` requests bounded capabilities, budgets,
+agent/mailbox capacities and parallelism. It contains no workspace path, actor identity or recovery
+evidence. The host derives its scope from the actual recorded owner and validates the requested
+envelope against immutable authority and current parent budgets. Ordinary sessions allocate no
+persistent controller until this explicit idle-boundary operation succeeds.
+
+`command` carries an exact `request_id` and the existing typed Spawn/SendMessage/FollowupTask/
+Steer/Interrupt/Close vocabulary. Other commands are `list`, `inspect`, `message_receipt` and
+`wait` (1–60,000 ms). The server binds authenticated ordinary control requests to Operator;
+model tools bind their own host AgentId. JSON cannot supply either authority. At most eight
+public controller operations are pending at once. Reads and controls remain usable while the
+parent turn is running; a bounded wait does not pause that parent turn. Observers can issue
+only the read commands.
+
+Acceptance receipts, mailbox delivery and provider request inclusion remain separate. `consumed`
+means the host included a message in a provider request, without claiming model comprehension.
+Steer/Interrupt target an exact incarnation/turn epoch; stale epochs are refused. Only host effect
+reconciliation can release RecoveryRequired executions.
+
+The TUI keeps `/agents` and `/agents definitions` for the pinned definition catalog. Live commands
+use `/agents live`, `enable TURNS TOKENS USD WALL_SECONDS`, `spawn PARENT TASK`, `inspect ID`,
+`send ID TEXT`, `followup ID TEXT`, `steer ID TEXT`, `interrupt ID`, `close ID [tree]`, `receipt ID`
+and `wait [REVISION] [MS]`. Spawn defaults to one read-only investigator turn inside the observed
+parent envelope; the host may refuse exhausted reservations. Inspect shows actual state and the
+latest bounded summary. Steering and interruption use the latest epoch observed in that view.
+
+## Captured inventory and model selection V1
+
+`inventory_v1` accepts a bounded query with `kind`, optional model `provider_id`, `offset` and
+`limit` (1–100). Kinds cover overview, providers, models, verified plugins, installed tools,
+hook event counts, pinned agents, captured skill metadata, effective checkpoint and permissions.
+Responses declare provenance, availability, total and next offset. Missing skill metadata before
+the context owner captures it, legacy V1 value reconstruction, and missing bootstrap evidence
+remain explicitly unavailable. Reads do not discover mutable configuration, skill or package files.
+
+The overview also reports the actual installed run, selected model, requested effort, permission
+mode, budget ceilings and scrubbed workspace display at the host's last idle/turn boundary.
+The explicit attached TUI reads this cached overview before its first frame and after observed
+run/model or terminal transitions; `/settings` reads it on demand. Old-run settings are discarded
+on rebind. This metadata read initializes no provider, skill, plugin or workspace scan. Capacity
+is reported separately from usage and verified pricing; the live `/activity` owner reports
+physical task state.
+
+Provider/model records come from the immutable bootstrap catalog and declare stale/unavailable
+evidence and actual captured capability limits. Plugin identity is the verified parsed manifest's
+serde JSON SHA-256 (`parsed_manifest_serde_json_sha256_v1`), with version and surfaces actually
+materialized; this digest does not claim to hash raw package bytes. Hook commands, credentials,
+provider endpoints, package paths, prompts and skill bodies are excluded from these inventories.
+Effective config pages project the real sealed runtime checkpoint. Tool declared gates are
+informative: actual dispatch also intersects the task envelope and operation requirements.
+
+`select_model_v1` requires provider/model and exact inventory, catalog and capability digests.
+The trusted captured owner resolves the actual provider handle and applies the shared durable
+model-selection transaction. Stale, absent or mismatched routes are refused. Observation-only
+connections may read inventory but cannot select a model. The TUI's `/config KIND [OFFSET]`
+and `/skills` use this same projection; `/model` sends typed identities to the host.
+
+## Live workflow V1
+
+The `live_workflow_v1` control carries a strict `command` tagged request: `open`, `read`,
+`replan`, `pump`, `interrupt` or `reconcile`. Each request names a bounded `workflow_id`;
+replan also carries `request_id` and the typed `WorkflowReplanV1` plan. Interrupt and reconcile
+name the actual node ID. Only read is available to observation-only connections. Requests cannot
+carry host paths, budgets, actors, terminal claims or completion/recovery evidence.
+
+The real session owner mints graph ceilings from verified persistent-agent host limits and uses
+a private rollout scope, retained scheduler journal, actual controller leases and host completion
+proofs. Enable persistent agents first. After restart an operator must open the graph before
+observers read it; a read cannot create state, repair a journal or start the driver. Responses
+carry an immutable view with graph revision, sequence, nodes, ready IDs, reservations, deadline,
+driver error and an optional durable plan receipt. Eight public dispatch permits bound concurrent
+requests. Admitted owner operations finish if a transport connection stops waiting.
+
+Use `/workflows live open|read|pump ID`, `interrupt|reconcile ID NODE`, or
+`replan ID REQUEST_ID JSON`. The TUI renders actual typed graph state and driver failure without
+changing the snapshot. `/workflows` retains the existing supervised-workflow inventory.
+
+## Client artifacts V1
+
+Send `{"type":"artifacts_v1","command":{"type":"list","thread_id":"..."}}` or a
+`read` command with the same thread ID, an `artifact_id`, `offset` and `max_bytes`. Read chunks
+are base64 encoded and bounded to 64 KiB. `next_offset` and `eof` support paged download. A client
+cannot supply a filesystem path or follow an artifact locator.
+
+Trusted runtime producers can publish complete text to the retained owner manifest before preview
+truncation. Publication scrubs the full text, hashes the bytes actually served, and registers real
+private-content source lineage. The index is scoped to the recorded tenant/run and canonical
+workspace. Downloads reopen and verify the content graph, so source revocation and session
+erasure revoke these artifacts as well. Each item is at most 8 MiB; one owner retains at most
+256 entries and 64 MiB. Eviction first durably removes the catalog entry, then releases the exact
+content reference. Prepared publications and release intents recover on the next trusted producer
+call; incomplete publications are never listed. Publication errors can report an unknown outcome.
+The same ID and byte offsets support downloads after a server restart when that recorded owner
+is adopted again. Windows manifest publication uses the private local NTFS adapter; unsupported
+filesystems are refused.
+
+The compatibility resident catalog publishes scrubbed finalized answers, tool logs and structured file diffs from the public
+event boundary. IDs are SHA-256 hashes of the retained bytes. Each descriptor declares the schema,
+MIME type, retained byte count, ReadOnly requirement, source event and `complete` status. A
+descriptor with `complete: false` is an explicitly truncated product; it is not a full log spill.
+The catalog retains at most 128 entries and 4 MiB, with 256 KiB per entry. Eviction is counted,
+missing handles are refused, and adoption clears the previous thread's handles. Retention is
+resident-thread lifetime. These fallback bytes do not survive server restart.
+
+The shared public list merges both owners and returns `resident_artifact_ids` for fallback entries.
+Read replies identify `retained_owner_manifest` or `resident_public_event` provenance. Retained
+complete bytes take priority over a resident preview with the same ID. Session erasure returns
+any pending presentation/index cleanup separately from its verified content-erasure receipt.
+
+The TUI's `/artifacts` lists this catalog with stable 12-character hash prefixes; `/artifacts HASH_PREFIX` opens the first 32 KiB with
+terminal-safe text rendering. The same API supports the remaining download pages. General
+binary publication and external screenshots/documents require typed safe producer ownership;
+clients cannot turn an external locator into a retained public artifact.
+
+
+### Verified session inspection and trace
+
+`thread_lifecycle_v1` also accepts `inspect {run_id}` and `trace_read {run_id, after_seq?, limit}`. Both use the authenticated resident tenant and canonical workspace; requests never contain a record locator. Inspection derives the most recent user goal and recorded terminal from verified scoped events, preserving original run/sequence provenance across forks. Changes list only retained execution-proven native FileDiff descriptors. A record terminal is not execution liveness; unbound background owners remain explicitly unavailable. Existing history `active` means selected resident run, not running work.
+
+Trace reads one verified physical record, includes genesis when `after_seq` is absent, and returns at most 64 entries and 512 KiB of redacted display data. Each event reports whether its 64 KiB display window is complete. The cursor is an actual record sequence, independent of the frozen frontend replay cursor. Structural digests inside event display are not an unredacted export or a new chain proof. TUI `/sessions preview RUN` and `/sessions trace RUN [AFTER_SEQ]` use these same controls; `/artifacts` supplies complete retained tool output when available.
+
+
+### Independent advisory maintenance
+
+`maintenance_v1` accepts `read {thread_id, after_revision?, limit?}` (1..64) and `subscribe {thread_id}`. It captures the adopted run's real readonly maintenance port. Observations are bounded current-state snapshots with the independent journal's revision, digest and original job IDs; they are not a lossless transition cursor. `after_revision` is a freshness bound. No request accepts target/path/actor/work/state/lease fields. Subscribe remains attached through an initial unavailable journal and reconciles explicit broadcast gaps by Read. Frames `advisory_maintenance_v1` and `maintenance_availability_v1` do not advance the legacy replay cursor. Only successful journal observations carry job state; availability/reconciliation errors never create a durable job transition.
+
+TUI `/finalization` reads both actual answer/Done sources and this separate advisory snapshot. The parent answer and terminal do not await optional route-cache or token-calibration completion. An enqueue attempt alone does not mean queued, running or completed. Restored queued/running jobs require the journal owner's reconciliation policy; public clients cannot supply recovery evidence.
+
+
+## Completion observations
+
+`host_final_evidence_v1` reads one actual current live-invocation host observation. Optional
+`observed_native_file_changes`, `native_change_source_seq` and `work_state` facts describe only
+byte-changing guarded native file commits joined to a successful same-run `ToolDone`. A newly
+created empty file counts; an identical-byte replacement does not. Repeat commits to one file
+count separately. The last change source is the actual committed tool terminal, before the
+observation's actual `Done` source.
+
+`changed_unverified` means such native changes were observed and relevant test-suite identity
+remains unverified. Neither a generic successful shell command, write permission, model prose
+nor `Done` can create this category. An optional configured check reports its own observed
+pass/failure separately; it does not certify a relevant test suite. No current workspace scan,
+net or distinct dirty-file count, absence-of-problems claim, mandatory check or new approval is
+introduced. Counts reset for the next live invocation and are not reconstructed as positive
+claims after service restart. Defaults omit the new fields and accept their absence.

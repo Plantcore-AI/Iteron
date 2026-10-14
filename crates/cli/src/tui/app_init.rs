@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    App, Editor, Effort, PermissionMode, RouteView, block, hyperlink, mouse_capture, theme,
+    transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
+};
+use ratatui::style::{Color, Style};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 impl App {
     #[cfg(test)]
@@ -15,243 +22,79 @@ impl App {
         let welcome = block::Block::new(
             0,
             block::BlockKind::Welcome {
-                tagline: "Iteron · Build, explain, and verify".into(),
+                tagline: "Build, explore, and ship".into(),
             },
         );
         App {
             session_name: "New session".into(),
-            transcript: vec![Arc::new(welcome)],
+            session_title: super::session_presentation::TitleLookup::default(),
+            history: super::transcript_history::TranscriptHistory::with_landing(welcome.kind),
             transcript_viewer: transcript_viewer::Viewer::default(),
-            transcript_revision: 0,
-            transcript_dirty_from: Some(0),
-            next_id: 1,
-            tool_index: std::collections::HashMap::new(),
-            pending_tools: VecDeque::new(),
-            workflow_index: std::collections::HashMap::new(),
+            artifact_viewer: super::artifact_view::Viewer::default(),
+            tools: super::tool_presentations::ToolPresentations::default(),
             workflow_monitor: workflow_region::WorkflowMonitor::default(),
             workflows_panel: workflows_panel::View::default(),
             workflows_dir: None,
             attached_job: None,
+            persistent_agent_views: Vec::new(),
             theme,
             color_depth,
             theme_epoch: 0,
             hyperlink_policy: hyperlink::Policy::disabled(),
-            render_cache: std::collections::HashMap::new(),
-            render_cache_width: 0,
-            render_cache_theme_epoch: 0,
-            transcript_layout: transcript_layout::HeightIndex::default(),
+            geometry: super::transcript_geometry::TranscriptGeometry::default(),
             editor: Editor::new(),
-            pending_mcp_input: None,
-            queued_mcp_inputs: VecDeque::new(),
+            mcp_form: super::mcp_input::McpInputOwner::default(),
+            final_evidence: super::final_evidence::FinalEvidencePresentation::default(),
             status: "idle".into(),
-            last_result: None,
-            running: false,
-            interrupting: false,
-            force_cancelling: false,
-            cancel_requested_at: None,
-            draining: false,
-            bottom_offset: 0,
-            follow_tail: true,
-            unread_updates: 0,
-            last_total_rows: 0,
-            last_view_h: 0,
+            run: super::run_presentation::RunPresentation::default(),
+            viewport: super::conversation_viewport::ConversationViewport::default(),
             quit: false,
             force_quit_requested: false,
             ctrl_c_quit_deadline: None,
             keymap_status: "keys:standard".into(),
             vim_anchor: None,
-            cur_text: String::new(),
-            assistant_stream_authority: String::new(),
-            assistant_turn_block_ids: Vec::new(),
-            cur_text_revision: 0,
-            cur_doc_revision: 0,
-            cur_doc: None,
-            cur_doc_parse: crate::markdown::StreamingParse::default(),
-            live_markdown_layout: Default::default(),
-            text_scrubber: crate::output::StreamingScrubber::default(),
-            cur_think: String::new(),
-            thinking_scrubber: crate::output::StreamingScrubber::default(),
+            assistant: super::assistant_stream::AssistantStream::default(),
             mode: PermissionMode::default(),
             effort: Effort::default(),
             model: String::new(),
+            remote_settings_pending: false,
             route: RouteView::unresolved(),
-            cost: CostState::Zero,
-            last_turn_usage: None,
-            last_context: None,
-            model_context_window: None,
-            reserved_output_tokens: None,
-            compaction_trigger_tokens: iteron_ctx::CompactionPolicy::default().trigger_tokens,
-            effort_application: None,
-            turns: 0,
-            pending: None,
-            approval_choice: ApprovalChoice::Deny,
-            completion: None,
-            completion_due: None,
-            completion_generation: 0,
-            completion_job: None,
-            picker: None,
-            session_picker_job: None,
-            session_picker_backing: None,
-            session_picker_generation: 0,
-            session_preview_job: None,
-            session_preview_generation: 0,
-            session_adoption_job: None,
-            workspace_command_job: None,
-            attachment_job: None,
-            attachment_generation: 0,
-            attachment_progress: None,
-            attachment_effect_state: AttachmentEffectState::Idle,
-            activities: std::collections::BTreeMap::new(),
-            retired_activity_ids: VecDeque::new(),
+            telemetry: super::session_telemetry::SessionTelemetry::default(),
+            permission_prompt: super::permission_prompt::PermissionPromptOwner::default(),
+            completions: super::completion_owner::CompletionOwner::default(),
+            pickers: super::picker_owner::PickerOwner::default(),
+            navigation: super::session_navigation::SessionNavigationOwner::default(),
+            workspace_commands: super::workspace_command::WorkspaceCommands::default(),
+            attachments: super::attachment_owner::AttachmentOwner::default(),
+            activity_observations: super::activity_presentation::ActivityPresentation::default(),
             resume_handoff: None,
-            run_started: None,
-            last_run_latency: None,
             workspace_dirty: None,
-            retryable_task: None,
-            awaiting_first_token_since: None,
-            provider_accepted: false,
-            active_tools: VecDeque::new(),
             spin: 0,
             row_map: Vec::new(),
             view_top: 0,
             view_scroll: 0,
             view_h: 0,
             mouse_capture: mouse_capture::State::default(),
-            queued: VecDeque::new(),
-            steer_previews: VecDeque::new(),
-            next_submission_seq: 0,
-            pending_turn_receipt: None,
-            pending_approval_response: None,
-            product_stream_active: false,
-            product_terminal_answer: None,
-            product_turn_status: None,
+            input_lanes: super::input_lanes::InputLanes::default(),
+            product: super::product_presentation::ProductPresentation::default(),
             #[cfg(test)]
             refused_image_paths: HashSet::new(),
         }
     }
 
-    /// Recompute the autocomplete menu from the current editor state (called after each edit while
-    /// idle or while composing a queued follow-up). Sets `self.completion` to a slash menu, a file
-    /// menu, or None. A running agent must not degrade the editor into a text-only field.
     #[cfg(test)]
     pub(super) fn refresh_completion(&mut self, repo: &std::path::Path) {
-        let text = self.editor.text();
-        self.completion = build_completion(&text, self.editor.cursor(), repo);
+        self.completions.refresh(&self.editor, repo);
     }
-
     pub(super) fn schedule_completion(&mut self) {
-        self.completion_generation = self.completion_generation.wrapping_add(1);
-        let text = self.editor.text();
-        if commands::slash_prefix(&text).is_some() {
-            self.completion_due = None;
-            self.completion =
-                build_completion(&text, self.editor.cursor(), std::path::Path::new("."));
-            return;
-        }
-        self.completion_due = Some(
-            Instant::now()
-                + iteron_tunables::param_duration(
-                    "cli.tui.completion_debounce",
-                    std::time::Duration::from_millis(75),
-                ),
-        );
-        self.completion = None;
+        self.completions.schedule(&self.editor, Instant::now());
     }
-}
-
-pub(super) fn build_completion(
-    text: &str,
-    cursor_chars: usize,
-    repo: &std::path::Path,
-) -> Option<Completion> {
-    if text.contains('\n') {
-        return None; // no menu in multi-line mode
-    }
-    // slash-command menu
-    if let Some(prefix) = commands::slash_prefix(text) {
-        let items: Vec<(String, String)> = commands::complete_slash(prefix)
-            .into_iter()
-            .map(|c| (c.name.to_string(), format!("{}  {}", c.args, c.help)))
-            .collect();
-        if !items.is_empty() {
-            return Some(Completion {
-                items,
-                sel: 0,
-                token_start: 1,
-                lead: '/',
-            });
-        }
-        return None;
-    }
-    // @file menu (path completion at the cursor)
-    let cursor_bytes = byte_index(text, cursor_chars);
-    if let Some((at, partial)) = commands::at_mention_at(text, cursor_bytes) {
-        let matches = complete_path(repo, partial);
-        if !matches.is_empty() {
-            let items = matches.into_iter().map(|p| (p, String::new())).collect();
-            return Some(Completion {
-                items,
-                sel: 0,
-                token_start: at + 1,
-                lead: '@',
-            });
-        }
-    }
-    None
-}
-
-impl App {
-    /// Accept the selected completion: replace the WHOLE token (from `token_start` to the next
-    /// whitespace or end — not just up to the cursor) with the chosen item + a single trailing
-    /// space, and place the cursor right after it. Replacing the whole token fixes corruption when
-    /// the cursor is in the middle of the token (review).
     pub(super) fn accept_completion(&mut self) {
-        let Some(comp) = self.completion.take() else {
-            return;
-        };
-        let Some((item, _)) = comp.items.get(comp.sel).cloned() else {
-            return;
-        };
-        let text = self.editor.text();
-        let token_end = text[comp.token_start.min(text.len())..]
-            .find(char::is_whitespace)
-            .map(|i| comp.token_start + i)
-            .unwrap_or(text.len());
-        // A directory item (ends with '/') gets NO trailing space, so the mention token stays open
-        // and the menu re-populates for drill-down (review: accepting a dir closed the menu).
-        let sep = if item.ends_with('/') { "" } else { " " };
-        let mut new = String::new();
-        new.push_str(&text[..comp.token_start]);
-        new.push_str(&item);
-        new.push_str(sep);
-        new.push_str(text[token_end..].trim_start_matches(' ')); // avoid a double space
-        let want =
-            text[..comp.token_start].chars().count() + item.chars().count() + sep.chars().count();
-        self.editor.clear();
-        self.editor.insert_str(&new);
-        self.editor.home();
-        for _ in 0..want {
-            self.editor.right();
-        }
+        self.completions.accept(&mut self.editor);
     }
-
-    /// Enter activates a slash-menu entry when the command has no required arguments. Tab remains
-    /// completion-only, and commands with required arguments (for example `/memory`) leave the
-    /// composer open for the missing value. Keeping this decision separate from dispatch prevents
-    /// one physical Enter from both opening a picker and accepting its first row.
     pub(super) fn accept_completion_for_enter(&mut self) -> bool {
-        let submit = self.completion.as_ref().is_some_and(|completion| {
-            if completion.lead != '/' {
-                return false;
-            }
-            let Some((name, _)) = completion.items.get(completion.sel) else {
-                return false;
-            };
-            commands::COMMANDS.iter().any(|command| {
-                command.name == name && (command.args.is_empty() || command.args.starts_with('['))
-            })
-        });
-        self.accept_completion();
+        let submit = self.completions.enter_submits();
+        self.completions.accept(&mut self.editor);
         submit
     }
 

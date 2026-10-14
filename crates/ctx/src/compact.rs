@@ -880,6 +880,20 @@ fn message_components(
                     estimate.tool_results = estimate.tool_results.saturating_add(tokens);
                 }
             }
+            Block::ToolImage(image) => {
+                // Native pixels consume multimodal tokens, never base64-as-text tokens. The
+                // protocol validates the actual PNG shape; this remains a conservative reserve.
+                estimate.tool_results = estimate
+                    .tool_results
+                    .saturating_add(
+                        profile
+                            .estimate_decoded_image(
+                                u64::from(image.width) * u64::from(image.height),
+                            )
+                            .tokens,
+                    )
+                    .saturating_add(64);
+            }
         }
     }
     estimate

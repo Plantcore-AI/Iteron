@@ -8,7 +8,7 @@ impl Agent {
         task: &str,
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        self.orchestrating = true;
+        let _orchestration = self.orchestrating.enter()?;
         let input_images = self.admit_input_images(input_images)?;
         let messages = self.admit_submission(task)?;
         self.drive_admitted(messages, task, input_images).await
@@ -23,7 +23,7 @@ impl Agent {
     /// A refusal is not an error the run dies on. Fan-out is the *additional* thing a route can
     /// ask for, so the fail-closed answer is the single-agent loop — which is also what a
     /// `Localized` route means — and the refusal is said out loud rather than swallowed.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "script-workflows"))]
     pub(super) fn route_submission(
         &mut self,
         task: &str,
@@ -53,8 +53,11 @@ impl Agent {
             )?;
             return Ok(route);
         }
-        match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling)
-        {
+        match iteron_agents::RouterStrategy::route_with(
+            self.compiled_policy_bundle.slots().router.as_ref(),
+            &observation,
+            ceiling,
+        ) {
             Ok(proposal) => {
                 let action = if proposal.route.fans_out() {
                     "fan_out"
@@ -143,7 +146,7 @@ impl Agent {
             }
         };
         match iteron_sched::SchedulerStrategy::plan_with(
-            self.scheduler.as_ref(),
+            self.compiled_policy_bundle.slots().scheduler.as_ref(),
             &observation,
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
         ) {

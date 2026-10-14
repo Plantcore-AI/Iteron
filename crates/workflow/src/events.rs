@@ -3,7 +3,9 @@
 //! but stays presentation-agnostic: the CLI's plain renderer (design §3.5) and a future ratatui
 //! tree both consume this one enum. We adopt the 5-state semantic model over the raw wire.
 
+#[cfg(any(feature = "script-workflows", test))]
 use std::sync::{Arc, Mutex};
+#[cfg(any(feature = "script-workflows", test))]
 use std::time::{Duration, Instant};
 
 /// v3 adds [`ProgressEvent::AgentCancelling`], separating the prompt cancellation acknowledgement
@@ -91,31 +93,41 @@ pub trait ProgressSink: Send + Sync {
     fn emit(&self, event: ProgressEvent);
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 const LOG_BURST: u32 = 4;
+#[cfg(any(feature = "script-workflows", test))]
 const ACTIVITY_BURST: u32 = 32;
+#[cfg(any(feature = "script-workflows", test))]
 const LOG_REFILL: Duration = Duration::from_millis(250);
+#[cfg(any(feature = "script-workflows", test))]
 const ACTIVITY_REFILL: Duration = Duration::from_millis(50);
+#[cfg(any(feature = "script-workflows", test))]
 const LOG_MESSAGE_MAX_BYTES: usize = 2 * 1024;
 
+#[cfg(any(feature = "script-workflows", test))]
 fn log_burst() -> u32 {
     iteron_tunables::param_integer("workflow.events.log_burst", LOG_BURST).clamp(1, LOG_BURST)
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 fn activity_burst() -> u32 {
     iteron_tunables::param_integer("workflow.events.activity_burst", ACTIVITY_BURST)
         .clamp(1, ACTIVITY_BURST)
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 fn log_refill() -> Duration {
     iteron_tunables::param_duration("workflow.events.log_refill", LOG_REFILL)
         .clamp(LOG_REFILL, Duration::from_secs(60))
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 fn activity_refill() -> Duration {
     iteron_tunables::param_duration("workflow.events.activity_refill", ACTIVITY_REFILL)
         .clamp(ACTIVITY_REFILL, Duration::from_secs(60))
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 fn log_message_max_bytes() -> usize {
     iteron_tunables::param_usize(
         "workflow.events.log_message_max_bytes",
@@ -124,6 +136,7 @@ fn log_message_max_bytes() -> usize {
     .clamp(1, LOG_MESSAGE_MAX_BYTES)
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 struct TokenBucket {
     tokens: u32,
     capacity: u32,
@@ -131,6 +144,7 @@ struct TokenBucket {
     updated: Instant,
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 impl TokenBucket {
     fn new(capacity: u32, refill: Duration) -> Self {
         Self {
@@ -158,6 +172,7 @@ impl TokenBucket {
     }
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 struct BoundedProgressState {
     log_bucket: TokenBucket,
     activity_bucket: TokenBucket,
@@ -172,6 +187,7 @@ struct BoundedProgressState {
 /// activity are lossy/coalescible; lifecycle boundaries are always forwarded immediately. This
 /// keeps a custom sink from accidentally turning an adversarial script into unbounded producer CPU
 /// even when the final transport has its own bounded channel.
+#[cfg(any(feature = "script-workflows", test))]
 pub(crate) struct BoundedProgressSink {
     inner: Arc<dyn ProgressSink>,
     max_log_events: usize,
@@ -179,6 +195,7 @@ pub(crate) struct BoundedProgressSink {
     state: Mutex<BoundedProgressState>,
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 impl BoundedProgressSink {
     pub(crate) fn new(
         inner: Arc<dyn ProgressSink>,
@@ -236,6 +253,7 @@ impl BoundedProgressSink {
     }
 }
 
+#[cfg(any(feature = "script-workflows", test))]
 impl ProgressSink for BoundedProgressSink {
     fn emit(&self, event: ProgressEvent) {
         let forwarded = {

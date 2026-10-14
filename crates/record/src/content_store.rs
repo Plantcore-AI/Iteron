@@ -32,9 +32,9 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use storage::{
     Layout, OwnerLock, StoreLock, crate_sync_dir, ensure_available_locked, ensure_layout,
-    load_bytes, load_bytes_with_state, lock_owner, lock_owner_shared, lock_store,
-    lock_store_shared, read_edges, read_limited, read_state, reference_edge_path,
-    remove_if_present, store_locked, write_edge_locked, write_state, write_tombstone,
+    load_bytes, lock_owner, lock_owner_shared, lock_store, lock_store_shared, read_edges,
+    read_limited, read_state, reference_edge_path, remove_if_present, store_locked,
+    write_edge_locked, write_state, write_tombstone,
 };
 
 const RECORD_LOCK_RETRY_ATTEMPTS: usize = 401;
@@ -187,7 +187,9 @@ fn put_private_content_at_surface_with_sources(
     ensure_content_bound(bytes)?;
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _lock = lock_store(&layout)?;
+    // A retained artifact shares this tenant store with record publication. Wait only for
+    // the existing bounded acquisition window, before any blob or reference mutation.
+    let _lock = lock_store_for_record(&layout, lock_store)?;
     if sources.len() > model::MAX_CONTENT_LINEAGE_EDGES {
         return Err(ContentStoreError::ReferenceBound {
             max: model::MAX_CONTENT_LINEAGE_EDGES,
@@ -266,7 +268,10 @@ fn read_private_content_at_reference(
 ) -> Result<Vec<u8>, ContentStoreError> {
     let layout = Layout::new(runs_dir, tenant);
     ensure_layout(&layout)?;
-    let _store_lock = lock_store_shared(&layout)?;
+    // A retained read shares this store with the background session publisher. Wait only
+    // through the existing bounded acquisition window; every reference, source and tombstone
+    // check still occurs under the actual shared lease after acquisition.
+    let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     read_private_content_at_reference_locked(&layout, owner, seq, surface, handle)
 }
 
@@ -680,7 +685,7 @@ pub(crate) fn externalize_event_payload(
     // authoritative rollout. Their short critical sections may overlap an event append, but a
     // transient lock collision is not a broken audit trail. Wait only at lock acquisition, before
     // this append can mutate content or reference state, and keep the wait strictly bounded.
-    let _lock = lock_store_for_record(&layout)?;
+    let _lock = lock_store_for_record(&layout, lock_store)?;
     for source in &checkpoint_sources {
         references::verify_source_owner_locked(&layout, source)?;
         ensure_available_locked(&layout, &source.digest)?;
@@ -757,12 +762,15 @@ pub(crate) fn externalize_event_payload(
     Ok(())
 }
 
-fn lock_store_for_record(layout: &Layout) -> Result<StoreLock, ContentStoreError> {
+fn lock_store_for_record(
+    layout: &Layout,
+    acquire: fn(&Layout) -> Result<StoreLock, ContentStoreError>,
+) -> Result<StoreLock, ContentStoreError> {
     for attempt in 0..iteron_tunables::param_integer(
         "record.content_store.record_lock_retry_attempts",
         RECORD_LOCK_RETRY_ATTEMPTS,
     ) {
-        match lock_store(layout) {
+        match acquire(layout) {
             Err(ContentStoreError::Busy)
                 if attempt + 1
                     < iteron_tunables::param_integer(
@@ -798,7 +806,7 @@ fn semantic_namespace(
         return Some(namespace);
     }
     let namespace = match field_class {
-        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error"
+        "tool_arguments" | "tool_result" | "tool_image" | "effect_arguments" | "effect_error"
         | "artifact_locator" => PrivateContentNamespace::ToolArtifact,
         "memory_context" | "instructions" | "environment" => PrivateContentNamespace::MemoryContext,
         "checkpoint" => PrivateContentNamespace::Checkpoint,
@@ -841,7 +849,12 @@ fn attachment_semantic_class(class: &str) -> bool {
 fn tool_artifact_semantic_class(class: &str) -> bool {
     matches!(
         class,
-        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error" | "artifact_locator"
+        "tool_arguments"
+            | "tool_result"
+            | "tool_image"
+            | "effect_arguments"
+            | "effect_error"
+            | "artifact_locator"
     )
 }
 
@@ -899,6 +912,15 @@ pub(crate) fn hydrate_event_payload(
     tenant: &TenantId,
     payload: &mut serde_json::Value,
 ) -> Result<(), ContentStoreError> {
+    hydrate_event_payload_budgeted(runs_dir, tenant, payload, None)
+}
+
+pub(crate) fn hydrate_event_payload_budgeted(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    payload: &mut serde_json::Value,
+    mut budget: Option<&mut crate::bounded_replay::ReplayReadBudget>,
+) -> Result<(), ContentStoreError> {
     let Some(version) = payload
         .as_object_mut()
         .ok_or(ContentStoreError::Corrupt)?
@@ -926,7 +948,15 @@ pub(crate) fn hydrate_event_payload(
                 generation: tombstone.generation,
             });
         }
-        let bytes = load_bytes_with_state(&layout, &state, &digest)?;
+        let bytes = storage::load_bytes_with_state_bounded(
+            &layout,
+            &state,
+            &digest,
+            budget.as_ref().map(|budget| budget.remaining_content()),
+        )?;
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.content(bytes.len())?;
+        }
         *value = encoding::decode(&bytes, encoding)
             .map_err(|reason| ContentStoreError::Unresolved { digest, reason })?;
         Ok(())

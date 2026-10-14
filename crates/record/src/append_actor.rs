@@ -66,6 +66,7 @@ impl Rollout {
     /// semantic boundaries with one device flush. On any write/barrier failure the writer remains
     /// poisoned and recovery proceeds through the ordinary reopen/tail-scan path.
     pub fn append_batch(&mut self, events: &[Event]) -> Result<Vec<Seq>, RecordError> {
+        let _foreground = self.foreground_activity()?;
         if !self.pending_observations.is_empty() {
             let mut prefix = std::mem::take(&mut self.pending_observations);
             self.pending_observation_bytes = 0;
@@ -431,13 +432,11 @@ fn run_worker(file: &mut File, receiver: Receiver<Command>) -> usize {
                     }
                     result
                 };
-                let failure = result.as_ref().err().map(ToString::to_string);
+                let failure = result.as_ref().err().map(super::RecordFailure::from_error);
                 for (_, reply) in writes {
-                    let receipt = match &failure {
+                    let receipt = match failure {
                         None => Ok(()),
-                        Some(message) => {
-                            Err(RecordError::Io(std::io::Error::other(message.clone())))
-                        }
+                        Some(failure) => Err(failure.into_append_error()),
                     };
                     let _ = reply.send(receipt);
                 }

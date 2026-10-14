@@ -5,8 +5,10 @@
 //! as an unknown external effect and makes aggregate usage incomplete; it is never misreported as
 //! a proven-unbilled request.
 
+use super::provider_extension::{self, ProviderDispatchGate, ProviderExtensionPermit};
 use super::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use iteron_protocol::Block;
 use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -81,6 +83,8 @@ pub(super) struct HedgedProviderDispatch {
     pub result: Result<iteron_provider::TurnResult, KernelError>,
     pub items: Vec<StreamItem>,
     pub scheduled_attempts: u32,
+    /// Highest actual admitted Provider EffectIntent identity, never a local billing counter.
+    pub last_physical_attempt: Option<u32>,
     /// True only when every scheduled attempt has known cost or proved it never dispatched.
     pub monetary_followup_safe: bool,
     /// Text/reasoning deltas were forwarded at winner selection, before loser cleanup. The caller
@@ -89,6 +93,7 @@ pub(super) struct HedgedProviderDispatch {
 }
 
 struct PreparedAttempt {
+    request_observer: Arc<dyn iteron_provider::request_capture::ProviderRequestObserver>,
     index: u8,
     ordinal: usize,
     physical_attempt: u32,
@@ -102,7 +107,7 @@ struct PreparedAttempt {
     attempt_cancel: Arc<AtomicBool>,
     ticket: effects::EffectTicket,
     permit: Option<AttemptPermit>,
-    dispatch_gate: Option<Arc<plantcore::DispatchGate>>,
+    dispatch_gate: Option<Arc<dyn ProviderDispatchGate>>,
     allow_in_flight_past_deadline: bool,
 }
 
@@ -120,11 +125,9 @@ enum AttemptTerminal {
     },
     Completed {
         index: u8,
-        ordinal: usize,
-        physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
-        dispatch_permit: Option<plantcore::DispatchPermit>,
+        dispatch_permit: Option<ProviderExtensionPermit>,
         items: Vec<StreamItem>,
         rate_limit: Option<iteron_provider::RateLimitSnapshot>,
         result: Result<iteron_provider::TurnResult, KernelError>,
@@ -173,9 +176,9 @@ impl Agent {
         deadline: Instant,
         route_transition: Option<&str>,
         route_retry_index: u32,
-        physical_attempt_base: u32,
         primary_admission_preacquired: bool,
         mut primary_permit: Option<AttemptPermit>,
+        request_manifests: &super::request_manifest::RequestManifestFactory,
     ) -> Result<HedgedProviderDispatch, KernelError> {
         if self
             .usd_budget
@@ -210,15 +213,63 @@ impl Agent {
                 result: Err(refusal),
                 items: Vec::new(),
                 scheduled_attempts: 0,
+                last_physical_attempt: None,
                 monetary_followup_safe: true,
                 ui_deltas_forwarded: false,
             });
         }
 
+        let physical = match super::provider_output_request::normalize(
+            provider.as_ref(),
+            request.clone(),
+            self.provider_output_proof_required(),
+        ) {
+            Ok(physical) => physical,
+            Err(error) => {
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                return Err(error);
+            }
+        };
+        let requested_max_tokens = physical.requested_max_tokens;
+        let request = &physical.request;
         let total = hedge.max_duplicates.saturating_add(1);
         let mut prepared = Vec::with_capacity(usize::from(total));
         let mut cancellation = Vec::with_capacity(usize::from(total));
+        let mut last_physical_attempt = None;
         for index in 0..total {
+            let financial = self.provider_financial_context();
+            let funding = match financial.output_funding(route_id, self.pricing_now()) {
+                Ok(funding) => funding,
+                Err(error) => {
+                    self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "hedge funding refused before dispatch",
+                    )?;
+                    return Err(error);
+                }
+            };
+            let funded = match super::provider_output_request::normalize_funded(
+                provider.as_ref(),
+                request.clone(),
+                self.provider_output_proof_required(),
+                funding.as_ref(),
+            ) {
+                Ok(physical) => physical,
+                Err(error) => {
+                    self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "hedge output envelope refused before dispatch",
+                    )?;
+                    return Err(error);
+                }
+            };
+            let request = &funded.request;
             let permit = if index == 0 && primary_admission_preacquired {
                 primary_permit.take()
             } else if index == 0 {
@@ -248,14 +299,26 @@ impl Agent {
                     }
                 };
                 let Some(permit) = admitted else {
-                    let ordinal =
-                        self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
-                    let physical_attempt = physical_attempt_base
-                        .saturating_add(u32::from(index))
-                        .saturating_add(1);
+                    let (ordinal, physical_attempt) = match self.next_provider_effect_identity(turn)
+                    {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            let cleanup = self.close_prepared_hedges_without_dispatch(
+                                turn,
+                                route_id,
+                                prepared,
+                                "provider identity refused before dispatch",
+                            );
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            cleanup?;
+                            return Err(error);
+                        }
+                    };
                     let (objective_score, objective_evidence) =
                         self.objective_rank_evidence(route_id);
-                    let ticket = self.open_kernel_effect(
+                    let ticket = match self.open_kernel_effect(
                         turn,
                         effect_class::EffectClass::Provider,
                         ordinal,
@@ -267,6 +330,7 @@ impl Agent {
                             "messages": request.messages.len(),
                             "tools": request.tools.len(),
                             "max_tokens": request.max_tokens,
+                            "incoming_max_tokens": requested_max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": route_retry_index,
                             "hedge_attempt": index,
@@ -274,7 +338,18 @@ impl Agent {
                             "route_objective_score_millionths": objective_score,
                             "route_objective_evidence": objective_evidence,
                         }),
-                    )?;
+                    ) {
+                        Ok(ticket) => ticket,
+                        Err(error) => {
+                            let cleanup = self.close_prepared_hedges_without_dispatch(
+                                turn, route_id, prepared, "suppressed hedge intent refused before dispatch",
+                            );
+                            if let Some(budget) = &self.usd_budget { budget.settle_not_dispatched(); }
+                            cleanup?;
+                            return Err(error);
+                        }
+                    };
+                    last_physical_attempt = Some(physical_attempt);
                     self.settle_not_dispatched_hedge(
                         turn,
                         route_id,
@@ -288,10 +363,23 @@ impl Agent {
                 Some(permit)
             };
             let attempt_cancel = Arc::new(AtomicBool::new(false));
-            let ordinal = self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
-            let physical_attempt = physical_attempt_base
-                .saturating_add(u32::from(index))
-                .saturating_add(1);
+            let (ordinal, physical_attempt) = match self.next_provider_effect_identity(turn) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    drop(permit);
+                    let cleanup = self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "provider identity refused before dispatch",
+                    );
+                    if let Some(budget) = &self.usd_budget {
+                        budget.settle_not_dispatched();
+                    }
+                    cleanup?;
+                    return Err(error);
+                }
+            };
             let delay = hedge
                 .delay
                 .checked_mul(u32::from(index))
@@ -309,6 +397,7 @@ impl Agent {
                     "messages": request.messages.len(),
                     "tools": request.tools.len(),
                     "max_tokens": request.max_tokens,
+                    "incoming_max_tokens": requested_max_tokens,
                     "physical_attempt": physical_attempt,
                     "route_retry_index": route_retry_index,
                     "hedge_attempt": index,
@@ -329,8 +418,10 @@ impl Agent {
                     return Err(error);
                 }
             };
+            last_physical_attempt = Some(physical_attempt);
             cancellation.push((index, attempt_cancel.clone()));
             prepared.push(PreparedAttempt {
+                request_observer: request_manifests.for_ticket(&ticket, request.max_tokens),
                 index,
                 ordinal,
                 physical_attempt,
@@ -338,14 +429,14 @@ impl Agent {
                 provider: provider.clone(),
                 request: request.clone(),
                 deadline,
-                interrupt: self.interrupt.clone(),
-                force_cancel: self.force_cancel.clone(),
-                drain: self.drain.clone(),
+                interrupt: self.control.interrupt().cloned(),
+                force_cancel: self.control.force_cancel().clone(),
+                drain: self.control.drain().clone(),
                 attempt_cancel,
                 ticket,
                 permit,
-                dispatch_gate: self.plantcore_dispatch_gate(),
-                allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
+                dispatch_gate: self.provider_dispatch_gate(),
+                allow_in_flight_past_deadline: self.provider_extension_enabled(),
             });
         }
 
@@ -390,6 +481,27 @@ impl Agent {
             )
             .clamp(1, max_aggregate_bytes),
         ));
+        // Only real admitted tickets supply child-output attribution. The selected physical
+        // stream is published live without pretending aggregate hedge usage belongs to it.
+        let partial_mailbox = self.persistent_mailbox.clone();
+        let partial_sources = partial_mailbox.as_ref().map(|_| {
+            prepared
+                .iter()
+                .map(|attempt| {
+                    (
+                        attempt.index,
+                        iteron_protocol::agent_output::AgentOutputSourceV1 {
+                            tenant: self.rollout.tenant().clone(),
+                            run_id: self.rollout.run_id().clone(),
+                            turn: attempt.ticket.turn(),
+                            provider_intent_seq: attempt.ticket.intent_sequence().0,
+                            effect_id: attempt.ticket.effect_id().clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let mut partial_stream: Option<super::agent_partial_stream::AgentPartialStream> = None;
         let mut attempts = prepared
             .into_iter()
             .map(|attempt| {
@@ -423,12 +535,19 @@ impl Agent {
                         );
                         if selected_index.is_none() && selects_winner {
                             selected_index = Some(live.index);
+                            partial_stream = partial_mailbox.clone().zip(partial_sources.as_ref()
+                                .and_then(|sources| sources.get(&live.index)).cloned())
+                                .map(|(mailbox, source)| super::agent_partial_stream::AgentPartialStream::new(mailbox, source));
                             for (other, cancel) in &cancellation {
                                 if *other != live.index {
                                     cancel.store(true, Ordering::Release);
                                 }
                             }
                         }
+                        if selected_index == Some(live.index)
+                            && let StreamItem::TextDelta(text) = &live.item
+                            && let Some(partial) = &mut partial_stream
+                        { partial.observe(text); }
                         if selected_index == Some(live.index)
                             && (self.resident_ui_tx.is_some() || self.ui_tx.is_some())
                         {
@@ -479,8 +598,6 @@ impl Agent {
                 }
                 AttemptTerminal::Completed {
                     index,
-                    ordinal,
-                    physical_attempt,
                     ticket,
                     permit,
                     dispatch_permit,
@@ -488,25 +605,15 @@ impl Agent {
                     rate_limit,
                     result,
                 } => {
-                    let accounting = self.route_attempt_accounting(
-                        turn,
-                        route_id,
-                        physical_attempt,
-                        &result,
-                        self.pricing_now(),
-                    )?;
-                    monetary_followup_safe &=
-                        route_attempt_accounting::monetary_followup_safe(&accounting);
-                    self.settle_kernel_effect(
+                    let (accounting, safe, _) = self.provider_attempt_journal().settle_observed(
                         ticket,
-                        provider_route::provider_settlement(
-                            turn,
-                            ordinal,
-                            &result,
-                            accounting.clone(),
-                        ),
+                        super::provider_attempt_journal::ProviderObservedAttempt {
+                            route_id,
+                            result: &result,
+                        },
                     )?;
-                    self.observe_plantcore_provider_attempt(turn, &accounting)
+                    monetary_followup_safe &= safe;
+                    self.observe_provider_extension_attempt(turn, &accounting)
                         .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                     self.commit_provider_route_charge(turn, &accounting)?;
                     self.observe_governed_route_attempt(turn, route_id, &result, rate_limit)?;
@@ -517,6 +624,26 @@ impl Agent {
                             aggregate.observe_success(result.usage);
                             if selected_index.is_none() {
                                 selected_index = Some(index);
+                                partial_stream = partial_mailbox
+                                    .clone()
+                                    .zip(
+                                        partial_sources
+                                            .as_ref()
+                                            .and_then(|sources| sources.get(&index))
+                                            .cloned(),
+                                    )
+                                    .map(|(mailbox, source)| {
+                                        super::agent_partial_stream::AgentPartialStream::new(
+                                            mailbox, source,
+                                        )
+                                    });
+                                if let Some(partial) = &mut partial_stream {
+                                    for item in &items {
+                                        if let StreamItem::TextDelta(text) = item {
+                                            partial.observe(text);
+                                        }
+                                    }
+                                }
                                 for (other, cancel) in &cancellation {
                                     if *other != index {
                                         cancel.store(true, Ordering::Release);
@@ -562,6 +689,9 @@ impl Agent {
             }
         }
 
+        if let Some(partial) = &mut partial_stream {
+            partial.finish();
+        }
         let (result, items) = if let Some((_index, mut result, items)) = winner {
             result.usage = aggregate.report();
             (Ok(result), items)
@@ -585,6 +715,7 @@ impl Agent {
             result,
             items,
             scheduled_attempts,
+            last_physical_attempt,
             monetary_followup_safe,
             ui_deltas_forwarded,
         })
@@ -636,7 +767,7 @@ impl Agent {
                 provider_route_attempt: Some(accounting.clone()),
             }),
         )?;
-        self.observe_plantcore_provider_attempt(turn, &accounting)
+        self.observe_provider_extension_attempt(turn, &accounting)
             .map_err(|reason| KernelError::ContextResolution(reason.into()))
     }
 
@@ -650,8 +781,12 @@ impl Agent {
         };
         match governor.admit(route_id, Instant::now()) {
             Admission::Admitted(permit) => {
-                self.emit_circuit_transition(turn, permit.transition);
-                self.record_provider_governor_state(turn, route_id, permit.transition, None)?;
+                self.provider_route_admission(turn).journal.observe(
+                    turn,
+                    route_id,
+                    permit.transition,
+                    None,
+                )?;
                 Ok(Some(permit))
             }
             Admission::Deferred { wait, reason } => {
@@ -712,10 +847,10 @@ async fn run_attempt(
         };
     }
 
-    let dispatch_permit = match &attempt.dispatch_gate {
-        Some(gate) => match gate.enter().await {
-            Some(permit) => Some(permit),
-            None => {
+    let dispatch_permit =
+        match provider_extension::enter_owned_gate(attempt.dispatch_gate.as_ref()).await {
+            Ok(permit) => permit,
+            Err(()) => {
                 return AttemptTerminal::Suppressed {
                     index: attempt.index,
                     ordinal: attempt.ordinal,
@@ -724,9 +859,7 @@ async fn run_attempt(
                     permit: attempt.permit,
                 };
             }
-        },
-        None => None,
-    };
+        };
     if attempt.attempt_cancel.load(Ordering::Acquire)
         || attempt.drain.load(Ordering::Acquire)
         || attempt.force_cancel.load(Ordering::Acquire)
@@ -771,7 +904,7 @@ async fn run_attempt(
                 buffer_overflow = Some(overflow);
             }
         };
-        provider_route::execute_admitted_provider_turn(
+        provider_route::execute_admitted_provider_turn_observed(
             attempt.provider,
             attempt.deadline,
             provider_route::ProviderCancellation {
@@ -783,6 +916,7 @@ async fn run_attempt(
             },
             &attempt.request,
             &mut on_item,
+            Some(attempt.request_observer.as_ref()),
         )
         .await
     };
@@ -796,8 +930,6 @@ async fn run_attempt(
     }
     AttemptTerminal::Completed {
         index: attempt.index,
-        ordinal: attempt.ordinal,
-        physical_attempt: attempt.physical_attempt,
         ticket: attempt.ticket,
         permit: attempt.permit,
         dispatch_permit,
@@ -877,6 +1009,13 @@ fn block_retained_bytes(block: &Block) -> usize {
             .tool_use_id
             .len()
             .saturating_add(result.content.len()),
+        Block::ToolImage(image) => image
+            .image
+            .data
+            .encoded_len()
+            .saturating_add(image.tool_use_id.len())
+            .saturating_add(image.source_url_display.len())
+            .saturating_add(256),
     };
     inline
         .saturating_mul(2)

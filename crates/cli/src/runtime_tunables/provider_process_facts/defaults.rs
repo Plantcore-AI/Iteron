@@ -23,12 +23,7 @@ pub(super) fn apply(
     report: &mut ProviderProcessFactsReport,
 ) -> Result<(), ProviderProcessFactError> {
     add_governor_defaults(builder, input, report)?;
-    let role_routes = super::super::execution_policy::admitted_role_model_routes(
-        input.agent_catalog,
-        &input.selection.provider_id,
-        &input.selection.model_id,
-    )
-    .map_err(|_| ProviderProcessFactError::EvidenceEncoding)?;
+    let role_routes = super::admitted_role_routes(input)?;
     builder.observe_default(
         "role_specific_model_map",
         map(role_routes

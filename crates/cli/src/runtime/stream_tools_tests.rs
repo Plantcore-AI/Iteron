@@ -183,6 +183,94 @@ async fn auto_commands_execute_concurrently_before_stream_terminal_with_durable_
 }
 
 #[tokio::test]
+async fn explicit_read_deny_cannot_bypass_operation_gate_through_pure_overlap() {
+    let workspace = super::gate_integration_tests::temp_ws("stream-pure-explicit-deny");
+    let called = Arc::new(AtomicUsize::new(0));
+    let mut registry = iteron_tools::Registry::coding_agent(&workspace).unwrap();
+    let seen = called.clone();
+    registry
+        .register_external(
+            iteron_protocol::ToolSpec {
+                name: "denied_read_probe".into(),
+                description: "actual pure executor counter".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                iteron_tools::boxfut::box_it(async move {
+                    ToolResult {
+                        tool_use_id: call.id,
+                        content: "executed".into(),
+                        is_error: false,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    }
+                })
+            },
+        )
+        .unwrap();
+    let provider = Arc::new(TailWaitProvider {
+        calls: vec![ToolUse {
+            id: "denied-pure".into(),
+            name: "denied_read_probe".into(),
+            input: serde_json::json!({}),
+        }],
+        calls_completed: called.clone(),
+        completed: Arc::new(tokio::sync::Notify::new()),
+        turn: AtomicUsize::new(0),
+        wait_for_tools: false,
+    });
+    let rollout = Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("denied-read".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        provider,
+        registry,
+        rollout,
+        "model-a".into(),
+        "sys".into(),
+        Budget {
+            max_turns: 3,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 10,
+            max_consecutive_tool_errors: 8,
+        },
+    );
+    super::gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    agent.workspace = workspace.clone();
+    agent.context_budget_policy.tool_schema_tokens = 20_000;
+    agent
+        .permission_rules
+        .set_tool("denied_read_probe", iteron_protocol::Verdict::Deny);
+    assert_eq!(agent.run("probe denied read").await.unwrap(), Outcome::Done);
+    assert_eq!(
+        called.load(Ordering::SeqCst),
+        0,
+        "real pure handler must never be entered"
+    );
+    let events = iteron_record::replay(agent.rollout.path()).unwrap();
+    assert!(events.iter().any(
+        |event| matches!(&event.kind, EventKind::ToolDone { result, .. }
+        if result.tool_use_id == "denied-pure" && result.is_error)
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::ToolReady {tool,..}
+        if tool.id == "denied-pure"))
+    );
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
+    drop(agent);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
 async fn plan_mode_never_starts_streaming_commands() {
     streaming_command_fixture(false).await;
 }
@@ -190,10 +278,13 @@ async fn plan_mode_never_starts_streaming_commands() {
 #[tokio::test]
 async fn exclusive_tool_waits_for_reads_and_blocks_later_reads() {
     let gate = Arc::new(tokio::sync::RwLock::new(()));
-    let first_read = super::stream_tools::execution_guard(gate.clone(), true).await;
-    let mut write = Box::pin(super::stream_tools::execution_guard(gate.clone(), false));
+    let first_read = super::early_tool_executor::execution_guard(gate.clone(), true).await;
+    let mut write = Box::pin(super::early_tool_executor::execution_guard(
+        gate.clone(),
+        false,
+    ));
     assert!(futures_util::poll!(&mut write).is_pending());
-    let mut later_read = Box::pin(super::stream_tools::execution_guard(gate, true));
+    let mut later_read = Box::pin(super::early_tool_executor::execution_guard(gate, true));
     assert!(futures_util::poll!(&mut later_read).is_pending());
     drop(first_read);
     let write = write.await;
@@ -312,7 +403,7 @@ async fn stream_write_then_read_observes_completed_mutation() {
 }
 
 #[tokio::test]
-async fn recovered_write_repeated_with_same_call_id_executes_once() {
+async fn recovered_write_plus_new_read_keeps_exact_order_and_executes_write_once() {
     struct RepeatWrite(AtomicUsize);
     #[async_trait::async_trait]
     impl iteron_provider::Provider for RepeatWrite {
@@ -334,14 +425,40 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
                         "connection reset by peer".into(),
                     ));
                 }
+                let read = ToolUse {
+                    id: "new-read-id".into(),
+                    name: "counted_read".into(),
+                    input: serde_json::json!({}),
+                };
+                on_item(iteron_provider::StreamItem::ToolUseComplete(read.clone()));
                 return Ok(iteron_provider::TurnResult {
-                    blocks: vec![Block::ToolUse(call)],
+                    blocks: vec![Block::ToolUse(call), Block::ToolUse(read)],
                     stop_reason: StopReason::ToolUse,
                     usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
                 });
             }
-            assert!(request.messages.last().unwrap().content.iter().any(|block| matches!(block,
-                Block::ToolResult(result) if result.tool_use_id == "recovered-write-id" && !result.is_error)));
+            let results = request
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .iter()
+                .filter_map(|block| {
+                    if let Block::ToolResult(result) = block {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results.len(),
+                2,
+                "replayed calls must retain their original result slots"
+            );
+            assert_eq!(results[0].tool_use_id, "recovered-write-id");
+            assert_eq!(results[1].tool_use_id, "new-read-id");
+            assert!(results.iter().all(|result| !result.is_error));
             Ok(iteron_provider::TurnResult {
                 blocks: vec![Block::Text {
                     text: "done".into(),
@@ -354,6 +471,7 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
     let workspace = super::gate_integration_tests::temp_ws("recovery-write-dedup");
     let run = iteron_protocol::RunId("recovery-write-dedup".into());
     let executions = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(AtomicUsize::new(0));
     let counter = executions.clone();
     let mut registry = iteron_tools::Registry::coding_agent(&workspace).unwrap();
     registry
@@ -371,6 +489,30 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
                     ToolResult {
                         tool_use_id: call.id,
                         content: "one mutation".into(),
+                        is_error: false,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    }
+                })
+            },
+        )
+        .unwrap();
+    let read_counter = reads.clone();
+    registry
+        .register_external(
+            iteron_protocol::ToolSpec {
+                name: "counted_read".into(),
+                description: "test-only newly admitted read".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _root| {
+                read_counter.fetch_add(1, Ordering::SeqCst);
+                iteron_tools::boxfut::box_it(async move {
+                    ToolResult {
+                        tool_use_id: call.id,
+                        content: "new read".into(),
                         is_error: false,
                         trust: Trust::Workspace,
                         latency_ms: 0,
@@ -413,6 +555,7 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
         Outcome::Done
     );
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
     let events = iteron_record::replay(
         &workspace
             .join(".iteron/runs")

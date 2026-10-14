@@ -12,7 +12,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     operator_default!("max_tokens"),                   // 7 max_tokens
     literal_default!(integer_value!(86_400)),          // 8 max_wall_secs
     literal_default!(boolean_value!(true)),            // 9 allow_code
-    literal_default!(enum_value!("acceptEdits")),      // 10 permission_mode
+    literal_default!(enum_value!("yolo")),             // 10 permission_mode
     derived_default!("permission_rules"),              // 11 permission_rules
     literal_default!(boolean_value!(true)),            // 12 bypass_permissions
     derived_default_with_value!(
@@ -92,13 +92,16 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("workflow_aggregate"),  // 65 workflow_aggregate
     derived_default!("schema_retry_jitter"), // 66 schema_retry_jitter
     derived_default_with_value!("provider_connect_tls_timeout", integer_value!(10)), // 67 provider_connect_tls_timeout
-    literal_default!(object_value!(
-        "max_images" => integer_value!(8),
-        "per_image_raw_bytes" => integer_value!(25_165_824),
-        "aggregate_raw_bytes" => integer_value!(25_165_824),
-        "max_dimension" => integer_value!(8_192),
-        "max_frames" => integer_value!(256),
-    )), // 68 multimodal_input_admission_decode_envelope
+    derived_default_with_value!(
+        "multimodal_input_admission_decode_envelope",
+        object_value!(
+            "max_images" => integer_value!(8),
+            "per_image_raw_bytes" => integer_value!(25_165_824),
+            "aggregate_raw_bytes" => integer_value!(25_165_824),
+            "max_dimension" => integer_value!(8_192),
+            "max_frames" => integer_value!(256),
+        )
+    ), // 68 multimodal_input_admission_decode_envelope
     derived_default_with_value!(
         "app_server_sq_eq_backpressure",
         object_value!(
@@ -109,12 +112,15 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
             "authoritative_overflow" => enum_value!("wait"),
         )
     ), // 69 app_server_sq_eq_backpressure
-    literal_default!(object_value!(
-        "eager_budget_milliseconds" => integer_value!(0),
-        "positive_ttl_seconds" => integer_value!(900),
-        "failure_backoff_base_seconds" => integer_value!(60),
-        "failure_backoff_cap_seconds" => integer_value!(86_400),
-    )), // 70 provider_discovery_account_probe_cache_policy
+    derived_default_with_value!(
+        "provider_discovery_account_probe_cache_policy",
+        object_value!(
+            "eager_budget_milliseconds" => integer_value!(0),
+            "positive_ttl_seconds" => integer_value!(900),
+            "failure_backoff_base_seconds" => integer_value!(60),
+            "failure_backoff_cap_seconds" => integer_value!(86_400),
+        )
+    ), // 70 provider_discovery_account_probe_cache_policy
     operator_default!("operator_prompt_stream"), // 71 operator_prompt_stream
     catalog_default!("builtin_prompt_corpus"),   // 72 builtin_prompt_corpus
     catalog_default!("instruction_bundle"),      // 73 instruction_bundle

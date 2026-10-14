@@ -1,66 +1,10 @@
-//! Bounded selection of restart-sidecar candidates plus its isolated tests.
-//!
-//! Sidecar interpretation remains in `crate::workflow`, next to the readers used by
-//! `iteron workflow list|resume|watch`. This module chooses which recent directories are affordable
-//! on the first-frame path and delegates each winner to that one command-owned reader.
-
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::path::Path;
-
-/// Timestamp given to a run id whose hex fields do not parse. Legacy ids sort last as a block and
-/// then fall back to lexicographic id order, which is why the floor is the minimum, not a guess.
-const UNPARSED_RUN_TIMESTAMP: u128 = 0;
-
-/// Reuse the command-side sidecar reader for at most `limit` recently-active run directories.
-///
-/// Fresh run ids carry their creation nanoseconds (both `wf_<nanos>_<seq>` and the standalone
-/// command's older `wf_<pid>_<nanos>` shape), so recency needs no `stat` per stale entry. A bounded
-/// min-heap keeps ordering work and memory at `O(entries * log(limit))` / `O(limit)`; only the
-/// winning candidates have sidecars opened. Legacy ids with no timestamp fall back to id order.
-pub(crate) fn restore(workflows_dir: &Path, limit: usize) -> Vec<crate::workflow::RunListing> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let Ok(entries) = std::fs::read_dir(workflows_dir) else {
-        return Vec::new();
-    };
-    let mut newest = BinaryHeap::with_capacity(limit.saturating_add(1));
-    for entry in entries.flatten() {
-        let run_id = entry.file_name().to_string_lossy().into_owned();
-        newest.push(Reverse((run_timestamp(&run_id), run_id)));
-        if newest.len() > limit {
-            newest.pop();
-        }
-    }
-    let mut candidates: Vec<_> = newest
-        .into_iter()
-        .map(|Reverse(candidate)| candidate)
-        .collect();
-    candidates.sort_by(|left, right| right.cmp(left));
-    candidates
-        .into_iter()
-        .filter_map(|(_, run_id)| crate::workflow::load_run_listing(workflows_dir, run_id))
-        .collect()
-}
-
-fn run_timestamp(run_id: &str) -> u128 {
-    let mut parts = run_id.strip_prefix("wf_").unwrap_or_default().split('_');
-    let first = parts
-        .next()
-        .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(iteron_tunables::param_integer(
-            "cli.tui.workflow_rehydrate.unparsed_run_timestamp",
-            UNPARSED_RUN_TIMESTAMP,
-        ));
-    let second = parts
-        .next()
-        .and_then(|part| u128::from_str_radix(part, 16).ok())
-        .unwrap_or(iteron_tunables::param_integer(
-            "cli.tui.workflow_rehydrate.unparsed_run_timestamp",
-            UNPARSED_RUN_TIMESTAMP,
-        ));
-    first.max(second)
+//! Native restart fixtures. Production uses the trusted workflow-domain inventory receipt.
+#[cfg(test)]
+pub(super) fn restore(
+    workflows_dir: &std::path::Path,
+    limit: usize,
+) -> Vec<crate::workflow::RunListing> {
+    crate::workflow::restored_inventory(workflows_dir, limit).rows
 }
 
 #[cfg(test)]
@@ -85,7 +29,9 @@ mod tests {
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch workflows directory");
-            Self { dir }
+            Self {
+                dir: std::fs::canonicalize(dir).expect("actual scratch directory"),
+            }
         }
 
         fn path(&self) -> &Path {
@@ -269,13 +215,6 @@ mod tests {
 
     #[test]
     fn workflow_rehydrate_orders_both_time_ordered_id_shapes_by_recency() {
-        assert_eq!(super::run_timestamp("wf_20_1"), 0x20);
-        assert_eq!(
-            super::run_timestamp("wf_2_30"),
-            0x30,
-            "the standalone command writes pid before nanoseconds"
-        );
-
         let scratch = Scratch::new("recency");
         completed_run(scratch.path(), "wf_10_1", "old", 1, 300);
         completed_run(scratch.path(), "wf_20_2", "middle", 1, 200);

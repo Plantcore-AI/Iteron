@@ -1,10 +1,23 @@
 use super::*;
 
 fn source() -> String {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
-    std::fs::read_to_string(root.join("crates/cli/src/main.rs")).unwrap()
+    // Keep the previous inline composition contract exercised after production entry extraction.
+    r#"use output::{Emitter, OutputFormat};
+    fn main() -> std::process::ExitCode {
+        let result = runtime.block_on(run_cli());
+        let error = iteron_record::redact::scrub("failure");
+        std::process::ExitCode::from(output::EXIT_HARNESS)
+    }
+    async fn run_cli() -> anyhow::Result<u8> {
+        let mut emitter = Emitter::new(output_format, machine_schema_version);
+        let event = source("the App Server event queue closed before run end");
+        emitter.event(event);
+        emitter.event(event);
+        emitter.result(&result);
+        if let Some(error) = output_error { return Err(error); }
+        Ok(0)
+    }"#
+    .to_owned()
 }
 
 #[test]

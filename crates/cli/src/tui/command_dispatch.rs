@@ -6,7 +6,7 @@ use super::*;
 /// segments than a screen holds, and the totals printed above the list stay readable only if the
 /// list itself stops.
 const LEDGER_SEGMENT_ROWS: usize = 24;
-fn queue_command_control(
+pub(super) fn queue_command_control(
     app: &mut App,
     session: &Session,
     effects: &mut transcript_effect::Supervisor,
@@ -34,7 +34,7 @@ fn queue_command_control(
 pub(super) fn handle_registered_command(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     command: SlashCommand,
@@ -75,24 +75,14 @@ pub(super) fn handle_registered_command(
                         return;
                     }
                 };
-                match directory.clear_model_unavailable_for_retry(&selection) {
-                    Ok(true) => queue_model_selection(
-                        app,
-                        session,
-                        directory,
-                        transcript_effects,
-                        interrupt,
-                        selection,
-                    ),
-                    Ok(false) => app.note(
-                        block::NoticeLevel::Warn,
-                        "that model is not blocked; normal /model selection is unchanged",
-                    ),
-                    Err(error) => app.note(
-                        block::NoticeLevel::Err,
-                        format!("cannot retry model: {error}"),
-                    ),
-                }
+                super::provider_catalog_client::queue_retry(
+                    app,
+                    session,
+                    directory,
+                    transcript_effects,
+                    interrupt,
+                    selection,
+                );
             } else {
                 match directory.resolve_model(arg, Some(&app.route.provider_id)) {
                     Ok(selection) => queue_model_selection(
@@ -432,7 +422,28 @@ pub(super) fn handle_registered_command(
                         "deny" => Some(Verdict::Deny),
                         _ => None,
                     };
-                    let cap = sub.next().and_then(parse_cap);
+                    let target = sub.next();
+                    if let (Some(verdict), Some(tool)) = (
+                        verdict,
+                        target.and_then(|target| target.strip_prefix("tool:")),
+                    ) {
+                        queue_command_control(
+                            app,
+                            session,
+                            transcript_effects,
+                            interrupt,
+                            app_server::Control::SetToolRule {
+                                tool: tool.to_owned(),
+                                verdict,
+                            },
+                            transcript_effect::ControlKind::ToolRule {
+                                tool: tool.to_owned(),
+                                verdict,
+                            },
+                        );
+                        return;
+                    }
+                    let cap = target.and_then(parse_cap);
                     match (verdict, cap) {
                         (Some(v), Some(c)) => {
                             queue_permission_capability(
@@ -706,115 +717,79 @@ pub(super) fn handle_registered_command(
         }
         SlashCommand::Diff => {
             let stat = arg.trim() == "stat";
-            workspace_command::queue_diff(app, session.workspace().to_path_buf(), stat);
+            workspace_command::queue_diff(app, session, stat);
         }
         SlashCommand::Sessions => {
-            handle_sessions_command(app, session, directory, arg);
+            handle_sessions_command(app, session, directory, transcript_effects, interrupt, arg);
         }
         SlashCommand::Workflows => {
-            queue_command_control(
-                app,
-                session,
-                transcript_effects,
-                interrupt,
-                app_server::Control::Workflow(app_server::WorkflowControl::Inventory),
-                transcript_effect::ControlKind::WorkflowsInventory,
-            );
-        }
-        SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
-        SlashCommand::Fork => {
-            // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
-            let path = session.rollout_path().to_path_buf();
-            let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            match iteron_record::replay(&path) {
-                Ok(events) if !events.is_empty() => {
-                    let at = events.last().map(|e| e.seq).unwrap();
-                    match iteron_record::fork(
-                        &runs,
-                        &iteron_protocol::RunId(stem),
-                        at,
-                        &iteron_protocol::TenantId::default(),
-                    ) {
-                        Ok(child) => {
-                            app.note(
-                                block::NoticeLevel::Ok,
-                                format!("forked {child} · adopting the divergent branch"),
-                            );
-                            start_adopt_session(app, session, directory, child.0);
-                        }
-                        Err(e) => app.push(fg(Color::Red), format!("fork failed: {e}")),
-                    }
-                }
-                Ok(_) => app.push(fg(Color::Red), "nothing to fork yet"),
-                Err(e) => app.push(fg(Color::Red), format!("cannot read this session: {e}")),
+            if let Some(argument) = arg.strip_prefix("live ") {
+                super::live_workflows::queue(app, session, transcript_effects, interrupt, argument);
+            } else if arg.trim() == "live" {
+                app.note(block::NoticeLevel::Info, "/workflows live open|read|pump ID | interrupt|reconcile ID NODE | replan ID REQUEST_ID JSON");
+            } else {
+                queue_command_control(
+                    app,
+                    session,
+                    transcript_effects,
+                    interrupt,
+                    app_server::Control::Workflow(app_server::WorkflowControl::Inventory),
+                    transcript_effect::ControlKind::WorkflowsInventory,
+                );
             }
         }
+        SlashCommand::Artifacts => super::artifacts::render(app, session, arg),
+        SlashCommand::Extensions => {
+            super::ordinary_extensions::queue(app, session, transcript_effects, interrupt, arg)
+        }
+        SlashCommand::Plugins => {
+            super::plugins::queue(app, session, transcript_effects, interrupt, arg)
+        }
+        SlashCommand::ActivityCenter => {
+            super::activity_center::queue(app, session, transcript_effects, interrupt, arg)
+        }
+        SlashCommand::Finalization => super::turn_publication::render(app, session),
+        SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
+        SlashCommand::Fork => super::session_adoption::start_fork_session(app, session),
         SlashCommand::Agents => {
-            show_agent_catalog(app, session);
+            if arg.trim().is_empty() || arg.trim() == "definitions" {
+                show_agent_catalog(app, session);
+            } else {
+                super::persistent_agents::queue(app, session, transcript_effects, interrupt, arg);
+            }
         }
         SlashCommand::Skills => {
-            let home = crate::config::config_home();
-            let cat = iteron_ctx::skills::SkillCatalog::discover_for_operator_with_dependencies(
-                home.as_deref(),
-                session.workspace(),
-                session.dependency_skill_dirs(),
-            );
-            let mut rows: Vec<block::PanelRow> = cat
-                .defs()
-                .iter()
-                .map(|s| item("◇", &s.name, &skill_hint(&s.description)))
-                .collect();
-            if rows.is_empty() {
-                rows.push(block::PanelRow::Note(
-                    "no skills (add <repo>/.iteron/skills or <repo>/.agents/skills)".into(),
-                ));
-            }
-            for e in cat.errors() {
-                rows.push(block::PanelRow::Note(format!(
-                    "rejected: {} ({})",
-                    e.source, e.reason
-                )));
-            }
-            app.panel("◇", "skills", rows);
+            super::inventory::queue(app, session, transcript_effects, interrupt, "skills")
         }
         SlashCommand::Config => {
-            // `/config` used to re-read the REPOSITORY config document, so it reported what was on
-            // disk instead of the layered value the kernel enforces: `iteron --max-turns 5` printed
-            // `max_turns: default`. It reads the one resolved route and the same effective limits
-            // the budget was built from (I-26).
-            let mut rows: Vec<block::PanelRow> = app
-                .route
-                .rows()
-                .iter()
-                .map(|(key, value)| kv(key, value))
-                .collect();
-            rows.push(kv(
-                "harness profile",
-                session.runtime_profile_id().unwrap_or("unrecognized"),
-            ));
-            rows.push(kv(
-                "tunables digest",
-                session.tunables_effective_digest().unwrap_or("not pinned"),
-            ));
-            rows.push(kv("effort", session.effort().label()));
-            rows.push(kv("mode", &permission_mode_row_value(session)));
-            for (key, value) in app.route.limits.rows() {
-                rows.push(kv(key, &value));
-            }
-            rows.push(block::PanelRow::Note(
-                "persist a choice with `iteron config set <key> <value>`".into(),
-            ));
-            app.panel("⚙", "config", rows);
+            super::inventory::queue(app, session, transcript_effects, interrupt, arg)
         }
         SlashCommand::Tunables => {
             let requested = arg.trim();
-            if requested == "registry" || requested == "load" || requested.starts_with("load ") {
+            if requested == "registry" || requested == "load" {
                 open_tunables_picker(app, session, arg);
+                return;
+            }
+            if let Some(path) = requested.strip_prefix("load ") {
+                let Some(scope) = session.client.thread_snapshot_v1() else {
+                    app.note(
+                        block::NoticeLevel::Err,
+                        "tunables simulation has no current session",
+                    );
+                    return;
+                };
+                queue_command_control(
+                    app,
+                    session,
+                    transcript_effects,
+                    interrupt,
+                    app_server::Control::TunablesSimulation(app_server::TunablesLoadV1 {
+                        thread_id: scope.thread_id,
+                        run_id: scope.run_id,
+                        relative_path: path.trim().to_owned(),
+                    }),
+                    transcript_effect::ControlKind::TunablesSimulation,
+                );
                 return;
             }
             queue_command_control(
@@ -829,7 +804,7 @@ pub(super) fn handle_registered_command(
             );
         }
         SlashCommand::Lab => {
-            experiment_lab::handle(app, session, arg);
+            experiment_lab::queue(app, session, transcript_effects, interrupt, arg);
         }
         SlashCommand::Login => {
             // The credential half of the setup state machine deliberately does NOT run here. A
@@ -913,61 +888,30 @@ pub(super) fn handle_registered_command(
             } else {
                 (arg.trim(), transcript_export::CollisionPolicy::Refuse)
             };
-            schedule_slash_export(
-                app,
-                session.workspace(),
-                session.rollout_path(),
-                transcript_effects,
-                requested,
-                collision,
-            );
+            schedule_slash_export(app, session, transcript_effects, requested, collision);
         }
         SlashCommand::Init => {
-            let dir = match ensure_real_workspace_dir(session.workspace(), ".iteron") {
-                Ok(dir) => dir,
-                Err(error) => {
-                    app.push(fg(Color::Red), format!("init refused: {error}"));
-                    return;
-                }
-            };
-            let cfg = dir.join("config.json");
-            if cfg.exists() {
-                app.push(
-                    dim(),
-                    format!("{} already exists — not overwritten", cfg.display()),
+            let Some(scope) = session.client.thread_snapshot_v1() else {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "project initialization has no current host scope",
                 );
-            } else {
-                // Repository config can only choose a bare model and tighten ceilings. Provider,
-                // MCP, hooks, effort, and grants belong in trusted ~/.iteron/config.json.
-                let starter = crate::config::starter_project_config();
-                match write_new_synced(&cfg, starter.as_bytes()) {
-                    Ok(_) => app.push(fg(Color::Green), format!("wrote {}", cfg.display())),
-                    Err(e) => app.push(fg(Color::Red), format!("init failed: {e}")),
-                }
-            }
-            let agents_md = session.workspace().join("AGENTS.md");
-            if !agents_md.exists() {
-                match write_new_synced(
-                    &agents_md,
-                    b"# Project instructions for coding agents\n\n- (describe build/test commands, conventions, and gotchas here)\n",
-                ) {
-                    Ok(()) => app.push(
-                        fg(Color::Green),
-                        format!("wrote {}", agents_md.display()),
-                    ),
-                    Err(error) => {
-                        app.push(fg(Color::Red), format!("init failed: {error}"));
-                    }
-                }
-            }
+                return;
+            };
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::ProjectInit(Box::new(app_server::ProjectInitV1 {
+                    thread_id: scope.thread_id,
+                    run_id: scope.run_id,
+                })),
+                transcript_effect::ControlKind::ProjectInit,
+            );
         }
         SlashCommand::Rewind => {
-            workspace_command::queue_rewind(
-                app,
-                session.workspace().to_path_buf(),
-                session.rollout_path().to_path_buf(),
-                arg.to_owned(),
-            );
+            workspace_command::queue_rewind(app, session, arg.to_owned());
         }
         SlashCommand::Resume => {
             if arg.is_empty() {
@@ -991,18 +935,29 @@ pub(super) fn handle_registered_command(
 }
 
 pub(super) fn show_help(app: &mut App) {
+    let everyday = [
+        "model", "effort", "mode", "resume", "sessions", "fork", "diff", "context", "status",
+        "quit",
+    ];
     let mut rows: Vec<block::PanelRow> = commands::COMMANDS
         .iter()
+        .filter(|command| everyday.contains(&command.name))
         .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
         .collect();
-    rows.push(block::PanelRow::Note("keys: drag selects · wheel/trackpad scrolls transcript · ↑↓ prompt history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-C interrupt".into()));
     rows.push(block::PanelRow::Note(
-        "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
+        "Write: Enter send · Ctrl-J newline · Ctrl-G editor · @ attach · ! shell".into(),
     ));
     rows.push(block::PanelRow::Note(
-        "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
+        "Browse: Ctrl-P sessions · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-O expand details".into(),
     ));
-    app.panel("?", "commands", rows);
+    rows.push(block::PanelRow::Note(
+        "While running: Enter steer · Tab queue · Alt-Up review pending · Esc stop · Ctrl-End latest".into(),
+    ));
+    rows.push(block::PanelRow::Note(
+        "Select: Ctrl-T terminal selection · Shift+Tab permission mode · / searches all commands"
+            .into(),
+    ));
+    app.panel("?", "Quick guide", rows);
 }
 
 pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryControlReply) {
@@ -1022,27 +977,4 @@ pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryContro
             app.push(fg(Color::Red), format!("no memory {id}"));
         }
     }
-}
-
-/// One scannable line for a `/skills` row.
-///
-/// A `SKILL.md` description is prose written for the model — several sentences, and in CJK a
-/// "120 character" description is ~360 bytes. Rendered verbatim, every row wrapped to three or
-/// more lines and the panel stopped being a list. opencode truncates its list rows for the same
-/// reason; the full text is one `use_skill` away. Counts CHARACTERS, so the budget means the same
-/// thing in every script.
-fn skill_hint(description: &str) -> String {
-    // Roughly one row at a common terminal width, minus the label column.
-    let skill_hint_chars =
-        iteron_tunables::param_usize("cli.tui.command_dispatch.skill_hint_chars", 88);
-    let flat: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= skill_hint_chars {
-        return flat;
-    }
-    let mut out: String = flat
-        .chars()
-        .take(skill_hint_chars.saturating_sub(1))
-        .collect();
-    out.push('…');
-    out
 }

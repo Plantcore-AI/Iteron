@@ -65,7 +65,7 @@ impl Agent {
             Some(turn_id),
             LifecyclePayload::default(),
         );
-        let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+        let (physical, admission) = self.admit_funded_provider_dispatch(turn_id, req).await?;
         let usd_attempt = admission.attempt_guard;
         let primary_route_permit = admission.primary_route_permit;
         let use_hedge = admission.use_hedge;
@@ -90,13 +90,23 @@ impl Agent {
             };
             let model_started = Instant::now();
             let response = self
-                .brokered_provider_turn(turn_id, &req, &mut sink, primary_route_permit, use_hedge)
+                .brokered_provider_turn(
+                    turn_id,
+                    physical,
+                    &mut sink,
+                    primary_route_permit,
+                    use_hedge,
+                )
                 .await;
             (response, model_started)
         };
         let (response, model_started) = response;
         let text = match response {
-            Ok(r) => {
+            Ok(physical_response) => {
+                let super::provider_attempt_journal::ProviderPhysicalResponse {
+                    result: r,
+                    usage_evidence,
+                } = physical_response;
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
                         ttft_ms: Some(iteron_obs::duration_ms_ceil(
@@ -111,7 +121,7 @@ impl Agent {
                     turn_id,
                     r.usage,
                     model_started.elapsed().as_millis() as u64,
-                    usd_attempt.projected_at_unix_secs(),
+                    &usage_evidence,
                     stream_timing,
                 )?;
                 self.emit_plantcore_turn_usage(turn_id)?;

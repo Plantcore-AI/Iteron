@@ -68,7 +68,7 @@ impl Agent {
                 .collect::<Vec<_>>(),
         });
         let collaboration = iteron_workflow::CollaborationStrategy::select_with(
-            self.collaboration.as_ref(),
+            self.compiled_policy_bundle.slots().collaboration.as_ref(),
             &iteron_workflow::CollaborationObservation {
                 version: iteron_workflow::COLLABORATION_SLOT_VERSION,
                 active_workers,
@@ -214,11 +214,8 @@ impl Agent {
         }
 
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
-            iteron_tunables::param_integer(
-                "cli.runtime.workflow_fan_progress_capacity",
-                256usize,
-            )
-            .max(1),
+            iteron_tunables::param_integer("cli.runtime.workflow_fan_progress_capacity", 256usize)
+                .max(1),
         );
         let channel_sink: std::sync::Arc<dyn iteron_workflow::ProgressSink> =
             std::sync::Arc::new(WorkflowProgressChannel { tx: progress_tx });
@@ -440,14 +437,18 @@ impl Agent {
         summaries.sort_by_key(|summary| summary.idx);
 
         if report.stopped {
-            if let Some(outcome) =
-                self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await?
+            if let Some(outcome) = self
+                .collect_and_finish_requested_control(TurnId(self.seq_turn))
+                .await?
             {
                 return Ok(FanRun::Stopped(outcome));
             }
             return Ok(FanRun::Stopped(Outcome::Interrupted));
         }
-        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await? {
+        if let Some(outcome) = self
+            .collect_and_finish_requested_control(TurnId(self.seq_turn))
+            .await?
+        {
             return Ok(FanRun::Stopped(outcome));
         }
         Ok(FanRun::Completed(summaries))

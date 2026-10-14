@@ -4,6 +4,71 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn tool_pixels_stay_out_of_jsonl_and_hydrate_only_through_owned_private_cas() {
+    use iteron_protocol::{
+        ImageContent, ImageMediaType, TurnId,
+        tool_image::{ToolImageObservationV1, ToolImageScopeV1},
+    };
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("tool-image-private-cas".into());
+    let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+    let image = ToolImageObservationV1 {
+        version: 1,
+        owner_tenant: iteron_protocol::TenantId::default(),
+        owner_run: iteron_protocol::RunId("tool-image-private-cas".into()),
+        tool_use_id: "vision-call".into(),
+        terminal_seq: Seq(7),
+        observed_unix_ms: 42,
+        source_url_display: "https://example.com/".into(),
+        scope: ToolImageScopeV1::IsolatedBrowserViewport,
+        artifact_id: "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f".into(),
+        width: 1,
+        height: 1,
+        image: ImageContent::new(ImageMediaType::Png, data).unwrap(),
+    };
+    let event = iteron_protocol::Event {
+        seq: Seq(8),
+        turn: TurnId(0),
+        kind: iteron_protocol::EventKind::ToolImageObservedV1 {
+            observation: image.clone(),
+        },
+    };
+    let redacted = crate::redact::redact_event(&event);
+    let mut payload = serde_json::to_value(redacted).unwrap();
+    externalize_event_payload(&dir, &tenant, &run, Seq(8), &mut payload).unwrap();
+    let wire = serde_json::to_string(&payload).unwrap();
+    assert!(!wire.contains(data));
+    assert!(wire.contains(&image.artifact_id));
+    let sources = private_content_sources_for_run(&dir, &tenant, &run).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].owner, run);
+    let edges = std::fs::read_dir(Layout::new(&dir, &tenant).run_reference_dir(&run))
+        .unwrap()
+        .map(|entry| {
+            serde_json::from_slice::<model::ReferenceEdge>(
+                &std::fs::read(entry.unwrap().path()).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.surface == ContentReferenceSurface::ToolArtifact
+                && edge.field_class == "tool_image")
+    );
+    hydrate_event_payload(&dir, &tenant, &mut payload).unwrap();
+    let hydrated: iteron_protocol::Event = serde_json::from_value(payload).unwrap();
+    let iteron_protocol::EventKind::ToolImageObservedV1 { observation } = hydrated.kind else {
+        panic!()
+    };
+    assert_eq!(observation, image);
+    observation.validate().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn test_dir() -> PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -46,6 +111,143 @@ fn authoritative_record_waits_for_a_transient_derivative_store_writer() {
         )),
         Some(&serde_json::Value::from(STORE_VERSION))
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn graph_readers_wait_for_incomplete_derivative_publication() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("graph-reader-publication".into());
+    let source = put_private_content(
+        &dir,
+        &tenant,
+        &run,
+        Seq(1),
+        PrivateContentClass::Transcript,
+        PrivateContentRetention::Session,
+        b"actual record source",
+        0,
+    )
+    .unwrap();
+    let store = PrivateContentDerivativeStore::open_registered(
+        &dir,
+        tenant.clone(),
+        run.clone(),
+        PrivateContentNamespace::ToolArtifact,
+        PrivateContentClass::ToolOutput,
+        PrivateContentRetention::Session,
+        1024,
+    )
+    .unwrap();
+    let expected = vec![PrivateContentSource {
+        owner: run.clone(),
+        digest: source.digest,
+    }];
+    let artifact = store
+        .put_derived(Seq(2), b"actual derivative", &expected)
+        .unwrap();
+    let layout = Layout::new(&dir, &tenant);
+    let writer = lock_store(&layout).unwrap();
+    // atomic_replace_private writes a scratch member in the edge directory before rename.
+    // An in-progress member is not a committed reference and must never reach graph readers.
+    let scratch = layout
+        .run_reference_dir(&run)
+        .join(".core-session-cache-pending.tmp");
+    std::fs::write(&scratch, b"{").unwrap();
+    // Each synchronous read exhausts only the existing finite store acquisition window.
+    // A missing lease would instead parse the writer-owned scratch member as a reference.
+    let guarded = guard_private_content_for_run(&dir, &tenant, &run);
+    let inventoried = private_content_sources_for_run(&dir, &tenant, &run);
+    // Complete publication before asserting; no failure can strand the held writer.
+    std::fs::remove_file(scratch).unwrap();
+    drop(writer);
+    assert!(matches!(guarded, Err(ContentStoreError::Busy)));
+    assert!(matches!(inventoried, Err(ContentStoreError::Busy)));
+    assert_eq!(
+        guard_private_content_for_run(&dir, &tenant, &run).unwrap(),
+        1
+    );
+    assert_eq!(
+        private_content_sources_for_run(&dir, &tenant, &run).unwrap(),
+        expected
+    );
+    assert_eq!(
+        store.read_at(Seq(2), &artifact).unwrap(),
+        b"actual derivative"
+    );
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn retained_artifact_waits_for_store_lease_and_preserves_actual_source_lineage() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let source = RunId("artifact-source-contention".into());
+    let owner = RunId("artifact-owner-contention".into());
+    let source_handle = put_private_content(
+        &dir,
+        &tenant,
+        &source,
+        Seq(1),
+        PrivateContentClass::Transcript,
+        PrivateContentRetention::Session,
+        b"actual retained source",
+        0,
+    )
+    .unwrap();
+    let store = PrivateContentDerivativeStore::open_registered(
+        &dir,
+        tenant.clone(),
+        owner,
+        PrivateContentNamespace::ToolArtifact,
+        PrivateContentClass::ToolOutput,
+        PrivateContentRetention::Session,
+        1024,
+    )
+    .unwrap();
+    let sources = [PrivateContentSource {
+        owner: source,
+        digest: source_handle.digest,
+    }];
+    let layout = Layout::new(&dir, &tenant);
+    let lock = lock_store(&layout).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(lock);
+    });
+
+    let result = store.put_derived(Seq(2), b"actual retained artifact", &sources);
+    release.join().unwrap();
+    let handle = result.expect("a transient record writer must not abort retained publication");
+    // Hydration also races the actual background publisher. A different thread releases its
+    // exclusive lease, so this blocking read never relies on its own caller to unblock it.
+    let lock = lock_store(&layout).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(lock);
+    });
+    let retained = store.read_at(Seq(2), &handle);
+    release.join().unwrap();
+    assert_eq!(
+        retained.expect("a transient publisher must not abort retained hydration"),
+        b"actual retained artifact"
+    );
+    // A lease which never becomes available still refuses after the same finite acquisition
+    // window. It cannot return cached bytes or relabel contention as corrupt/missing content.
+    let lock = lock_store(&layout).unwrap();
+    assert!(matches!(
+        store.read_at(Seq(2), &handle),
+        Err(ContentStoreError::Busy)
+    ));
+    drop(lock);
+    assert_eq!(store.sources_at(Seq(2), &handle).unwrap(), sources);
+    assert!(matches!(
+        store.read_at(Seq(3), &handle),
+        Err(ContentStoreError::Unresolved { .. })
+    ));
+    drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

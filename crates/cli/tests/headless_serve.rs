@@ -2,6 +2,8 @@ use iteron_protocol::wire::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 #[cfg(unix)]
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(not(feature = "legacy-plantcore"))]
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -60,10 +62,12 @@ struct CoreProcess {
     child: Child,
     listening: Receiver<Result<SocketAddr, String>>,
     stderr: Option<thread::JoinHandle<Vec<u8>>>,
+    startup_stage: &'static str,
 }
 
 struct Scratch {
     root: PathBuf,
+    signed_pricing: bool,
 }
 
 impl Scratch {
@@ -71,10 +75,16 @@ impl Scratch {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("core-headless-serve-{}-{id}", std::process::id()));
-        let scratch = Self { root };
+        let mut scratch = Self {
+            root,
+            signed_pricing: false,
+        };
         fs::create_dir_all(scratch.repo()).unwrap();
         fs::create_dir_all(scratch.home().join(".iteron")).unwrap();
         fs::create_dir_all(scratch.runs()).unwrap();
+        // Native writers and reopened sessions require physical ancestors. On macOS the
+        // temporary root can arrive through /var, which aliases /private/var.
+        scratch.root = scratch.root.canonicalize().unwrap();
         let config = json!({
             "provider": PROVIDER_ID,
             "model": MODEL_ID,
@@ -178,33 +188,51 @@ impl PausedProvider {
     }
 
     fn spawn_inner(chunks: usize, respond: bool) -> Self {
+        Self::spawn_bounded(chunks, respond, 1)
+    }
+
+    fn spawn_two_requests() -> Self {
+        Self::spawn_bounded(1, true, 2)
+    }
+
+    fn spawn_bounded(chunks: usize, respond: bool, requests: usize) -> Self {
+        assert!((1..=2).contains(&requests));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (seen_tx, request_seen) = sync_channel(1);
         let (release, release_rx) = sync_channel(1);
         let (completed_tx, completed) = sync_channel(1);
         // The replay-fallback fixture must exceed the ring's aggregate byte bound. Single-response
-        // parity keeps its exact assistant text; the flood uses bounded 60 KiB thinking chunks for
-        // 18.75 MiB of diagnostic events, below the 32 MiB provider-output ceiling but above the
-        // 16 MiB replay-byte budget. Bound each harmless token below the scrubber's pending-token
-        // limit even if transport splits the chunk, testing replay retention rather than redaction.
+        // parity keeps its exact assistant text. The flood uses 120 bounded 60 KiB thinking chunks:
+        // 7.03 MiB of raw private text stays below the independent 8 MiB content-store ceiling,
+        // while JSON's escaping of the harmless NUL produces 18.75 MiB before frame metadata,
+        // exceeding the 16 MiB replay budget without changing any production capacity. Spaces
+        // bound each harmless token below the scrubber's pending-token limit even across splits.
         // Keeping the final assistant answer small also respects v7's independent 65,536-byte
         // assistant-message ceiling.
         let content = if chunks == 1 {
             "parity reply".to_owned()
         } else {
-            ("x".repeat(1023) + " ").repeat(60)
+            "\0x ".repeat(20 * 1024)
         };
         let thread = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("provider accepts one request");
-            stream.set_read_timeout(Some(io_timeout())).unwrap();
-            read_http_request(&mut stream);
-            seen_tx.send(()).unwrap();
-            release_rx
-                .recv_timeout(timeout())
-                .expect("test releases the provider response");
-            if respond {
-                write_success(&mut stream, chunks, &content);
+            for _ in 0..requests {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("provider accepts a bounded request");
+                stream.set_read_timeout(Some(io_timeout())).unwrap();
+                read_http_request(&mut stream);
+                seen_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(timeout())
+                    .expect("test releases the provider response");
+                if respond {
+                    if chunks > 1 {
+                        write_success_with_pacing(&mut stream, chunks, &content, Some(&release_rx));
+                    } else {
+                        write_success(&mut stream, chunks, &content);
+                    }
+                }
             }
             completed_tx.send(()).unwrap();
         });
@@ -268,13 +296,23 @@ fn read_http_request(stream: &mut TcpStream) {
 }
 
 fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
+    write_success_with_pacing(stream, chunks, content, None);
+}
+
+fn write_success_with_pacing(
+    stream: &mut TcpStream,
+    chunks: usize,
+    content: &str,
+    observed_chunk: Option<&Receiver<()>>,
+) {
     let event = if chunks == 1 {
         format!(
             "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
         )
     } else {
         format!(
-            "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
+            "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":{}}},\"finish_reason\":null}}],\"usage\":null}}\n\n",
+            serde_json::to_string(content).unwrap()
         )
     };
     let final_answer = (chunks > 1).then_some(
@@ -282,7 +320,7 @@ fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
     );
     let tail = concat!(
         "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
-        "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+        "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_creation_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
         "data: [DONE]\n\n",
     );
     let body_len = event
@@ -298,8 +336,10 @@ fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
     for _ in 0..chunks {
         stream.write_all(event.as_bytes()).unwrap();
         stream.flush().unwrap();
-        if chunks > 1 {
-            thread::sleep(Duration::from_millis(5));
+        if let Some(observed_chunk) = observed_chunk {
+            observed_chunk
+                .recv_timeout(timeout())
+                .expect("the client observed the actual flood chunk before the next write");
         }
     }
     if let Some(final_answer) = final_answer {
@@ -322,6 +362,15 @@ fn fresh_bearer_token() -> String {
 }
 
 fn core_command(scratch: &Scratch) -> Command {
+    core_command_with_launch(scratch, &scratch.repo(), 1, &[])
+}
+
+fn core_command_with_launch(
+    scratch: &Scratch,
+    workspace: &Path,
+    max_turns: u32,
+    launch_arguments: &[&str],
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
@@ -338,9 +387,9 @@ fn core_command(scratch: &Scratch) -> Command {
         .env("LANG", "C.UTF-8")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env(KEY_ENV, KEY)
-        .current_dir(scratch.repo())
+        .current_dir(workspace)
         .arg("--repo")
-        .arg(scratch.repo())
+        .arg(workspace)
         .arg("--runs-dir")
         .arg(scratch.runs())
         .arg("--provider")
@@ -350,7 +399,8 @@ fn core_command(scratch: &Scratch) -> Command {
         .arg("--effort")
         .arg("low")
         .arg("--max-turns")
-        .arg("1")
+        .arg(max_turns.to_string())
+        .args(launch_arguments)
         .arg("serve")
         .arg("--listen")
         .arg("127.0.0.1:0")
@@ -363,11 +413,29 @@ fn core_command(scratch: &Scratch) -> Command {
             }
         }
     }
+    if scratch.signed_pricing {
+        priced_route::install_key(&mut command);
+    }
     command
 }
 
 fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CoreProcess {
-    let mut child = core_command(scratch)
+    spawn_core_command_with_token_input(core_command(scratch), token_input)
+}
+
+fn spawn_core_command_with_token_input(mut command: Command, token_input: &[u8]) -> CoreProcess {
+    // Retain only the launch class; run IDs, arguments and authentication stay private.
+    let startup_stage = if command.get_args().any(|argument| {
+        argument == "--resume"
+            || argument
+                .to_str()
+                .is_some_and(|value| value.starts_with("--resume="))
+    }) {
+        "cold_resume"
+    } else {
+        "fresh"
+    };
+    let mut child = command
         .stdin(Stdio::piped())
         .spawn()
         .expect("spawn real headless iteron process");
@@ -412,6 +480,7 @@ fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CorePro
         child,
         listening,
         stderr: Some(stderr),
+        startup_stage,
     }
 }
 
@@ -438,18 +507,37 @@ fn wait_for_listening(process: &mut CoreProcess) -> SocketAddr {
             );
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            terminate_after_readiness_failure(process);
+            let diagnostic = terminate_after_readiness_failure(process);
             panic!(
-                "headless stderr closed while waiting for app_server listening log with bound address"
+                "headless stderr closed while waiting for app_server listening log with bound address: {diagnostic}"
             );
         }
     }
 }
 
-fn terminate_after_readiness_failure(process: &mut CoreProcess) {
+fn terminate_after_readiness_failure(process: &mut CoreProcess) -> String {
     let _ = process.child.kill();
-    let _ = process.child.wait();
-    let _ = take_stderr(process);
+    let status = process.child.wait();
+    let stderr = take_stderr(process);
+    // Preserve the product's public startup error through the existing secret scrubber. Keep
+    // arbitrary stderr/arguments out of the failure, and bound then escape the scrubbed text.
+    let bounded = &stderr[..stderr.len().min(64 * 1024)];
+    let text = String::from_utf8_lossy(bounded);
+    let public_error = text
+        .lines()
+        .find_map(|line| line.strip_prefix("error: "))
+        .map(iteron_record::redact::scrub)
+        .unwrap_or_else(|| "unobserved".into())
+        .chars()
+        .take(768)
+        .collect::<String>();
+    format!(
+        "stage={}, exit={status:?}, stderr_bytes={}, harness_error={}, stack_overflow={}, public_error={public_error:?}",
+        process.startup_stage,
+        stderr.len(),
+        text.lines().any(|line| line.starts_with("error: ")),
+        text.contains("stack overflow")
+    )
 }
 
 fn connect(address: SocketAddr) -> TcpStream {
@@ -467,6 +555,7 @@ fn send(stream: &mut TcpStream, value: Value) {
     stream.flush().unwrap();
 }
 
+#[track_caller]
 fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     let mut line = String::new();
     reader.read_line(&mut line).expect("read server frame");
@@ -475,7 +564,6 @@ fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     serde_json::from_str(&line).expect("server frame is JSON")
 }
 
-#[cfg(unix)]
 fn receive_result_within_timeout(reader: &mut BufReader<TcpStream>) -> Value {
     let deadline = Instant::now() + timeout();
     loop {
@@ -520,6 +608,384 @@ fn control(request_id: u64, protocol_version: u32, control: Value) -> Value {
         "request_id": request_id,
         "control": control,
     })
+}
+
+#[test]
+fn compatible_observer_cannot_mutate_or_upgrade_by_stamping_current_version() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    let mut observer = hello(&token, PROTOCOL_VERSION - 1, 0);
+    observer["observation_only"] = json!(true);
+    send(&mut connection, observer);
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let accepted = receive(&mut reader);
+    assert_eq!(accepted["type"], "hello");
+    assert_eq!(accepted["client_access"], "observe");
+    let rollout = only_rollout(&scratch.runs());
+    let before = fs::read(&rollout).unwrap();
+    for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION] {
+        send(
+            &mut connection,
+            control(1, version, json!({"type":"set_effort", "effort":"max"})),
+        );
+        assert_eq!(receive(&mut reader)["type"], "error");
+    }
+    send(
+        &mut connection,
+        json!({"type":"submit", "protocol_version":PROTOCOL_VERSION, "op":{"op":"user_input", "text":"must not run"}}),
+    );
+    assert_eq!(receive(&mut reader)["type"], "error");
+    assert_eq!(fs::read(&rollout).unwrap(), before);
+    send(
+        &mut connection,
+        control(2, PROTOCOL_VERSION - 1, json!({"type":"jobs_list"})),
+    );
+    let read = receive(&mut reader);
+    assert_eq!(read["type"], "control_reply");
+    assert_eq!(read["reply"]["type"], "jobs");
+    drop(reader);
+    drop(connection);
+    stop(child);
+}
+
+#[test]
+fn public_named_rules_and_owner_inventory_share_the_resident_control_plane() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    assert_eq!(receive(&mut reader)["type"], "hello");
+    send(
+        &mut connection,
+        control(
+            1,
+            PROTOCOL_VERSION,
+            json!({"type":"set_tool_rule", "tool":"bash:external", "verdict":"deny"}),
+        ),
+    );
+    let reply = receive(&mut reader);
+    assert_eq!(reply["reply"]["type"], "state");
+    assert!(
+        reply["reply"]["state"]["permission_rules"]
+            .to_string()
+            .contains("bash:external")
+    );
+    for operation in ["operator_status", "workflows_list", "mcp_status"] {
+        send(
+            &mut connection,
+            control(2, PROTOCOL_VERSION, json!({"type":operation})),
+        );
+        let reply = receive(&mut reader);
+        assert_eq!(reply["type"], "control_reply");
+        assert_ne!(reply["reply"]["type"], "refused");
+    }
+    let records = fs::read_to_string(only_rollout(&scratch.runs())).unwrap();
+    assert!(records.contains("bash:external"));
+    drop(reader);
+    drop(connection);
+    stop(child);
+}
+
+#[test]
+fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes() {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    let provider = PausedProvider::spawn();
+    let scratch = Scratch::new(&provider.api_root);
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let accepted = receive(&mut reader);
+    let thread_id = accepted["session_id"].as_str().unwrap().to_owned();
+    send(
+        &mut connection,
+        json!({"type":"submit", "protocol_version":PROTOCOL_VERSION, "op":{"op":"user_input", "text":"produce a bounded answer artifact"}}),
+    );
+    provider.request_seen.recv_timeout(timeout()).unwrap();
+    provider.release.send(()).unwrap();
+    let result = receive_result_within_timeout(&mut reader);
+    assert_eq!(result["result"]["outcome"], "done");
+    send(
+        &mut connection,
+        control(
+            91,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"list", "thread_id":thread_id}}),
+        ),
+    );
+    let listing = receive(&mut reader);
+    assert_eq!(listing["type"], "control_reply");
+    assert_eq!(listing["reply"]["type"], "artifacts_v1");
+    let artifacts: Vec<iteron_protocol::client_artifact::ClientArtifactDescriptorV1> =
+        serde_json::from_value(listing["reply"]["artifacts"].clone()).unwrap();
+    let answers = artifacts
+        .iter()
+        .filter(|artifact| artifact.schema == "iteron.final-answer.v1")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        answers.len(),
+        1,
+        "select the actual answer rather than an earlier request artifact"
+    );
+    let artifact = answers[0];
+    assert!(artifact.complete);
+    assert_eq!(artifact.bytes, b"parity reply".len() as u64);
+    let id = artifact.artifact_id.as_str();
+    assert_eq!(id.len(), 64);
+    assert_eq!(id, hex::encode(Sha256::digest(b"parity reply")));
+    send(
+        &mut connection,
+        control(
+            92,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"read", "thread_id":thread_id, "artifact_id":id, "offset":0, "max_bytes":64}}),
+        ),
+    );
+    let chunk = receive(&mut reader);
+    assert_eq!(chunk["reply"]["type"], "artifact_chunk_v1");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(chunk["reply"]["content_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(bytes, b"parity reply");
+    assert_eq!(chunk["reply"]["eof"], true);
+    send(
+        &mut connection,
+        control(
+            93,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"read", "thread_id":"another-workspace", "artifact_id":id, "offset":0, "max_bytes":64}}),
+        ),
+    );
+    assert_eq!(receive(&mut reader)["reply"]["type"], "artifact_refused_v1");
+    drop(reader);
+    drop(connection);
+    stop(child);
+    provider.finish();
+    let events = iteron_record::replay(&only_rollout(&scratch.runs())).unwrap();
+    let source = events
+        .iter()
+        .find(|event| event.seq.0 == artifact.source_event_seq)
+        .expect("the answer descriptor must cite its actual retained physical producer");
+    let iteron_protocol::EventKind::Message { message } = &source.kind else {
+        panic!("the final answer source must be the committed assistant message");
+    };
+    assert_eq!(message.role, iteron_protocol::Role::Assistant);
+    assert_eq!(
+        message.content,
+        vec![iteron_protocol::Block::Text {
+            text: "parity reply".into()
+        }]
+    );
+    assert!(events.iter().any(|event| {
+        event.seq > source.seq && event.turn == source.turn
+            && matches!(&event.kind, iteron_protocol::EventKind::Done { outcome } if outcome == "Done")
+    }));
+}
+
+#[test]
+fn unproved_loopback_physical_bound_refuses_parent_dispatch_without_consuming_mailbox() {
+    fn reply(reader: &mut BufReader<TcpStream>, id: u64) -> Value {
+        for _ in 0..64 {
+            let frame = receive(reader);
+            if frame["type"] == "control_reply" && frame["request_id"] == id {
+                return frame;
+            }
+        }
+        panic!("bounded public control reply not observed");
+    }
+
+    let provider = PausedProvider::spawn();
+    let mut scratch = Scratch::new(&provider.api_root);
+    // The root's finite 10-second allocation starts after an actual priced parent turn and
+    // scoped controls. The parent journey must still have room to admit that allocation.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    priced_route::configure(&mut scratch);
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    let mut greeting = hello(&token, PROTOCOL_VERSION, 0);
+    greeting["product_contract_version"] =
+        json!(iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION);
+    send(&mut connection, greeting);
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let greeted = receive(&mut reader);
+    assert_eq!(greeted["type"], "hello");
+    let thread_id = greeted["session_id"].as_str().unwrap().to_owned();
+    send(
+        &mut connection,
+        json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"establish the real parent route"}}),
+    );
+    provider.request_seen.recv_timeout(timeout()).unwrap();
+    provider.release.send(()).unwrap();
+    let terminal = receive_result_within_timeout(&mut reader);
+    assert_eq!(terminal["result"]["outcome"], "done");
+    assert_eq!(terminal["result"]["cost_status"], "known", "{terminal}");
+    send(
+        &mut connection,
+        control(201, PROTOCOL_VERSION, json!({"type":"turn_budget","set":4})),
+    );
+    assert_eq!(reply(&mut reader, 201)["reply"]["type"], "turn_budget");
+    send(
+        &mut connection,
+        control(
+            202,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{
+                "type":"enable","capabilities":["read_only"],
+                // This planning window does not prove a financial physical input ceiling.
+                "budget":{"turns":1,"tokens":2000000,"cost_microusd":1000000,"wall_ms":10000},
+                "max_agents":4,"max_pending_per_agent":8,"parallel":2,
+            }}),
+        ),
+    );
+    let enabled = reply(&mut reader, 202);
+    assert_eq!(enabled["reply"]["type"], "agents_enabled_v1", "{enabled}");
+    let root_id = enabled["reply"]["agents"][0]["agent_id"].as_u64().unwrap();
+    send(
+        &mut connection,
+        control(
+            203,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{
+                "type":"command","request_id":"root-message-1","command":{"type":"send_message","agent_id":root_id,"text":"accepted mailbox probe"},
+            }}),
+        ),
+    );
+    let acceptance = reply(&mut reader, 203);
+    assert_eq!(
+        acceptance["reply"]["type"], "agent_receipt_v1",
+        "{acceptance}"
+    );
+    let message_id = acceptance["reply"]["receipt"]["message_id"]
+        .as_u64()
+        .unwrap();
+    send(
+        &mut connection,
+        json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"continue the parent while observing its controller"}}),
+    );
+    let refused = receive_result_within_timeout(&mut reader);
+    assert_eq!(refused["result"]["outcome"], "harness_error");
+    // Terminal diagnostics are explicitly read through the public typed control. They are
+    // deliberately absent from the frozen Result frame; no error text supplies this evidence.
+    send(
+        &mut connection,
+        control(
+            207,
+            PROTOCOL_VERSION,
+            json!({"type":"product_v1","command":{
+                "type":"thread_read","thread_id":thread_id,
+            }}),
+        ),
+    );
+    let thread = reply(&mut reader, 207);
+    let turn_id = thread["reply"]["thread"]["turn"]["turn_id"]
+        .as_u64()
+        .unwrap();
+    send(
+        &mut connection,
+        control(
+            208,
+            PROTOCOL_VERSION,
+            json!({"type":"product_v1","command":{
+                "type":"terminal_diagnostics_read","thread_id":thread_id,"turn_id":turn_id,
+            }}),
+        ),
+    );
+    let diagnostics = reply(&mut reader, 208);
+    assert_eq!(diagnostics["reply"]["type"], "terminal_diagnostics_v1");
+    let diagnostics: iteron_protocol::product_contract::ProductTerminalDiagnosticsV1 =
+        serde_json::from_value(diagnostics["reply"]["diagnostics"].clone()).unwrap();
+    assert_eq!(diagnostics.thread_id.0, thread_id);
+    assert_eq!(diagnostics.turn_id.0, turn_id);
+    assert_eq!(
+        diagnostics.evidence,
+        iteron_protocol::product_contract::TerminalEvidenceV1 {
+            failure_code: Some(iteron_protocol::PolicyHarnessErrorCode::RouteError),
+            effect_state: iteron_protocol::product_contract::TerminalEffectStateV1::NotDispatched,
+        }
+    );
+    assert!(provider.request_seen.try_recv().is_err());
+    send(
+        &mut connection,
+        control(
+            204,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{"type":"list"}}),
+        ),
+    );
+    let live = reply(&mut reader, 204);
+    assert_eq!(live["reply"]["type"], "agents_v1");
+    // The refused epoch is settled, and unconsumed delivered inputs have been rejected.
+    assert_eq!(live["reply"]["agents"][0]["queued_messages"], 0);
+
+    let mut observer = connect(address);
+    let mut greeting = hello(
+        &token,
+        PROTOCOL_VERSION - 1,
+        refused["seq"].as_u64().unwrap(),
+    );
+    greeting["observation_only"] = json!(true);
+    send(&mut observer, greeting);
+    let mut observed = BufReader::new(observer.try_clone().unwrap());
+    assert_eq!(receive(&mut observed)["type"], "hello");
+    send(
+        &mut observer,
+        control(
+            205,
+            PROTOCOL_VERSION - 1,
+            json!({"type":"agents_v1","command":{"type":"message_receipt","message_id":message_id}}),
+        ),
+    );
+    let message = reply(&mut observed, 205);
+    assert_eq!(message["reply"]["message"]["state"]["type"], "rejected");
+    send(
+        &mut observer,
+        control(
+            206,
+            PROTOCOL_VERSION - 1,
+            json!({"type":"agents_v1","command":{
+                "type":"command","request_id":"observer-mutation","command":{"type":"send_message","agent_id":root_id,"text":"forbidden"},
+            }}),
+        ),
+    );
+    let mut mutation_rejected = false;
+    for _ in 0..64 {
+        let frame = receive(&mut observed);
+        if frame["type"] == "error" {
+            assert_eq!(frame["code"], "observer_authority");
+            mutation_rejected = true;
+            break;
+        }
+    }
+    assert!(mutation_rejected);
+    drop(observed);
+    drop(observer);
+    drop(reader);
+    drop(connection);
+    stop(child);
+    provider.finish();
+    let events = iteron_record::replay(&only_rollout(&scratch.runs())).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+        iteron_protocol::EventKind::EffectIntent { tool, .. } if tool == "provider"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, iteron_protocol::EventKind::TurnStart))
+            .count(),
+        1
+    );
 }
 
 fn assert_closed_without_frame(stream: TcpStream) {
@@ -597,6 +1063,7 @@ fn wait_for_exit(mut process: CoreProcess) -> (std::process::ExitStatus, Vec<u8>
     }
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn recording_startup(scratch: &Scratch, ca: &Path, plantcore: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
@@ -627,6 +1094,7 @@ fn recording_startup(scratch: &Scratch, ca: &Path, plantcore: bool) -> std::proc
 }
 
 #[test]
+#[cfg(feature = "legacy-plantcore")]
 fn recording_ca_argument_is_hidden_and_requires_plantcore_serve() {
     let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
         .args(["serve", "--help"])
@@ -692,6 +1160,7 @@ fn recording_ca_argument_is_hidden_and_requires_plantcore_serve() {
 }
 
 #[test]
+#[cfg(feature = "legacy-plantcore")]
 fn recording_route_and_pem_fail_before_the_listener_binds() {
     let scratch = Scratch::new("https://127.0.0.1:443/v1");
     let ca = scratch.root.join("ca.pem");
@@ -718,6 +1187,113 @@ fn recording_route_and_pem_fail_before_the_listener_binds() {
     );
     assert!(!stderr.contains("private-material"));
     assert!(!stderr.contains("\"event\":\"listening\""));
+}
+
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_recording_refusal(scratch: &Scratch, arguments: &[OsString]) {
+    // Choose an actual available endpoint rather than letting an unrelated occupied port explain
+    // refusal. The parser must reject before a token, provider, record or listener is constructed.
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let before = fs::read(scratch.home().join(".iteron/config.json")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .env_clear()
+        .env("HOME", scratch.home())
+        .env("ITERON_CONFIG_HOME", scratch.home())
+        .env("LANG", "C.UTF-8")
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env(KEY_ENV, KEY)
+        .env("ITERON_PROVIDER_API_KEY", "synthetic-recording-key")
+        .current_dir(scratch.repo())
+        .arg("--repo")
+        .arg(scratch.repo())
+        .arg("--runs-dir")
+        .arg(scratch.runs())
+        .arg("--provider")
+        .arg(PROVIDER_ID)
+        .arg("--model")
+        .arg(MODEL_ID)
+        .args(["serve", "--listen"])
+        .arg(address.to_string())
+        .args(arguments)
+        .output()
+        .expect("run standalone parser refusal");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("unexpected argument"), "{stderr}");
+    assert!(stderr.contains(arguments[0].to_str().unwrap()), "{stderr}");
+    for text in [&stdout, &stderr] {
+        assert!(!text.contains("private-material"));
+        assert!(!text.contains("synthetic-recording-key"));
+        assert!(!text.contains(KEY));
+        assert!(!text.contains("\"event\":\"listening\""));
+        assert!(!text.contains("recording_provider_route_invalid"));
+        assert!(!text.contains("recording_provider_ca_invalid_pem"));
+    }
+    assert_eq!(fs::read_dir(scratch.runs()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(scratch.repo()).unwrap().count(), 0);
+    assert_eq!(
+        fs::read(scratch.home().join(".iteron/config.json")).unwrap(),
+        before
+    );
+    assert!(TcpListener::bind(address).is_ok());
+}
+
+#[test]
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_serve_hides_and_rejects_legacy_recording_controls() {
+    let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args(["serve", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("--listen"));
+    for option in [
+        "--plantcore",
+        "--recording-provider-ca-file",
+        "--recording-inject-harness-error",
+        "--recording-app-server-fault",
+    ] {
+        assert!(!help.contains(option));
+    }
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let ca = scratch.root.join("ca.pem");
+    fs::write(&ca, "private-material-not-a-certificate").unwrap();
+    for arguments in [
+        vec![OsString::from("--plantcore")],
+        vec!["--recording-provider-ca-file".into(), ca.into_os_string()],
+        vec!["--recording-inject-harness-error".into()],
+        vec![
+            "--recording-app-server-fault".into(),
+            "frame-chunk-missing".into(),
+        ],
+    ] {
+        standalone_recording_refusal(&scratch, &arguments);
+    }
+}
+
+#[test]
+#[cfg(not(feature = "legacy-plantcore"))]
+fn standalone_recording_bootstrap_refuses_before_route_pem_or_listener_effects() {
+    let scratch = Scratch::new("https://127.0.0.1:443/v1");
+    let ca = scratch.root.join("ca.pem");
+    let material = b"private-material-not-a-certificate";
+    fs::write(&ca, material).unwrap();
+    for api_root in ["https://localhost:443/v1", "https://127.0.0.1:443/v1"] {
+        scratch.configure_recording_provider(api_root);
+        standalone_recording_refusal(
+            &scratch,
+            &[
+                "--plantcore".into(),
+                "--recording-provider-ca-file".into(),
+                ca.as_os_str().to_owned(),
+            ],
+        );
+        assert_eq!(fs::read(&ca).unwrap(), material);
+    }
 }
 
 fn stop(mut process: CoreProcess) -> Vec<u8> {
@@ -1092,6 +1668,12 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
             }
         }),
     );
+    // The first event follows durable turn admission, so use the transaction bound rather
+    // than the short idle socket allowance used by ordinary control replies.
+    first_reader
+        .get_mut()
+        .set_read_timeout(Some(timeout()))
+        .unwrap();
     let first_event = receive(&mut first_reader);
     assert_eq!(first_event["type"], "event", "{first_event}");
     let mut last_seq = first_event["seq"].as_u64().unwrap();
@@ -1114,7 +1696,14 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     assert_eq!(hello["replay_source"], "ring");
 
     let mut results = Vec::new();
+    let result_deadline = Instant::now() + timeout();
     loop {
+        let remaining = result_deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "resumed turn result timed out");
+        resumed_reader
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .unwrap();
         let frame = receive(&mut resumed_reader);
         if let Some(seq) = frame.get("seq").and_then(Value::as_u64) {
             assert_eq!(seq, last_seq + 1, "live cursor has a gap or duplicate");
@@ -1159,10 +1748,16 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
 
 #[test]
 fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
-    // More deltas than the production ring holds force the real fallback path without a
-    // test-only capacity override.
-    let provider = PausedProvider::spawn_with_chunks(320);
+    // Observe enough real frontend bytes to exceed the production ring without a capacity
+    // override. Wire volume alone cannot prove retention across a bounded cosmetic channel.
+    let provider = PausedProvider::spawn_with_chunks(120);
     let scratch = Scratch::new(&provider.api_root);
+    // This one admitted synthetic turn must have the same finite 30-second wall ceiling as the
+    // existing aggregate flood observation. Ordinary control fixtures retain their 10-second cap.
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["max_wall_secs"] = json!(30);
+    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     let (child, token, address) = spawn_core(&scratch);
 
     let mut client = connect(address);
@@ -1181,14 +1776,42 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
         .request_seen
         .recv_timeout(timeout())
         .expect("provider received the flood turn");
-    drop(reader);
-    drop(client);
-    provider.release.send(()).unwrap();
-
     // This fixture deliberately moves more than 16 MiB through the production byte-bounded ring.
     // Give that volume its own bounded ceiling instead of treating the ordinary 10-second control
     // timeout as a throughput guarantee on contended debug builders.
     let deadline = Instant::now() + timeout().saturating_mul(3);
+    provider.release.send(()).unwrap();
+    let mut observed_bytes = 0usize;
+    let mut observed_serialized_bytes = 0usize;
+    for chunk in 1..=120 {
+        let expected_bytes = chunk * 60 * 1024;
+        while observed_bytes < expected_bytes {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "the bounded frontend flood did not arrive"
+            );
+            reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+            let frame = receive(&mut reader);
+            assert_ne!(
+                frame["type"], "result",
+                "the provider finished before the flood was observed"
+            );
+            if frame["type"] == "event" && frame["event"]["type"] == "thinking" {
+                observed_bytes += frame["event"]["delta"].as_str().unwrap().len();
+                observed_serialized_bytes += serde_json::to_vec(&frame).unwrap().len() + 1;
+            }
+        }
+        assert_eq!(observed_bytes, expected_bytes);
+        if chunk < 120 {
+            provider.release.send(()).unwrap();
+        }
+    }
+    assert_eq!(observed_bytes, 120 * 60 * 1024);
+    assert!(observed_bytes < iteron_record::MAX_PRIVATE_CONTENT_BYTES);
+    assert!(observed_serialized_bytes > 16 * (1024 * 1024 + 1));
+    drop(reader);
+    drop(client);
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
         send(&mut candidate, hello(&token, PROTOCOL_VERSION, 0));
@@ -1235,6 +1858,30 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert_eq!(durable["protocol_version"], PROTOCOL_VERSION);
     assert!(durable["rollout_seq"].as_u64().is_some());
     assert!(durable["event"].is_object());
+    // The last chunk was observed and forced actual fallback. Only now release the successful
+    // provider tail, so an early terminal cannot substitute for the overflow witness.
+    provider.release.send(()).unwrap();
+    let terminal = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "the bounded replay flood did not publish its actual successful terminal"
+        );
+        fallback_reader
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .unwrap();
+        let frame = receive(&mut fallback_reader);
+        if frame["type"] == "result" {
+            break frame;
+        }
+    };
+    assert_eq!(terminal["result"]["outcome"], "done", "{terminal}");
+    assert_eq!(terminal["result"]["exit_code"], 0);
+    assert_eq!(
+        terminal["result"]["assistant_text"],
+        "bounded replay flood complete"
+    );
     provider.finish();
 
     let stderr = stop(child);
@@ -1242,3 +1889,49 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert!(stderr.contains("\"event\":\"listening\""));
     assert!(!stderr.contains(&token));
 }
+
+#[path = "headless_serve/artifact_journey.rs"]
+mod artifact_journey;
+
+#[path = "headless_serve/priced_route.rs"]
+mod priced_route;
+
+#[cfg(unix)]
+#[path = "headless_serve/operator_shell_journey.rs"]
+mod operator_shell_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/operator_project_init_journey.rs"]
+mod operator_project_init_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/tunables_simulation_journey.rs"]
+mod tunables_simulation_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/native_host_control.rs"]
+mod native_host_control;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+use native_host_control::{launch, matching_control};
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/experiment_lab_journey.rs"]
+mod experiment_lab_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "headless_serve/side_journey.rs"]
+mod side_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[path = "headless_serve/mcp_input_journey.rs"]
+mod mcp_input_journey;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[path = "headless_serve/final_evidence_journey.rs"]
+mod final_evidence_journey;
+
+#[path = "headless_serve/resident_service_journey.rs"]
+mod resident_service_journey;
+
+#[path = "headless_serve/turn_start_journey.rs"]
+mod turn_start_journey;

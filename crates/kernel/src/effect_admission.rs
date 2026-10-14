@@ -21,6 +21,9 @@ use crate::effect_journal::EffectJournal;
 use iteron_protocol::{EffectId, TurnId};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "effect_admission_recovery.rs"]
+mod recovery;
+
 /// Hard ceiling on distinct effects admitted inside one turn.
 ///
 /// `MAX_TOOL_CALLS_PER_TURN` (128) already bounds the registry class. This bounds the sum of every
@@ -92,6 +95,9 @@ impl EffectAdmissions {
             .filter(|(turn, _)| turn.0 == highest)
             .map(|(_, id)| id.0.clone())
             .collect();
+        // Restoring only IDs would mint zero again and refuse a valid continuation as a duplicate.
+        // All harness classes resume strictly beyond their highest durable canonical ordinal.
+        ledger.ordinals = recovery::next_ordinals(TurnId(highest), &ledger.ids);
         ledger
     }
 

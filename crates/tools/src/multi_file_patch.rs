@@ -2,7 +2,8 @@
 //!
 //! Every path and hunk is planned in memory before a destination is touched. Updated contents are
 //! then staged as fsynced same-directory files and committed as one registry effect; a commit-time
-//! I/O failure triggers byte-exact restoration of any member already replaced.
+//! I/O failure restores prior members only while they still contain this transaction's bytes.
+//! Intervening user edits are retained and reported as a rollback conflict.
 
 use crate::edit::{UniqueEditError, plan_unique_edit};
 use crate::multi_file_patch_error::PatchFailure;
@@ -11,7 +12,7 @@ use crate::multi_file_patch_error::PatchFailure;
 #[cfg(test)]
 use crate::multi_file_patch_input::MAX_FILES;
 use crate::multi_file_patch_input::{FilePatch, max_files, max_hunks_per_file, parse_requests};
-use crate::write_file::{StagedWrite, atomic_replace_with_boundary};
+use crate::write_file::{GuardedCommitFailure, StagedWrite, TargetSnapshot};
 use crate::{Registry, ToolError, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
@@ -33,6 +34,7 @@ struct PlannedFile {
     original: Vec<u8>,
     updated: Vec<u8>,
     stamp: FileStamp,
+    commit_guard: TargetSnapshot,
     #[cfg(unix)]
     confined_target: Option<Arc<crate::confined_fs::ConfinedTarget>>,
 }
@@ -54,6 +56,7 @@ struct FileStamp {
 struct ReadSnapshot {
     bytes: Vec<u8>,
     stamp: FileStamp,
+    commit_guard: TargetSnapshot,
 }
 
 struct SnapshotEdit {
@@ -64,22 +67,24 @@ struct SnapshotEdit {
 
 #[derive(Default)]
 struct PatchIoStats {
-    file_reads: usize,
+    planning_reads: usize,
     file_writes: usize,
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
+    let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
-    registry.push_candidate_change_effect_tool(
+    registry.push_native_change_captured_tool(
         ToolSpec {
             name: "apply_patch".into(),
             description: format!(
-                "Apply an all-or-nothing unique-anchor patch across up to {} existing UTF-8 \
+                "Apply a validated unique-anchor patch across up to {} existing UTF-8 \
                  files. Exact matching is tried first; an exact miss may use deterministic \
                  line-edge whitespace/EOL normalization. Every anchor must still have one \
                  candidate in its original snapshot, and overlapping hunks are refused before any \
-                 write. Errors identify the failing file and hunk.",
+                 write. Commit failures restore only unchanged transaction bytes; intervening \
+                 user edits are retained and reported. Errors identify the failing file and hunk.",
                 max_files()
             ),
             input_schema: serde_json::json!({
@@ -117,62 +122,121 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 "required": ["files"]
             }),
             purity: Purity::Effecting,
-            // Paths are nested, while the current dynamic elevation seam understands one
-            // top-level `path`. Fail closed until that seam accepts a bounded path set.
-            capability: Capability::TrustMutating,
+            // Host classification elevates the complete bounded nested path set when any
+            // target mutates trust. An ordinary source patch retains local write authority.
+            capability: Capability::ReversibleLocal,
         },
         move |call, root| {
             let confined = confined.clone();
+            let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
-            crate::effectfut::box_it(async move {
-                if confined.load(std::sync::atomic::Ordering::Relaxed) {
-                    return crate::confined_helper::execute(
+            crate::capturedfut::box_it(async move {
+                if inherited_scope.get().is_some() || confined.load(std::sync::atomic::Ordering::Relaxed) {
+                    return crate::confined_helper::execute_captured(
                         &root,
                         call,
                         test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
+                        inherited_scope.get().cloned(),
                     )
                     .await;
                 }
                 let id = call.id.clone();
                 let mut stats = PatchIoStats::default();
-                let result = execute_patch(&root, &call.input, &mut stats, false).await;
-                crate::ToolExecution::Definite(match result {
-                    Ok((files, hunks)) => {
-                        ok_result(id, format!("patched {files} files ({hunks} hunks)"))
+                let result = execute_patch_captured_scoped(&root, &call.input, &mut stats, false, None).await;
+                match result {
+                    Ok((files, hunks, captured)) => {
+                        crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("patched {files} files ({hunks} hunks)")), captured)
                     }
-                    Err(error) => err_result(id, error.model_json()),
-                })
+                    Err(error) => crate::ToolExecution::Definite(err_result(id, error.model_json())).into(),
+                }
             })
         },
     )
 }
 
+#[cfg(test)]
 async fn execute_patch(
     root: &Path,
     input: &Value,
     stats: &mut PatchIoStats,
     confined: bool,
 ) -> Result<(usize, usize), PatchFailure> {
+    execute_patch_scoped(root, input, stats, confined, None).await
+}
+#[cfg(test)]
+async fn execute_patch_scoped(
+    root: &Path,
+    input: &Value,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(usize, usize), PatchFailure> {
+    execute_patch_captured_scoped(root, input, stats, confined, scope)
+        .await
+        .map(|(files, hunks, _)| (files, hunks))
+}
+
+async fn execute_patch_captured_scoped(
+    root: &Path,
+    input: &Value,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(usize, usize, Vec<crate::NativeFileChange>), PatchFailure> {
     let requests = parse_requests(input)?;
     let total_hunks = requests.iter().map(|file| file.hunks.len()).sum::<usize>();
-    let plans = plan_patch(root, requests, stats, confined).await?;
+    let plans = plan_patch_scoped(root, requests, stats, confined, scope).await?;
     commit_patch(root, &plans, stats, confined).await?;
-    Ok((plans.len(), total_hunks))
+    let files = plans.len();
+    let captured = plans
+        .into_iter()
+        .map(|plan| {
+            crate::NativeFileChange::committed(plan.target, Some(plan.original), plan.updated)
+        })
+        .collect();
+    Ok((files, total_hunks, captured))
 }
 
-pub(crate) async fn apply_patch_confined(root: &Path, input: &Value) -> Result<String, String> {
-    let mut stats = PatchIoStats::default();
-    execute_patch(root, input, &mut stats, true)
-        .await
-        .map(|(files, hunks)| format!("patched {files} files ({hunks} hunks)"))
-        .map_err(|failure| failure.model_json())
-}
-
+#[cfg(test)]
 async fn plan_patch(
     root: &Path,
     requests: Vec<FilePatch>,
     stats: &mut PatchIoStats,
     confined: bool,
+) -> Result<Vec<PlannedFile>, PatchFailure> {
+    plan_patch_scoped(root, requests, stats, confined, None).await
+}
+#[cfg(test)]
+pub(crate) async fn apply_patch_scoped(
+    root: &Path,
+    input: &Value,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<String, String> {
+    execute_patch_scoped(root, input, &mut PatchIoStats::default(), true, scope)
+        .await
+        .map(|(files, hunks)| format!("patched {files} files ({hunks} hunks)"))
+        .map_err(|failure| failure.model_json())
+}
+
+pub(crate) async fn apply_patch_captured_scoped(
+    root: &Path,
+    input: &Value,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(String, Vec<crate::NativeFileChange>), String> {
+    execute_patch_captured_scoped(root, input, &mut PatchIoStats::default(), true, scope)
+        .await
+        .map(|(files, hunks, captured)| {
+            (format!("patched {files} files ({hunks} hunks)"), captured)
+        })
+        .map_err(|failure| failure.model_json())
+}
+
+async fn plan_patch_scoped(
+    root: &Path,
+    requests: Vec<FilePatch>,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
 ) -> Result<Vec<PlannedFile>, PatchFailure> {
     #[cfg(not(unix))]
     if confined {
@@ -214,8 +278,8 @@ async fn plan_patch(
         #[cfg(unix)]
         let confined_target = if confined {
             Some(Arc::new(
-                crate::confined_fs::ConfinedTarget::open(root, &target, false).map_err(
-                    |error| {
+                crate::confined_fs::ConfinedTarget::open_scoped(root, &target, false, scope)
+                    .map_err(|error| {
                         PatchFailure::file(
                             "path_outside_workspace",
                             "bind",
@@ -223,8 +287,7 @@ async fn plan_patch(
                             &request.path,
                             error.to_string(),
                         )
-                    },
-                )?,
+                    })?,
             ))
         } else {
             None
@@ -313,6 +376,7 @@ async fn plan_patch(
             original: snapshot.bytes,
             updated: updated.into_bytes(),
             stamp: snapshot.stamp,
+            commit_guard: snapshot.commit_guard,
             #[cfg(unix)]
             confined_target,
         });
@@ -380,7 +444,12 @@ async fn read_bounded(
     path: &Path,
     stats: &mut PatchIoStats,
 ) -> Result<ReadSnapshot, (&'static str, String)> {
-    let file = tokio::fs::File::open(path)
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options
+        .open(path)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
     let before = file
@@ -395,7 +464,7 @@ async fn read_bounded(
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
-    stats.file_reads += 1;
+    stats.planning_reads += 1;
     if bytes.len() > max_file_bytes {
         return Err((
             "file_too_large",
@@ -407,6 +476,8 @@ async fn read_bounded(
         .metadata()
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
+    let commit_guard = TargetSnapshot::existing_from_retained_bytes(&after, &bytes)
+        .map_err(|error| ("file_changed", error.to_string()))?;
     let before = file_stamp(&before);
     let after = file_stamp(&after);
     if before != after {
@@ -418,6 +489,7 @@ async fn read_bounded(
     Ok(ReadSnapshot {
         bytes,
         stamp: after,
+        commit_guard,
     })
 }
 
@@ -441,7 +513,7 @@ async fn read_bounded_confined(
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| ("read_failed", error.to_string()))?;
-    stats.file_reads += 1;
+    stats.planning_reads += 1;
     if bytes.len() > max_file_bytes {
         return Err((
             "file_too_large",
@@ -464,6 +536,8 @@ async fn read_bounded_confined(
         ));
     }
     Ok(ReadSnapshot {
+        commit_guard: TargetSnapshot::existing_from_retained_bytes(&after, &bytes)
+            .map_err(|error| ("file_changed", error.to_string()))?,
         bytes,
         stamp: file_stamp(&after),
     })
@@ -492,6 +566,19 @@ async fn commit_patch(
     stats: &mut PatchIoStats,
     confined: bool,
 ) -> Result<(), PatchFailure> {
+    commit_patch_with_member_hook(root, plans, stats, confined, |_, _| {}).await
+}
+
+async fn commit_patch_with_member_hook<F>(
+    root: &Path,
+    plans: &[PlannedFile],
+    stats: &mut PatchIoStats,
+    confined: bool,
+    mut before_member: F,
+) -> Result<(), PatchFailure>
+where
+    F: FnMut(usize, &Path) + Send,
+{
     let mut staged = Vec::with_capacity(plans.len());
     for plan in plans {
         #[cfg(unix)]
@@ -520,7 +607,8 @@ async fn commit_patch(
 
     // Staging can take time. Recheck the identity stamp before the first rename so an operator
     // edit made underneath the patch is refused while our write set is still zero. This is a
-    // metadata-only check: each file's content is read exactly once into its planning snapshot.
+    // metadata-only early check. Each member's retained content/identity guard is checked again
+    // immediately before its own replacement, including edits made while prior members commit.
     for plan in plans {
         if confined {
             crate::workspace_boundary::validate_coding_write_target(root, &plan.target).map_err(
@@ -569,20 +657,49 @@ async fn commit_patch(
 
     let mut committed = Vec::with_capacity(plans.len());
     for (index, write) in staged.into_iter().enumerate() {
-        if let Err(failure) = write.commit().await {
-            if failure.target_replaced {
+        before_member(index, &plans[index].target);
+        if let Err(failure) = write.commit_if_unchanged(&plans[index].commit_guard).await {
+            let (failure_kind, commit_message, target_replaced) = match failure {
+                GuardedCommitFailure::Changed => (
+                    "file_changed_rolled_back",
+                    "target changed since the retained planning snapshot; current bytes retained"
+                        .into(),
+                    false,
+                ),
+                GuardedCommitFailure::Inspect(error) => (
+                    "commit_inspection_failed_rolled_back",
+                    error.to_string(),
+                    false,
+                ),
+                GuardedCommitFailure::Commit(failure) => (
+                    "commit_failed_rolled_back",
+                    failure.error.to_string(),
+                    failure.target_replaced,
+                ),
+            };
+            if target_replaced {
                 committed.push(index);
                 stats.file_writes += 1;
             }
-            let commit_message = failure.error.to_string();
             let rollback_error = rollback(root, plans, &committed, confined).await;
             return Err(match rollback_error {
-                None => PatchFailure::file(
-                    "commit_failed_rolled_back",
+                None if committed.is_empty() => PatchFailure::file(
+                    match failure_kind {
+                        "file_changed_rolled_back" => "file_changed",
+                        "commit_inspection_failed_rolled_back" => "commit_inspection_failed",
+                        _ => "commit_failed",
+                    },
                     "commit",
                     plans[index].file_index,
                     &plans[index].path,
-                    format!("commit failed and prior files were restored: {commit_message}"),
+                    format!("commit stopped before any destination replacement: {commit_message}"),
+                ),
+                None => PatchFailure::file(
+                    failure_kind,
+                    "commit",
+                    plans[index].file_index,
+                    &plans[index].path,
+                    format!("commit stopped and prior files were restored: {commit_message}"),
                 ),
                 Some(error) => PatchFailure::file(
                     "rollback_failed",
@@ -600,35 +717,14 @@ async fn commit_patch(
 }
 
 async fn rollback(
-    _root: &Path,
+    root: &Path,
     plans: &[PlannedFile],
     committed: &[usize],
-    _confined: bool,
+    confined: bool,
 ) -> Option<String> {
     let mut first_error = None;
     for &index in committed.iter().rev() {
-        #[cfg(unix)]
-        let replacement = if let Some(bound) = &plans[index].confined_target {
-            async {
-                let staged = StagedWrite::prepare_confined(
-                    &plans[index].target,
-                    &plans[index].original,
-                    bound.clone(),
-                )
-                .await?;
-                staged.commit().await.map_err(|failure| failure.error)
-            }
-            .await
-        } else {
-            atomic_replace_with_boundary(&plans[index].target, &plans[index].original, None).await
-        };
-        #[cfg(not(unix))]
-        let replacement = atomic_replace_with_boundary(
-            &plans[index].target,
-            &plans[index].original,
-            _confined.then_some(_root),
-        )
-        .await;
+        let replacement = restore_transaction_bytes(root, &plans[index], confined).await;
         if let Err(error) = replacement
             && first_error.is_none()
         {
@@ -636,6 +732,51 @@ async fn rollback(
         }
     }
     first_error
+}
+
+async fn restore_transaction_bytes(
+    root: &Path,
+    plan: &PlannedFile,
+    confined: bool,
+) -> std::io::Result<()> {
+    if confined {
+        crate::workspace_boundary::validate_coding_write_target(root, &plan.target)
+            .map_err(std::io::Error::other)?;
+    }
+    #[cfg(unix)]
+    let current = if let Some(bound) = &plan.confined_target {
+        crate::write_file::read_existing_confined_snapshot(bound)
+    } else {
+        crate::write_file::read_existing_snapshot(&plan.target).await
+    };
+    #[cfg(not(unix))]
+    let current = crate::write_file::read_existing_snapshot(&plan.target).await;
+    let current = current.map_err(|error| std::io::Error::other(error.to_string()))?;
+    if current.bytes != plan.updated {
+        return Err(std::io::Error::other(
+            "rollback conflict: current bytes are not this transaction's replacement; retained",
+        ));
+    }
+    #[cfg(unix)]
+    let staged = if let Some(bound) = &plan.confined_target {
+        StagedWrite::prepare_confined(&plan.target, &plan.original, bound.clone()).await
+    } else {
+        StagedWrite::prepare_with_boundary(&plan.target, &plan.original, None).await
+    };
+    #[cfg(not(unix))]
+    let staged =
+        StagedWrite::prepare_with_boundary(&plan.target, &plan.original, confined.then_some(root))
+            .await;
+    staged?
+        .commit_if_unchanged(&current.target)
+        .await
+        .map_err(|failure| match failure {
+            GuardedCommitFailure::Changed => std::io::Error::other(
+                "rollback conflict: file changed during restoration; retained",
+            ),
+            GuardedCommitFailure::Inspect(error) => error,
+            GuardedCommitFailure::Commit(failure) => failure.error,
+        })
 }
 
 #[cfg(test)]

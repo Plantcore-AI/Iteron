@@ -1,10 +1,8 @@
 use super::*;
+use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
+use sha2::{Digest, Sha256};
 
-const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
-
-/// Governor-bound verdict recorded when the route carries no governor metadata at all: absence is
-/// not a grant, so the route is treated as unbound rather than pre-approved.
-const GOVERNOR_ROUTE_BOUND_ABSENT: bool = false;
+pub(super) const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 
 impl Agent {
     pub(crate) fn set_last_success_route_path(&mut self, path: Option<std::path::PathBuf>) {
@@ -14,7 +12,7 @@ impl Agent {
     pub(super) fn persist_last_success_route(&mut self, turn: TurnId) {
         let (Some(path), Some(selected)) = (
             self.last_success_route_path.as_deref(),
-            self.selected_route.as_ref(),
+            self.provider_selection.selected(),
         ) else {
             return;
         };
@@ -27,23 +25,12 @@ impl Agent {
             selected.route.catalog_digest.clone(),
             selected.route.capability_digest.clone(),
         );
-        let path = path.to_owned();
-        let emitter = self.lifecycle_emitter.clone();
-        let correlation = self.lifecycle_correlation(Some(turn));
-        if !super::turn_maintenance::enqueue(move || {
-            if snapshot.store(&path).is_err()
-                && let Some(emitter) = emitter
-            {
-                let _ = emitter.emit(
-                    "model.route_failed",
-                    correlation,
-                    LifecyclePayload {
-                        reason_code: Some("last_success_snapshot_persist_failed".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }) {
+        let queued = snapshot.maintenance_bytes().ok().is_some_and(|bytes| {
+            self.advisory_maintenance_owner().is_some_and(|owner| {
+                owner.enqueue(MaintenanceKindV1::LastSuccessfulRoute, turn.0, &bytes, path)
+            })
+        });
+        if !queued {
             self.lifecycle_event(
                 "model.route_failed",
                 Some(turn),
@@ -125,19 +112,15 @@ impl Agent {
         capability_digest: String,
     ) -> Result<(), KernelError> {
         let provider = self.provider.clone();
-        let selected = self.append_model_selection(
-            &provider,
+        let turn = TurnId(self.seq_turn);
+        let route = PricingRoute {
             provider_id,
             model_id,
             catalog_digest,
             capability_digest,
-        )?;
-        // Every successful selection append starts a fresh binding epoch, including a byte-for-
-        // byte re-selection. Replay applies the same rule, so live state cannot retain a card that
-        // the durable history says must be rebound.
-        self.pricing = None;
-        self.selected_route = Some(selected);
-        self.selected_provider = Some(self.provider.clone());
+        };
+        let (selection, mut journal) = self.provider_selection_ports();
+        selection.select(provider, route, turn, &mut journal)?;
         Ok(())
     }
 
@@ -246,107 +229,18 @@ impl Agent {
         turn: Option<TurnId>,
         source: &'static str,
     ) -> Result<(), KernelError> {
-        if let Err(error) = self.validate_model_selection(
-            &provider,
-            &provider_id,
-            &model_id,
-            &catalog_digest,
-            &capability_digest,
-        ) {
-            self.record_model_router_abstention(turn, source, "invalid_route_metadata")?;
-            return Err(error);
-        }
-        // The sealed session preference stays immutable. Optional cache breakpoints are projected
-        // onto each route; unsupported semantic, pricing and authority controls still refuse.
-        provider
-            .control_capabilities()
-            .validate(&self.provider_controls_for(provider.as_ref()))
-            .map_err(|error| KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: unattested_control_reason(error),
-            })
-            .or_else(|error| {
-                self.record_model_router_abstention(turn, source, "unsupported_request_controls")?;
-                Err(error)
-            })?;
-        let governor_route_id = format!("{provider_id}:{model_id}");
-        let governor_route_inserted = self
-            .provider_governor
-            .as_ref()
-            .map(|governor| governor.register_route(governor_route_id.clone()))
-            .transpose()
-            .map_err(|_| KernelError::InvalidRouteMetadata {
-                field: "provider_governor",
-                reason: "new provider route exceeds the immutable governor route bound",
-            })
-            .or_else(|error| {
-                self.record_model_router_abstention(turn, source, "governor_route_refused")?;
-                Err(error)
-            })?
-            .unwrap_or(iteron_tunables::param_bool(
-                "cli.runtime.route_state.governor_route_bound_absent",
-                GOVERNOR_ROUTE_BOUND_ABSENT,
-            ));
-
-        if let Err(error) = self.record_model_router_selection(
+        let selection_turn = TurnId(self.seq_turn);
+        self.provider_route_binding(selection_turn)?.select(
+            provider,
+            PricingRoute {
+                provider_id,
+                model_id,
+                catalog_digest,
+                capability_digest,
+            },
             turn,
             source,
-            &provider_id,
-            &model_id,
-            &catalog_digest,
-            &capability_digest,
-        ) {
-            if governor_route_inserted && let Some(governor) = &self.provider_governor {
-                let _ = governor.unregister_idle_route(&governor_route_id);
-            }
-            return Err(error);
-        }
-
-        match self.commit_provider_model_selection(
-            provider,
-            provider_id,
-            model_id,
-            catalog_digest,
-            capability_digest,
-        ) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if governor_route_inserted && let Some(governor) = &self.provider_governor {
-                    let _ = governor.unregister_idle_route(&governor_route_id);
-                }
-                Err(error)
-            }
-        }
-    }
-
-    fn commit_provider_model_selection(
-        &mut self,
-        provider: std::sync::Arc<dyn Provider>,
-        provider_id: String,
-        model_id: String,
-        catalog_digest: String,
-        capability_digest: String,
-    ) -> Result<(), KernelError> {
-        provider
-            .control_capabilities()
-            .validate(&self.provider_controls_for(provider.as_ref()))
-            .map_err(|error| KernelError::InvalidRouteMetadata {
-                field: "provider_controls",
-                reason: unattested_control_reason(error),
-            })?;
-        let selected = self.append_model_selection(
-            &provider,
-            provider_id,
-            model_id,
-            catalog_digest,
-            capability_digest,
-        )?;
-        self.provider = provider.clone();
-        self.model = selected.route.model_id.clone();
-        self.pricing = None;
-        self.selected_route = Some(selected);
-        self.selected_provider = Some(provider);
-        Ok(())
+        )
     }
 
     fn validate_model_selection(
@@ -357,52 +251,34 @@ impl Agent {
         catalog_digest: &str,
         capability_digest: &str,
     ) -> Result<(), KernelError> {
-        validate_route_identifier("provider_id", provider_id, 64, false)?;
-        if let Some(actual_provider_id) = provider.provider_instance_id()
-            && actual_provider_id != provider_id
-        {
-            return Err(KernelError::InvalidRoute(
-                "provider instance identity does not match the selected provider id",
-            ));
-        }
-        validate_route_identifier("model_id", model_id, 512, true)?;
-        validate_route_digest("catalog_digest", catalog_digest)?;
-        validate_route_digest("capability_digest", capability_digest)
+        super::provider_selection::ProviderSelectionOwner::validate_selection(
+            provider,
+            &PricingRoute {
+                provider_id: provider_id.to_owned(),
+                model_id: model_id.to_owned(),
+                catalog_digest: catalog_digest.to_owned(),
+                capability_digest: capability_digest.to_owned(),
+            },
+        )
     }
 
-    pub(super) fn append_model_selection(
+    fn provider_selection_ports(
         &mut self,
-        provider: &std::sync::Arc<dyn Provider>,
-        provider_id: String,
-        model_id: String,
-        catalog_digest: String,
-        capability_digest: String,
-    ) -> Result<SelectedRoute, KernelError> {
-        self.validate_model_selection(
-            provider,
-            &provider_id,
-            &model_id,
-            &catalog_digest,
-            &capability_digest,
-        )?;
-        let selected = SelectedRoute {
-            route: PricingRoute {
-                provider_id: provider_id.clone(),
-                model_id: model_id.clone(),
-                catalog_digest: catalog_digest.clone(),
-                capability_digest: capability_digest.clone(),
+    ) -> (
+        &mut super::provider_selection::ProviderSelectionOwner,
+        super::provider_selection_journal::ProviderSelectionJournal<'_>,
+    ) {
+        (
+            &mut self.provider_selection,
+            super::provider_selection_journal::ProviderSelectionJournal {
+                rollout: &mut self.rollout,
+                ledger: &mut self.ledger,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
             },
-        };
-        self.emit_durable(
-            TurnId(self.seq_turn),
-            EventKind::ModelSelected {
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-            },
-        )?;
-        Ok(selected)
+        )
     }
 
     fn record_model_router_selection(
@@ -416,7 +292,7 @@ impl Agent {
     ) -> Result<(), KernelError> {
         let selected_route_identity =
             model_route_action_id(provider_id, model_id, catalog_digest, capability_digest);
-        let previous_route_identity = self.selected_route.as_ref().map(|selected| {
+        let previous_route_identity = self.provider_selection.selected().map(|selected| {
             model_route_action_id(
                 &selected.route.provider_id,
                 &selected.route.model_id,
@@ -455,7 +331,7 @@ impl Agent {
             None,
         );
         match iteron_provider::catalog::ModelRouterStrategy::route_with(
-            self.model_router.as_ref(),
+            self.compiled_policy_bundle.slots().model_router.as_ref(),
             &observation,
             self.authority_ceiling,
         ) {
@@ -511,64 +387,15 @@ impl Agent {
     /// HMAC material. Replacing trust invalidates the current public binding until it is resolved
     /// again for the selected route.
     pub fn set_pricing_port(&mut self, pricing: std::sync::Arc<dyn PricingPort>) {
-        self.pricing_port = Some(pricing);
-        self.pricing = None;
+        self.provider_selection.set_pricing_port(pricing);
     }
 
-    /// Ask the injected strategy to resolve and authenticate the unique currently-active card for
-    /// the exact selected route, then durably bind only its public artifact. `false` means the
-    /// trusted manifest has no card for this route; positive monetary ceilings remain fail-closed.
+    /// Authenticate and durably bind the exact selection epoch through the sole selection owner.
     pub fn bind_selected_rate_card(&mut self) -> Result<bool, KernelError> {
-        let Some(selected) = &self.selected_route else {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "rate_card_route",
-                reason: "a durable provider/model selection must precede pricing",
-            });
-        };
-        // Resolution and freshness checks may fail. Clear the prior artifact first so even a
-        // same-route rebind cannot retain a stale card after an error.
-        self.pricing = None;
-        let Some(port) = &self.pricing_port else {
-            return Ok(false);
-        };
-        validate_pricing_route_digest("pricing_catalog_digest", &selected.route.catalog_digest)?;
-        validate_pricing_route_digest(
-            "pricing_capability_digest",
-            &selected.route.capability_digest,
-        )?;
-        let Some(signed) = port.resolve_rate_card(&selected.route, self.pricing_now())? else {
-            return Ok(false);
-        };
-        port.verify_rate_card(&signed)?;
-        validate_route_identifier(
-            "provider_id",
-            &signed.rate_card.route.provider_id,
-            64,
-            false,
-        )?;
-        validate_route_identifier("model_id", &signed.rate_card.route.model_id, 512, false)?;
-        validate_route_identifier(
-            "pricing_provenance",
-            &signed.rate_card.provenance,
-            512,
-            false,
-        )?;
-        validate_route_identifier("pricing_signer_id", &signed.signer_id, 128, false)?;
-        validate_route_digest("rate_card_digest", &signed.rate_card_digest)?;
-        if selected.route != signed.rate_card.route {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "rate_card_route",
-                reason: "must exactly match the selected provider/model route",
-            });
-        }
-        self.emit_durable(
-            TurnId(self.seq_turn),
-            EventKind::RateCardBound {
-                rate_card: signed.clone(),
-            },
-        )?;
-        self.pricing = Some(signed);
-        Ok(true)
+        let turn = TurnId(self.seq_turn);
+        let now = self.pricing_now();
+        let (selection, mut journal) = self.provider_selection_ports();
+        selection.bind_card(turn, now, &mut journal)
     }
 
     pub(super) fn inherit_route_and_pricing(&self, child: &mut Agent) -> Result<(), KernelError> {
@@ -581,10 +408,10 @@ impl Agent {
         child.authority_ceiling = self.authority_ceiling;
         child.policy_capabilities = self.policy_capabilities;
         child.token_calibration = self.token_calibration.clone();
-        if let Some(pricing) = &self.pricing_port {
+        if let Some(pricing) = self.provider_selection.pricing_port() {
             child.set_pricing_port(pricing.clone());
         }
-        if let Some(selected) = &self.selected_route {
+        if let Some(selected) = self.provider_selection.selected() {
             child.record_inherited_model_selection(
                 selected.route.provider_id.clone(),
                 selected.route.model_id.clone(),
@@ -612,63 +439,10 @@ impl Agent {
             // parent's in-flight/quota/circuit state rather than minting an independent ceiling.
             child.install_shared_provider_governor(governor.clone())?;
         }
-        if self.pricing.is_some() && !child.bind_selected_rate_card()? {
+        if self.provider_selection.card().is_some() && !child.bind_selected_rate_card()? {
             return Err(KernelError::UnpricedUsdCeiling);
         }
         Ok(())
-    }
-}
-
-/// Operator-facing explanation of the one request control a candidate route cannot send.
-///
-/// Each arm names the control that failed and the single configuration knob that would let this
-/// route in, because the controls themselves cannot be relaxed while the session is running: they
-/// are part of the resolved, durably recorded settings, so the repair is always at the next launch.
-fn unattested_control_reason(error: iteron_provider::ControlError) -> &'static str {
-    use iteron_provider::ControlError;
-
-    match error {
-        ControlError::UnsupportedServiceTier(_) => {
-            "the selected route does not offer this session's service tier; request controls are \
-             fixed for the life of a session, so relaunch with provider_governor.service_tier at \
-             the provider default to use this route"
-        }
-        ControlError::UnsupportedVerbosity(_) => {
-            "the selected route does not accept this session's response verbosity; request \
-             controls are fixed for the life of a session, so relaunch with \
-             provider_governor.response_verbosity at the model default to use this route"
-        }
-        ControlError::UnsupportedCompression(_) => {
-            "the selected route does not accept this session's request compression; request \
-             controls are fixed for the life of a session, so relaunch with \
-             provider_governor.request_compression set to none to use this route"
-        }
-        ControlError::UnsupportedCacheBreakpoint(_) => {
-            "the selected route cannot mark prompt-cache breakpoints, which this session sends; \
-             request controls are fixed for the life of a session, so relaunch with \
-             provider_governor.prompt_cache.breakpoint set to none to use this route"
-        }
-        ControlError::UnsupportedCacheTtl(_) => {
-            "the selected route does not offer this session's prompt-cache lifetime; request \
-             controls are fixed for the life of a session, so relaunch with \
-             provider_governor.prompt_cache.ttl_seconds set to 0 to use this route"
-        }
-        ControlError::UnsupportedCacheScope(_) => {
-            "the selected route cannot preserve this session's prompt-cache scope; request \
-             controls are fixed for the life of a session, so relaunch with a \
-             provider_governor.prompt_cache.scope this route supports to use it"
-        }
-        ControlError::CacheToolInvalidationNotAttested => {
-            "the selected route does not invalidate its prompt cache when the tool catalog \
-             changes, which this session requires; request controls are fixed for the life of a \
-             session, so relaunch with provider_governor.prompt_cache.invalidate_on_tool_change \
-             set to false to use this route"
-        }
-        ControlError::IdempotencyNotAttested => {
-            "the selected route does not attest duplicate-safe requests, which this session's \
-             hedging requires; request controls are fixed for the life of a session, so relaunch \
-             with provider_governor.hedge.enabled set to false to use this route"
-        }
     }
 }
 

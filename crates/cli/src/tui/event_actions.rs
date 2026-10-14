@@ -1,19 +1,30 @@
 use super::*;
 
-fn max_presented_activity_age() -> Duration {
-    Duration::from_secs(24 * 60 * 60)
-}
-
-fn activity_started_at(event: &iteron_protocol::ActivityEvent) -> Instant {
-    let now = Instant::now();
-    let unix_now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let unix_now_ms = u64::try_from(unix_now_ms).unwrap_or(u64::MAX);
-    let age = Duration::from_millis(unix_now_ms.saturating_sub(event.started_at_unix_ms))
-        .min(max_presented_activity_age());
-    now.checked_sub(age).unwrap_or(now)
+pub(super) fn show_model_preference(app: &mut App, receipt: app_server::PreferenceReceipt) {
+    use crate::config::preferences::PreferenceWriteStatus;
+    let route = format!(
+        "{}:{}",
+        receipt.provider_id.chars().take(120).collect::<String>(),
+        receipt.model_id.chars().take(120).collect::<String>()
+    );
+    let (level, message) = match receipt.status {
+        PreferenceWriteStatus::Pending => {
+            (block::NoticeLevel::Info, format!("saving default {route}…"))
+        }
+        PreferenceWriteStatus::Installed => (
+            block::NoticeLevel::Ok,
+            format!("default {route} saved for the next session"),
+        ),
+        PreferenceWriteStatus::NotInstalled => (
+            block::NoticeLevel::Warn,
+            format!("default {route} was not saved; this session's selection is unchanged"),
+        ),
+        PreferenceWriteStatus::InstallationUnknown => (
+            block::NoticeLevel::Warn,
+            format!("saving default {route} is unconfirmed; this session's selection is unchanged"),
+        ),
+    };
+    app.note(level, message);
 }
 
 /// Apply one EQ envelope.
@@ -35,74 +46,39 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
     writer: &mut T,
     interrupt: &Arc<AtomicBool>,
     drain: &Arc<AtomicBool>,
-    directory: Option<&ProviderDirectory>,
+    directory: Option<&ProviderCatalogView>,
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::Refusal(value) => super::refusal::show(app, &value),
+        app_server::ServerEvent::HostFinalEvidence(fact) => {
+            super::final_evidence::apply(app, session, fact)
+        }
         app_server::ServerEvent::Plantcore(_) => {}
+        app_server::ServerEvent::AdvisoryMaintenance(event) => {
+            super::advisory_maintenance::apply(app, session, event)
+        }
+        app_server::ServerEvent::MaintenanceAvailability(event) => {
+            super::advisory_maintenance::availability(app, session, event)
+        }
+        app_server::ServerEvent::TurnPublication(event) => {
+            super::turn_publication::apply(app, session, event)
+        }
         app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Activity(event) => {
-            if event.validate().is_err() {
-                app.note(
+            match app.activity_observations.observe(event, app.run.running()) {
+                super::activity_presentation::ActivityReaction::None => {}
+                super::activity_presentation::ActivityReaction::Status(status) => {
+                    app.status = status.into()
+                }
+                super::activity_presentation::ActivityReaction::Invalid => app.note(
                     block::NoticeLevel::Err,
                     "runtime emitted an invalid bounded activity event; it was not rendered",
-                );
-            } else if app
-                .retired_activity_ids
-                .iter()
-                .any(|retired| retired == &event.id)
-            {
-                // Best-effort activity delivery may trail the authoritative run terminal. Never
-                // re-open a retired id, including after the next submission has started.
-            } else if event.state.is_terminal() {
-                match event.detail_code {
-                    Some(iteron_protocol::ActivityDetailCode::AnswerComplete) if app.running => {
-                        app.status = "answer complete · finalizing…".into();
-                    }
-                    Some(iteron_protocol::ActivityDetailCode::InputReady) if !app.running => {
-                        app.status = "idle · input ready".into();
-                    }
-                    _ => {}
-                }
-                app.activities.remove(&event.id);
-                app.retired_activity_ids.push_back(event.id);
-                while app.retired_activity_ids.len() > 256 {
-                    app.retired_activity_ids.pop_front();
-                }
-            } else {
-                if !app.running
-                    && matches!(
-                        event.owner,
-                        iteron_protocol::ActivityOwner::Runtime
-                            | iteron_protocol::ActivityOwner::Provider
-                            | iteron_protocol::ActivityOwner::Tool
-                            | iteron_protocol::ActivityOwner::Workflow
-                    )
-                {
-                    return;
-                }
-                if event.detail_code == Some(iteron_protocol::ActivityDetailCode::Finalizing) {
-                    app.status = "answer complete · finalizing…".into();
-                }
-                let started_at = activity_started_at(&event);
-                match event.detail_code {
-                    Some(iteron_protocol::ActivityDetailCode::RequestSent) => {
-                        app.awaiting_first_token_since = Some(started_at);
-                        app.provider_accepted = false;
-                    }
-                    Some(iteron_protocol::ActivityDetailCode::WaitingFirstToken) => {
-                        app.awaiting_first_token_since.get_or_insert(started_at);
-                        app.provider_accepted = true;
-                    }
-                    _ => {}
-                }
-                app.activities
-                    .entry(event.id.clone())
-                    .and_modify(|presented| presented.event = event.clone())
-                    .or_insert(PresentedActivity {
-                        event,
-                        observed_at: started_at,
-                    });
+                ),
+                super::activity_presentation::ActivityReaction::Saturated => app.note(
+                    block::NoticeLevel::Warn,
+                    "activity display is incomplete; /activity reads the actual owners",
+                ),
             }
         }
         app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
@@ -123,46 +99,45 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             state,
             reason_code,
         } => {
-            if state == iteron_protocol::SubmissionLifecycleState::Received
-                && let Some(pending) = app.pending_turn_receipt.as_ref()
-                && pending.id == id
-                && pending.clear_composer
-            {
-                if app.editor.persistence_revision() == pending.editor_revision {
-                    let _ = app.editor.take_submit();
-                } else {
-                    app.note(
-                        block::NoticeLevel::Info,
-                        "submission received; composer changed before its receipt, so the newer draft was preserved",
-                    );
-                }
+            if state == iteron_protocol::SubmissionLifecycleState::Applied {
+                app.settle_steer_submission(id);
             }
-            if state == iteron_protocol::SubmissionLifecycleState::Applied
-                && app
-                    .pending_turn_receipt
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == id)
-                && let Some(pending) = app.pending_turn_receipt.take()
-            {
-                app.push_user(pending.display_text);
+            match app.run.observe_receipt(id, state) {
+                super::run_presentation::ReceiptObservation::Applied {
+                    display_text,
+                    editor_revision,
+                    clear_composer,
+                } => {
+                    // Transport receipt does not grant admission. Keep every owned attachment
+                    // until the exact operation is applied, and never clear newer typed input.
+                    if clear_composer && app.editor.draft_revision() == editor_revision {
+                        let _ = app.editor.take_submit();
+                    } else if clear_composer {
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "submission applied; your newer draft was preserved",
+                        );
+                    }
+                    app.input_lanes.settle_submitted();
+                    app.push_user(display_text);
+                }
+                super::run_presentation::ReceiptObservation::Refused => {
+                    app.activity_observations.retire_run_observations();
+                    if app.input_lanes.hold_submitted() {
+                        app.note(
+                            block::NoticeLevel::Warn,
+                            "queued input was not admitted · Alt-Up restores it for review",
+                        );
+                    }
+                    app.status = "submission not accepted · draft preserved".into();
+                }
+                super::run_presentation::ReceiptObservation::None => {}
             }
             if matches!(
                 state,
                 iteron_protocol::SubmissionLifecycleState::Rejected
                     | iteron_protocol::SubmissionLifecycleState::Expired
             ) {
-                if app
-                    .pending_turn_receipt
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == id)
-                {
-                    app.pending_turn_receipt = None;
-                    app.running = false;
-                    app.interrupting = false;
-                    app.force_cancelling = false;
-                    app.cancel_requested_at = None;
-                    app.draining = false;
-                }
                 app.note(
                     block::NoticeLevel::Warn,
                     format!(
@@ -188,30 +163,17 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
         ),
         app_server::ServerEvent::RunEnded { snapshot, summary } => {
             let completion_notification = notifier.run_completed();
-            app.running = false;
-            app.interrupting = false;
-            app.force_cancelling = false;
-            app.cancel_requested_at = None;
+            app.run.run_ended(Instant::now());
+            if app.input_lanes.hold_submitted() {
+                app.note(block::NoticeLevel::Warn, "input admission was not confirmed · Alt-Up restores it for review; check the conversation before sending again");
+            }
             app.ctrl_c_quit_deadline = None;
-            app.draining = false;
-            app.last_run_latency = app.run_started.take().map(|started| started.elapsed());
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
-            // Activity snapshots are deliberately best-effort. The authoritative run boundary
-            // retires every remaining live projection so a saturated activity bridge cannot
-            // leave a stale spinner after the run has terminalized.
-            for id in app.activities.keys() {
-                app.retired_activity_ids.push_back(id.clone());
-            }
-            while app.retired_activity_ids.len() > 256 {
-                app.retired_activity_ids.pop_front();
-            }
-            app.activities.clear();
+            app.activity_observations.retire_run_observations();
             app.flush_think();
             app.finish_text_boundary();
             let terminal_answer = app
-                .product_terminal_answer
-                .take()
+                .product
+                .take_terminal()
                 .unwrap_or_else(|| iteron_record::redact::scrub(&summary.assistant_text));
             if app.reconcile_terminal_assistant(&terminal_answer) {
                 app.note(
@@ -220,8 +182,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 );
             }
             app.flush_text();
-            app.pending = None; // a pending approval cannot outlive its run
-            app.pending_approval_response = None;
+            app.permission_prompt.clear(); // only the actual run terminal clears its prompt
             app.clear_mcp_inputs();
             app.settle_unfinished_tools();
             interrupt.store(false, Ordering::Relaxed);
@@ -246,11 +207,14 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 app.note(
                     block::NoticeLevel::Warn,
                     format!(
-                        "delivery could not be confirmed for {unmatched_previews} steering submission(s); preserved after the turn"
+                        "delivery could not be confirmed for {unmatched_previews} steering submission(s); held for review · Alt-Up restores without sending"
                     ),
                 );
             }
 
+            let route_changed = snapshot.provider_id != session.state.provider_id
+                || snapshot.model != session.state.model;
+            let effort_changed = snapshot.effort != session.state.effort;
             app.mode = snapshot.mode;
             app.effort = snapshot.effort;
             app.model = snapshot.model.clone();
@@ -261,16 +225,22 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             if let Some(directory) = directory
                 && !snapshot.provider_id.is_empty()
             {
-                app.route = app.route.reselect(
-                    directory,
+                app.route = directory.route_view(
                     &ModelSelection {
                         provider_id: snapshot.provider_id.clone(),
                         model_id: snapshot.model.clone(),
                     },
+                    app.route.limits.clone(),
                 );
             }
-            app.cost = snapshot.cost.clone();
-            app.last_turn_usage = snapshot.last_turn_usage;
+            app.telemetry.refresh_economics(&snapshot);
+            if route_changed || effort_changed {
+                app.telemetry.invalidate_request(&snapshot);
+            }
+            if route_changed {
+                app.telemetry
+                    .bind_model_capacity(directory.and(app.route.context_window_tokens));
+            }
             session.adopt(*snapshot);
 
             // A durable append/record refusal latches the current writer fail-closed. Re-sending
@@ -281,13 +251,29 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 .as_deref()
                 .is_some_and(crate::runtime::KernelError::is_public_record_failure);
             if record_failed {
-                app.retryable_task = None;
+                app.run.clear_retry();
             }
             let result = summary.current_result();
             let canonical_outcome = result
                 .get("outcome")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("harness_error");
+            if (result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+                || canonical_outcome == "harness_error")
+                && app.input_lanes.hold_queued_after_failure() > 0
+            {
+                app.note(block::NoticeLevel::Warn, "remaining queued input is held after the failure · Alt-Up restores it for review");
+            }
+            app.run.finish_draft_recovery(
+                canonical_outcome == "done"
+                    && result
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none(),
+            );
             if let Some(detail) = result
                 .get("error")
                 .and_then(serde_json::Value::as_str)
@@ -295,7 +281,11 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             {
                 // Everything already streamed is on the record as an interrupted message, so a
                 // retry continues from evidence rather than from nothing (I-39).
-                let detail = if !record_failed && app.retryable_task.is_some() {
+                let detail = if record_failed && app.run.has_draft_recovery() {
+                    format!(
+                        "{detail}\n\nCtrl-R restores the draft and attachments for review or copying. Start a new session before sending; this writer cannot accept another turn."
+                    )
+                } else if app.run.has_draft_recovery() || app.run.retry_text().is_some() {
                     format!("{detail}\n\n{}", retry_hint())
                 } else {
                     detail
@@ -307,7 +297,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 });
             } else {
                 // The turn landed; there is nothing to re-send.
-                app.retryable_task = None;
+                app.run.clear_retry();
             }
             // A budget stop is not a failure and gets no error block, so without this the operator
             // saw only `idle · last: budget_exhausted` — true, and silent about the fact that the
@@ -321,12 +311,12 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                     block::NoticeLevel::Warn,
                     format!(
                         "stopped on the {reason} ceiling — {}",
-                        crate::output::budget_remedy(reason)
+                        crate::machine_projection::budget_remedy(reason)
                     ),
                 );
             }
             app.status = format!("idle · last: {canonical_outcome}");
-            app.last_result = Some(result);
+            app.run.observe_terminal_result(result);
             if let Some(trigger) = completion_notification {
                 notifier.emit_transport(writer, trigger);
             }
@@ -451,40 +441,29 @@ pub(super) fn queue_permission_capability(
 pub(super) fn queue_model_selection(
     app: &mut App,
     session: &Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     selection: ModelSelection,
 ) {
-    let provider = match directory.build(&selection) {
-        Ok(provider) => provider,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot switch model: {error}"),
-            );
-            return;
-        }
-    };
+    let selection_request =
+        match super::provider_catalog_client::selection_request(directory, &selection) {
+            Ok(request) => request,
+            Err(reason) => {
+                app.note(block::NoticeLevel::Warn, reason);
+                return;
+            }
+        };
     let changed =
         session.model() != selection.model_id || app.route.provider_id != selection.provider_id;
     let provider_name = directory
         .entry(&selection.provider_id)
         .map(|entry| entry.display_name().to_owned())
         .unwrap_or_else(|| selection.provider_id.clone());
-    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
     let capabilities = directory.selection_capabilities(&selection);
     let request = transcript_effect::Request::Control {
         sender: session.control_sender(),
-        control: app_server::Control::SelectModel(Box::new(app_server::ModelSelection {
-            provider,
-            provider_id: selection.provider_id.clone(),
-            model_id: selection.model_id.clone(),
-            catalog_digest,
-            capability_digest,
-            context_window_tokens: capabilities.context_window_tokens,
-            max_output_tokens: capabilities.max_output_tokens,
-        })),
+        control: app_server::Control::SelectModelDefaultV1(selection_request),
         interrupt: interrupt.clone(),
         kind: transcript_effect::ControlKind::Model {
             selection,
@@ -509,17 +488,14 @@ pub(super) fn queue_model_selection(
 /// does that on its own side when it applies the transition, so the frontend only has to stop
 /// displaying values that no longer describe anything.
 pub(super) fn clear_last_turn_telemetry_from(app: &mut App, state: &app_server::SessionSnapshot) {
-    app.last_turn_usage = state.last_turn_usage;
-    app.last_context = None;
-    app.reserved_output_tokens = None;
-    app.effort_application = None;
+    app.telemetry.invalidate_request(state);
 }
 
 /// Resolve an explicit model-leaf retry without weakening normal selection. A qualified value is
 /// treated as `provider:model` only when the prefix names a configured provider, preserving model
 /// ids such as OpenAI fine-tunes that themselves contain colons.
 pub(super) fn model_retry_selection(
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     current_provider: &str,
     current_model: &str,
     value: &str,

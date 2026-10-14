@@ -11,13 +11,15 @@ name: windows
 # ruleset's required contexts. It deliberately does NOT use `continue-on-error` — #196 recorded
 # what that costs, an unstarted runner reporting green. A failure here reports as a failure.
 #
-# A green run means the workspace compiles for `x86_64-pc-windows-msvc`. It does **not** yet mean
-# the native ConPTY oracle passes: that step runs and reports, but does not gate, for the reasons
-# recorded above it. Saying so here matters more than the wording is worth — a green check that
-# quietly covers less than its comment claims is how a lane stops being evidence.
+# Ordinary PR/push runs check the workspace on the selected native Windows runner. The explicit
+# workflow_dispatch additionally compiles default/script test cohorts once each and executes exact
+# required native sets: retained Job/ConPTY/pipes, sealed LPAC setup/factory, environment/filesystem/
+# network denial, registered process/LSP and private journal/restart cases. Missing or cfg-empty
+# sets, unknown cleanup and failed native cases fail the job. Artifact receipts bind source and
+# compiler bytes; they do not certify the whole product or make the TUI a supported Windows SLA.
 #
-# It is not a support claim either. `docs/reference/platforms.md` remains the authority on what
-# Windows is and is not, and there is still no Windows sandbox backend.
+# Source contains a Windows LPAC backend. Native availability and support remain subject to the
+# exact selected candidate's real oracles; docs/reference/platforms.md records that distinction.
 
 on:
   push:
@@ -61,7 +63,7 @@ jobs:
     if: vars.WINDOWS_RUNNER_LABELS != ''
     runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER_LABELS || '["windows-latest"]') }}
     # A cold MSVC build of this workspace is slow, and the self-hosted box is 4 vCPU.
-    timeout-minutes: 60
+    timeout-minutes: 180
     defaults:
       run:
         # Windows PowerShell 5.1 ships with Windows Server; `pwsh` is not guaranteed on a machine
@@ -250,44 +252,154 @@ jobs:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
       - name: check the workspace for Windows
+        if: github.event_name != 'workflow_dispatch'
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
-      # The compile above can finish suspiciously fast against a warm persistent `target/`. This
-      # links and runs a real binary through the native pseudoconsole, so the lane cannot pass
-      # without having genuinely built something.
-      #
-      # This step earned its place the first time it ran. Every case failed with an empty captured
-      # terminal, and the process tree showed the `conhost --headless` hosts alive with no client
-      # process under any of them: `iteron.exe` was dying before it could emit a byte. Run by hand,
-      # `iteron.exe -V` printed `thread 'main' has overflowed its stack` and exited 0xC00000FD. The
-      # compile gate above cannot see that — a binary that links is not a binary that starts.
-      #
-      # Bounded deliberately. Four cores is this entire machine, and it also hosts the
-      # plantcore-desktop runner, whose checkout went from 1m43s to over 30 minutes while four
-      # abandoned pseudoconsoles held a core each. `--test-threads=1` keeps one failure from
-      # taking the host down with it, and the step timeout keeps a hang from eating the job budget.
-      - name: native ConPTY oracle
-        timeout-minutes: 15
-        run: >-
-          cargo test --locked -p iteron-cli --test windows_conpty
-          --target x86_64-pc-windows-msvc -- --test-threads=1
-
-      # A step timeout kills the cargo process, not the pseudoconsoles it left behind. Those
-      # survive as orphans holding a core each, and the runner then reports itself busy while the
-      # next job sits queued behind processes belonging to a job that already ended -- observed
-      # twice on this host, each time needing a manual kill to recover.
-      #
-      # This is deliberately narrow. It matches only the binaries this job starts, so a console
-      # belonging to the desktop runner on the same machine is left alone.
-      - name: release the pseudoconsoles this job leaked
-        if: always()
+      - name: exact native owned-process proof on the selected branch
+        if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 150
+        env:
+          CARGO_BUILD_JOBS: 4
+          RUST_TEST_THREADS: 1
+          ITERON_TEST_TIMEOUT_SCALE: 10
         run: |
-          $ErrorActionPreference = 'Continue'
-          $orphans = Get-CimInstance Win32_Process |
-            Where-Object {
-              $_.Name -eq 'iteron.exe' -or $_.Name -like 'windows_conpty-*.exe'
-            }
-          foreach ($orphan in $orphans) {
-            Write-Output "terminating leaked $($orphan.Name) ($($orphan.ProcessId))"
-            & taskkill /T /F /PID $orphan.ProcessId 2>&1 | Out-Null
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-f]{40}$' -or $env:RUNNER_OS -ne 'Windows') {
+            throw 'native process gate requires the exact selected commit on Windows'
           }
-          if (-not $orphans) { Write-Output 'no leaked pseudoconsole clients' }
+          Write-Host "Native process source: $env:GITHUB_SHA; runner: $env:RUNNER_NAME"
+          # The source comes from the exact API materializer above. Reuse only this runner's
+          # target, with refreshed source mtimes; do not test another checkout or old executable.
+          if ([string]::IsNullOrEmpty($env:CARGO_TARGET_DIR)) { throw 'missing isolated Cargo target' }
+
+          function Read-PrerequisitePipe($reader) {
+            $buffer = New-Object char[] 1025
+            $read = $reader.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $read.Wait(2000) -or $read.Result -ge $buffer.Length) {
+              throw 'native prerequisite output unavailable or oversized'
+            }
+            $count = $read.Result
+            $tail = New-Object char[] 1
+            $end = $reader.ReadAsync($tail, 0, 1)
+            if (-not $end.Wait(2000) -or $end.Result -ne 0) {
+              throw 'native prerequisite output did not end at its bounded receipt'
+            }
+            if ($count -eq 0) { return '' }
+            return (-join $buffer[0..($count - 1)])
+          }
+          function Invoke-Prerequisite([string]$executable, [string]$arguments) {
+            if (-not [System.IO.Path]::IsPathRooted($executable)) {
+              throw 'native prerequisite executable must be an absolute selected path'
+            }
+            $executable = [System.IO.Path]::GetFullPath($executable)
+            if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+              throw "native prerequisite selected executable is absent: $executable"
+            }
+            $workingDirectory = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+            if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) {
+              throw 'native prerequisite selected source working directory is absent'
+            }
+            Write-Host "Native prerequisite executable: $executable; cwd: $workingDirectory"
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = $executable
+            $process.StartInfo.Arguments = $arguments
+            $process.StartInfo.WorkingDirectory = $workingDirectory
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            foreach ($key in @($process.StartInfo.EnvironmentVariables.Keys)) {
+              if ($key -in @('BASH_ENV', 'ENV', 'BASHOPTS', 'SHELLOPTS', 'PROMPT_COMMAND', 'LD_PRELOAD') -or
+                  $key.StartsWith('BASH_FUNC_')) {
+                $process.StartInfo.EnvironmentVariables.Remove($key)
+              }
+            }
+            try {
+              try {
+                $started = $process.Start()
+              } catch [System.ComponentModel.Win32Exception] {
+                $nativeError = $_.Exception.GetBaseException().NativeErrorCode
+                throw "native prerequisite launch unavailable (Win32 $nativeError): executable=$executable; cwd=$workingDirectory"
+              }
+              if (-not $started) { throw 'native prerequisite did not start' }
+              if (-not $process.WaitForExit(10000)) {
+                try { $process.Kill() } catch { }
+                $null = $process.WaitForExit(2000)
+                throw 'native prerequisite timed out; no platform proof recorded'
+              }
+              $stdout = Read-PrerequisitePipe $process.StandardOutput
+              $stderr = Read-PrerequisitePipe $process.StandardError
+              if ($process.ExitCode -ne 0 -or $stderr.Length -ne 0) {
+                throw 'native prerequisite refused; no platform proof recorded'
+              }
+              return $stdout
+            } finally { $process.Dispose() }
+          }
+          # Require the actual Git for Windows installation, then select its own Bash for the
+          # product fixtures. A WSL alias or merely finding some command named bash is insufficient.
+          function Resolve-NativeApplication([string]$name) {
+            $commands = @(Get-Command -Name $name -CommandType Application -TotalCount 1 -ErrorAction Stop)
+            if ($commands.Count -ne 1 -or
+                $commands[0] -isnot [System.Management.Automation.ApplicationInfo]) {
+              throw "native prerequisite requires one selected application: $name"
+            }
+            # Never coerce a command collection into a path passed to .NET. Retain enough
+            # nonsecret selection evidence to distinguish lookup from normalization failures.
+            $path = $commands[0].Path
+            if ($path -isnot [string] -or [string]::IsNullOrEmpty($path)) {
+              throw "native prerequisite selected application has no scalar path: $name"
+            }
+            Write-Host "Native prerequisite selected command: $name; count: $($commands.Count); type: ApplicationInfo; path length: $($path.Length)"
+            if (-not [System.IO.Path]::IsPathRooted($path)) {
+              throw "native prerequisite selected application path is not rooted: $name"
+            }
+            try {
+              $path = [System.IO.Path]::GetFullPath($path)
+            } catch {
+              $failureType = $_.Exception.GetBaseException().GetType().Name
+              throw "native prerequisite selected path normalization failed: command=$name; type=$failureType; length=$($path.Length)"
+            }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "native prerequisite selected application is absent: $name"
+            }
+            return $path
+          }
+          $git = Resolve-NativeApplication 'git.exe'
+          $version = Invoke-Prerequisite $git '--version'
+          if ($version -notmatch '^git version [^\r\n]+\.windows\.[0-9]+\s*$') {
+            throw 'native shell gate requires Git for Windows'
+          }
+          $directory = [System.IO.Path]::GetDirectoryName($git)
+          $bash = $null
+          for ($depth = 0; $depth -lt 4 -and $directory -and -not $bash; $depth++) {
+            foreach ($relative in @('bin\bash.exe', 'usr\bin\bash.exe')) {
+              $candidate = Join-Path $directory $relative
+              if (Test-Path -LiteralPath $candidate -PathType Leaf) { $bash = $candidate; break }
+            }
+            $directory = [System.IO.Path]::GetDirectoryName($directory)
+          }
+          if (-not $bash) { throw 'Git for Windows Bash is unavailable' }
+          $bash = [System.IO.Path]::GetFullPath($bash)
+          $probe = Invoke-Prerequisite $bash '--noprofile --norc -c "printf iteron-native-bash-prerequisite"'
+          if ($probe -cne 'iteron-native-bash-prerequisite') { throw 'actual Bash prerequisite failed' }
+          $env:PATH = "$(Split-Path -Parent $bash);$env:PATH"
+          $resolved = Resolve-NativeApplication 'bash.exe'
+          if ($resolved -ne $bash) {
+            throw 'product Bash resolution differs from its native prerequisite'
+          }
+          Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_MODE -ErrorAction SilentlyContinue
+          Remove-Item Env:ITERON_WINDOWS_JOB_FIXTURE_ROOT -ErrorAction SilentlyContinue
+
+          # One default/script compiler-artifact cohort each, followed by direct frozen native
+          # binary listing/execution. The driver owns a private Job before initial resume, retains
+          # bounded logs and immutable copies, and requires waited leader + Job0 + stream closure.
+          $python = Resolve-NativeApplication 'python.exe'
+          & $python scripts/windows-native-cohort.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: retain exact native Windows source and compiler receipts
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-native-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iteron-native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn shell_startup_and_imported_function_environment_is_not_an_implicit_execution_grant() {
+    for key in [
+        "BASH_ENV",
+        "ENV",
+        "BASH_FUNC_printf%%",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+    ] {
+        assert!(is_shell_startup_env_key(key), "{key}");
+    }
+    assert!(!is_shell_startup_env_key("VIRTUAL_ENV"));
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.env("BASH_ENV", "/synthetic/unapproved-startup.sh");
+    command.env("BASH_FUNC_printf%%", "() { unapproved-script; }");
+    confine_env_with_exact(&mut command, &[]);
+    assert!(
+        command
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "BASH_ENV" && value.is_none())
+    );
+    assert!(
+        command
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| { key == "BASH_FUNC_printf%%" && value.is_none() })
+    );
+}
+
+#[test]
 fn secret_shapes_are_detected_toolchain_vars_are_not() {
     for key in [
         "ANTHROPIC_API_KEY",

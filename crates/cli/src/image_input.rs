@@ -42,7 +42,7 @@ pub(crate) use routing::{BinaryMediaInspectionPolicy, UnknownMimePolicy};
 use sniff::{SourceFormat, extension_format, sniff_image};
 pub use types::{ImageInputError, ImageInputErrorKind, SafeDisplayName};
 
-/// Exact fixed decode/admission owner sampled by tunables composition. Keeping this query beside
+/// Exact decode/admission owner sampled after profile admission by tunables composition. Keeping this query beside
 /// the loader prevents the registry projection from copying literals that can drift away from the
 /// limits which actually reject bytes and decoder work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -66,17 +66,9 @@ impl MultimodalDecodeEnvelope {
             return Err("multimodal image count exceeds the protocol envelope");
         }
         if per_image_raw_bytes == 0
-            || per_image_raw_bytes
-                > iteron_tunables::param_integer(
-                    "cli.image_input.max_image_file_bytes",
-                    MAX_IMAGE_FILE_BYTES,
-                )
+            || per_image_raw_bytes > MAX_IMAGE_FILE_BYTES
             || aggregate_raw_bytes == 0
-            || aggregate_raw_bytes
-                > iteron_tunables::param_integer(
-                    "cli.image_input.max_total_image_file_bytes",
-                    MAX_TOTAL_IMAGE_FILE_BYTES,
-                )
+            || aggregate_raw_bytes > MAX_TOTAL_IMAGE_FILE_BYTES
             || per_image_raw_bytes > aggregate_raw_bytes
         {
             return Err("multimodal raw-byte limits exceed the protocol envelope");
@@ -84,7 +76,7 @@ impl MultimodalDecodeEnvelope {
         if max_dimension == 0
             || max_dimension > decode::MAX_IMAGE_DIMENSION
             || max_frames == 0
-            || max_frames > decode::max_animation_frames()
+            || max_frames > decode::MAX_ANIMATION_FRAMES
         {
             return Err("multimodal decode work exceeds the fixed safety envelope");
         }
@@ -98,17 +90,24 @@ impl MultimodalDecodeEnvelope {
     }
 }
 
+fn image_file_byte_limits() -> (usize, usize) {
+    let aggregate = iteron_tunables::param_integer(
+        "cli.image_input.max_total_image_file_bytes",
+        MAX_TOTAL_IMAGE_FILE_BYTES,
+    );
+    let per_image = iteron_tunables::param_integer(
+        "cli.image_input.max_image_file_bytes",
+        MAX_IMAGE_FILE_BYTES.min(aggregate),
+    );
+    (per_image, aggregate)
+}
+
 pub(crate) fn multimodal_decode_envelope() -> MultimodalDecodeEnvelope {
+    let (per_image_raw_bytes, aggregate_raw_bytes) = image_file_byte_limits();
     MultimodalDecodeEnvelope {
         max_images: MAX_INPUT_IMAGES,
-        per_image_raw_bytes: iteron_tunables::param_integer(
-            "cli.image_input.max_image_file_bytes",
-            MAX_IMAGE_FILE_BYTES,
-        ),
-        aggregate_raw_bytes: iteron_tunables::param_integer(
-            "cli.image_input.max_total_image_file_bytes",
-            MAX_TOTAL_IMAGE_FILE_BYTES,
-        ),
+        per_image_raw_bytes,
+        aggregate_raw_bytes,
         max_dimension: decode::MAX_IMAGE_DIMENSION,
         max_frames: decode::max_animation_frames(),
     }
@@ -138,17 +137,10 @@ impl ImageLoadLimits {
         if max_attachments == 0
             || max_attachments > MAX_INPUT_IMAGES
             || max_file_bytes == 0
-            || max_file_bytes
-                > iteron_tunables::param_integer(
-                    "cli.image_input.max_image_file_bytes",
-                    MAX_IMAGE_FILE_BYTES,
-                )
+            || max_file_bytes > MAX_IMAGE_FILE_BYTES
             || max_total_file_bytes == 0
-            || max_total_file_bytes
-                > iteron_tunables::param_integer(
-                    "cli.image_input.max_total_image_file_bytes",
-                    MAX_TOTAL_IMAGE_FILE_BYTES,
-                )
+            || max_total_file_bytes > MAX_TOTAL_IMAGE_FILE_BYTES
+            || max_file_bytes > max_total_file_bytes
             || max_file_encoded_bytes == 0
             || max_file_encoded_bytes > MAX_IMAGE_BASE64_BYTES
             || max_total_encoded_bytes == 0
@@ -168,16 +160,11 @@ impl ImageLoadLimits {
 
 impl Default for ImageLoadLimits {
     fn default() -> Self {
+        let (max_file_bytes, max_total_file_bytes) = image_file_byte_limits();
         Self {
             max_attachments: MAX_INPUT_IMAGES,
-            max_file_bytes: iteron_tunables::param_integer(
-                "cli.image_input.max_image_file_bytes",
-                MAX_IMAGE_FILE_BYTES,
-            ),
-            max_total_file_bytes: iteron_tunables::param_integer(
-                "cli.image_input.max_total_image_file_bytes",
-                MAX_TOTAL_IMAGE_FILE_BYTES,
-            ),
+            max_file_bytes,
+            max_total_file_bytes,
             max_file_encoded_bytes: MAX_IMAGE_BASE64_BYTES,
             max_total_encoded_bytes: MAX_TOTAL_IMAGE_BASE64_BYTES,
         }

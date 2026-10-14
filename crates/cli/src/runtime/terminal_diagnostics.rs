@@ -5,12 +5,12 @@ use iteron_protocol::PolicyHarnessErrorCode;
 use iteron_protocol::product_contract::{TerminalEffectStateV1, TerminalEvidenceV1};
 
 impl Agent {
-    /// Classify the completed Product Turn without parsing a human-readable error. `first_turn`
-    /// is the kernel turn captured by the App Server at admission; one Product Turn may contain
-    /// several physical model turns, all of which belong to this evidence snapshot.
+    /// Classify the completed Product Turn without parsing a human-readable error. Admission
+    /// captures this held physical rollout's next sequence before any run or follow-up work.
+    /// A refusal can precede the kernel turn advance, so turn IDs cannot separate this scope.
     pub(crate) fn terminal_diagnostic_snapshot(
         &self,
-        first_turn: TurnId,
+        first_sequence: Seq,
         completion: &Result<Outcome, KernelError>,
     ) -> TerminalEvidenceV1 {
         let failure_code = match completion {
@@ -33,22 +33,22 @@ impl Agent {
         };
         TerminalEvidenceV1 {
             failure_code,
-            effect_state: self.terminal_effect_state(first_turn),
+            effect_state: self.terminal_effect_state(first_sequence),
         }
     }
 
-    fn terminal_effect_state(&self, first_turn: TurnId) -> TerminalEffectStateV1 {
+    fn terminal_effect_state(&self, first_sequence: Seq) -> TerminalEffectStateV1 {
         // A failed append makes the physical record untrustworthy even if its readable prefix
         // happens to show settled effects. Never turn that prefix into an AllSettled claim.
         if self.record_failed {
             return TerminalEffectStateV1::Unavailable;
         }
-        let Ok(events) = replay_logical_rollout(self.rollout.path()) else {
+        let Ok(events) = iteron_record::replay(self.rollout.path()) else {
             return TerminalEffectStateV1::Unavailable;
         };
         let scoped = events
             .into_iter()
-            .filter(|event| event.turn.0 >= first_turn.0)
+            .filter(|event| event.seq.0 >= first_sequence.0)
             .collect::<Vec<_>>();
         let Ok(journal) = effects::EffectJournal::replay(&scoped) else {
             return TerminalEffectStateV1::Unavailable;

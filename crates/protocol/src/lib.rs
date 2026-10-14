@@ -19,30 +19,53 @@ use serde::{Deserialize, Serialize};
 pub use iteron_tunables::param_integer;
 
 pub mod activity;
+pub mod activity_control;
+pub mod advisory_maintenance;
+pub mod agent_cohort;
+pub mod agent_control;
+pub mod agent_input;
+pub mod agent_output;
 pub mod artifact;
 pub mod bundle;
 pub mod capability_set;
+pub mod client_final_evidence;
+pub mod client_interaction;
+pub mod client_mcp_input;
+pub mod client_refusal;
 pub mod context;
 pub mod diff;
 pub mod effect;
 pub mod erasure;
 pub mod event;
+pub mod extension_dispatch;
+pub mod final_evidence;
 pub mod ids;
+mod image_record;
 pub mod intent;
 pub mod lifecycle;
+pub mod memory_reference;
 pub mod message;
+pub mod native_child_context;
+pub mod ordinary_extension_control;
 pub mod permission;
 pub mod plantcore;
+pub mod plugin_control;
 pub mod policy_bundle_checkpoint;
 pub mod policy_evidence;
 pub mod pricing;
 pub mod product_contract;
+pub mod refusal;
+pub mod resident_service;
+pub mod session_navigation;
 pub mod slot;
 pub mod task;
+pub mod task_plan;
 pub mod tool;
+pub mod tool_image;
 pub mod trust;
 pub mod tunables_snapshot;
 pub mod wire;
+pub mod workspace_rewind;
 
 pub mod home;
 pub mod input;
@@ -138,6 +161,14 @@ pub use tunables_snapshot::{
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
     RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2, is_extension_server_binding_id,
 };
+pub mod advisory_maintenance_control;
+pub mod client_agent_control;
+pub mod client_artifact;
+pub mod client_inventory;
+pub mod client_negotiation;
+pub mod thread_lifecycle;
+pub mod turn_publication;
+
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
 /// Schema version for [`EventKind::TunablesSnapshot`].

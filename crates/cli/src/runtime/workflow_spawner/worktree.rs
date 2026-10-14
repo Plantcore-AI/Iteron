@@ -1,12 +1,17 @@
 //! Host-owned isolated writer worktrees and validating serialized merge mechanics.
 
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
+
+mod evidence;
+pub(in crate::runtime) use evidence::WriterSettlementProof;
+mod git_process;
+pub(in crate::runtime) mod persistent;
 
 /// Symlink verdict for a path whose metadata cannot be read at all: provisioning refuses it rather
 /// than treating an unreadable owner directory as safe.
@@ -17,12 +22,13 @@ const MAX_WRITER_PATCH_BYTES: u64 = 128 * 1024 * 1024;
 const VERIFY_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MergeFailureKind {
+pub(in crate::runtime) enum MergeFailureKind {
     ParentNotRepository,
     ParentDirty,
     ParentAdvanced,
     WorktreeProvision,
     WorktreeState,
+    NativeProcessUncertain,
     PatchTooLarge,
     PatchReceiptMismatch,
     VerificationUnavailable,
@@ -41,6 +47,7 @@ impl MergeFailureKind {
             Self::ParentAdvanced => "parent_advanced",
             Self::WorktreeProvision => "worktree_provision_failed",
             Self::WorktreeState => "worktree_state_invalid",
+            Self::NativeProcessUncertain => "native_process_uncertain",
             Self::PatchTooLarge => "patch_too_large",
             Self::PatchReceiptMismatch => "patch_receipt_mismatch",
             Self::VerificationUnavailable => "verification_unavailable",
@@ -54,8 +61,8 @@ impl MergeFailureKind {
 }
 
 #[derive(Debug)]
-pub(super) struct MergeFailure {
-    pub(super) kind: MergeFailureKind,
+pub(in crate::runtime) struct MergeFailure {
+    pub(in crate::runtime) kind: MergeFailureKind,
     detail: String,
 }
 
@@ -67,7 +74,7 @@ impl MergeFailure {
         }
     }
 
-    pub(super) fn public_summary(&self) -> String {
+    pub(in crate::runtime) fn public_summary(&self) -> String {
         format!(
             "writer merge requires human resolution [{}]: {}",
             self.kind.code(),
@@ -77,24 +84,25 @@ impl MergeFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MergeReceipt {
-    pub(super) patch_digest_sha256: Option<String>,
-    pub(super) patch_bytes: u64,
+pub(in crate::runtime) struct MergeReceipt {
+    pub(in crate::runtime) patch_digest_sha256: Option<String>,
+    pub(in crate::runtime) patch_bytes: u64,
     sealed_index_tree: String,
 }
 
 /// An exact Git worktree registered under the parent repository. The path is derived below the
 /// runtime-owned state directory and never accepted from the model.
-pub(super) struct WriterWorktree {
+pub(in crate::runtime) struct WriterWorktree {
     parent: PathBuf,
     path: PathBuf,
     patch_path: PathBuf,
     base_head: String,
     active: bool,
+    evidence: std::sync::Arc<evidence::WriterEvidence>,
 }
 
 impl WriterWorktree {
-    pub(super) async fn provision(
+    pub(in crate::runtime) async fn provision(
         parent: PathBuf,
         runtime_state: PathBuf,
         child_id: String,
@@ -109,28 +117,36 @@ impl WriterWorktree {
             })?
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::runtime) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(in crate::runtime) fn settlement_proof(&self) -> WriterSettlementProof {
+        self.evidence.proof(!self.active)
     }
 
     /// Stage the child's bounded registry edits and materialize a content-addressable patch before
     /// verification. Verification may create ignored build output, but may not alter tracked or
     /// non-ignored source after this point.
-    pub(super) async fn prepare_patch(&self) -> Result<MergeReceipt, MergeFailure> {
+    pub(in crate::runtime) async fn prepare_patch(&self) -> Result<MergeReceipt, MergeFailure> {
         let path = self.path.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
-        tokio::task::spawn_blocking(move || prepare_patch_sync(&path, &patch_path, &base_head))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::WorktreeState,
-                    "patch preparation task did not complete",
-                )
-            })?
+        self.evidence.begin();
+        let result =
+            tokio::task::spawn_blocking(move || prepare_patch_sync(&path, &patch_path, &base_head))
+                .await
+                .map_err(|_| {
+                    MergeFailure::new(
+                        MergeFailureKind::WorktreeState,
+                        "patch preparation task did not complete",
+                    )
+                })?;
+        self.evidence.complete(&result);
+        result
     }
 
-    pub(super) async fn verify(
+    pub(in crate::runtime) async fn verify(
         &self,
         receipt: &MergeReceipt,
         command: Option<&str>,
@@ -148,13 +164,27 @@ impl WriterWorktree {
             self.path.clone(),
             command.to_owned(),
         )
-        .with_timeout_secs(iteron_tunables::param_integer(
-            "cli.runtime.workflow_spawner.worktree.verify_timeout_secs",
-            VERIFY_TIMEOUT_SECS,
-        ))
+        .with_timeout_secs(
+            iteron_tunables::param_integer(
+                "cli.runtime.workflow_spawner.worktree.verify_timeout_secs",
+                VERIFY_TIMEOUT_SECS,
+            )
+            .clamp(1, VERIFY_TIMEOUT_SECS),
+        )
         .with_sensitive_env_names(sensitive_env_names.to_vec())
         .with_output_tail_bytes(output_tail_bytes);
-        let verdict = oracle.evaluate().await;
+        let (cleanup_observer, _cleanup_events) =
+            iteron_sandbox::OutputObserver::bounded("isolated-writer-verification", 1, 4);
+        let cleanup_observer = cleanup_observer.with_owned_group_cleanup();
+        self.evidence.begin();
+        let verdict = oracle
+            .with_output_observer(cleanup_observer.clone())
+            .evaluate()
+            .await;
+        if !cleanup_observer.owned_group_cleanup_known() {
+            self.evidence.mark_unknown();
+        }
+        self.evidence.complete(&Ok::<(), MergeFailure>(()));
         if !verdict.passed() {
             return Err(MergeFailure::new(
                 MergeFailureKind::VerificationFailed,
@@ -164,7 +194,8 @@ impl WriterWorktree {
         let path = self.path.clone();
         let base_head = self.base_head.clone();
         let sealed_index_tree = receipt.sealed_index_tree.clone();
-        tokio::task::spawn_blocking(move || {
+        self.evidence.begin();
+        let result = tokio::task::spawn_blocking(move || {
             ensure_verification_did_not_mutate(&path, &base_head, &sealed_index_tree)
         })
         .await
@@ -173,28 +204,39 @@ impl WriterWorktree {
                 MergeFailureKind::VerificationMutatedWorkspace,
                 "verification mutation audit did not complete",
             )
-        })?
+        })?;
+        self.evidence.complete(&result);
+        result
     }
 
     /// Apply the prepared patch only after revalidating the parent HEAD and cleanliness while the
     /// caller holds the session-wide writer mutex.
-    pub(super) async fn merge(&mut self, receipt: &MergeReceipt) -> Result<(), MergeFailure> {
+    pub(in crate::runtime) async fn merge(
+        &mut self,
+        receipt: &MergeReceipt,
+    ) -> Result<(), MergeFailure> {
         let parent = self.parent.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
         let receipt = receipt.clone();
-        tokio::task::spawn_blocking(move || merge_sync(&parent, &patch_path, &base_head, &receipt))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::ApplyFailed,
-                    "serialized merge task did not complete",
-                )
-            })??;
+        self.evidence.begin();
+        let evidence = self.evidence.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            merge_sync(&parent, &patch_path, &base_head, &receipt, &evidence)
+        })
+        .await
+        .map_err(|_| {
+            MergeFailure::new(
+                MergeFailureKind::ApplyFailed,
+                "serialized merge task did not complete",
+            )
+        })?;
+        self.evidence.complete(&result);
+        result?;
         self.cleanup().await
     }
 
-    pub(super) async fn discard(&mut self) -> Result<(), MergeFailure> {
+    pub(in crate::runtime) async fn discard(&mut self) -> Result<(), MergeFailure> {
         self.cleanup().await
     }
 
@@ -205,14 +247,17 @@ impl WriterWorktree {
         let parent = self.parent.clone();
         let path = self.path.clone();
         let patch_path = self.patch_path.clone();
-        tokio::task::spawn_blocking(move || cleanup_sync(&parent, &path, &patch_path))
+        self.evidence.begin();
+        let result = tokio::task::spawn_blocking(move || cleanup_sync(&parent, &path, &patch_path))
             .await
             .map_err(|_| {
                 MergeFailure::new(
                     MergeFailureKind::CleanupFailed,
                     "worktree cleanup task did not complete",
                 )
-            })??;
+            })?;
+        self.evidence.complete(&result);
+        result?;
         self.active = false;
         Ok(())
     }
@@ -236,6 +281,15 @@ fn provision_sync(
     require_clean(&canonical_parent)?;
     let base_head = head(&canonical_parent)?;
 
+    provision_at_head(canonical_parent, runtime_state, child_id, base_head)
+}
+
+fn provision_at_head(
+    canonical_parent: PathBuf,
+    runtime_state: PathBuf,
+    child_id: &str,
+    base_head: String,
+) -> Result<WriterWorktree, MergeFailure> {
     let owner = runtime_state.join("writer-worktrees");
     std::fs::create_dir_all(&owner).map_err(|error| {
         MergeFailure::new(MergeFailureKind::WorktreeProvision, error.to_string())
@@ -279,6 +333,7 @@ fn provision_sync(
         path,
         base_head,
         active: true,
+        evidence: std::sync::Arc::new(evidence::WriterEvidence::default()),
     })
 }
 
@@ -286,6 +341,15 @@ fn prepare_patch_sync(
     worktree: &Path,
     patch_path: &Path,
     base_head: &str,
+) -> Result<MergeReceipt, MergeFailure> {
+    prepare_patch_against(worktree, patch_path, base_head, base_head)
+}
+
+fn prepare_patch_against(
+    worktree: &Path,
+    patch_path: &Path,
+    base_head: &str,
+    diff_base: &str,
 ) -> Result<MergeReceipt, MergeFailure> {
     require_head(worktree, base_head, MergeFailureKind::WorktreeState)?;
     require_git_success(
@@ -300,8 +364,12 @@ fn prepare_patch_sync(
             OsStr::new("--cached"),
             OsStr::new("--binary"),
             OsStr::new("--full-index"),
+            // Disabling an external diff is a Git option; `diff.external=` alone is an
+            // empty executable and still invokes Git's external-command path.
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-textconv"),
             OsStr::new(&output_arg),
-            OsStr::new(base_head),
+            OsStr::new(diff_base),
             OsStr::new("--"),
         ],
     )?;
@@ -386,6 +454,7 @@ fn merge_sync(
     patch_path: &Path,
     base_head: &str,
     receipt: &MergeReceipt,
+    evidence: &evidence::WriterEvidence,
 ) -> Result<(), MergeFailure> {
     let patch = verified_patch_bytes(patch_path, receipt)?;
     require_head(parent, base_head, MergeFailureKind::ParentAdvanced)?;
@@ -407,6 +476,7 @@ fn merge_sync(
             check.message(),
         ));
     }
+    evidence.applying();
     let apply = git_capture_with_input(
         parent,
         [
@@ -423,6 +493,7 @@ fn merge_sync(
             apply.message(),
         ));
     }
+    evidence.applied();
     Ok(())
 }
 
@@ -584,12 +655,7 @@ fn has_untracked(path: &Path) -> Result<bool, MergeFailure> {
 }
 
 fn git_quiet<const N: usize>(path: &Path, args: [&str; N]) -> Result<bool, MergeFailure> {
-    let status = git_command(path)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
+    let status = git_capture(path, args)?.status;
     match status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -638,30 +704,9 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdout was not piped")
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stderr was not piped")
-    })?;
-    let out = std::thread::spawn(move || read_bounded(stdout));
-    let err = std::thread::spawn(move || read_bounded(stderr));
-    let status = child
-        .wait()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    Ok(GitOutput {
-        status,
-        stdout,
-        stderr,
-    })
+    let mut command = git_command(path)?;
+    command.args(args);
+    git_process::capture(command, None, MAX_GIT_MESSAGE_BYTES, false)
 }
 
 fn git_capture_with_input<I, S>(
@@ -673,53 +718,18 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdin was not piped")
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdout was not piped")
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stderr was not piped")
-    })?;
-    let input = input.to_vec();
-    let input_writer = std::thread::spawn(move || stdin.write_all(&input));
-    let out = std::thread::spawn(move || read_bounded(stdout));
-    let err = std::thread::spawn(move || read_bounded(stderr));
-    let status = child
-        .wait()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let input_result = input_writer.join().map_err(|_| {
-        MergeFailure::new(
-            MergeFailureKind::WorktreeState,
-            "Git patch input writer did not complete",
-        )
-    })?;
-    if let Err(error) = input_result
-        && error.kind() != std::io::ErrorKind::BrokenPipe
-    {
+    if input.len() as u64 > MAX_WRITER_PATCH_BYTES {
         return Err(MergeFailure::new(
-            MergeFailureKind::WorktreeState,
-            error.to_string(),
+            MergeFailureKind::PatchTooLarge,
+            "Git input exceeds the writer patch ceiling",
         ));
     }
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    Ok(GitOutput {
-        status,
-        stdout,
-        stderr,
-    })
+    let mut command = git_command(path)?;
+    command.args(args);
+    git_process::capture(command, Some(input.to_vec()), MAX_GIT_MESSAGE_BYTES, false)
 }
 
-fn git_command(path: &Path) -> Command {
+fn raw_git_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-c")
@@ -728,31 +738,55 @@ fn git_command(path: &Path) -> Command {
         .arg("core.fsmonitor=false")
         .arg("-c")
         .arg("credential.helper=")
-        .arg("-C")
-        .arg(path)
+        .arg("-c")
+        .arg("core.attributesFile=/dev/null")
+        .arg("-c")
+        .arg("diff.external=")
+        .arg("-c")
+        .arg("gc.auto=0")
+        .arg("-c")
+        .arg("maintenance.auto=false")
+        .current_dir(path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
         .stdin(Stdio::null());
+    // Ambient Git process configuration cannot retarget the trusted repository/index or inject
+    // a command. No configuration values or command strings are read or printed.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat");
     command
 }
 
-fn read_bounded(mut reader: impl Read) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let _ = reader
-        .by_ref()
-        .take(
-            (iteron_tunables::param_integer(
-                "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
-                MAX_GIT_MESSAGE_BYTES,
-            ) + 1) as u64,
-        )
-        .read_to_end(&mut bytes);
-    bytes.truncate(iteron_tunables::param_integer(
-        "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
-        MAX_GIT_MESSAGE_BYTES,
-    ));
-    bytes
+fn git_command(path: &Path) -> Result<Command, MergeFailure> {
+    let mut inspection = raw_git_command(path);
+    inspection.args([
+        "config",
+        "--name-only",
+        "--get-regexp",
+        "^filter\\.|^diff\\..*\\.textconv$|^remote\\..*\\.promisor$|^extensions\\.partialClone$",
+    ]);
+    let status = git_process::capture(inspection, None, MAX_GIT_MESSAGE_BYTES, false)?.status;
+    if status.code() != Some(1) {
+        return Err(MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            "isolated writer refuses repository filters, text conversion or lazy-fetch configuration",
+        ));
+    }
+    Ok(raw_git_command(path))
 }
 
 fn bounded_detail(value: &str) -> String {
@@ -829,7 +863,7 @@ mod tests {
     }
 
     fn git_ok(path: &Path, args: &[&str]) {
-        let output = git_command(path).args(args).output().unwrap();
+        let output = git_command(path).unwrap().args(args).output().unwrap();
         assert!(
             output.status.success(),
             "git {args:?} failed: {}",
@@ -900,8 +934,14 @@ mod tests {
         )
         .expect("writer evidence is unchanged before the patch-file tamper");
         std::fs::write(&tampered.patch_path, "not the verified patch\n").unwrap();
-        let refused =
-            merge_sync(&parent, &tampered.patch_path, &tampered.base_head, &receipt).unwrap_err();
+        let refused = merge_sync(
+            &parent,
+            &tampered.patch_path,
+            &tampered.base_head,
+            &receipt,
+            &tampered.evidence,
+        )
+        .unwrap_err();
         assert_eq!(refused.kind, MergeFailureKind::PatchReceiptMismatch);
         assert!(
             refused
@@ -934,6 +974,7 @@ mod tests {
             &deterministic.patch_path,
             &deterministic.base_head,
             &receipt,
+            &deterministic.evidence,
         )
         .expect("the clean unchanged parent accepts the validated patch deterministically");
         assert_eq!(

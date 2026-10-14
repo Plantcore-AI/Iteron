@@ -19,13 +19,21 @@
 //! tracked outside the source API rather than presented as a live stub.
 
 mod append_actor;
+pub mod bounded_replay;
 pub mod checkpoint;
 pub mod content_store;
 pub mod erasure;
+mod failure;
+pub mod native_child_context;
 pub mod policy_bundle;
 pub mod redact;
 pub mod session;
 mod session_maintenance;
+mod session_publication_admission;
+pub use session_publication_admission::ForegroundActivity;
+#[cfg(test)]
+mod session_publication_admission_tests;
+pub mod turn_start_store;
 
 // Public type identities remain available at the crate root without importing new names into the
 // scope that owns the frozen `replay`/`Rollout::append` authorities. Executable entry points live
@@ -34,6 +42,7 @@ mod session_maintenance;
 pub type ContentReferenceSurface = content_store::ContentReferenceSurface;
 pub type ContentStoreError = content_store::ContentStoreError;
 use append_actor::RolloutAppendActor;
+pub use failure::{RecordFailure, RecordFailureKind};
 pub type PrivateContentClass = content_store::PrivateContentClass;
 pub type PrivateContentDerivativeStore = content_store::PrivateContentDerivativeStore;
 pub type PrivateContentHandle = content_store::PrivateContentHandle;
@@ -53,7 +62,8 @@ mod cache_io;
 
 pub use checkpoint::{
     Snapshot, SnapshotInventory, checkpoint, checkpoint_excluding_runtime_state,
-    checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
+    checkpoint_supported, rewind_workspace, rewind_workspace_excluding_runtime_state,
+    rewind_workspace_with_policy, snapshot_inventory,
 };
 pub use session::{
     DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, SessionPage,
@@ -247,9 +257,11 @@ fn take_append_sync_fault() -> bool {
 fn inject_append_sync_fault(file: &File, durable_prefix_bytes: u64) -> std::io::Result<()> {
     file.set_len(durable_prefix_bytes)?;
     file.sync_all()?;
-    Err(std::io::Error::other(
-        "injected append sync fault at semantic-batch barrier",
-    ))
+    #[cfg(unix)]
+    let error = std::io::Error::from_raw_os_error(libc::ENOSPC);
+    #[cfg(not(unix))]
+    let error = std::io::Error::from(std::io::ErrorKind::StorageFull);
+    Err(error)
 }
 
 /// How hard one append pushes its line toward the platter.
@@ -315,6 +327,9 @@ fn sync_line(file: &File) -> std::io::Result<()> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
+    /// Safe original cause retained by a runtime that has already stopped this writer.
+    #[error("{0}")]
+    PreviousFailure(RecordFailure),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
@@ -545,6 +560,11 @@ fn hash_line(prev: &str, seq: u64, payload: &serde_json::Value) -> String {
 /// Frontend setters are not sufficient: records can be produced by embedders, copied between
 /// versions, or be independently hash-valid while carrying a hostile nested field.
 pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
+    if let EventKind::NativeChildContextCapturedV1 { context } = &event.kind {
+        context.validate().map_err(|reason| {
+            RecordError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, reason))
+        })?;
+    }
     let max_environment_bytes = iteron_tunables::param_integer(
         "protocol.event.max_durable_environment_context_bytes",
         MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,
@@ -592,6 +612,61 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
         policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
     }
     match &event.kind {
+        EventKind::AgentCohortInstalledV1 { installation } => {
+            installation
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            // These names determine physical journal/controller recovery identity. Redaction
+            // cannot rename them after admission, so credential-shaped names refuse beforehand.
+            for identity in [
+                &installation.origin.tenant.0,
+                &installation.origin.run_id.0,
+                &installation.installed_run.0,
+            ] {
+                if crate::redact::scrub_route_identifier(identity) != *identity {
+                    return Err(RecordError::InvalidEventSchema {
+                        reason: "cohort scope identities must be credential-free",
+                    });
+                }
+            }
+        }
+        EventKind::OrdinaryExtensionBindingsV1 { catalog_sha256, .. }
+            if !crate::redact::is_content_address(catalog_sha256) =>
+        {
+            return Err(RecordError::InvalidEventSchema {
+                reason: "ordinary extension catalog must carry a content digest",
+            });
+        }
+        EventKind::TaskPlanUpdatedV1 { plan } => plan
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
+        EventKind::MemoryReferenceAdmittedV1 { admission } => {
+            admission
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+            if crate::redact::scrub_correlation_identifier(&admission.record_id)
+                != admission.record_id
+            {
+                return Err(RecordError::InvalidEventSchema {
+                    reason: "memory record correlation identity must be credential-free",
+                });
+            }
+        }
+        EventKind::TurnPublicationV1 { fact } => fact
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
+        EventKind::ChildAccountingPendingV1 { effect_id }
+        | EventKind::ChildAccountingResolvedV1 { effect_id }
+            if effect_id.0.is_empty()
+                || crate::redact::scrub_route_identifier(&effect_id.0) != effect_id.0 =>
+        {
+            return Err(RecordError::InvalidEventSchema {
+                reason: "child accounting effect identity must be nonempty and credential-free",
+            });
+        }
+        EventKind::AgentInputAdmittedV1 { admission } => admission
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
         EventKind::PolicyDecision { evidence } => evidence.validate().map_err(|_| {
             RecordError::InvalidEventSchema {
                 reason: "policy decision evidence is invalid or outside its content-free bounds",
@@ -1029,6 +1104,9 @@ pub struct Rollout {
     durable_bytes: u64,
     last_hash: String,
     poisoned: bool,
+    /// First runtime-fatal failure, retained only as content-free diagnostic evidence. This does
+    /// not change append admission or poison recovery; a new writer starts without the snapshot.
+    retained_failure: Option<RecordFailure>,
     /// Record-owned so every public append path observes the actual redacted, stamped event only
     /// after fsync. A caller cannot bypass the session projection by appending directly.
     session_projection: SessionProjectionState,
@@ -1048,6 +1126,18 @@ pub struct Rollout {
 }
 
 impl Rollout {
+    /// Exclude this process's rebuildable session publications for a complete foreground
+    /// operation. The owned guard can span awaits and nests across runs in the same tenant store.
+    pub fn foreground_activity(&self) -> Result<ForegroundActivity, RecordError> {
+        let runs = self.path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout has no runs directory",
+            )
+        })?;
+        session_publication_admission::foreground(runs, &self.tenant)
+    }
+
     /// Monotonic time elapsed since this writer descriptor opened.
     ///
     /// Evidence constructed immediately before [`Self::append`] uses this clock so its payload
@@ -1284,6 +1374,7 @@ impl Rollout {
             create_state_dir(dir)?;
         }
         let dir = dir.canonicalize()?;
+        let _foreground = session_publication_admission::foreground(&dir, &tenant)?;
         let path = validated_run_path(&dir, run, ".jsonl")?;
         let mut file = OpenOptions::new()
             .create(create)
@@ -1335,7 +1426,7 @@ impl Rollout {
             }
         }
         let (seq, event_count, physical_line_count, last_hash) =
-            match Self::scan_tail(&mut file, &tenant) {
+            match Self::scan_tail(&mut file, &dir, &tenant) {
                 Ok(tail) => tail,
                 Err(error) => {
                     // Make the early-return release explicit. Dropping the descriptor also releases
@@ -1375,6 +1466,7 @@ impl Rollout {
             durable_bytes,
             last_hash,
             poisoned: false,
+            retained_failure: None,
             session_projection: SessionProjectionState::Uninitialized,
             // The segment origin. A resumed run reaches here again in a new process, which is
             // precisely why `ts_us` restarts and why the reader treats that drop as a seam.
@@ -1390,6 +1482,7 @@ impl Rollout {
     /// FINAL line is treated as torn — the file is truncated back to before it.
     fn scan_tail(
         file: &mut File,
+        runs_dir: &Path,
         tenant: &TenantId,
     ) -> Result<(Seq, usize, usize, String), RecordError> {
         file.seek(SeekFrom::Start(0))?;
@@ -1460,7 +1553,11 @@ impl Rollout {
                             computed,
                         });
                     }
-                    let event: Event = serde_json::from_value(cl.payload)?;
+                    // Verify the stored chain before resolving private fields. Typed image
+                    // values require their real pixels, never the CAS marker's spelling.
+                    let mut payload = cl.payload;
+                    content_store::hydrate_event_payload(runs_dir, tenant, &mut payload)?;
+                    let event: Event = serde_json::from_value(payload)?;
                     validate_event_bounds(&event)?;
                     last = cl.hash;
                     next_seq = next_seq.next();
@@ -1495,6 +1592,7 @@ impl Rollout {
     /// poisoned; only a successful durability barrier clears it. An I/O error therefore requires
     /// close + reopen, where tail recovery establishes the authoritative chain head.
     pub fn append(&mut self, event: &Event) -> Result<Seq, RecordError> {
+        let _foreground = self.foreground_activity()?;
         if !self.pending_observations.is_empty() {
             if self.pending_observations.len().saturating_add(1)
                 > append_actor::append_batch_limit()
@@ -1610,9 +1708,27 @@ impl Rollout {
 
     /// Refresh the rebuildable session sidecars from the record-owned incremental projection.
     /// The first call performs one bounded verified replay; later calls are O(1) in rollout age.
+    /// Returns false if publication is deferred by foreground activity; its pending proposal is
+    /// retained and ordinary readers continue to validate the cache against the journal.
     pub fn refresh_session_cache(&mut self) -> Result<bool, RecordError> {
         self.flush_observations()?;
         session_maintenance::flush()?;
+        let publication = {
+            let runs_dir = self.path.parent().ok_or_else(|| {
+                RecordError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "rollout path has no runs directory",
+                ))
+            })?;
+            session_publication_admission::sync_publication(runs_dir, &self.tenant)?
+        };
+        // Deferred projection reads still participate in foreground ordering. A synchronous
+        // publication already owns the permit, so it must not wait for a foreground slot itself.
+        let _foreground = if publication.is_none() {
+            Some(self.foreground_activity()?)
+        } else {
+            None
+        };
 
         if !self.ensure_session_projection()? {
             return Ok(false);
@@ -1620,7 +1736,23 @@ impl Rollout {
         let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
             unreachable!("a successful projection initialization must be ready");
         };
-        projection.persist_at(self.durable_bytes)
+        if !projection.prepare_publication(self.durable_bytes)? {
+            return Ok(false);
+        }
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        let Some(_publication) = publication else {
+            let _ = session_maintenance::enqueue(
+                runs_dir.to_owned(),
+                projection.publication_meta().clone(),
+            );
+            return Ok(false);
+        };
+        session::write_meta(runs_dir, projection.publication_meta())
     }
 
     /// Advisory records are accepted into a bounded buffer; no durable sequence is acknowledged.
@@ -1674,13 +1806,26 @@ impl Rollout {
     }
 
     pub fn refresh_session_cache_async(&mut self) -> Result<bool, RecordError> {
+        let _foreground = self.foreground_activity()?;
         if !self.ensure_session_projection()? {
             return Ok(false);
         }
         let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
             unreachable!();
         };
-        projection.persist_in_background(self.durable_bytes)
+        if !projection.prepare_publication(self.durable_bytes)? {
+            return Ok(false);
+        }
+        let runs_dir = self.path.parent().ok_or_else(|| {
+            RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "rollout path has no runs directory",
+            ))
+        })?;
+        Ok(session_maintenance::enqueue(
+            runs_dir.to_owned(),
+            projection.publication_meta().clone(),
+        ))
     }
 
     fn ensure_session_projection(&mut self) -> Result<bool, RecordError> {
@@ -3058,19 +3203,33 @@ mod tests {
             .expect_err("the injected semantic barrier must fail");
         set_append_sync_fault_at(None);
         assert!(matches!(first_error, RecordError::Io(_)));
+        rollout.retain_failure(&first_error);
+        let original_failure = rollout.retained_failure().unwrap();
+        assert_eq!(original_failure.kind, RecordFailureKind::StorageFull);
+        assert_eq!(
+            original_failure.io_kind,
+            Some(std::io::ErrorKind::StorageFull)
+        );
+        #[cfg(unix)]
+        assert_eq!(original_failure.os_code, Some(libc::ENOSPC));
 
         // The live worker must fail-stop instead of trusting its pre-error in-memory hash head and
         // continuing the journal.
-        assert!(matches!(
-            rollout.append(&ev(0)),
-            Err(RecordError::WriterPoisoned)
-        ));
+        let later_error = rollout.append(&ev(0)).unwrap_err();
+        assert!(matches!(later_error, RecordError::WriterPoisoned));
+        rollout.retain_failure(&later_error);
+        assert_eq!(rollout.retained_failure(), Some(original_failure));
+        assert_eq!(
+            RecordFailure::from_error(&rollout.unavailable_error()),
+            original_failure
+        );
         drop(rollout);
 
         // Reopen scans the durable tail, clears the poison by constructing a fresh writer, and
         // resumes at the authoritative next sequence.
         {
             let mut recovered = Rollout::open(&dir, &run, tenant).unwrap();
+            assert!(recovered.retained_failure().is_none());
             assert_eq!(recovered.append(&ev(0)).unwrap(), Seq(1));
         }
         assert_eq!(replay(&path).unwrap().len(), 2);
@@ -3562,10 +3721,22 @@ AbCdEf1234567890AbCdEf1234567890"
             });
             assert_eq!(events.len(), lines.len(), "{}", path.display());
             assert!(!events.is_empty(), "{}", path.display());
-            assert!(matches!(
-                events[0].kind,
-                EventKind::TurnStart | EventKind::RunStart { .. }
-            ));
+            if fixture["path"]
+                == "governance/schema-compat/fixtures/record/rollout-native-runtime-v16.jsonl"
+            {
+                // This exact additive corpus exercises runtime events, not a session genesis.
+                // Its frozen hash chain begins with the declared neutral fixture marker.
+                assert_eq!(fixture["schema_version"], 16);
+                assert!(matches!(
+                    &events[0].kind,
+                    EventKind::Notice { text } if text == "schema compatibility fixture"
+                ));
+            } else {
+                assert!(matches!(
+                    events[0].kind,
+                    EventKind::TurnStart | EventKind::RunStart { .. }
+                ));
+            }
             if fixture["schema_version"] == 4 {
                 assert!(matches!(
                     &events[0].kind,

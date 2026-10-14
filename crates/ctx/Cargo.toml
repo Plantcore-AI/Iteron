@@ -19,3 +19,6 @@ walkdir = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+
+[target.'cfg(windows)'.dependencies]
+iteron-support = { path = "../support" }

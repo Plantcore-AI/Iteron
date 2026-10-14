@@ -3,12 +3,25 @@
 //! This is deliberately not a PTY abstraction. Linux uses the same bubblewrap confinement as the
 //! one-shot sandbox plus its PID namespace and parent-death semantics. macOS uses Seatbelt plus a
 //! dedicated process group for protocol-style children that require distinct stdin/stdout/stderr.
-//! Windows still refuses before spawn because it needs a Job Object.
+//! Windows pipes and ConPTY retain the same suspended native process and private Job. A required
+//! confinement installs one sealed LPAC scope before creation; the explicit unconfined posture
+//! keeps only the Job's lifetime boundary. No failed confined launch retries without isolation.
 
 use crate::{Confinement, SandboxError};
 use std::fs::File;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+#[cfg(windows)]
+pub use crate::persistent_windows::{
+    ConfinedProcess, ConfinedProcessError, ConfinedProcessInput, ConfinedProcessOutput,
+};
+#[cfg(not(windows))]
+pub type ConfinedProcessInput = tokio::process::ChildStdin;
+#[cfg(not(windows))]
+pub type ConfinedProcessOutput = tokio::process::ChildStdout;
+#[cfg(not(windows))]
+pub type ConfinedProcessError = tokio::process::ChildStderr;
 
 #[cfg(unix)]
 use std::process::Stdio;
@@ -25,6 +38,15 @@ pub enum PersistentBackend {
     /// receipt has to be able to say so -- a run that reports `macos-seatbelt-pty` when nothing
     /// was confined is a receipt that describes a different process than the one that ran.
     DirectPty,
+    /// Private Job tree plus ConPTY, with no filesystem/network isolation claim.
+    #[cfg(windows)]
+    WindowsJobConPty,
+    #[cfg(windows)]
+    WindowsJobPipes,
+    #[cfg(windows)]
+    WindowsLpacConPty,
+    #[cfg(windows)]
+    WindowsLpacPipes,
 }
 
 impl PersistentBackend {
@@ -35,6 +57,14 @@ impl PersistentBackend {
             Self::MacOsSeatbeltPipes => "macos-seatbelt-pipes",
             Self::MacOsSeatbeltPty => "macos-seatbelt-pty",
             Self::DirectPty => "direct-pty",
+            #[cfg(windows)]
+            Self::WindowsJobConPty => "windows-job-conpty",
+            #[cfg(windows)]
+            Self::WindowsJobPipes => "windows-job-pipes",
+            #[cfg(windows)]
+            Self::WindowsLpacConPty => "windows-lpac-conpty",
+            #[cfg(windows)]
+            Self::WindowsLpacPipes => "windows-lpac-pipes",
         }
     }
 }
@@ -45,6 +75,7 @@ impl PersistentBackend {
 ///
 /// The caller must additionally impose a wall-clock deadline and drain both output pipes. The
 /// tools supervisor does both and explicitly kills the process group before abnormal drop.
+#[cfg(not(windows))]
 pub struct ConfinedProcess {
     child: tokio::process::Child,
     backend: PersistentBackend,
@@ -56,9 +87,25 @@ pub struct ConfinedProcess {
 }
 
 struct ProcessGroupToken {
+    #[cfg(windows)]
+    job: Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
     #[cfg(unix)]
     pid: Option<u32>,
     armed: Mutex<bool>,
+}
+
+#[cfg(unix)]
+impl ProcessGroupToken {
+    // Only called while this token's armed mutex is held and the child identity is retained.
+    fn signal(&self, signal: libc::c_int) {
+        if let Some(pid) = self
+            .pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 1)
+        {
+            unsafe { libc::kill(-pid, signal) };
+        }
+    }
 }
 
 /// An opaque cleanup capability minted for one confined process group.
@@ -70,6 +117,15 @@ struct ProcessGroupToken {
 pub struct ConfinedProcessControl(Arc<ProcessGroupToken>);
 
 impl ConfinedProcessControl {
+    #[cfg(windows)]
+    pub(crate) fn for_windows_job(
+        job: Arc<iteron_support::owned_windows_job::OwnedWindowsJob>,
+    ) -> Self {
+        Self(Arc::new(ProcessGroupToken {
+            job,
+            armed: Mutex::new(true),
+        }))
+    }
     #[cfg(unix)]
     pub(crate) fn for_child(_pid: Option<u32>) -> Self {
         Self(Arc::new(ProcessGroupToken {
@@ -86,7 +142,7 @@ impl ConfinedProcessControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *armed {
-            crate::signal_process_group(self.0.pid, signal);
+            self.0.signal(signal);
         }
     }
 
@@ -110,7 +166,11 @@ impl ConfinedProcessControl {
         // `kill(2)` would leave a PID-reuse window between those two operations.
         self.spend_with(|| {
             #[cfg(unix)]
-            crate::signal_process_group(self.0.pid, libc::SIGKILL);
+            self.0.signal(libc::SIGKILL);
+            #[cfg(windows)]
+            {
+                let _ = self.0.job.terminate();
+            }
         });
     }
 
@@ -128,6 +188,7 @@ impl ConfinedProcessControl {
     }
 }
 
+#[cfg(not(windows))]
 impl ConfinedProcess {
     pub fn backend(&self) -> PersistentBackend {
         self.backend
@@ -239,6 +300,7 @@ impl ConfinedProcess {
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for ConfinedProcess {
     fn drop(&mut self) {
         let _ = self.terminate_and_reap_blocking(std::time::Duration::from_secs(
@@ -272,7 +334,11 @@ pub async fn spawn_confined_process(
         spawn_macos_pipes(command, conf, None).await
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        crate::persistent_windows::spawn(command, conf, None).await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (command, conf);
         Err(SandboxError::Unsupported)
@@ -331,7 +397,11 @@ pub async fn spawn_confined_process_from_workspace(
         spawn_macos_pipes(command, conf, Some(workspace)).await
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        crate::persistent_windows::spawn(command, conf, Some(workspace)).await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (command, conf, workspace);
         Err(SandboxError::Unsupported)

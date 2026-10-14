@@ -1,10 +1,17 @@
 //! Content-free `/status` projection over the exact session-owned authorities.
 
-use super::*;
+use crate::runtime::Agent;
+use std::sync::Arc;
 
 const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) struct OperatorStatusSources {
+    pub(super) ordinary_extensions: super::ordinary_extensions::OrdinaryExtensionsSurface,
+    pub(super) plugins: super::plugin_control::PluginControlSurface,
+    pub(super) activity: super::activity_control::ActivitySurface,
+    pub(super) agents: super::agent_control::AgentControlSurface,
+    pub(super) live_workflows: super::live_workflow_control::LiveWorkflowSurface,
+    pub(super) inventory: super::inventory_control::InventorySurface,
     runtime: crate::runtime::RuntimeOperatorStatusSources,
     processes: Option<iteron_tools::ProcessControl>,
     language_servers: Option<iteron_tools::LspControl>,
@@ -47,6 +54,19 @@ impl OperatorStatusSources {
         workflows: Arc<crate::workflow::WorkflowSupervisor>,
     ) -> Self {
         Self {
+            ordinary_extensions: super::ordinary_extensions::OrdinaryExtensionsSurface::capture(
+                agent,
+            ),
+            plugins: super::plugin_control::PluginControlSurface::capture(agent),
+            activity: super::activity_control::ActivitySurface::capture(
+                agent,
+                processes.clone(),
+                mcp.clone(),
+                workflows.clone(),
+            ),
+            agents: super::agent_control::AgentControlSurface::capture(agent),
+            live_workflows: super::live_workflow_control::LiveWorkflowSurface::capture(agent),
+            inventory: super::inventory_control::InventorySurface::capture(agent),
             runtime: agent.operator_status_sources(),
             processes,
             language_servers,
@@ -58,6 +78,12 @@ impl OperatorStatusSources {
     /// Refresh identities that can change only at an idle control boundary (model/run adoption).
     /// The live owner handles remain the same Arcs and are intentionally retained.
     pub(super) fn refresh_runtime(&mut self, agent: &Agent) {
+        self.ordinary_extensions.refresh(agent);
+        self.plugins.refresh(agent);
+        self.activity.refresh(agent);
+        self.agents.refresh(agent);
+        self.live_workflows.refresh(agent);
+        self.inventory.refresh(agent);
         self.runtime = agent.operator_status_sources();
     }
 

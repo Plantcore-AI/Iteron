@@ -19,12 +19,12 @@ pub(super) fn apply_live_event<T: notification::NotificationTransport + ?Sized>(
 pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
     match ev {
         UiEvent::Text(t) => {
-            if !app.product_stream_active {
+            if !app.product.stream_active() {
                 app.stream_text(&t);
             }
         }
         UiEvent::Thinking(t) => {
-            if !app.product_stream_active {
+            if !app.product.stream_active() {
                 app.stream_think(&t);
             }
         }
@@ -39,11 +39,9 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         UiEvent::Phase(p) => {
             // Durable Phase is not transport authority. Local request assembly and admission also
             // happen under Model, so TTFT begins only when the RequestSent activity arrives.
-            app.awaiting_first_token_since = None;
-            app.provider_accepted = false;
+            app.activity_observations.finish_provider_wait();
             if p == iteron_protocol::Phase::Model {
-                app.assistant_stream_authority.clear();
-                app.assistant_turn_block_ids.clear();
+                app.assistant.begin_model_turn();
             }
             app.status = p.label().into();
         }
@@ -58,24 +56,18 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         } => {
             // A provider turn is a semantic token boundary. Release the last held word only after
             // scrubbing the complete token; keep it in the live block until Done/tool framing.
-            if let Some(pending) = app.text_scrubber.finish() {
-                let pending = ui_safe_text(&pending);
-                app.cur_text.push_str(&pending);
-                app.assistant_stream_authority.push_str(&pending);
-                app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-            }
-            if let Some(pending) = app.thinking_scrubber.finish() {
-                app.cur_think.push_str(&ui_safe_text(&pending));
-            }
-            app.cost = cost;
-            app.last_turn_usage = Some(usage);
-            app.last_context = Some(context);
-            app.model_context_window = model_context_window;
-            app.reserved_output_tokens = Some(reserved_output_tokens);
-            app.compaction_trigger_tokens = compaction_trigger_tokens;
-            app.effort_application = Some(effort);
-            app.turns = app.turns.saturating_add(1);
-            app.status = "answer complete · finalizing run record…".into();
+            app.assistant.finish_boundaries();
+            app.telemetry
+                .observe_provider_turn(super::session_telemetry::ProviderTurnTelemetry {
+                    cost,
+                    usage,
+                    context,
+                    model_context_window,
+                    reserved_output_tokens,
+                    compaction_trigger_tokens,
+                    effort,
+                });
+            app.status = "provider turn complete · continuing…".into();
         }
         UiEvent::Workflow(event) => app.workflow_event(event),
         // Legacy count events lack an ID and cannot settle an identified TUI preview.
@@ -98,14 +90,13 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             arguments,
             workspace,
         } => {
-            if app.product_stream_active {
+            if app.product.stream_active() {
                 return;
             }
             app.flush_text();
             app.transcript_viewer.close();
             app.status = "approval required".into();
-            app.approval_choice = ApprovalChoice::Deny;
-            app.pending = Some(Pending {
+            app.permission_prompt.present(Pending {
                 id,
                 tool,
                 cap: capability,
@@ -121,9 +112,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             reason_code,
             ..
         } => {
-            if app.pending.as_ref().is_some_and(|pending| pending.id == id) {
-                app.pending = None;
-                app.pending_approval_response = None;
+            if app.permission_prompt.resolve(id) {
                 let decision = match resolution {
                     crate::runtime::ApprovalResolution::Approved => "approved · tool pending",
                     crate::runtime::ApprovalResolution::Denied => "denied",

@@ -1,6 +1,189 @@
 #[cfg(test)]
 mod tests {
+    use super::command_surfaces::{expand_selection_ancestors, initial_picker_selection};
+    use super::composer_images::{
+        attach_bare_image_paths, dropped_image_reference, queue_image_path_effect,
+    };
+    use super::control_submission::side_request_for;
+    use super::event_projection::apply_event;
+    use super::input_lanes::MAX_PENDING_SUBMISSIONS;
+    use super::picker::{MAX_PICKER_QUERY_BYTES, MAX_PICKER_QUERY_CHARS};
     use super::*;
+
+    #[test]
+    fn live_workflow_view_renders_real_revision_recovery_and_driver_failure() {
+        use crate::workflow::live_session::{LiveWorkflowReplyV1, LiveWorkflowViewV1};
+        use iteron_workflow::live_scheduler::{
+            WorkflowConfigV1, WorkflowNodeRecordV1, WorkflowNodeStateV1, WorkflowNodeV1,
+        };
+        use iteron_workflow::task_dag::{BudgetUsage, TaskBudget};
+        let budget = TaskBudget {
+            max_turns: 1,
+            max_tokens: 1000,
+            max_cost_microusd: 1000,
+            max_wall_ms: 1000,
+        };
+        let reply = LiveWorkflowReplyV1 {
+            receipt: None,
+            view: LiveWorkflowViewV1 {
+                version: 1,
+                config: WorkflowConfigV1 {
+                    workflow_id: "graph-render".into(),
+                    budget,
+                    max_nodes: 4,
+                    max_edges: 4,
+                    max_concurrency: 2,
+                    started_at_unix_ms: 1000,
+                    deadline_unix_ms: 2000,
+                },
+                revision: 7,
+                sequence: 11,
+                nodes: vec![WorkflowNodeRecordV1 {
+                    node: WorkflowNodeV1 {
+                        id: 3,
+                        label: "inspect delivery".into(),
+                        task: "task".into(),
+                        dependencies: vec![],
+                        assigned_agent: 2,
+                        input_digest: "a".repeat(64),
+                        budget,
+                    },
+                    state: WorkflowNodeStateV1::RecoveryRequired {
+                        attempt: 1,
+                        lease: None,
+                        reason: "host proof pending".into(),
+                    },
+                    admitted_task: None,
+                    next_attempt: 2,
+                    usage: BudgetUsage::default(),
+                    attempt_usage: BudgetUsage::default(),
+                    reserved_budget: BudgetUsage::default(),
+                }],
+                reserved: BudgetUsage::default(),
+                ready: vec![],
+                observed_at_unix_ms: 1500,
+                driver_error: Some("controller unavailable".into()),
+            },
+        };
+        let mut app = App::new();
+        live_workflows::render(&mut app, &reply);
+        let text = app.history.blocks().last().unwrap().to_text();
+        for expected in [
+            "7 / 11",
+            "recovery required",
+            "host proof pending",
+            "controller unavailable",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        assert!(render_text(&mut app, 120, 30).contains("graph-render"));
+    }
+
+    #[test]
+    fn live_agent_views_render_exact_state_and_preserve_observed_epoch_for_controls() {
+        use iteron_protocol::agent_control::{
+            AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentUsageV1, AgentViewV1,
+        };
+        let view = AgentViewV1 {
+            agent_id: AgentIdV1(2),
+            parent_id: Some(AgentIdV1(1)),
+            label: "bounded investigator".into(),
+            workspace_scope: "workspace-scope".into(),
+            incarnation: 7,
+            state: AgentStateV1::Running {
+                epoch: AgentEpochV1 {
+                    incarnation: 7,
+                    turn: 3,
+                },
+            },
+            capabilities: iteron_protocol::capability_set::CapabilitySet::only(
+                iteron_protocol::Capability::ReadOnly,
+            ),
+            budget: AgentBudgetV1 {
+                turns: 2,
+                tokens: 1000,
+                cost_microusd: 1000,
+                wall_ms: 1000,
+            },
+            write_paths: Vec::new(),
+            usage: AgentUsageV1::default(),
+            reserved: AgentUsageV1::default(),
+            queued_messages: 1,
+            last_summary: None,
+            partial_output: None,
+        };
+        let mut app = App::new();
+        persistent_agents::render(
+            &mut app,
+            &serde_json::json!({"type":"agents_v1","agents":[view]}),
+        );
+        assert_eq!(
+            app.persistent_agent_views[0].state.epoch(),
+            Some(AgentEpochV1 {
+                incarnation: 7,
+                turn: 3
+            })
+        );
+        let panel = app.history.blocks().last().unwrap().to_text();
+        assert!(panel.contains("bounded investigator"));
+        assert!(panel.contains("running"));
+        assert!(panel.contains("queued 1"));
+        let screen = render_text(&mut app, 120, 24);
+        assert!(screen.contains("live agents"));
+        assert!(screen.contains("bounded investigator"));
+    }
+
+    #[tokio::test]
+    async fn artifact_panel_and_open_render_the_same_scrubbed_public_content() {
+        let (submissions, _receive) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(submissions);
+        let thread_id = iteron_protocol::SessionId("artifact-thread".into());
+        session.client.seed_contract_identity_for_test(
+            thread_id.clone(),
+            iteron_protocol::RunId("run".into()),
+        );
+        const SECRET: &str = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        session.client.observe_contract_event_for_test(
+            1,
+            &app_server::ServerEvent::Ui(UiEvent::ToolEnd {
+                id: "tool-1".into(),
+                ok: true,
+                exit_code: None,
+                output: format!("artifact result {SECRET}"),
+                diff: None,
+            }),
+        );
+        let listing = session.client.artifacts_v1(
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { thread_id },
+        );
+        let id = listing["artifacts"][0]["artifact_id"].as_str().unwrap();
+        let mut app = App::new();
+        artifacts::render(&mut app, &session, "");
+        let panel = app.history.blocks().last().unwrap().to_text();
+        assert!(panel.contains("tool_output"));
+        assert!(panel.contains(&id[..12]), "artifact panel: {panel}");
+        let screen = render_text(&mut app, 180, 24);
+        assert!(screen.contains("thread artifacts"));
+        assert!(screen.contains("tool_output"));
+        artifacts::render(&mut app, &session, &id[..12]);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            app.artifact_viewer
+                .poll(&iteron_protocol::RunId("run".into()));
+            let screen = render_text(&mut app, 120, 24);
+            if screen.contains("SHA-256 verified") {
+                assert!(screen.contains("artifact result"));
+                assert!(screen.contains("[REDACTED"));
+                assert!(!screen.contains(SECRET));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "artifact view did not observe its worker: {screen}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
 
     #[test]
     fn agents_panel_renders_the_attached_catalog_after_the_filesystem_drifts() {
@@ -55,7 +238,7 @@ mod tests {
 
         let mut app = App::new();
         show_agent_catalog(&mut app, &session);
-        let retained = app.transcript.last().expect("agents panel").to_text();
+        let retained = app.history.blocks().last().expect("agents panel").to_text();
         assert!(retained.contains("pinned-reviewer"));
         assert!(!retained.contains("late-reviewer"));
         assert!(!retained.contains(SECRET));
@@ -303,7 +486,7 @@ mod tests {
     #[test]
     fn picker_query_reveals_leaf_and_ancestors_then_accepts_with_one_enter() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: model_tree(),
             sel: 0,
@@ -314,7 +497,7 @@ mod tests {
         for ch in "gpt-5".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        let picker = app.picker.as_ref().unwrap();
+        let picker = app.pickers.view().unwrap();
         assert_eq!(picker.visible_indices(), vec![0, 1, 2]);
         assert_eq!(picker.sel, 2, "search focuses the actionable matching leaf");
         assert!(matches!(
@@ -329,7 +512,7 @@ mod tests {
     #[test]
     fn picker_query_is_cjk_safe_bounded_and_has_an_explicit_no_result_state() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![
                 pick("通义千问", PickAction::Info),
@@ -342,22 +525,22 @@ mod tests {
         for ch in "智谱".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![1]);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![1]);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
 
         app.picker_key(KeyCode::Char('x'));
-        assert!(app.picker.as_ref().unwrap().visible_indices().is_empty());
+        assert!(app.pickers.view().unwrap().visible_indices().is_empty());
         assert!(render_text(&mut app, 80, 18).contains("No matches"));
         for _ in 0..(MAX_PICKER_QUERY_CHARS + 20) {
             app.picker_key(KeyCode::Char('a'));
         }
-        assert!(app.picker.as_ref().unwrap().query.chars().count() <= MAX_PICKER_QUERY_CHARS);
+        assert!(app.pickers.view().unwrap().query.chars().count() <= MAX_PICKER_QUERY_CHARS);
 
         app.picker_key(KeyCode::Esc);
-        assert!(app.picker.is_some(), "first Esc clears the query");
-        assert!(app.picker.as_ref().unwrap().query.is_empty());
+        assert!(app.pickers.is_open(), "first Esc clears the query");
+        assert!(app.pickers.view().unwrap().query.is_empty());
         app.picker_key(KeyCode::Esc);
-        assert!(app.picker.is_none(), "second Esc closes the picker");
+        assert!(!app.pickers.is_open(), "second Esc closes the picker");
     }
 
     #[test]
@@ -373,7 +556,7 @@ mod tests {
         let original_text = app.editor.text();
         let original_cursor = app.editor.cursor();
         let original_attachments = app.editor.attachments().clone();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![
                 pick("通义千问", PickAction::Info),
@@ -385,7 +568,7 @@ mod tests {
         });
 
         assert!(app.picker_paste("智谱\n\u{1b}\u{202e}"));
-        let picker = app.picker.as_ref().expect("picker remains open");
+        let picker = app.pickers.view().expect("picker remains open");
         assert_eq!(picker.query, "智谱 ");
         assert_eq!(picker.visible_indices(), vec![1]);
         assert_eq!(picker.sel, 1);
@@ -400,13 +583,9 @@ mod tests {
             .filter_map(char::from_u32)
             .collect();
         for unsafe_character in unsafe_codepoints {
-            app.picker
-                .as_mut()
-                .expect("picker remains open")
-                .query
-                .clear();
+            app.pickers.clear_query();
             assert!(app.picker_paste(&format!("安全{unsafe_character}😀")));
-            let query = &app.picker.as_ref().expect("picker remains open").query;
+            let query = &app.pickers.view().expect("picker remains open").query;
             assert!(query.contains("安全"));
             assert!(query.contains('😀'));
             assert!(!query.contains(unsafe_character));
@@ -414,7 +593,7 @@ mod tests {
         }
 
         assert!(app.picker_paste(&"无匹配😀".repeat(2_000)));
-        let picker = app.picker.as_ref().expect("picker remains open");
+        let picker = app.pickers.view().expect("picker remains open");
         assert!(picker.visible_indices().is_empty());
         assert!(picker.query.chars().count() <= MAX_PICKER_QUERY_CHARS);
         assert!(picker.query.len() <= MAX_PICKER_QUERY_BYTES);
@@ -439,12 +618,12 @@ mod tests {
         for ch in "route_selection".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        let picker = app.picker.as_ref().expect("tunables picker opens");
+        let picker = app.pickers.view().expect("tunables picker opens");
         assert_eq!(picker.items.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
         assert_eq!(picker.query, "route_selection");
         assert_eq!(picker.visible_indices(), vec![0]);
         let l0 = render_text(&mut app, 110, 26);
-        assert!(l0.contains("tunables · catalog"));
+        assert!(l0.contains("tunables · simulation only · catalog"));
         assert!(l0.contains("provider"));
         assert!(l0.contains("simulation only"));
 
@@ -604,7 +783,7 @@ mod tests {
         assert!(screen.contains("$0.0123"), "{screen}");
         assert!(screen.contains("crates/cli/src/tui.rs:1"), "{screen}");
         assert!(
-            app.transcript.iter().all(|block| !matches!(
+            app.history.blocks().iter().all(|block| !matches!(
                 block.kind,
                 block::BlockKind::Assistant(_) | block::BlockKind::User(_)
             )),
@@ -772,16 +951,17 @@ mod tests {
 
         project_recorded_transcript(&mut app, &events);
 
-        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(app.history.blocks().len(), 2);
         assert!(
-            matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question")
+            matches!(&app.history.blocks()[0].kind, block::BlockKind::User(text) if text == "previous question")
         );
         assert!(matches!(
-            &app.transcript[1].kind,
+            &app.history.blocks()[1].kind,
             block::BlockKind::Assistant(_)
         ));
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. }))
         );
@@ -834,7 +1014,7 @@ mod tests {
     #[test]
     fn session_picker_one_enter_selects_the_run_to_adopt_in_process() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "sessions".into(),
             items: session_picker_items(
                 vec![session_meta(
@@ -868,7 +1048,8 @@ mod tests {
         let screen = render_text(&mut app, 100, 18);
         assert!(screen.contains("iteron --resume run-42"));
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("not resumed here"))
         );
@@ -892,46 +1073,48 @@ mod tests {
         assert!(page.replace);
         assert!(page.items.len() <= 25);
         let mut app = App::new();
-        app.session_picker_generation = 7;
-        app.session_picker_backing = Some(SessionPickerBacking {
-            runs: runs.clone(),
-            current_run: String::new(),
-            next_cursor: page.next_cursor,
-            has_more: page.has_more,
-            generation: 7,
-        });
-        app.picker = Some(Picker {
-            title: "Sessions · resume here".into(),
-            items: page.items,
-            sel: 0,
-            query: String::new(),
-            saved_theme: None,
-        });
+        app.pickers.install_session_fixture(
+            Picker {
+                title: "Sessions · resume here".into(),
+                items: page.items,
+                sel: 0,
+                query: String::new(),
+                saved_theme: None,
+            },
+            7,
+            Some(SessionPickerBacking {
+                runs: runs.clone(),
+                current_run: String::new(),
+                next_cursor: page.next_cursor,
+                has_more: page.has_more,
+                generation: 7,
+            }),
+        );
 
         maybe_prefetch_session_page(&mut app);
-        assert!(
-            app.session_picker_job.is_none(),
-            "an exhausted cursor stops"
-        );
-        assert!(!app.session_picker_backing.as_ref().unwrap().has_more);
+        assert!(!app.pickers.has_worker(), "an exhausted cursor stops");
+        assert!(!app.pickers.has_more());
         let _ = std::fs::remove_dir_all(runs);
     }
 
     fn loading_session_picker(generation: u64) -> App {
         let mut app = App::new();
-        app.session_picker_generation = generation;
-        app.picker = Some(Picker {
-            title: "Sessions · resume here".into(),
-            items: vec![PickItem::flat(
-                "Loading sessions…",
-                "reading saved conversations",
-                false,
-                PickAction::Info,
-            )],
-            sel: 0,
-            query: String::new(),
-            saved_theme: None,
-        });
+        app.pickers.install_session_fixture(
+            Picker {
+                title: "Sessions · resume here".into(),
+                items: vec![PickItem::flat(
+                    "Loading sessions…",
+                    "reading saved conversations",
+                    false,
+                    PickAction::Info,
+                )],
+                sel: 0,
+                query: String::new(),
+                saved_theme: None,
+            },
+            generation,
+            None,
+        );
         app
     }
 
@@ -999,7 +1182,7 @@ mod tests {
         .unwrap();
         let mut app = loading_session_picker(9);
         assert!(apply_session_page_result(&mut app, Ok(page)));
-        let picker = app.picker.as_ref().unwrap();
+        let picker = app.pickers.view().unwrap();
         assert!(picker.items.iter().any(
             |item| matches!(&item.action, PickAction::AdoptRun(id) if id == "saved-conversation")
         ));
@@ -1024,8 +1207,8 @@ mod tests {
         assert!(rendered.contains("retry"), "{rendered}");
         assert!(!rendered.contains("Loading sessions"));
         assert!(
-            app.picker
-                .as_ref()
+            app.pickers
+                .view()
                 .unwrap()
                 .items
                 .iter()
@@ -1060,7 +1243,7 @@ mod tests {
     #[test]
     fn mode_picker_hint_tracks_the_effective_code_grant() {
         let hint_for = |rules: &PermissionRules, mode: PermissionMode| {
-            mode_picker_items(mode, rules)
+            mode_picker_items(mode, rules, false)
                 .into_iter()
                 .find(|item| item.label == mode.label())
                 .expect("every mode is offered")
@@ -1096,17 +1279,17 @@ mod tests {
             "edits auto; code denied"
         );
 
-        // The two modes whose posture no session rule can change keep their fixed wording.
+        // Plan stays read-only; gated YOLO still reports the actual code rule.
         assert_eq!(
             hint_for(&allowed, PermissionMode::Plan),
             "read-only; propose a plan first"
         );
         assert_eq!(
             hint_for(&allowed, PermissionMode::Yolo),
-            "auto-approve (still asks for trust-mutating + egress)"
+            "trust and external actions follow permission rules; code auto"
         );
         assert!(
-            mode_picker_items(PermissionMode::Plan, &none)
+            mode_picker_items(PermissionMode::Plan, &none, false)
                 .iter()
                 .any(|item| item.label == PermissionMode::Plan.label() && item.is_current),
             "the active mode stays pre-selected"
@@ -1114,8 +1297,47 @@ mod tests {
     }
 
     #[test]
+    fn mode_picker_describes_bypass_without_hiding_plan_or_explicit_denies() {
+        let mut rules = PermissionRules::new();
+        for denied in [false, true] {
+            if denied {
+                rules
+                    .try_set_cap(Capability::CodeExecuting, Verdict::Deny)
+                    .unwrap();
+            }
+            let items = mode_picker_items(PermissionMode::Yolo, &rules, true);
+            for mode in [
+                PermissionMode::Default,
+                PermissionMode::AcceptEdits,
+                PermissionMode::Yolo,
+            ] {
+                let item = items
+                    .iter()
+                    .find(|item| item.label == mode.label())
+                    .unwrap();
+                assert!(item.hint.contains("bypass active"), "{}", item.hint);
+                assert!(item.hint.contains("explicit denies and limits apply"));
+                assert!(item.hint.contains(if denied {
+                    "code denied"
+                } else {
+                    "code auto"
+                }));
+                assert!(!item.hint.contains("prompt"));
+                assert!(!item.hint.contains("still asks"));
+            }
+            let plan = items
+                .iter()
+                .find(|item| item.label == PermissionMode::Plan.label())
+                .unwrap();
+            assert!(plan.hint.contains("read-only"));
+            assert!(!plan.hint.contains("bypass active"));
+            assert!(items.iter().any(|item| item.label == "yolo" && item.is_current));
+        }
+    }
+
+    #[test]
     fn the_permission_picker_states_the_bypass_instead_of_listing_rules_that_do_not_decide() {
-        // The default posture auto-approves every tool. A picker that renders "ask every time"
+        // Bypass auto-approves asking decisions within the authority ceiling. A picker with "ask"
         // rows without saying so would be describing a gate that is not running.
         let gated = permission_picker_items(&PermissionRules::new(), false)
             .into_iter()
@@ -1133,7 +1355,7 @@ mod tests {
             first.hint
         );
         assert!(
-            first.hint.contains("deny"),
+            first.hint.contains("denies"),
             "an explicit deny still applies and the screen must not imply otherwise: {}",
             first.hint
         );
@@ -1170,7 +1392,7 @@ mod tests {
     #[test]
     fn picker_nav_wraps_and_accept_returns_action() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "effort".into(),
             sel: 0,
             query: String::new(),
@@ -1181,13 +1403,13 @@ mod tests {
             ],
         });
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         let accepted = matches!(
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Accept(PickAction::SetEffort(Effort::High)))
         );
         assert!(accepted, "Enter returns the selected action");
-        assert!(app.picker.is_none(), "picker closes on accept");
+        assert!(!app.pickers.is_open(), "picker closes on accept");
     }
 
     #[test]
@@ -1207,7 +1429,7 @@ mod tests {
         assert_eq!(selection, 2, "first actionable model should be focused");
         expand_selection_ancestors(&mut items, selection);
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items,
             sel: selection,
@@ -1215,8 +1437,8 @@ mod tests {
             saved_theme: None,
         });
         assert!(
-            app.picker
-                .as_ref()
+            app.pickers
+                .view()
                 .unwrap()
                 .visible_indices()
                 .contains(&selection)
@@ -1242,7 +1464,7 @@ mod tests {
         assert!(items[selection].enabled);
 
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "permissions".into(),
             items,
             sel: selection,
@@ -1258,7 +1480,7 @@ mod tests {
         };
         rules.try_set_cap(capability, verdict).unwrap();
         assert_eq!(rules.cap_rule(capability), Some(verdict));
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.is_open());
     }
 
     #[test]
@@ -1285,7 +1507,7 @@ mod tests {
             .unwrap();
         assert!(!items[unsafe_auto].enabled);
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "permissions".into(),
             items,
             sel: unsafe_auto,
@@ -1296,7 +1518,7 @@ mod tests {
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "unsafe choice must remain unapplied");
+        assert!(app.pickers.is_open(), "unsafe choice must remain unapplied");
         assert!(
             rules
                 .try_set_cap(Capability::TrustMutating, Verdict::Auto)
@@ -1308,7 +1530,7 @@ mod tests {
     #[test]
     fn hierarchical_picker_expands_collapses_and_moves_to_parent() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),
@@ -1316,50 +1538,47 @@ mod tests {
             items: model_tree(),
         });
 
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![0, 4]);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 4]);
         assert!(matches!(
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
         assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
+            app.pickers.view().unwrap().visible_indices(),
             vec![0, 1, 4],
             "Enter expands a provider header"
         );
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         app.picker_key(KeyCode::Right);
         assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
+            app.pickers.view().unwrap().visible_indices(),
             vec![0, 1, 2, 3, 4],
             "Right expands a family header"
         );
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 2);
+        assert_eq!(app.pickers.view().unwrap().sel, 2);
         app.picker_key(KeyCode::Left);
         assert_eq!(
-            app.picker.as_ref().unwrap().sel,
+            app.pickers.view().unwrap().sel,
             1,
             "Left on a leaf moves to its parent"
         );
         app.picker_key(KeyCode::Left);
-        assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
-            vec![0, 1, 4]
-        );
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 1, 4]);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         app.picker_key(KeyCode::Left);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 0);
+        assert_eq!(app.pickers.view().unwrap().sel, 0);
         app.picker_key(KeyCode::Left);
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![0, 4]);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 4]);
     }
 
     #[test]
     fn hierarchical_navigation_uses_only_visible_rows() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),
@@ -1368,19 +1587,19 @@ mod tests {
         });
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
         app.picker_key(KeyCode::Down);
         assert_eq!(
-            app.picker.as_ref().unwrap().sel,
+            app.pickers.view().unwrap().sel,
             0,
             "Down wraps across visible roots without entering hidden descendants"
         );
         app.picker_key(KeyCode::End);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
         app.picker_key(KeyCode::Home);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 0);
+        assert_eq!(app.pickers.view().unwrap().sel, 0);
         app.picker_key(KeyCode::PageDown);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
     }
 
     #[test]
@@ -1389,7 +1608,7 @@ mod tests {
         items[0].expanded = true;
         items[1].expanded = true;
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 3,
             query: String::new(),
@@ -1401,13 +1620,16 @@ mod tests {
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "disabled model keeps the picker open");
-        assert_eq!(app.picker.as_ref().unwrap().sel, 3);
+        assert!(
+            app.pickers.is_open(),
+            "disabled model keeps the picker open"
+        );
+        assert_eq!(app.pickers.view().unwrap().sel, 3);
         assert!(matches!(
             app.picker_key(KeyCode::Tab),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "Tab cannot bypass disabled state");
+        assert!(app.pickers.is_open(), "Tab cannot bypass disabled state");
     }
 
     #[test]
@@ -1416,7 +1638,7 @@ mod tests {
         let mut app = App::new();
         let orig = app.theme.clone();
         let light = theme::Theme::light();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "theme".into(),
             sel: 0,
             query: String::new(),
@@ -1434,7 +1656,7 @@ mod tests {
         );
         app.picker_key(KeyCode::Esc); // restore
         assert_eq!(app.theme.fg, orig.fg, "Esc restores the pre-open theme");
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.is_open());
     }
 
     #[test]
@@ -1444,7 +1666,7 @@ mod tests {
             PickItem::flat("unavailable", "missing credential", true, PickAction::Info);
         unavailable.enabled = false;
         unavailable.disabled_reason = Some("missing credential".into());
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![unavailable],
             sel: 0,
@@ -1458,7 +1680,10 @@ mod tests {
             KeyModifiers::ALT,
             &repo,
         ));
-        assert!(app.picker.is_none(), "the Esc half must cancel the picker");
+        assert!(
+            !app.pickers.is_open(),
+            "the Esc half must cancel the picker"
+        );
         assert_eq!(app.editor.text(), "/", "the slash half must not be lost");
 
         // Exercise the same completion-to-submit path used by the event loop. This is the failure
@@ -1467,7 +1692,8 @@ mod tests {
         app.editor.insert_str("quit");
         app.refresh_completion(&repo);
         assert_eq!(
-            app.completion
+            app.completions
+                .view()
                 .as_ref()
                 .and_then(|menu| menu.items.get(menu.sel))
                 .map(|item| item.0.as_str()),
@@ -1483,7 +1709,7 @@ mod tests {
         let original = theme::Theme::dark();
         let selected = theme::Theme::light();
         app.set_theme(original.clone());
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "theme".into(),
             sel: 0,
             query: String::new(),
@@ -1509,7 +1735,7 @@ mod tests {
         let mut items = model_tree();
         items[0].expanded = true;
         items[1].expanded = true;
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 3,
             query: String::new(),
@@ -1549,7 +1775,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut app = App::new();
         app.theme = theme::Theme::mono();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),
@@ -1621,16 +1847,17 @@ mod tests {
     #[test]
     fn stream_text_accumulates_then_flushes_to_a_block() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         app.stream_text("hello ");
         app.stream_text("world");
         // still buffered as the in-flight block; no committed block yet
-        assert_eq!(app.transcript.len(), base);
-        assert_eq!(app.cur_text, "hello ");
+        assert_eq!(app.history.blocks().len(), base);
+        assert_eq!(app.assistant.text(), "hello ");
         app.flush_text();
-        assert_eq!(app.transcript.len(), base + 1);
+        assert_eq!(app.history.blocks().len(), base + 1);
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -1642,8 +1869,11 @@ mod tests {
     fn streaming_markdown_is_reparsed_only_after_text_revision_changes() {
         let mut app = App::new();
         app.stream_text("**first** ");
-        assert!(app.cur_doc.is_some());
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+        assert!(app.assistant.document().is_some());
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
 
         assert!(
             !ensure_stream_doc(&mut app),
@@ -1651,81 +1881,89 @@ mod tests {
         );
         let first_screen = render_text(&mut app, 80, 18);
         assert!(first_screen.contains("first"));
-        assert!(app.cur_doc.is_some());
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
-        let first_revision = app.cur_doc_revision;
-        let first_doc = app.cur_doc.clone();
+        assert!(app.assistant.document().is_some());
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
+        let first_revision = app.assistant.document_revision();
+        let first_doc = app.assistant.document().cloned();
 
         let second_screen = render_text(&mut app, 80, 18);
         assert!(second_screen.contains("first"));
-        assert_eq!(app.cur_doc_revision, first_revision);
+        assert_eq!(app.assistant.document_revision(), first_revision);
         assert_eq!(
-            app.cur_doc, first_doc,
+            app.assistant.document().cloned(),
+            first_doc,
             "an unchanged frame reuses the parsed doc"
         );
 
         app.stream_text("_second_ ");
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
         assert!(!ensure_stream_doc(&mut app));
         let updated_screen = render_text(&mut app, 80, 18);
         assert!(updated_screen.contains("first"));
         assert!(updated_screen.contains("second"));
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
-        assert_ne!(app.cur_doc_revision, first_revision);
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
+        assert_ne!(app.assistant.document_revision(), first_revision);
     }
 
     #[test]
     fn production_stream_path_parses_one_mebibyte_linearly_and_finalizes_exactly() {
         let mut app = App::new();
+        // Use the same content width as the frame, including its reserved scrollbar gutter.
+        // Prewarming at the terminal width would correctly trigger one resize rebuild on paint.
+        let content_width =
+            surface::Surface::resolve(Rect::new(0, 0, 80, 18), 1, 0, 0, true, false)
+                .transcript_content_width();
         let chunk = "streaming-word ".repeat(256);
         let target = 1024 * 1024;
-        while app.assistant_stream_authority.len() < target {
+        while app.assistant.authority().len() < target {
             app.stream_text(&chunk);
             let App {
-                live_markdown_layout,
-                cur_doc,
-                cur_doc_parse,
-                cur_text,
+                assistant,
                 theme,
                 theme_epoch,
                 hyperlink_policy,
                 ..
             } = &mut app;
-            live_markdown_layout.update(
-                cur_doc.as_ref().expect("production append parses the doc"),
-                cur_doc_parse,
-                cur_text,
-                super::live_markdown::LiveMarkdownRenderContext {
-                    width: 80,
-                    theme_epoch: *theme_epoch,
-                    theme,
-                    hyperlinks: hyperlink_policy,
-                },
-            );
+            assistant.prepare_layout(super::live_markdown::LiveMarkdownRenderContext {
+                width: content_width,
+                theme_epoch: *theme_epoch,
+                theme,
+                hyperlinks: hyperlink_policy,
+            });
         }
         // The live unfinished paragraph is only scanned and retained as bounded pending chunks;
         // none of its accumulated prefix is fed back through the block parser per provider delta.
-        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), 0);
-        let exact = app.assistant_stream_authority.clone();
+        assert_eq!(app.assistant.parsed_source_bytes(), 0);
+        let exact = app.assistant.authority().to_owned();
         assert_eq!(
-            app.live_markdown_layout.laid_out_source_bytes(),
+            app.assistant.layout().laid_out_source_bytes(),
             exact.len(),
             "the production live-layout path must inspect each source byte once"
         );
-        let laid_out = app.live_markdown_layout.laid_out_source_bytes();
+        let laid_out = app.assistant.layout().laid_out_source_bytes();
         for _ in 0..8 {
             let screen = render_text(&mut app, 80, 18);
             assert!(screen.contains("streaming-word"));
+            assert_eq!(app.geometry.cache_width(), content_width);
         }
         assert_eq!(
-            app.live_markdown_layout.laid_out_source_bytes(),
+            app.assistant.layout().laid_out_source_bytes(),
             laid_out,
             "animation frames must reuse retained wrap state"
         );
         app.flush_text();
-        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), exact.len());
+        assert_eq!(app.assistant.parsed_source_bytes(), exact.len());
         let block::BlockKind::Assistant(actual) =
-            &app.transcript.last().expect("assistant block").kind
+            &app.history.blocks().last().expect("assistant block").kind
         else {
             panic!("stream must finalize as one assistant block");
         };
@@ -1738,15 +1976,16 @@ mod tests {
         let secret = "sk-\
 ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.stream_text("answer sk-ant-api03-AbCd");
-        assert_eq!(app.cur_text, "answer ");
+        assert_eq!(app.assistant.text(), "answer ");
         app.stream_text("EfGhIjKlMnOpQrStUvWx");
-        assert!(!app.cur_text.contains(secret));
+        assert!(!app.assistant.text().contains(secret));
         app.stream_text(" done");
-        assert!(!app.cur_text.contains(secret));
-        assert!(app.cur_text.contains("[REDACTED"));
+        assert!(!app.assistant.text().contains(secret));
+        assert!(app.assistant.text().contains("[REDACTED"));
         app.flush_text();
         assert!(
-            !app.transcript
+            !app.history
+                .blocks()
                 .last()
                 .expect("assistant block")
                 .to_text()
@@ -1778,7 +2017,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             completion.ok,
             completion.code,
         );
-        let text = app.transcript.last().expect("shell card").to_text();
+        let text = app.history.blocks().last().expect("shell card").to_text();
         assert!(!text.contains(secret));
         assert!(text.contains("[REDACTED"));
         assert!(text.contains("truncated"));
@@ -1805,15 +2044,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.requeue_unadmitted(vec!["late steer".into()], &[Some(SubmissionId(1))]);
         assert_eq!((moved, unmatched), (1, 0));
         assert_eq!(
-            app.queued
+            app.input_lanes
+                .queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
             vec!["queued first", "late steer", "queued last"]
         );
 
-        while app.queued.len() < MAX_PENDING_SUBMISSIONS {
-            app.queue_after_turn(format!("item {}", app.queued.len()))
+        while app.input_lanes.queued().len() < MAX_PENDING_SUBMISSIONS {
+            app.queue_after_turn(format!("item {}", app.input_lanes.queued().len()))
                 .unwrap();
         }
         let rejected = "must remain editable".to_string();
@@ -1825,7 +2065,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn unmatched_steer_previews_are_preserved_as_ordered_follow_ups() {
+    fn unmatched_steer_previews_are_held_for_explicit_review() {
         let mut app = App::new();
         app.track_steer("returned by kernel".into(), SubmissionId(1));
         app.track_steer(
@@ -1838,19 +2078,192 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.requeue_unadmitted(vec!["returned by kernel".into()], &[Some(SubmissionId(1))]);
 
         assert_eq!((reported, preserved), (1, 1));
-        assert!(app.steer_previews.is_empty());
+        assert!(app.input_lanes.steers().is_empty());
         assert_eq!(
-            app.queued
+            app.input_lanes
+                .queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "returned by kernel",
-                "preview missing from reclaim report",
-                "already queued"
-            ],
-            "count mismatch must preserve at-least-once operator intent in submission order"
+            vec!["returned by kernel", "already queued"],
+            "only positively unadmitted input may enter the automatic queue"
         );
+        assert_eq!(
+            app.input_lanes.held().front().unwrap().text,
+            "preview missing from reclaim report"
+        );
+    }
+
+    #[test]
+    fn run_wide_foreign_steers_do_not_resubmit_or_overflow_owned_input_and_chips() {
+        let mut app = App::new();
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.editor.insert_str("owned image draft");
+        app.editor
+            .attach_image_bytes("owned.png", &png_1x1())
+            .unwrap();
+        assert!(queue_draft_with_chips(&mut app));
+        let owned_image = app.input_lanes.queued().front().cloned().unwrap();
+        for index in 0..MAX_PENDING_SUBMISSIONS - 2 {
+            app.queue_after_turn(format!("owned next {index}")).unwrap();
+        }
+        app.track_steer("original owned steering".into(), SubmissionId(500));
+        let mut words = (0..64)
+            .map(|index| format!("foreign steering {index}"))
+            .collect::<Vec<_>>();
+        let mut ids = (0..64)
+            .map(|index| Some(SubmissionId(index)))
+            .collect::<Vec<_>>();
+        words.push("returned text cannot replace original words".into());
+        ids.push(Some(SubmissionId(500)));
+        assert_eq!(app.requeue_unadmitted(words, &ids), (1, 0));
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
+        assert!(app.input_lanes.steers().is_empty());
+        assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
+        assert_eq!(
+            app.input_lanes.queued().front().unwrap().images.as_slice(),
+            owned_image.images.as_slice()
+        );
+        assert_eq!(
+            app.input_lanes.queued().back().unwrap().text,
+            "original owned steering"
+        );
+        assert!(
+            app.input_lanes
+                .queued()
+                .iter()
+                .all(|input| !input.text.starts_with("foreign"))
+        );
+        assert!(app.history.blocks().iter().any(|block| {
+            block
+                .to_text()
+                .contains("64 unadmitted steering submission(s) belong to another client")
+        }));
+        let next = app.input_lanes.pop_next().unwrap();
+        app.input_lanes.restore_next(next);
+        assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 2)).unwrap();
+        terminal
+            .draw(|frame| render_pending_lanes(frame, frame.area(), &app))
+            .unwrap();
+        let screen = buffer_text(&terminal);
+        assert!(screen.contains("owned image draft"), "{screen}");
+        assert!(!screen.contains("foreign steering"));
+    }
+
+    #[test]
+    fn no_id_legacy_restore_reserves_every_tracked_owned_preview() {
+        let mut app = App::new();
+        for index in 0..MAX_PENDING_SUBMISSIONS - 1 {
+            app.track_steer(format!("own {index}"), SubmissionId(index as u64));
+        }
+        assert_eq!(
+            app.requeue_unadmitted(
+                (0..64).map(|index| format!("legacy {index}")).collect(),
+                &[]
+            ),
+            (0, MAX_PENDING_SUBMISSIONS - 1)
+        );
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS - 1);
+        assert!(app.input_lanes.queued().is_empty());
+        assert_eq!(app.input_lanes.held().front().unwrap().text, "own 0");
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.to_text().contains("64 legacy steering submission(s)"))
+        );
+    }
+
+    #[test]
+    fn refused_multimodal_queue_returns_all_owned_stores_for_exact_restoration() {
+        let mut app = App::new();
+        for index in 0..MAX_PENDING_SUBMISSIONS {
+            app.queue_after_turn(format!("already pending {index}"))
+                .unwrap();
+        }
+        let mut editor = crate::editor::Editor::new();
+        editor.insert_str("refused draft ");
+        editor
+            .capture_paste("actual pasted first line\nsecond line")
+            .unwrap();
+        editor
+            .attach_image_bytes("refused.png", &png_1x1())
+            .unwrap();
+        let raw = editor.text();
+        let expanded = editor.submission_text();
+        let images = editor.attachments().clone();
+        let metadata = editor.queued_draft_metadata();
+        let refusal = app
+            .queue_after_turn_with_draft(
+                expanded.clone(),
+                images.clone(),
+                file_input::FileAttachments::default(),
+                Some(metadata),
+            )
+            .expect_err("full lane returns the draft");
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
+        editor.clear();
+        assert!(
+            editor
+                .restore_owned_draft(refusal.into_owned_draft())
+                .is_ok()
+        );
+        assert_eq!(editor.text(), raw);
+        assert_eq!(editor.submission_text(), expanded);
+        assert_eq!(editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(editor.pastes().len(), 1);
+    }
+
+    #[test]
+    fn alt_up_restores_actual_png_file_paste_and_declines_a_newer_attachment_draft() {
+        let root = std::env::temp_dir().join(format!("iteron-alt-up-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("owned.txt"), "actual captured file content").unwrap();
+        let mut app = App::new();
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.editor.insert_str("restore this draft ");
+        app.editor
+            .capture_paste("original pasted lines\nsecond line")
+            .unwrap();
+        app.editor
+            .attach_image_bytes("owned.png", &png_1x1())
+            .unwrap();
+        app.editor
+            .attach_file_path(&root, Path::new("owned.txt"))
+            .unwrap();
+        let raw = app.editor.text();
+        let expanded = app.editor.submission_text();
+        let images = app.editor.attachments().clone();
+        let files = app.editor.files().clone();
+        assert!(queue_draft_with_chips(&mut app));
+        assert!(app.editor.can_restore_owned_draft());
+        // A newer attachment draft must remain in the composer rather than be overwritten.
+        app.editor
+            .attach_image_bytes("newer.png", &png_1x1())
+            .unwrap();
+        let newer = app.editor.attachments().clone();
+        let key = crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        assert!(!input_dispatch::reclaim_queued_key(&mut app, key));
+        assert_eq!(app.input_lanes.queued().len(), 1);
+        assert_eq!(app.editor.attachments().as_slice(), newer.as_slice());
+        app.editor.clear();
+        assert!(input_dispatch::reclaim_queued_key(&mut app, key));
+        app.schedule_completion();
+        assert!(app.input_lanes.queued().is_empty());
+        assert_eq!(app.editor.text(), raw);
+        assert_eq!(app.editor.submission_text(), expanded);
+        assert_eq!(app.editor.pastes().len(), 1);
+        assert_eq!(app.editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(app.editor.files().as_slice(), files.as_slice());
+        assert_eq!(app.editor.chip_count(), 3);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 16)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = buffer_text(&terminal);
+        assert!(screen.contains("owned.png"), "{screen}");
+        assert!(screen.contains("owned.txt"), "{screen}");
+        assert!(screen.contains("restore this draft"), "{screen}");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1865,18 +2278,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.toggle_last_fold();
         }
         let _ = render_text(&mut app, 80, 18);
-        assert!(app.render_cache.len() <= app.transcript.len());
-        assert!(app.render_cache.contains_key(&1));
+        assert!(app.geometry.cache_len() <= app.history.blocks().len());
+        assert!(app.geometry.cached_revision(1).is_some());
         assert_eq!(
-            app.render_cache.get(&1).map(|(revision, _)| *revision),
-            Some(app.transcript[1].revision)
+            app.geometry.cached_revision(1),
+            Some(app.history.blocks()[1].revision)
         );
     }
 
     #[test]
     fn unchanged_twelve_hundred_block_transcript_reuses_height_index_between_frames() {
         let mut app = App::new();
-        app.transcript.clear();
+        app.history.clear();
         for index in 0..MAX_BLOCKS {
             app.push_block(block::BlockKind::Notice {
                 level: block::NoticeLevel::Info,
@@ -1884,11 +2297,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             });
         }
         let _ = render_text(&mut app, 80, 24);
-        let rebuilt = app.transcript_layout.rebuilds();
+        let rebuilt = app.geometry.layout().rebuilds();
         assert_eq!(rebuilt, 1);
         let _ = render_text(&mut app, 80, 24);
         assert_eq!(
-            app.transcript_layout.rebuilds(),
+            app.geometry.layout().rebuilds(),
             rebuilt,
             "an unchanged frame must use binary visible-range lookup, not scan/rebuild 1,200 blocks"
         );
@@ -1902,12 +2315,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.push(dim(), format!("line {i}"));
         }
         assert!(
-            app.transcript.len() <= MAX_BLOCKS,
+            app.history.blocks().len() <= MAX_BLOCKS,
             "transcript must be bounded, got {}",
-            app.transcript.len()
+            app.history.blocks().len()
         );
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -1924,17 +2338,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             name: "ultracode".into(),
             class: "repository-wide".into(),
         });
-        let block_id = *app
-            .workflow_index
-            .get(run_id)
+        let block_id = app
+            .history
+            .workflow_binding(run_id)
             .expect("active workflow is indexed");
 
         for i in 0..(MAX_BLOCKS + 300) {
             app.push(dim(), format!("pressure line {i}"));
         }
-        assert!(app.transcript.len() <= MAX_BLOCKS);
-        assert_eq!(app.workflow_index.get(run_id), Some(&block_id));
-        assert!(app.transcript.iter().any(|block| block.id == block_id));
+        assert!(app.history.blocks().len() <= MAX_BLOCKS);
+        assert_eq!(app.history.workflow_binding(run_id), Some(block_id));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == block_id)
+        );
 
         app.workflow_event(WorkflowUiEvent::RunFinished {
             run_id: run_id.into(),
@@ -1948,9 +2367,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             failed_tasks: 1,
             skipped_tasks: 0,
         });
-        assert!(!app.workflow_index.contains_key(run_id));
+        assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -1980,21 +2400,23 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor.insert_str("line1");
         app.editor.newline();
         app.editor.insert_str("line2");
-        app.completion = None;
+        app.completions.dismiss();
         term.draw(|f| draw(f, &mut app)).unwrap();
         // running + a pending approval
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.spin = 3;
-        app.cost = CostState::Known {
-            amount_microusd: 120_000,
-            rate_card_digest: "sha256:test-rate-card".into(),
-        };
-        app.last_turn_usage = Some(Usage {
-            input: 60,
-            cache_read: 40,
-            ..Usage::default()
-        });
-        app.pending = Some(Pending {
+        apply_event(
+            &mut app,
+            turn_end(
+                0.12,
+                Usage {
+                    input: 60,
+                    cache_read: 40,
+                    ..Usage::default()
+                },
+            ),
+        );
+        app.permission_prompt.present(Pending {
             id: SubmissionId(1),
             tool: "edit".into(),
             cap: Capability::ReversibleLocal,
@@ -2006,12 +2428,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         term.draw(|f| draw(f, &mut app)).unwrap();
         // CRITICAL regression: the completion menu OPEN on short terminals must not panic (the
         // popup rect must clamp to the frame). Sweep sizes below the popup height.
-        app.running = false;
-        app.pending = None;
+        app.run.run_ended(Instant::now());
+        app.permission_prompt.clear();
         app.editor.clear();
         app.editor.insert_str("/"); // 25-command menu -> tall popup
         app.refresh_completion(&std::env::temp_dir());
-        assert!(app.completion.is_some());
+        assert!(app.completions.is_open());
         for (w, h) in [
             (80u16, 24u16),
             (40, 9),
@@ -2026,9 +2448,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
         // selection windowing: move past the visible window, still no panic on a short terminal
         for _ in 0..20 {
-            if let Some(c) = app.completion.as_mut() {
-                c.sel = (c.sel + 1) % c.items.len();
-            }
+            app.completions.navigate(KeyCode::Down);
             let mut t = Terminal::new(TestBackend::new(40, 8)).unwrap();
             t.draw(|f| draw(f, &mut app)).unwrap();
         }
@@ -2149,7 +2569,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .unwrap();
 
         let screen = render_text(&mut app, 80, 14);
-        assert!(screen.contains("▧ #1"));
+        assert!(screen.contains("image #1"));
         assert!(screen.contains("clipboard.png"));
         assert!(screen.contains("alt+backspace"));
         assert!(screen.contains("inspect"));
@@ -2182,9 +2602,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor.capture_paste(&pasted).expect("a held paste");
 
         let screen = render_text(&mut app, 100, 18);
-        assert!(screen.contains("▧ #1"), "{screen}");
-        assert!(screen.contains("▤ [file] notes.md"), "{screen}");
-        assert!(screen.contains("▥ #1 held paste"), "{screen}");
+        assert!(screen.contains("image #1"), "{screen}");
+        assert!(screen.contains("[file] notes.md"), "{screen}");
+        assert!(screen.contains("paste #1"), "{screen}");
         assert!(
             screen.contains("04bade72"),
             "complete file digest is represented on the chip"
@@ -2193,14 +2613,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(screen.contains("notes.md"), "{screen}");
         assert!(screen.contains("inspect"), "{screen}");
         let rows = screen.lines().collect::<Vec<_>>();
-        let image_row = rows.iter().position(|row| row.contains("▧ #1")).unwrap();
+        let image_row = rows
+            .iter()
+            .position(|row| row.contains("image #1"))
+            .unwrap();
         let file_row = rows
             .iter()
-            .position(|row| row.contains("▤ [file] notes.md"))
+            .position(|row| row.contains("[file] notes.md"))
             .unwrap();
         let paste_row = rows
             .iter()
-            .position(|row| row.contains("▥ #1 held paste"))
+            .position(|row| row.contains("paste #1"))
             .unwrap();
         assert_eq!(file_row, image_row + 1, "each chip owns exactly one row");
         assert_eq!(paste_row, file_row + 1, "each chip owns exactly one row");
@@ -2225,7 +2648,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let screen = render_text(&mut app, 100, 14);
         let digest = app.editor.files().as_slice()[0].digest().get(..8).unwrap();
-        assert!(screen.contains("± [diff] working tree"), "{screen}");
+        assert!(screen.contains("[diff] working tree"), "{screen}");
         assert!(screen.contains("17 B"), "{screen}");
         assert!(screen.contains(digest), "{screen}");
         assert!(
@@ -2340,7 +2763,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .iter()
                 .position(|bit| bit.contains(GLYPH))
                 .unwrap_or_else(|| panic!("{density:?}: no workflow bit in {bits:?}"));
-            assert_eq!(at, 1, "{density:?}: wrong drop rank in {bits:?}");
+            assert_eq!(at, 0, "{density:?}: wrong drop rank in {bits:?}");
             assert!(at < bits.len() - 1, "{density:?}: it must not be the last");
         }
 
@@ -2378,16 +2801,42 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn unknown_config_warning_stays_above_the_composer_after_resize() {
+        let (_, warnings) = crate::config::FileConfig::parse_with_warnings(
+            r#"{"schema_version":2,"otel":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 1);
+        let mut app = App::new();
+        for warning in warnings {
+            app.note(block::NoticeLevel::Info, warning);
+        }
+        for width in [120, 48] {
+            let screen = render_text(&mut app, width, 24);
+            let rows: Vec<_> = screen.lines().collect();
+            let warning = rows
+                .iter()
+                .position(|line| line.contains("unknown top-level"));
+            let composer = rows.iter().position(|line| line.contains("ask about this"));
+            assert!(
+                warning.is_some(),
+                "config warning must remain visible: {screen}"
+            );
+            assert!(composer.is_some(), "composer must remain visible: {screen}");
+            assert!(warning.unwrap() < composer.unwrap(), "{screen}");
+            assert!(!rows[composer.unwrap()].contains("otel"), "{screen}");
+        }
+    }
+
+    #[test]
     fn app_mouse_is_default_and_ctrl_t_selection_state_is_truthful() {
         let mut app = App::new();
         let rendered = render_text(&mut app, 240, 14);
-        assert!(rendered.contains("mouse:on"));
-        assert!(rendered.contains("wheel:transcript"));
+        assert_eq!(app.mouse_capture, mouse_capture::State::Captured);
         assert!(rendered.contains("ctrl+t selection"));
 
         app.mouse_capture = mouse_capture::State::Released;
         let released = render_text(&mut app, 240, 14);
-        assert!(released.contains("selection:on"));
         assert!(released.contains("ctrl+t app mouse"));
     }
 
@@ -2405,20 +2854,28 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let bits = status_right_bits(&app, surface::Density::Wide);
         assert_eq!(
             bits.iter()
-                .filter(|bit| bit.as_str() == "✦ ultracode")
+                .filter(|bit| bit.as_str() == "ultracode")
                 .count(),
             1
         );
         assert!(bits.iter().all(|bit| bit != "◉ max · ultracode"));
         app.effort = Effort::High;
-        app.effort_application = Some(EffortApplication::Mapped {
-            requested: ReasoningEffort::High,
-            sent: ReasoningEffort::Max,
-        });
+        let mut observed = turn_end(0.0, Usage::default());
+        if let UiEvent::TurnEnd { effort, .. } = &mut observed {
+            *effort = EffortApplication::Mapped {
+                requested: ReasoningEffort::High,
+                sent: ReasoningEffort::Max,
+            };
+        }
+        apply_event(&mut app, observed);
         assert_eq!(effort_status_label(&app), "◉ max ← high requested");
-        app.effort_application = Some(EffortApplication::Unsupported {
-            requested: ReasoningEffort::High,
-        });
+        let mut observed = turn_end(0.0, Usage::default());
+        if let UiEvent::TurnEnd { effort, .. } = &mut observed {
+            *effort = EffortApplication::Unsupported {
+                requested: ReasoningEffort::High,
+            };
+        }
+        apply_event(&mut app, observed);
         assert_eq!(effort_status_label(&app), "● high · not enforced");
     }
 
@@ -2457,8 +2914,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.schedule_completion();
 
-        assert!(app.completion.is_some());
-        assert!(app.completion_due.is_none());
+        assert!(app.completions.is_open());
+        assert!(app.completions.due().is_none());
     }
 
     #[test]
@@ -2479,7 +2936,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.route.provider_id = "anthropic".into();
             app.route.model_id = "claude-sonnet-4-5".into();
             let screen = render_text(&mut app, width, height);
-            assert!(screen.contains("▄██"), "Plantcore icon at {width}x{height}");
+            assert!(
+                screen.contains("████"),
+                "welcome artwork at {width}x{height}"
+            );
             assert!(screen.contains('›'), "composer at {width}x{height}");
             assert!(
                 screen.contains("commands"),
@@ -2509,8 +2969,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }
             assert!(screen.contains("markdown"));
             assert!(!screen.contains('�'));
-            cache_widths.push(app.render_cache_width);
-            assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+            cache_widths.push(app.geometry.cache_width());
+            assert_eq!(
+                app.assistant.document_revision(),
+                app.assistant.source_revision()
+            );
         }
         assert_ne!(cache_widths[0], cache_widths[1]);
         assert_eq!(cache_widths[0], cache_widths[5]);
@@ -2527,11 +2990,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn running_surface_shows_real_steer_and_queue_lanes() {
         for (width, height) in PRODUCT_SIZES {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             app.status = "verifying".into();
-            app.run_started = Some(Instant::now());
-            app.active_tools
-                .push_back(("tool-1".into(), "Bash(cargo test -p iteron-cli)".into()));
+
+            app.tools
+                .fixture_active("tool-1".into(), "Bash(cargo test -p iteron-cli)".into());
             app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
             app.queue_after_turn("then update the design record".into())
                 .unwrap();
@@ -2553,7 +3016,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_is_a_blocking_decision_surface_with_reason() {
         for (width, height) in PRODUCT_SIZES {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             apply_event(
                 &mut app,
                 UiEvent::ApprovalRequest {
@@ -2580,7 +3043,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_keeps_actions_on_short_screens_and_never_offers_impossible_remember() {
         for height in [3, 4, 5] {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             apply_event(
                 &mut app,
                 UiEvent::ApprovalRequest {
@@ -2607,7 +3070,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for width in [3, 6, 8, 12, 20] {
             for height in [1, 2] {
                 let mut app = App::new();
-                app.running = true;
+                app.run.submission_accepted(SubmissionId(1), Instant::now());
                 apply_event(
                     &mut app,
                     UiEvent::ApprovalRequest {
@@ -2624,7 +3087,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                     screen.contains("[n]"),
                     "fail-closed focus at {width}x{height}: {screen:?}"
                 );
-                assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+                assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
             }
         }
     }
@@ -2632,7 +3095,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn narrow_approval_keeps_canonical_order_or_uses_an_explicit_single_slot_pager() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -2653,7 +3116,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let canonical = text(approval_action_line(
             &app,
-            app.pending.as_ref().unwrap(),
+            app.permission_prompt.read().unwrap(),
             20,
         ));
         assert!(canonical.find("[y]") < canonical.find("[a]"));
@@ -2661,7 +3124,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
         let after_move = text(approval_action_line(
             &app,
-            app.pending.as_ref().unwrap(),
+            app.permission_prompt.read().unwrap(),
             20,
         ));
         assert_eq!(
@@ -2669,17 +3132,25 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "focus does not reorder visible actions"
         );
 
-        let paged = text(approval_action_line(&app, app.pending.as_ref().unwrap(), 8));
+        let paged = text(approval_action_line(
+            &app,
+            app.permission_prompt.read().unwrap(),
+            8,
+        ));
         assert_eq!(paged, "[a] <>");
         assert_eq!(app.approval_key(KeyCode::Right), ApprovalInput::Consumed);
-        let deny_page = text(approval_action_line(&app, app.pending.as_ref().unwrap(), 8));
+        let deny_page = text(approval_action_line(
+            &app,
+            app.permission_prompt.read().unwrap(),
+            8,
+        ));
         assert_eq!(deny_page, "[n] <>");
     }
 
     #[test]
     fn runtime_approval_is_focusable_and_enter_defaults_to_deny() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -2691,10 +3162,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 workspace: "/tmp/project".into(),
             },
         );
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
         for theme in [theme::Theme::dark(), theme::Theme::mono()] {
             app.theme = theme;
-            let pending = app.pending.as_ref().expect("pending approval");
+            let pending = app.permission_prompt.read().expect("pending approval");
             let line = approval_action_line(&app, pending, 80);
             let deny = line
                 .spans
@@ -2723,7 +3194,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Session);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Session);
         assert_eq!(
             app.approval_key(KeyCode::Enter),
             ApprovalInput::Answer {
@@ -2732,13 +3203,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }
         );
         assert_eq!(app.approval_key(KeyCode::Right), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
     }
 
     #[test]
     fn runtime_approval_never_constructs_an_impossible_session_grant() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -2751,12 +3222,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Once);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Once);
         assert_eq!(
             app.approval_key(KeyCode::Char('a')),
             ApprovalInput::Consumed
         );
-        assert_ne!(app.approval_choice, ApprovalChoice::Session);
+        assert_ne!(app.permission_prompt.choice(), ApprovalChoice::Session);
     }
 
     #[test]
@@ -2764,7 +3235,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for theme in [theme::Theme::dark(), theme::Theme::mono()] {
             let mut app = App::new();
             app.theme = theme;
-            app.transcript.clear();
+            app.history.clear();
             app.push_user("请检查 provider 路由");
             app.stream_text("I found the route and its tests.");
             app.flush_text();
@@ -2785,7 +3256,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_command_draft_truthfully_switches_composer_route() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("/model");
         let command = render_text(&mut app, 80, 16);
         assert!(command.contains("/model"));
@@ -2803,10 +3274,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(prose.contains("also inspect the tests"));
         assert!(prose.contains("enter steer"));
 
-        app.interrupting = true;
+        app.run.interrupt_accepted(Instant::now());
         let next_prompt = render_text(&mut app, 80, 16);
         assert!(next_prompt.contains("also inspect the tests"));
-        assert!(next_prompt.contains("enter queues after this turn"));
+        assert!(next_prompt.contains("enter queues next prompt"));
+        assert!(next_prompt.contains("esc stop again"));
         assert!(!next_prompt.contains("enter steer"));
     }
 
@@ -2847,24 +3319,31 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupt_keeps_the_composer_focused_and_enter_queues_the_next_prompt() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.cancel_requested_at = Some(Instant::now());
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+
         app.editor.insert_str("start the next task immediately");
 
         assert_eq!(
-            input_destination(app.running, app.interrupting, &app.editor.text()),
+            input_destination(
+                app.run.running(),
+                app.run.interrupting(),
+                &app.editor.text()
+            ),
             InputDestination::AfterTurn
         );
         let text = app.editor.take_submit();
         app.queue_after_turn(text).expect("next prompt is admitted");
 
-        assert!(app.running, "only RunEnded may declare the old turn idle");
-        assert!(app.interrupting);
+        assert!(
+            app.run.running(),
+            "only RunEnded may declare the old turn idle"
+        );
+        assert!(app.run.interrupting());
         assert!(app.editor.is_empty(), "the focused composer accepted Enter");
-        assert_eq!(app.queued.len(), 1);
+        assert_eq!(app.input_lanes.queued().len(), 1);
         assert_eq!(
-            app.queued.front().unwrap().text,
+            app.input_lanes.queued().front().unwrap().text,
             "start the next task immediately"
         );
     }
@@ -2873,7 +3352,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn fused_interrupt_escape_and_first_character_interrupts_and_preserves_that_character() {
         let repo = std::env::temp_dir();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
 
         assert!(app.recover_running_escape_prefixed_char(
             KeyCode::Char('c'),
@@ -2882,10 +3361,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             true,
             true,
         ));
-        assert!(app.interrupting);
+        assert!(
+            !app.run.interrupting(),
+            "a recovered key is not host acceptance of an interrupt"
+        );
         assert_eq!(app.editor.text(), "c");
-
-        app.interrupting = false;
         assert!(!app.recover_running_escape_prefixed_char(
             KeyCode::Char('b'),
             KeyModifiers::ALT,
@@ -3005,17 +3485,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the first PageUp delta remains exact when the reading shelf appears"
         );
         let prior_scroll = app.view_scroll;
-        let prior_offset = app.bottom_offset;
+        let prior_offset = app.viewport.offset();
         app.note(block::NoticeLevel::Info, "new output while reading");
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(!app.follow_tail);
+        assert!(!app.viewport.follows_tail());
         assert_eq!(
             app.view_scroll, prior_scroll,
             "logical viewport stays anchored"
         );
-        assert!(app.bottom_offset > prior_offset);
-        assert_eq!(app.unread_updates, 1);
-        assert!(buffer_text(&terminal).contains("new output"));
+        assert!(app.viewport.offset() > prior_offset);
+        assert_eq!(u32::from(app.viewport.has_unread()), 1);
+        assert!(buffer_text(&terminal).contains("ctrl+end latest"));
+        let wide = render_text(&mut app, 120, 14);
+        assert!(
+            wide.contains("new output"),
+            "a wider reading shelf discloses unread output"
+        );
     }
 
     #[test]
@@ -3131,7 +3616,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         tall.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.view_scroll, 0, "the reference frame shows every row");
         let reference = transcript_rows(&tall, app.view_top, app.view_h);
-        let total = usize::from(app.last_total_rows);
+        let total = app.viewport.total_rows();
         assert!(total > 0 && total <= reference.len());
 
         let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
@@ -3142,7 +3627,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the transcript has to overflow to be a test"
         );
         assert_eq!(
-            usize::from(app.last_total_rows),
+            app.viewport.total_rows(),
             total,
             "windowing changes what is built, never how tall the transcript is"
         );
@@ -3159,7 +3644,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.scroll_up(9);
         short.draw(|frame| draw(frame, &mut app)).unwrap();
-        let scroll = usize::from(app.view_scroll);
+        let scroll = app.view_scroll;
         assert!(scroll > 0 && scroll + view_h <= total);
         let rows = transcript_rows(&short, app.view_top, app.view_h);
         assert_eq!(
@@ -3178,7 +3663,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             };
             let marker = row[at..at + "historical row 000".len()].to_string();
             let expected = app
-                .transcript
+                .history
+                .blocks()
                 .iter()
                 .position(|candidate| candidate.to_text().contains(&marker))
                 .expect("the rendered notice is still in the transcript");
@@ -3199,7 +3685,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             );
         }
         short.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(usize::from(app.last_total_rows) > total * 5);
+        assert!(app.viewport.total_rows() > total * 5);
         assert_eq!(app.row_map.len(), view_h);
     }
 
@@ -3219,7 +3705,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(
-            app.last_total_rows > app.view_h,
+            app.viewport.total_rows() > usize::from(app.view_h),
             "the scrollbar must be visible"
         );
 
@@ -3241,7 +3727,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn popup_keeps_selected_detail_discoverable_on_compact_width() {
         let mut app = App::new();
         app.editor.insert_str("/m");
-        app.completion = Some(Completion {
+        app.completions.install_fixture(Completion {
             items: vec![(
                 "model".into(),
                 "choose a provider, family, and available model".into(),
@@ -3387,7 +3873,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the terminal stage and brand entrance remain unpainted"
         );
         let screen = buffer_text(&terminal);
-        assert!(screen.contains("▄██"), "Plantcore icon is visible");
+        assert!(screen.contains("▄███████"), "welcome artwork is visible");
         assert!(!screen.contains("Prompt"));
         assert!(screen.contains('▌'));
         assert!(screen.contains('›'));
@@ -3423,7 +3909,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Running keeps a real composer and teaches the steer/queue split instead of claiming Send.
         app.editor.clear();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
         let mut term3 = Terminal::new(TestBackend::new(100, 12)).unwrap();
         term3.draw(|f| draw(f, &mut app)).unwrap();
@@ -3473,13 +3959,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
         summary
-            .result_for_schema(crate::output::SCHEMA_VERSION)
+            .result_for_schema(crate::machine_projection::SCHEMA_VERSION)
             .expect("current terminal facts must project")
     }
 
     fn tui_terminal_result(summary: &app_server::TerminalSummary) -> (serde_json::Value, String) {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -3522,7 +4008,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         (
-            app.last_result
+            app.run
+                .terminal_result()
+                .cloned()
                 .expect("RunEnded stores the canonical result"),
             app.status,
         )
@@ -3547,7 +4035,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn capture_v7_machine_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
         let plantcore_resident = summary
-            .result_for_schema(crate::output::V7_SCHEMA_VERSION)
+            .result_for_schema(crate::machine_projection::V7_SCHEMA_VERSION)
             .expect("v7 terminal facts must project");
         let (protocol_version, seq, headless) =
             headless::capture_plantcore_terminal_result_frame(41, summary);
@@ -3653,7 +4141,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn run_terminal_chrome_is_derived_from_the_canonical_current_result_object() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let summary = app_server::TerminalSummary {
@@ -3677,7 +4165,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             terminal_evidence: None,
         };
         let outcome = summary.terminal.outcome();
-        let expected = crate::output::final_result(
+        let expected = crate::machine_projection::final_result(
             &outcome,
             &summary.assistant_text,
             &summary.run_id,
@@ -3723,7 +4211,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
 
-        assert_eq!(app.last_result.as_ref(), Some(&expected));
+        assert_eq!(app.run.terminal_result(), Some(&expected));
         assert_eq!(app.status, "idle · last: done");
         assert_eq!(
             notification_bytes, b"\x07",
@@ -3734,12 +4222,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupted_run_ended_releases_input_and_preserves_the_next_prompt_for_dispatch() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.draining = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+        app.run.drain_accepted();
         app.queue_after_turn("continue with the next task".into())
             .unwrap();
-        let queued = app.queued.front().cloned().unwrap();
+        let queued = app.input_lanes.queued().front().cloned().unwrap();
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -3793,12 +4281,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
 
-        assert!(!app.running, "RunEnded returns the composer to idle");
-        assert!(!app.interrupting);
-        assert!(!app.draining);
+        assert!(!app.run.running(), "RunEnded returns the composer to idle");
+        assert!(!app.run.interrupting());
+        assert!(!app.run.draining());
         assert!(!interrupt.load(Ordering::Relaxed));
         assert!(!drain.load(Ordering::Relaxed));
-        assert_eq!(app.queued.front(), Some(&queued));
+        assert_eq!(app.input_lanes.queued().front(), Some(&queued));
         assert_eq!(app.status, "idle · last: interrupted");
     }
 
@@ -3806,8 +4294,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn record_failure_run_ended_never_offers_same_session_retry() {
         fn end_failed_run(error: String) -> App {
             let mut app = App::new();
-            app.running = true;
-            app.retryable_task = Some("retry this turn".into());
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
+            app.run
+                .retain_plain_text_retry(Some("retry this turn".into()));
             let (sender, _receiver) = tokio::sync::mpsc::channel(1);
             let mut session = Session::for_test(sender);
             let event = app_server::ServerEvent::RunEnded {
@@ -3859,16 +4348,21 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app
         }
 
-        let record_error = crate::runtime::KernelError::Record(
-            iteron_record::RecordError::Io(std::io::Error::new(
+        let record_error = crate::runtime::KernelError::Record(iteron_record::RecordError::Io(
+            std::io::Error::new(
                 std::io::ErrorKind::StorageFull,
                 "private/client/sk-test-secret",
-            )),
-        )
+            ),
+        ))
         .public_summary();
         let mut app = end_failed_run(record_error);
-        assert!(app.retryable_task.is_none());
-        let rendered = app.transcript.last().expect("failure block").to_text();
+        assert!(app.run.retry_text().is_none());
+        let rendered = app
+            .history
+            .blocks()
+            .last()
+            .expect("failure block")
+            .to_text();
         assert!(rendered.contains("[storage_full]"), "{rendered}");
         assert!(!rendered.contains("ctrl+r"), "{rendered}");
         assert!(!rendered.contains("sk-test-secret"), "{rendered}");
@@ -3878,10 +4372,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(!screen.contains("sk-test-secret"), "{screen}");
 
         let ordinary = end_failed_run("provider: provider transport failed".into());
-        assert_eq!(ordinary.retryable_task.as_deref(), Some("retry this turn"));
+        assert_eq!(ordinary.run.retry_text(), Some("retry this turn"));
         assert!(
             ordinary
-                .transcript
+                .history
+                .blocks()
                 .last()
                 .expect("failure block")
                 .to_text()
@@ -3896,7 +4391,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_budget_stop_tells_the_operator_which_ceiling_and_how_to_clear_it() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -3954,7 +4449,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
-            .transcript
+            .history
+            .blocks()
             .last()
             .expect("the budget stop leaves a notice")
             .to_text();
@@ -3966,20 +4462,23 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_is_a_responsive_plantcore_icon_in_the_transcript() {
+    fn welcome_is_a_compact_responsive_coding_workspace() {
         let app = App::new();
-        let wide: String = app.transcript[0]
+        let wide: String = app.history.blocks()[0]
             .render(80, &app.theme, 0)
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect();
-        assert!(wide.contains("▄██"), "Plantcore icon present: {wide:?}");
         assert!(
-            wide.contains("Build, explain, and verify"),
+            wide.contains("▄███████") && wide.contains("████████"),
+            "welcome artwork present: {wide:?}"
+        );
+        assert!(
+            wide.contains("Build, explore, and ship"),
             "tagline present: {wide:?}"
         );
-        let rows = app.transcript[0].render(20, &app.theme, 0);
+        let rows = app.history.blocks()[0].render(20, &app.theme, 0);
         for r in &rows {
             assert!(
                 crate::render::line_width(r) <= 20,
@@ -3995,26 +4494,31 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn welcome_icon_is_one_startup_block_and_scrolls_away() {
+    fn welcome_is_one_startup_block_and_disappears_after_conversation_begins() {
         let mut app = App::new();
         assert_eq!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
             1
         );
         let first = render_text(&mut app, 40, 12);
-        assert!(first.contains("▄██"));
+        assert!(first.contains("████"), "welcome artwork is present");
         for index in 0..32 {
             app.push_user(format!(
                 "later task {index}: keep the active transcript at the tail"
             ));
         }
         let tail = render_text(&mut app, 40, 12);
-        assert!(!tail.contains("▄██"), "the brand is entrance, not chrome");
+        assert!(
+            !tail.contains("Build, explore"),
+            "welcome leaves the conversation"
+        );
         assert_eq!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
@@ -4034,7 +4538,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.push(fg(Color::White), format!("row {i} {}", "x".repeat(80)));
         }
         app.push(fg(Color::White), "NEWESTMARKER");
-        app.bottom_offset = 0; // pinned to bottom
+        app.viewport.fixture_offset(0); // pinned to bottom
         term.draw(|f| draw(f, &mut app)).unwrap();
         let content: String = term
             .backend()
@@ -4055,7 +4559,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let repo = std::env::temp_dir();
         app.editor.insert_str("/mod");
         app.refresh_completion(&repo);
-        let comp = app.completion.as_ref().expect("slash menu should open");
+        let comp = app.completions.view().expect("slash menu should open");
         assert!(
             comp.items.iter().any(|(n, _)| n == "model" || n == "mode"),
             "expected model/mode"
@@ -4080,7 +4584,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "permissions is runnable without an argument and should activate on Enter"
         );
         assert_eq!(app.editor.text(), "/permissions ");
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
         assert!(
             !app.accept_completion_for_enter(),
             "the consumed completion cannot emit a second submit signal"
@@ -4098,7 +4602,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "memory requires an argument, so Enter completes without dispatching"
         );
         assert_eq!(app.editor.text(), "/memory ");
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
     }
 
     #[test]
@@ -4109,7 +4613,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.editor.insert_str("look @hel");
         app.refresh_completion(&dir);
-        let comp = app.completion.as_ref().expect("@file menu should open");
+        let comp = app.completions.view().expect("@file menu should open");
         assert_eq!(comp.lead, '@');
         assert!(comp.items.iter().any(|(p, _)| p == "hello.txt"));
         app.accept_completion();
@@ -4122,6 +4626,39 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn accepting_file_completion_preserves_unrelated_actual_png_and_paste_stores() {
+        let root =
+            std::env::temp_dir().join(format!("iteron-completion-media-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("readme.txt"), "actual completion candidate").unwrap();
+        let mut app = App::new();
+        app.editor
+            .attach_image_bytes("kept.png", &png_1x1())
+            .unwrap();
+        app.editor.insert_str(" ");
+        app.editor
+            .capture_paste("kept pasted first line\nsecond line")
+            .unwrap();
+        app.editor.insert_str(" @rea");
+        let images = app.editor.attachments().clone();
+        app.refresh_completion(&root);
+        assert!(app.completions.is_open());
+        app.accept_completion();
+        assert!(app.editor.text().ends_with("@readme.txt "));
+        assert_eq!(app.editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(app.editor.pastes().len(), 1);
+        assert!(
+            app.editor
+                .submission_text()
+                .contains("kept pasted first line\nsecond line")
+        );
+        let screen = render_text(&mut app, 100, 18);
+        assert!(screen.contains("kept.png"), "{screen}");
+        assert!(screen.contains("@readme.txt"), "{screen}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn accept_completion_replaces_whole_token_mid_cursor() {
         let mut app = App::new();
         let repo = std::env::temp_dir();
@@ -4131,7 +4668,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.right();
         } // cursor in the middle: "/mod|el"
         app.refresh_completion(&repo);
-        assert!(app.completion.is_some());
+        assert!(app.completions.is_open());
         app.accept_completion();
         let t = app.editor.text();
         assert!(
@@ -4156,19 +4693,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let repo = std::env::temp_dir();
         app.editor.insert_str("just a task");
         app.refresh_completion(&repo);
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
         app.editor.clear();
         app.editor.insert_str("/mode");
         app.editor.newline();
         app.refresh_completion(&repo);
-        assert!(app.completion.is_none(), "no menu in multi-line");
+        assert!(!app.completions.is_open(), "no menu in multi-line");
 
         app.editor.clear();
         app.editor.insert_str("/mod");
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.refresh_completion(&repo);
         assert!(
-            app.completion.is_some(),
+            app.completions.is_open(),
             "running follow-ups keep slash/@ completion"
         );
     }
@@ -4176,7 +4713,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn apply_event_updates_state() {
         let mut app = App::new();
-        let before_start = app.transcript.len();
+        let before_start = app.history.blocks().len();
         apply_event(
             &mut app,
             UiEvent::ToolStart {
@@ -4186,22 +4723,23 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         // Activity is immediate, but the transcript waits out the anti-flash reveal delay.
-        assert!(!app.tool_index.contains_key("t1"));
-        assert_eq!(app.pending_tools.len(), 1);
-        assert_eq!(app.transcript.len(), before_start);
-        assert!(app.active_tools.iter().any(|(id, _)| id == "t1"));
-        let reveal_at = app.pending_tools.front().unwrap().reveal_deadline;
+        assert!(app.tools.revealed_block("t1").is_none());
+        assert_eq!(app.tools.pending_len(), 1);
+        assert_eq!(app.history.blocks().len(), before_start);
+        assert!(app.tools.has_active("t1"));
+        let reveal_at = app.tools.next_reveal().unwrap();
         assert!(app.advance_tool_presentations(reveal_at));
-        assert!(app.tool_index.contains_key("t1"));
+        assert!(app.tools.revealed_block("t1").is_some());
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
                 .contains("read_file")
         );
         // ToolEnd mutates the SAME card (by id, R2), not a new sibling
-        let before = app.transcript.len();
+        let before = app.history.blocks().len();
         apply_event(
             &mut app,
             UiEvent::ToolEnd {
@@ -4213,13 +4751,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(
-            app.transcript.len(),
+            app.history.blocks().len(),
             before,
             "ToolEnd mutates the originating card, not a new block"
         );
         let theme = theme::Theme::dark();
         let rendered: String = app
-            .transcript
+            .history
+            .blocks()
             .last()
             .unwrap()
             .render(80, &theme, 0)
@@ -4251,29 +4790,29 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 },
             ),
         );
-        assert_eq!(app.cost.usd(), Some(0.05));
+        assert_eq!(app.telemetry.cost().usd(), Some(0.05));
         assert_eq!(
-            app.last_turn_usage.map(|usage| usage.cache_hit_ratio()),
+            app.telemetry.usage().map(|usage| usage.cache_hit_ratio()),
             Some(0.5)
         );
         app.track_steer("first".into(), SubmissionId(1));
         app.track_steer("second".into(), SubmissionId(2));
         apply_event(&mut app, UiEvent::SteerApplied { count: 1 });
-        assert_eq!(app.steer_previews.len(), 2);
+        assert_eq!(app.input_lanes.steers().len(), 2);
         apply_event(
             &mut app,
             UiEvent::SteerSubmissionApplied {
                 id: SubmissionId(2),
             },
         );
-        assert_eq!(app.steer_previews.len(), 1);
-        assert_eq!(app.steer_previews.front().unwrap().text, "first");
+        assert_eq!(app.input_lanes.steers().len(), 1);
+        assert_eq!(app.input_lanes.steers().front().unwrap().text, "first");
     }
 
     #[test]
     fn tool_projection_is_hidden_for_300ms_then_reveals_deterministically() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         let started = Instant::now();
         app.tool_start_at(
             "slow-read".into(),
@@ -4282,17 +4821,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started,
         );
 
-        assert_eq!(app.transcript.len(), base);
-        assert!(app.active_tools.iter().any(|(id, _)| id == "slow-read"));
+        assert_eq!(app.history.blocks().len(), base);
+        assert!(app.tools.has_active("slow-read"));
         assert!(
             !app.advance_tool_presentations(started + TOOL_REVEAL_DELAY - Duration::from_millis(1))
         );
-        assert_eq!(app.transcript.len(), base);
+        assert_eq!(app.history.blocks().len(), base);
         assert!(app.advance_tool_presentations(started + TOOL_REVEAL_DELAY));
-        assert_eq!(app.transcript.len(), base + 1);
-        assert!(app.tool_index.contains_key("slow-read"));
+        assert_eq!(app.history.blocks().len(), base + 1);
+        assert!(app.tools.revealed_block("slow-read").is_some());
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::Tool(block::ToolCard {
                 status: block::ToolStatus::Running,
                 ..
@@ -4303,7 +4842,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn fast_tool_completion_inserts_one_settled_audit_card_without_running_flash() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         let started = Instant::now();
         app.tool_start_at(
             "fast-read".into(),
@@ -4320,11 +4859,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started + Duration::from_millis(42),
         );
 
-        assert_eq!(app.transcript.len(), base + 1);
-        assert!(app.pending_tools.is_empty());
-        assert!(app.active_tools.is_empty());
-        assert!(!app.tool_index.contains_key("fast-read"));
-        let block::BlockKind::Tool(card) = &app.transcript.last().unwrap().kind else {
+        assert_eq!(app.history.blocks().len(), base + 1);
+        assert!(app.tools.pending_len() == 0);
+        assert!(app.tools.active_len() == 0);
+        assert!(app.tools.revealed_block("fast-read").is_none());
+        let block::BlockKind::Tool(card) = &app.history.blocks().last().unwrap().kind else {
             panic!("expected a settled tool card");
         };
         assert_eq!(card.status, block::ToolStatus::Ok);
@@ -4352,11 +4891,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.settle_unfinished_tools();
 
-        assert!(app.pending_tools.is_empty());
-        assert!(app.tool_index.is_empty());
-        assert!(app.active_tools.is_empty());
+        assert!(app.tools.pending_len() == 0);
+        assert!(app.tools.revealed_len() == 0);
+        assert!(app.tools.active_len() == 0);
         let cards: Vec<_> = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4414,7 +4954,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         let cards = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4438,7 +4979,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started,
         );
         app.advance_tool_presentations(started + TOOL_REVEAL_DELAY);
-        let count = app.transcript.len();
+        let count = app.history.blocks().len();
         app.tool_end_at(
             "visible",
             true,
@@ -4451,9 +4992,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // Codex's hook cell lingers a quiet success for 600 ms. Core model-tool events are
         // audit-bearing and have no Ephemeral flag, so the stronger policy is to persist them.
         app.advance_tool_presentations(started + TOOL_REVEAL_DELAY + Duration::from_millis(601));
-        assert_eq!(app.transcript.len(), count);
+        assert_eq!(app.history.blocks().len(), count);
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::Tool(block::ToolCard {
                 status: block::ToolStatus::Ok,
                 ..
@@ -4471,7 +5012,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
 
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::WorkflowRun(card)) if card.run_id == "wf_reachable"
         ));
     }
@@ -4479,10 +5020,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn kernel_activity_updates_status_without_leaking_internal_draft_text() {
         let mut app = App::new();
-        app.cur_text = "visible answer".into();
-        app.cur_think = "visible reasoning".into();
-        app.awaiting_first_token_since = Some(Instant::now());
-        let transcript_len = app.transcript.len();
+        app.assistant.fixture_text("visible answer".into());
+        app.assistant.fixture_thinking("visible reasoning".into());
+        app.activity_observations
+            .observe_request_sent(Instant::now());
+        let transcript_len = app.history.blocks().len();
 
         app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::KernelActivity {
             kind: crate::workflow::KernelActivityKind::Planning,
@@ -4491,10 +5033,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
 
         assert_eq!(app.status, "planning · 1.2k chars · 320 reasoning");
-        assert!(app.awaiting_first_token_since.is_none());
-        assert_eq!(app.cur_text, "visible answer");
-        assert_eq!(app.cur_think, "visible reasoning");
-        assert_eq!(app.transcript.len(), transcript_len);
+        assert!(app.activity_observations.provider_wait().is_none());
+        assert_eq!(app.assistant.text(), "visible answer");
+        assert_eq!(app.assistant.thinking(), "visible reasoning");
+        assert_eq!(app.history.blocks().len(), transcript_len);
     }
 
     #[test]
@@ -4555,14 +5097,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Exactly one WorkflowRun block, still keyed by run id, mutated in place.
         let run_blocks = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
             .count();
         assert_eq!(run_blocks, 1, "one live tree, not a line-per-event log");
         assert_eq!(app.workflow_monitor.block_id(run_id).unwrap(), block_id);
         let card = match &app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4590,7 +5134,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.workflow_run_finished(run_id);
         assert!(!app.workflow_monitor.is_live(run_id));
         let finished = match &app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4620,11 +5165,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         let index = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .position(|block| matches!(block.kind, block::BlockKind::WorkflowRun(_)))
             .expect("the run minted its card");
-        let verbose = |app: &App| match &app.transcript[index].kind {
+        let verbose = |app: &App| match &app.history.blocks()[index].kind {
             block::BlockKind::WorkflowRun(card) => card.verbose,
             _ => unreachable!(),
         };
@@ -4715,7 +5261,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
 
         let card = match &app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .expect("the run keeps its one block")
@@ -4759,7 +5306,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
         assert!(!app.workflow_monitor.is_live(run_id));
         let settled = match &app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .unwrap()
@@ -4787,7 +5335,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let before = render_text(&mut app, 100, 30);
         assert!(before.contains("conversation marker"), "{before}");
-        let conversation_rows = app.last_total_rows;
+        let conversation_rows = app.viewport.total_rows();
         let conversation_height = app.view_h;
 
         let run_id = "wf_region_1";
@@ -4825,7 +5373,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the conversation is still readable behind it: {live}"
         );
         assert_eq!(
-            app.last_total_rows, conversation_rows,
+            app.viewport.total_rows(),
+            conversation_rows,
             "the transcript renders nothing for a live run — not the tree, not a gap in front of it"
         );
         let region_height = conversation_height - app.view_h;
@@ -4852,7 +5401,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the rows it borrowed go back to the conversation"
         );
         assert!(
-            app.last_total_rows > conversation_rows,
+            app.viewport.total_rows() > conversation_rows,
             "which now renders the run's permanent record"
         );
         assert!(
@@ -4860,7 +5409,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the same tree, at the point in the conversation where the run began: {settled}"
         );
         assert!(
-            app.transcript.iter().any(|block| block.id == block_id),
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == block_id),
             "one card, moved between surfaces rather than copied"
         );
     }
@@ -4925,11 +5477,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         clear_conversation(&mut app);
 
         assert!(
-            app.transcript.iter().any(|block| block.id == live_block),
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == live_block),
             "the running workflow keeps the card the region draws"
         );
         assert!(
-            !app.transcript
+            !app.history
+                .blocks()
                 .iter()
                 .any(|block| block.id == finished_block),
             "the finished run's record leaves with the conversation it belonged to"
@@ -4983,7 +5539,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .block_id(run_id)
             .expect("the run minted its card");
         let verbose = |app: &App| {
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .find(|block| block.id == block_id)
                 .map(|block| match &block.kind {
@@ -5049,7 +5606,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // The landing already has a conversation (the welcome block), so the run is measured as a
         // DELTA against it rather than against an empty transcript.
         let _ = render_text(&mut app, 60, 30);
-        let conversation_rows = app.last_total_rows;
+        let conversation_rows = app.viewport.total_rows();
 
         let run_id = "wf_region_tiny";
         app.workflow_run_started(run_id, "tiny frame audit", &["Explore".to_string()]);
@@ -5065,14 +5622,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // give away, so the region is granted zero — and the tree renders through the transcript.
         let tiny = render_text(&mut app, 60, 4);
         assert!(
-            app.last_total_rows > conversation_rows,
+            app.viewport.total_rows() > conversation_rows,
             "the transcript drew the run rather than dropping it: {tiny}"
         );
 
         // The same run on a frame with room is drawn by the region and by nothing else.
         let roomy = render_text(&mut app, 60, 30);
         assert_eq!(
-            app.last_total_rows, conversation_rows,
+            app.viewport.total_rows(),
+            conversation_rows,
             "the conversation renders nothing for it: {roomy}"
         );
         assert!(roomy.contains("tiny frame audit"), "{roomy}");
@@ -5228,8 +5786,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 class: "multi-file".into(),
             }),
         );
-        let block_count = app.transcript.len();
-        let block_id = *app.workflow_index.get(run_id).expect("indexed workflow");
+        let block_count = app.history.blocks().len();
+        let block_id = app
+            .history
+            .workflow_binding(run_id)
+            .expect("indexed workflow");
         apply_event(
             &mut app,
             UiEvent::Workflow(WorkflowUiEvent::PlanReady {
@@ -5293,12 +5854,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }),
         );
         assert_eq!(
-            app.transcript.len(),
+            app.history.blocks().len(),
             block_count,
             "lifecycle updates must not append sibling log lines"
         );
         let card = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5336,9 +5898,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 skipped_tasks: 0,
             }),
         );
-        assert!(!app.workflow_index.contains_key(run_id));
+        assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5402,7 +5965,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             skipped_tasks: 1,
         });
         let card = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .find_map(|block| match &block.kind {
                 block::BlockKind::Workflow(card) if card.run_id == run_id => Some(card),
@@ -5427,7 +5991,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.stream_text("写代码 ");
         app.stream_text("测试😀");
         app.flush_text();
-        assert!(app.transcript.iter().any(|b| b.to_text().contains("测试")));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .any(|b| b.to_text().contains("测试"))
+        );
     }
 
     #[test]
@@ -5475,10 +6044,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn turn_counter_increments_on_turn_end() {
         // The usage projection increments once per completed provider turn.
         let mut app = App::new();
-        assert_eq!(app.turns, 0);
+        assert_eq!(app.telemetry.turns(), 0);
         apply_event(&mut app, turn_end(0.01, Usage::default()));
         apply_event(&mut app, turn_end(0.03, Usage::default()));
-        assert_eq!(app.turns, 2, "turns++ per completed turn");
+        assert_eq!(app.telemetry.turns(), 2, "turns++ per completed turn");
     }
 
     #[test]
@@ -5495,7 +6064,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "accepted".into(),
         ));
 
-        assert!(accepted_app.running);
+        assert!(accepted_app.run.running());
         assert_eq!(accepted_app.session_name, "accepted");
         assert!(matches!(
             accepted_rx
@@ -5525,13 +6094,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "refused".into(),
         ));
 
-        assert!(!busy_app.running);
+        assert!(!busy_app.run.running());
         assert_eq!(busy_app.session_name, "New session");
-        assert_eq!(busy_app.retryable_task, None);
+        assert_eq!(busy_app.run.retry_text(), None);
         assert_eq!(busy_notifier.run_completed(), None);
         assert!(
             busy_app
-                .transcript
+                .history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("submission was not accepted"))
         );
@@ -5541,7 +6111,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_refused_queue_dispatch_returns_the_exact_prompt_and_never_draws_a_ghost_user_row() {
         let mut app = App::new();
         app.queue_after_turn("preserve me exactly".into()).unwrap();
-        let item = app.queued.pop_front().unwrap();
+        let item = app.input_lanes.pop_next().unwrap();
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
@@ -5554,19 +6124,20 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             submit_queued_model_input(&mut app, &busy_session, &mut notifier, item.clone())
                 .expect_err("a saturated SQ cannot consume the queue item");
         assert_eq!(*returned, item);
-        assert!(!app.running);
+        assert!(!app.run.running());
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
             "a refused prompt must not appear as admitted conversation"
         );
 
         let (accepted_tx, mut accepted_rx) = tokio::sync::mpsc::channel(1);
-        let accepted_session = Session::for_test(accepted_tx);
+        let mut accepted_session = Session::for_test(accepted_tx);
         submit_queued_model_input(&mut app, &accepted_session, &mut notifier, *returned)
             .expect("the preserved item is accepted exactly once when capacity returns");
-        assert!(app.running);
+        assert!(app.run.running());
         assert!(matches!(
             accepted_rx
                 .try_recv()
@@ -5575,8 +6146,33 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .expect("current protocol envelope"),
             Op::UserInput { text } if text == "preserve me exactly"
         ));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
+            "SQ acceptance does not yet admit a user row"
+        );
+        let submission_id = app.run.pending_id().expect("pending runtime admission");
+        for _ in 0..2 {
+            apply_server_event(
+                &mut app,
+                &mut accepted_session,
+                app_server::ServerEvent::Submission {
+                    id: submission_id,
+                    state: iteron_protocol::SubmissionLifecycleState::Applied,
+                    reason_code: None,
+                },
+                &mut notifier,
+                &mut Vec::new(),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                None,
+            );
+        }
         assert_eq!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(&block.kind, block::BlockKind::User(_)))
                 .count(),
@@ -5621,7 +6217,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.has_submission(),
             "local enqueue is not the runtime receipt that clears a draft"
         );
-        let submission_id = app.pending_turn_receipt.as_ref().unwrap().id;
+        let submission_id = app.run.pending_id().unwrap();
         apply_server_event(
             &mut app,
             &mut session,
@@ -5636,7 +6232,82 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
+        assert!(
+            app.editor.has_submission(),
+            "transport receipt preserves the draft until admission"
+        );
+        apply_server_event(
+            &mut app,
+            &mut session,
+            app_server::ServerEvent::Submission {
+                id: submission_id,
+                state: iteron_protocol::SubmissionLifecycleState::Applied,
+                reason_code: None,
+            },
+            &mut notifier,
+            &mut Vec::new(),
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        );
         assert!(!app.editor.has_submission());
+    }
+
+    #[test]
+    fn late_history_hydration_does_not_keep_an_applied_draft_but_new_typing_does() {
+        for newer_input in [false, true] {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let mut session = Session::for_test(tx);
+            let mut app = App::new();
+            let mut notifier = notification::TerminalNotifier::new(false);
+            app.editor.insert_str("hi");
+            submit_composer(&mut app, &session, &mut notifier);
+            assert!(matches!(rx.try_recv().unwrap().into_current().unwrap(),
+                Op::UserInput { text } if text == "hi"));
+            let submission_id = app.run.pending_id().unwrap();
+            let submitted_revision = app.editor.draft_revision();
+            let persistence_revision = app.editor.persistence_revision();
+            app.editor
+                .observe_persisted_history(vec!["earlier task".into()], None);
+            assert_ne!(app.editor.persistence_revision(), persistence_revision);
+            assert_eq!(app.editor.draft_revision(), submitted_revision);
+            assert!(
+                app.run
+                    .awaiting_composer_admission(app.editor.draft_revision())
+            );
+            if newer_input {
+                app.editor.insert_str(" plus a new draft");
+            }
+            apply_server_event(
+                &mut app,
+                &mut session,
+                app_server::ServerEvent::Submission {
+                    id: submission_id,
+                    state: iteron_protocol::SubmissionLifecycleState::Applied,
+                    reason_code: None,
+                },
+                &mut notifier,
+                &mut Vec::new(),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                None,
+            );
+            assert_eq!(
+                app.editor.text(),
+                if newer_input {
+                    "hi plus a new draft"
+                } else {
+                    ""
+                }
+            );
+            assert_eq!(app.editor.history_len(), if newer_input { 1 } else { 2 });
+            let rendered = render_text(&mut app, 100, 16);
+            assert_eq!(
+                rendered.contains("your newer draft was preserved"),
+                newer_input,
+                "{rendered}"
+            );
+        }
     }
 
     #[test]
@@ -5669,16 +6340,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         submit_composer(&mut app, &session, &mut notifier);
 
-        assert!(app.running);
+        assert!(app.run.running());
         assert!(
             app.editor.has_submission(),
             "an SQ send is not yet the runtime's receipt"
         );
         let submission_id = app
-            .pending_turn_receipt
-            .as_ref()
-            .expect("accepted local enqueue owns a receipt")
-            .id;
+            .run
+            .pending_id()
+            .expect("accepted local enqueue owns a receipt");
         let mut notification_bytes = Vec::new();
         apply_server_event(
             &mut app,
@@ -5694,7 +6364,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
-        assert!(!app.editor.has_submission());
+        assert!(app.editor.has_submission(), "Received is not admission");
         let op = rx
             .try_recv()
             .expect("composer submits through the bounded SQ")
@@ -5737,8 +6407,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
+        assert!(
+            !app.editor.has_submission(),
+            "Applied consumes the unchanged draft"
+        );
         assert_eq!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| block.to_text().contains("describe this"))
                 .count(),
@@ -5768,7 +6443,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut notifier = notification::TerminalNotifier::new(false);
         submit_composer(&mut app, &session, &mut notifier);
-        let submission_id = app.pending_turn_receipt.as_ref().unwrap().id;
+        let submission_id = app.run.pending_id().unwrap();
         assert!(app.editor.has_submission());
 
         let op = rx.try_recv().unwrap().into_current().unwrap();
@@ -5794,6 +6469,24 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &Arc::new(AtomicBool::new(false)),
             None,
         );
+        assert!(
+            app.editor.has_submission(),
+            "transport receipt preserves the draft until admission"
+        );
+        apply_server_event(
+            &mut app,
+            &mut session,
+            app_server::ServerEvent::Submission {
+                id: submission_id,
+                state: iteron_protocol::SubmissionLifecycleState::Applied,
+                reason_code: None,
+            },
+            &mut notifier,
+            &mut Vec::new(),
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        );
         assert!(!app.editor.has_submission());
         assert_eq!(app.editor.chip_count(), 0);
 
@@ -5807,7 +6500,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_draft_composed_during_a_run_keeps_its_chips_and_is_queued_with_them() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("look at ");
         app.editor
             .attach_image_bytes("shot.png", gif)
@@ -5824,7 +6517,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the chips leave the composer with the text, not after it"
         );
         assert!(app.editor.is_empty(), "the draft was consumed");
-        let queued = app.queued.front().expect("one queued submission");
+        let queued = app
+            .input_lanes
+            .queued()
+            .front()
+            .expect("one queued submission");
         assert_eq!(
             queued.images.len(),
             1,
@@ -5844,7 +6541,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_command_carrying_chips_is_refused_with_everything_left_intact() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("/model");
         app.editor
             .attach_image_bytes("shot.png", gif)
@@ -5860,9 +6557,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the command is still in the composer: {}",
             app.editor.text()
         );
-        assert!(app.queued.is_empty(), "nothing was queued");
+        assert!(app.input_lanes.queued().is_empty(), "nothing was queued");
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("cannot carry attachments")),
             "the operator is told why"
@@ -5928,13 +6626,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 original: "shot.gif".into(),
             },
         );
-        assert_eq!(app.attachment_effect_state, AttachmentEffectState::Queued);
+        assert_eq!(app.attachments.state(), AttachmentEffectState::Queued);
         assert_eq!(
             app.editor.chip_count(),
             0,
             "the TUI did no decode/admit work"
         );
-        let effect = app.attachment_job.take().unwrap().await.unwrap();
+        let attachment_owner::AttachmentUpdate::Prepared(effect) =
+            app.attachments.wait_ready().await
+        else {
+            panic!("actual worker should return prepared value")
+        };
         let Ok(AttachmentWorkerOutput::Prepared(prepared)) = effect.result else {
             panic!("worker must return a prepared image")
         };
@@ -6142,7 +6844,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.text()
         );
         assert!(
-            app.transcript
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "a drop that did not attach is never silent"
@@ -6165,7 +6868,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the words are still the operator's"
         );
         let refusals = app
-            .transcript
+            .history
+            .blocks()
             .iter()
             .filter(|block| block.to_text().contains("image attachment refused"))
             .count();
@@ -6187,7 +6891,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "renamed report.png to summary.png in the release notes"
         );
         assert!(
-            !app.transcript
+            !app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "prose that names a file is not a failed drop"
@@ -6200,13 +6905,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_queued_submission_sends_the_image_it_was_queued_with() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("describe ");
         app.editor
             .attach_image_bytes("shot.png", gif)
             .expect("a canonical GIF");
         assert!(queue_draft_with_chips(&mut app));
-        let item = app.queued.pop_front().expect("one queued submission");
+        let item = app.input_lanes.pop_next().expect("one queued submission");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(tx);
@@ -6465,14 +7170,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
 
         // An ordinary wait says nothing at all; the phase label already covers it.
         assert!(app.first_token_stall().is_none());
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
-        app.provider_accepted = false;
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
         let slow = app
             .first_token_stall()
             .expect("a slow prefill is described");
@@ -6480,18 +7185,26 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(slow.label().contains("request sent"));
         assert!(!slow.label().contains("accepted"));
 
-        app.provider_accepted = true;
+        app.activity_observations
+            .observe_provider_response(Instant::now());
         let accepted = app
             .first_token_stall()
             .expect("accepted prefill retains the request-sent clock");
         assert!(accepted.label().contains("accepted · model generating"));
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         let stalled = app
             .first_token_stall()
             .expect("a stalled stream is described");
         assert_eq!(stalled.state, FirstTokenState::Stalled);
-        assert!(stalled.label().contains("may be stalled"));
+        assert!(stalled.label().contains("no provider response"));
+        assert!(!stalled.label().contains("accepted"));
+        app.activity_observations
+            .observe_provider_response(Instant::now());
+        let accepted_stall = app.first_token_stall().unwrap();
+        assert!(accepted_stall.label().contains("may be stalled"));
+        assert_ne!(accepted_stall.label(), stalled.label());
         assert_ne!(
             accepted.label(),
             stalled.label(),
@@ -6507,13 +7220,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         apply_event(&mut app, UiEvent::Thinking("reasoning".into()));
         assert!(app.first_token_stall().is_none());
 
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         apply_event(&mut app, UiEvent::Text("answer".into()));
         assert!(app.first_token_stall().is_none());
 
         // Leaving the model phase stops the clock: only a provider request can be waiting on one.
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
-        app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
+        app.activity_observations
+            .observe_request_sent(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Tools));
         assert!(app.first_token_stall().is_none());
     }
@@ -6675,7 +7390,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         app.flush_text();
-        for block in &app.transcript {
+        for block in app.history.blocks() {
             let retained = block.to_text();
             assert!(!retained.contains('\x1b'));
             assert!(!retained.contains('\x07'));
@@ -6737,23 +7452,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             ..Usage::default()
         };
         let mut app = App::new();
-        app.last_turn_usage = Some(usage);
-        app.last_context = Some(ContextEstimate {
-            system_tokens: 1,
-            tool_tokens: 2,
-            conversation_tokens: 3,
-            tool_result_tokens: 0,
-            lsp_result_tokens: 0,
-            transcript_tokens: 3,
-            framing_tokens: 4,
-            total_tokens: 10,
-            provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
-            components: None,
-        });
-        app.model_context_window = Some(200_000);
-        app.effort_application = Some(EffortApplication::Unsupported {
-            requested: iteron_protocol::ReasoningEffort::High,
-        });
+        let mut observed = turn_end(0.0, usage);
+        if let UiEvent::TurnEnd {
+            model_context_window,
+            effort,
+            ..
+        } = &mut observed
+        {
+            *model_context_window = Some(200_000);
+            *effort = EffortApplication::Unsupported {
+                requested: ReasoningEffort::High,
+            };
+        }
+        apply_event(&mut app, observed);
         // The runtime clears the ledger's last-turn usage on a model change (see
         // `app_server::apply_control`) and reports the result on the snapshot; the frontend adopts
         // whatever the snapshot says rather than deciding for itself.
@@ -6777,10 +7488,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         clear_last_turn_telemetry_from(&mut app, &state);
 
-        assert!(app.last_turn_usage.is_none());
-        assert!(app.last_context.is_none());
-        assert_eq!(app.model_context_window, Some(200_000));
-        assert!(app.effort_application.is_none());
+        assert!(app.telemetry.usage().is_none());
+        assert!(app.telemetry.context().is_none());
+        assert_eq!(app.telemetry.window(), Some(200_000));
+        assert!(app.telemetry.effort().is_none());
     }
 
     #[test]
@@ -6820,8 +7531,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(
             status_right_bits(&app, surface::Density::Wide)
                 .iter()
-                .any(|bit| bit == "cache 70%"),
-            "cache is the last-turn ratio even when the low-priority bit yields to width"
+                .all(|bit| !bit.starts_with("cache ")),
+            "cache details are available on request and do not crowd the default status"
         );
         let canonical_fields = canonical.split(" | ").collect::<Vec<_>>();
         assert_eq!(canonical_fields[1], "109", "tokens are provider-observed");
@@ -6837,25 +7548,32 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn active_shelf_progressively_discloses_run_metrics() {
+    fn active_shelf_keeps_accounting_in_diagnostics_and_discloses_live_state() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let mut app = App::new();
-        app.running = true;
-        app.status = "thinking".into();
-        app.cost = CostState::Known {
-            amount_microusd: 80_000,
-            rate_card_digest: "sha256:test-rate-card".into(),
-        };
-        app.last_turn_usage = Some(Usage {
-            input: 39,
-            cache_read: 61,
-            ..Usage::default()
-        });
-        app.turns = 4;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        for _ in 0..4 {
+            apply_event(
+                &mut app,
+                turn_end(
+                    0.08,
+                    Usage {
+                        input: 39,
+                        cache_read: 61,
+                        ..Usage::default()
+                    },
+                ),
+            );
+        }
+        // Those completed provider turns legitimately change the live phase. This next actual
+        // frontend phase observation starts the reasoning displayed by the active shelf.
+        apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
         app.effort = Effort::Ultracode;
-        app.run_started = Some(Instant::now());
-        let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+
+        // Even a wide everyday shelf stays concise; exact accounting remains available to
+        // diagnostics through the same retained telemetry and canonical status renderer.
+        let mut term = Terminal::new(TestBackend::new(240, 12)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = buffer_text(&term);
         let statusline = s.lines().last().unwrap_or_default();
@@ -6863,11 +7581,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             !statusline.contains('█') && !statusline.contains('░'),
             "statusline has no permanent gauge chrome: {statusline:?}"
         );
-        assert!(s.contains("cache 61%"), "wide shelf shows cache-hit text");
-        assert!(s.contains("turn 4"), "wide shelf shows the turn counter");
+        assert!(!statusline.contains("cache 61%"));
+        assert!(!statusline.contains("turn 4"));
+        assert_eq!(app.telemetry.turns(), 4);
+        assert_eq!(app.telemetry.usage().unwrap().cache_hit_ratio(), 0.61);
         assert!(
-            s.contains("0.080"),
-            "wide shelf uses the canonical exact milli-USD status value"
+            canonical_statusline(&app).contains("0.080"),
+            "diagnostics retain the canonical exact milli-USD status value"
         );
         assert!(s.contains("thinking"), "shelf shows the live phase word");
         assert!(
@@ -6881,8 +7601,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupt_state_replaces_stale_phase_in_active_shelf() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
         app.status = "verifying".into();
         let screen = render_text(&mut app, 80, 16);
         assert!(screen.contains("interrupt requested"));
@@ -6893,7 +7613,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_ctrl_d_requests_exactly_one_drain_without_requiring_git() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
@@ -6901,7 +7621,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         request_drain(&mut app, &session, &drain, true);
         request_drain(&mut app, &session, &drain, true);
 
-        assert!(app.draining);
+        assert!(app.run.draining());
         assert!(drain.load(Ordering::Relaxed));
         assert!(app.status.contains("draining session"));
         assert!(matches!(
@@ -6922,14 +7642,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_ctrl_d_is_available_without_a_workspace_checkpoint() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
         request_drain(&mut app, &session, &drain, false);
 
-        assert!(app.draining);
+        assert!(app.run.draining());
         assert!(drain.load(Ordering::Relaxed));
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
@@ -6940,21 +7660,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_second_interrupt_force_cancels_without_draining_or_consuming_the_queue() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.cancel_requested_at = Some(Instant::now() - Duration::from_secs(30));
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+        app.run
+            .interrupt_accepted(Instant::now() - Duration::from_secs(30));
         app.queue_after_turn("the next prompt".into()).unwrap();
-        let queued = app.queued.front().cloned().unwrap();
+        let queued = app.input_lanes.queued().front().cloned().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         force_cancel_turn(&mut app, &session);
         force_cancel_turn(&mut app, &session);
 
-        assert!(app.running, "RunEnded remains the only idle boundary");
-        assert!(app.interrupting);
-        assert!(app.force_cancelling);
-        assert!(!app.draining);
-        assert_eq!(app.queued.front(), Some(&queued));
+        assert!(app.run.running(), "RunEnded remains the only idle boundary");
+        assert!(app.run.interrupting());
+        assert!(app.run.force_cancelling());
+        assert!(!app.run.draining());
+        assert_eq!(app.input_lanes.queued().front(), Some(&queued));
         assert!(matches!(
             rx.try_recv()
                 .expect("the escalation submits one force-cancel")
@@ -6968,17 +7689,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn cooperative_then_force_cancel_is_one_target_even_with_a_local_effect() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let interrupt = Arc::new(AtomicBool::new(false));
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
 
         cancel_local_effect_then_turn(&mut app, &session, &interrupt);
         assert!(
-            app.running,
+            app.run.running(),
             "local cancellation cannot invent a run boundary"
         );
-        assert!(app.interrupting);
+        assert!(app.run.interrupting());
         assert!(interrupt.load(Ordering::SeqCst));
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
@@ -6990,7 +7711,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         cancel_local_effect_then_turn(&mut app, &session, &interrupt);
-        assert!(app.force_cancelling);
+        assert!(app.run.force_cancelling());
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
             Op::ForceCancel
@@ -7086,7 +7807,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_event_preempts_an_open_transcript_viewer_immediately() {
         let mut app = App::new();
         app.transcript_viewer
-            .open("", &app.transcript, app.transcript_revision);
+            .open("", app.history.blocks(), app.history.revision());
         assert!(app.transcript_viewer.is_open());
         apply_event(
             &mut app,
@@ -7100,14 +7821,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert!(!app.transcript_viewer.is_open());
-        assert!(app.pending.is_some());
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert!(app.permission_prompt.read().is_some());
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
     }
 
     #[test]
     fn approval_resolution_clears_only_its_prompt_and_renders_decision_not_tool_success() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -7129,7 +7850,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(
-            app.pending.as_ref().map(|pending| pending.id),
+            app.permission_prompt.read().map(|pending| pending.id),
             Some(SubmissionId(77))
         );
         apply_event(
@@ -7141,7 +7862,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 response_submission_id: Some(SubmissionId(79)),
             },
         );
-        assert!(app.pending.is_none());
+        assert!(app.permission_prompt.read().is_none());
         assert!(app.status.contains("tool pending"));
         assert!(!app.status.contains("tool complete"));
         assert!(render_text(&mut app, 100, 24).contains("tool pending"));
@@ -7151,7 +7872,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     async fn pending_transcript_effect_never_blocks_an_approval_transition() {
         let mut app = App::new();
         app.transcript_viewer
-            .open("", &app.transcript, app.transcript_revision);
+            .open("", app.history.blocks(), app.history.revision());
         let mut effects = transcript_effect::Supervisor::default();
         effects
             .start(transcript_effect::Request::Delay {
@@ -7175,7 +7896,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert!(effects.is_active());
         assert!(!app.transcript_viewer.is_open());
-        assert!(app.pending.is_some());
+        assert!(app.permission_prompt.read().is_some());
         effects.shutdown().await;
     }
 
@@ -7281,7 +8002,7 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
     }
 
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let mut session = Session::for_test(tx);
     let mut notifier = notification::TerminalNotifier::new(false);
@@ -7318,12 +8039,10 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &drain,
         None,
     );
-    assert!(app.activities.contains_key("turn-1-finalizing"));
+    assert!(app.activity_observations.contains("turn-1-finalizing"));
 
-    app.retired_activity_ids
-        .push_back("turn-1-finalizing".into());
-    app.activities.clear();
-    app.running = false;
+    app.activity_observations.retire_run_observations();
+    app.run.run_ended(Instant::now());
     apply_server_event(
         &mut app,
         &mut session,
@@ -7339,7 +8058,7 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         None,
     );
     assert!(
-        app.activities.is_empty(),
+        !app.activity_observations.has_active(),
         "late old-turn activity stayed retired"
     );
 
@@ -7386,7 +8105,7 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         progress: None,
     };
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let mut session = Session::for_test(tx);
     let mut notifier = notification::TerminalNotifier::new(false);
@@ -7405,12 +8124,14 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
     );
 
     assert!(
-        !app.provider_accepted,
+        !app.activity_observations.provider_wait().unwrap().accepted,
         "request sent is not provider acceptance"
     );
     assert!(
-        app.awaiting_first_token_since
+        app.activity_observations
+            .provider_wait()
             .expect("request sent starts TTFT")
+            .started
             .elapsed()
             >= Duration::from_millis(400),
         "queue delay must not reset the TTFT clock"
@@ -7418,11 +8139,11 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
     let (presented, elapsed) = visible_activity(&app).expect("delayed activity is visible now");
     assert!(elapsed >= Duration::from_millis(400));
     assert_eq!(
-        activity_label(&presented.event),
+        status_render::activity_label(presented.event()),
         "request sent · waiting for provider"
     );
 
-    let mut accepted = presented.event.clone();
+    let mut accepted = presented.event().clone();
     accepted.id = "turn-2-first-token".into();
     accepted.started_at_unix_ms = now;
     accepted.updated_at_unix_ms = now;
@@ -7438,7 +8159,7 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         None,
     );
     assert!(
-        app.provider_accepted,
+        app.activity_observations.provider_wait().unwrap().accepted,
         "only Accepted advances the presentation label"
     );
 }
@@ -7461,13 +8182,12 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
         event,
     };
     let mut app = App::new();
-    app.running = true;
-    app.product_stream_active = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 5,
@@ -7522,10 +8242,7 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
         },
         12,
     );
-    assert_eq!(
-        app.product_terminal_answer.as_deref(),
-        Some("exact terminal answer")
-    );
+    assert_eq!(app.product.terminal_answer(), Some("exact terminal answer"));
     let screen = tests::render_text(&mut app, 100, 24);
     assert!(screen.contains("exact terminal answer"), "{screen}");
     assert!(!screen.contains("partial answer"), "{screen}");
@@ -7549,12 +8266,12 @@ fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
         event,
     };
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 3,
@@ -7586,7 +8303,7 @@ fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
         },
         3,
     );
-    assert!(app.product_terminal_answer.is_none());
+    assert!(app.product.terminal_answer().is_none());
     assert!(tests::render_text(&mut app, 100, 24).contains("product content gap"));
 }
 
@@ -7625,13 +8342,12 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
     };
     let thread_id = iteron_protocol::SessionId("approval-thread".into());
     let mut app = App::new();
-    app.running = true;
-    app.product_stream_active = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 1,
@@ -7659,7 +8375,10 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
         },
         1,
     );
-    let pending = app.pending.as_ref().expect("product prompt projected");
+    let pending = app
+        .permission_prompt
+        .read()
+        .expect("product prompt projected");
     assert!(!pending.prompt_complete);
     let actions = approval_action_line(&app, pending, 100)
         .spans
@@ -7694,7 +8413,7 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         },
     };
     let mut app = App::new();
-    app.pending = Some(Pending {
+    app.permission_prompt.present(Pending {
         id: SubmissionId(7),
         tool: "bash".into(),
         cap: Capability::CodeExecuting,
@@ -7703,12 +8422,13 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         workspace: "/fixture".into(),
         prompt_complete: true,
     });
-    app.pending_approval_response = Some(SubmissionId(9));
+    app.permission_prompt
+        .response_queued(SubmissionId(7), SubmissionId(9));
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 0,
             next_cursor: 1,
@@ -7724,11 +8444,11 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         },
         1,
     );
-    assert_eq!(app.pending_approval_response, Some(SubmissionId(9)));
+    assert_eq!(app.permission_prompt.response_id(), Some(SubmissionId(9)));
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread_id.clone(),
             requested_after: 1,
             next_cursor: 2,
@@ -7745,10 +8465,10 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         2,
     );
     assert_eq!(
-        app.pending.as_ref().map(|pending| pending.id),
+        app.permission_prompt.read().map(|pending| pending.id),
         Some(SubmissionId(7))
     );
-    assert!(app.pending_approval_response.is_none());
+    assert!(app.permission_prompt.response_id().is_none());
     assert!(app.status.contains("rejected"));
 }
 
@@ -7786,7 +8506,7 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
     projection.ingest_page(
         &mut old_app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread.clone(),
             requested_after: 0,
             next_cursor: 2,
@@ -7806,7 +8526,7 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
     projection.ingest_page(
         &mut new_app,
         ProductEventsPageV1 {
-            contract_version: 1,
+            contract_version: iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             thread_id: thread.clone(),
             requested_after: 2,
             next_cursor: 5,
@@ -7823,6 +8543,42 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
         5,
     );
     new_app.finish_text_boundary();
-    assert_eq!(new_app.assistant_stream_authority, "fresh content ");
+    assert_eq!(new_app.assistant.authority(), "fresh content ");
     assert!(!tests::render_text(&mut new_app, 100, 24).contains("old replay"));
+}
+
+#[cfg(test)]
+mod large_logical_viewport_tests {
+    use super::tests::render_text;
+    use super::*;
+
+    #[test]
+    fn actual_over_u16_history_keeps_newest_pixels_and_high_row_reading_anchor_visible() {
+        let mut app = App::new();
+        app.history.clear();
+        app.push_block(block::BlockKind::Thinking {
+            text: "retained history row\n".repeat(70_000),
+            open: true,
+        });
+        app.stream_text("newest answer remains visible");
+        // Commit the real streaming scrubber boundary before asserting its full retained text.
+        app.finish_text_boundary();
+        let screen = render_text(&mut app, 80, 22);
+        assert!(app.viewport.total_rows() > usize::from(u16::MAX));
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        assert!(screen.contains("newest answer remains visible"), "{screen}");
+        app.scroll_up(6);
+        let _ = render_text(&mut app, 80, 22);
+        let anchored = app
+            .geometry
+            .reading_anchor(app.view_scroll)
+            .expect("retained high-row block");
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        let _ = render_text(&mut app, 42, 20);
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        assert_eq!(app.geometry.reading_anchor(app.view_scroll), Some(anchored));
+        app.follow_latest();
+        let screen = render_text(&mut app, 80, 22);
+        assert!(screen.contains("newest answer remains visible"), "{screen}");
+    }
 }

@@ -13,6 +13,7 @@ use iteron_protocol::{
 };
 use std::sync::{Arc, OnceLock};
 
+#[derive(Clone)]
 pub(crate) struct CompiledPolicyBundle {
     boot_bundle: Arc<iteron_agents::BootBundle>,
     slots: CompiledSlots,
@@ -31,6 +32,20 @@ impl std::fmt::Debug for CompiledPolicyBundle {
 }
 
 impl CompiledPolicyBundle {
+    pub(crate) fn boot_bundle_ref(&self) -> &Arc<iteron_agents::BootBundle> {
+        &self.boot_bundle
+    }
+    /// Fault injection belongs to tests; production installs only a complete compiled generation.
+    #[cfg(test)]
+    pub(crate) fn with_fixture_slot(
+        &self,
+        slot: super::schema::CoreSlot,
+        strategy: Arc<dyn iteron_protocol::slot::StrategySlot>,
+    ) -> Self {
+        let mut fixture = self.clone();
+        fixture.slots.replace(slot, strategy);
+        fixture
+    }
     pub(crate) fn boot_bundle(&self) -> Arc<iteron_agents::BootBundle> {
         self.boot_bundle.clone()
     }

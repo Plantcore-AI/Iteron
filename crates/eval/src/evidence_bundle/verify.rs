@@ -14,9 +14,44 @@ pub fn verify_evidence_bundle(
             reason: "evidence bundle must be a regular non-symlink directory".into(),
         });
     }
-    let index_path = directory.join("bundle.index.json");
-    let index: EvidenceBundleIndex = decode(&read_regular(
-        &index_path,
+    verify_evidence_bundle_from_source(&DirectorySource(directory), trusted_public_key)
+}
+
+/// Native callers retain their own exact directory capabilities and finite read budget. Source
+/// bytes remain untrusted until the same signature, file digest and recomputation checks succeed.
+pub trait EvidenceBundleSource {
+    fn names(&self) -> Result<Vec<String>, EvidenceBundleError>;
+    fn read(&self, file_name: &str, max_bytes: u64) -> Result<Vec<u8>, EvidenceBundleError>;
+}
+struct DirectorySource<'a>(&'a Path);
+impl EvidenceBundleSource for DirectorySource<'_> {
+    fn names(&self) -> Result<Vec<String>, EvidenceBundleError> {
+        std::fs::read_dir(self.0)
+            .map_err(|error| io(self.0, error))?
+            .map(|entry| {
+                entry.map_err(|error| io(self.0, error)).and_then(|entry| {
+                    entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| EvidenceBundleError::Digest)
+                })
+            })
+            .take(MAX_BUNDLE_FILES + 2)
+            .collect()
+    }
+    fn read(&self, name: &str, max: u64) -> Result<Vec<u8>, EvidenceBundleError> {
+        if name != "bundle.index.json" {
+            validate_file_name(name)?;
+        }
+        read_regular(&self.0.join(name), max)
+    }
+}
+pub fn verify_evidence_bundle_from_source(
+    source: &impl EvidenceBundleSource,
+    trusted_public_key: &str,
+) -> Result<VerifiedEvidenceBundle, EvidenceBundleError> {
+    let index: EvidenceBundleIndex = decode(&source.read(
+        "bundle.index.json",
         iteron_tunables::param_integer("eval.evidence_bundle.max_index_bytes", MAX_INDEX_BYTES),
     )?)?;
     if index.schema_version != 1
@@ -29,6 +64,7 @@ pub fn verify_evidence_bundle(
                 "eval.evidence_bundle.max_bundle_files",
                 MAX_BUNDLE_FILES,
             )
+            .min(MAX_BUNDLE_FILES)
     {
         return Err(EvidenceBundleError::Signature);
     }
@@ -38,20 +74,20 @@ pub fn verify_evidence_bundle(
     validate_label(&index.comparison.candidate_arm)?;
     index.evidence_rows.validate()?;
     verify_index(&index)?;
-    verify_file_set(directory, &index)?;
+    verify_file_set(source, &index)?;
 
-    let baseline_bytes = read_role(directory, &index, "baseline_manifest")?;
-    let candidate_bytes = read_role(directory, &index, "candidate_manifest")?;
+    let baseline_bytes = read_role(source, &index, "baseline_manifest")?;
+    let candidate_bytes = read_role(source, &index, "candidate_manifest")?;
     let baseline: EvaluationManifest = decode(&baseline_bytes)?;
     let candidate: EvaluationManifest = decode(&candidate_bytes)?;
     let baseline_attestation: RunAttestation =
-        decode(&read_role(directory, &index, "baseline_attestation")?)?;
+        decode(&read_role(source, &index, "baseline_attestation")?)?;
     let candidate_attestation: RunAttestation =
-        decode(&read_role(directory, &index, "candidate_attestation")?)?;
+        decode(&read_role(source, &index, "candidate_attestation")?)?;
     validate_attestation(&baseline_attestation, &baseline, &baseline_bytes)?;
     validate_attestation(&candidate_attestation, &candidate, &candidate_bytes)?;
 
-    let paired: PairedEvaluationReport = decode(&read_role(directory, &index, "paired_report")?)?;
+    let paired: PairedEvaluationReport = decode(&read_role(source, &index, "paired_report")?)?;
     let expected_paired = compare_manifests(
         &baseline,
         &index.comparison.baseline_arm,
@@ -61,7 +97,7 @@ pub fn verify_evidence_bundle(
         "signed_evidence_bundle",
         KernelTaxLine::reserved(),
     )?;
-    let pareto: ParetoReport = decode(&read_role(directory, &index, "pareto_report")?)?;
+    let pareto: ParetoReport = decode(&read_role(source, &index, "pareto_report")?)?;
     let expected_pareto = pareto_frontier(vec![
         ParetoPoint::from_manifest_arm(
             &index.comparison.baseline_id,
@@ -107,7 +143,7 @@ pub fn verify_evidence_bundle(
 }
 
 fn verify_file_set(
-    directory: &Path,
+    source: &impl EvidenceBundleSource,
     index: &EvidenceBundleIndex,
 ) -> Result<(), EvidenceBundleError> {
     let expected = index
@@ -116,14 +152,12 @@ fn verify_file_set(
         .map(|file| file.file_name.clone())
         .chain(std::iter::once("bundle.index.json".into()))
         .collect::<BTreeSet<_>>();
-    let actual = std::fs::read_dir(directory)
-        .map_err(|error| io(directory, error))?
-        .map(|entry| {
-            entry
-                .map_err(|error| io(directory, error))
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let source_names = source.names()?;
+    if source_names.len() > MAX_BUNDLE_FILES + 1 {
+        return Err(EvidenceBundleError::Digest);
+    }
+    let source_count = source_names.len();
+    let actual = source_names.into_iter().collect::<BTreeSet<_>>();
     let names = index
         .files
         .iter()
@@ -142,14 +176,18 @@ fn verify_file_set(
         "paired_report",
         "pareto_report",
     ]);
-    if expected != actual || names.len() != index.files.len() || roles != required_roles {
+    if expected != actual
+        || actual.len() != source_count
+        || names.len() != index.files.len()
+        || roles != required_roles
+    {
         return Err(EvidenceBundleError::Digest);
     }
     let mut total = 0_u64;
     for expected_file in &index.files {
         validate_file_name(&expected_file.file_name)?;
-        let bytes = read_regular(
-            &directory.join(&expected_file.file_name),
+        let bytes = source.read(
+            &expected_file.file_name,
             maximum_for_role(&expected_file.role)?,
         )?;
         total = total.saturating_add(bytes.len() as u64);
@@ -213,14 +251,25 @@ fn file_for_role<'a>(
 }
 
 fn read_role(
-    directory: &Path,
+    source: &impl EvidenceBundleSource,
     index: &EvidenceBundleIndex,
     role: &str,
 ) -> Result<Vec<u8>, EvidenceBundleError> {
-    read_regular(
-        &directory.join(file_for_role(index, role)?),
-        maximum_for_role(role)?,
-    )
+    let name = file_for_role(index, role)?;
+    let expected = index
+        .files
+        .iter()
+        .find(|file| file.file_name == name)
+        .ok_or(EvidenceBundleError::Digest)?;
+    let bytes = source.read(name, maximum_for_role(role)?)?;
+    // A source may change between validation and decoding. Authenticate the exact bytes used by
+    // recomputation against this signed index instead of trusting an earlier pathname read.
+    if bytes.len() as u64 != expected.bytes
+        || hex::encode(Sha256::digest(&bytes)) != expected.sha256
+    {
+        return Err(EvidenceBundleError::Digest);
+    }
+    Ok(bytes)
 }
 
 fn maximum_for_role(role: &str) -> Result<u64, EvidenceBundleError> {
@@ -249,7 +298,10 @@ fn validate_file_name(value: &str) -> Result<(), EvidenceBundleError> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_file_name;
+    use super::{
+        DirectorySource, EvidenceBundleError, EvidenceBundleIndex, EvidenceBundleSource,
+        validate_file_name, verify_evidence_bundle_from_source,
+    };
 
     #[test]
     fn bundle_file_names_use_the_same_bounded_ascii_grammar_as_the_schema() {
@@ -258,5 +310,68 @@ mod tests {
             assert!(validate_file_name(invalid).is_err());
         }
         assert!(validate_file_name(&format!("{}.json", "a".repeat(252))).is_err());
+    }
+
+    #[test]
+    fn role_recomputation_authenticates_the_exact_second_native_read() {
+        use std::cell::Cell;
+        struct ChangingSource<'a> {
+            directory: DirectorySource<'a>,
+            report_name: String,
+            report_reads: Cell<usize>,
+        }
+        impl EvidenceBundleSource for ChangingSource<'_> {
+            fn names(&self) -> Result<Vec<String>, EvidenceBundleError> {
+                self.directory.names()
+            }
+            fn read(&self, name: &str, max: u64) -> Result<Vec<u8>, EvidenceBundleError> {
+                if name == self.report_name {
+                    let count = self.report_reads.get() + 1;
+                    self.report_reads.set(count);
+                    if count == 2 {
+                        // This preserves the parsed report and every computed field, but changes
+                        // the actual signed bytes between file verification and recomputation.
+                        let path = self.directory.0.join(name);
+                        let mut bytes = std::fs::read(&path).unwrap();
+                        bytes.push(b' ');
+                        std::fs::write(path, bytes).unwrap();
+                    }
+                }
+                self.directory.read(name, max)
+            }
+        }
+        let source =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/evidence-bundle-v1");
+        let root = std::env::temp_dir().join(format!(
+            "iteron-evidence-role-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), root.join(entry.file_name())).unwrap();
+        }
+        let index: EvidenceBundleIndex =
+            serde_json::from_slice(&std::fs::read(root.join("bundle.index.json")).unwrap())
+                .unwrap();
+        let report_name = index
+            .files
+            .iter()
+            .find(|file| file.role == "paired_report")
+            .unwrap()
+            .file_name
+            .clone();
+        let changing = ChangingSource {
+            directory: DirectorySource(&root),
+            report_name,
+            report_reads: Cell::new(0),
+        };
+        assert!(verify_evidence_bundle_from_source(&changing, &index.public_key).is_err());
+        assert_eq!(changing.report_reads.get(), 2);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

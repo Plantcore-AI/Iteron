@@ -10,9 +10,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod contained_source;
+pub use contained_source::{ContainedSourceError, read_contained_utf8};
+mod captured_execution;
+mod ordinary_recipe;
+pub use ordinary_recipe::{MAX_ORDINARY_RECIPES, MAX_RECIPE_BYTES, ToolRecipeV1};
+mod captured_image;
+pub use captured_image::{CapturedImageObservation, CapturedToolImage};
+pub mod browser;
 #[cfg(unix)]
 mod confined_fs;
 mod confined_helper;
+pub mod desktop;
+mod dispatch_agent;
+use dispatch_agent::register_dispatch_agent;
+pub use dispatch_agent::{DispatchAgentProfile, MAX_DISPATCH_AGENT_PROFILES};
 mod edit;
 mod egress;
 mod execution_policy;
@@ -23,6 +35,7 @@ mod git_filters;
 mod git_harness;
 mod git_observe;
 mod grep_tool;
+mod inherited_write_scope;
 mod lsp;
 mod mcp_timing;
 mod mem;
@@ -30,21 +43,29 @@ mod memo;
 mod multi_file_patch;
 mod multi_file_patch_error;
 mod multi_file_patch_input;
+mod native_mutation;
+mod operation_effects;
 mod plantcore;
 mod process;
 mod repair_evidence;
+mod repository_ignore;
 mod schema;
 mod schema_error;
 mod shell;
 mod skill;
+mod task_plan;
 mod tool_policy;
 mod tool_purpose;
 mod tool_search;
 mod web;
+#[cfg(feature = "script-workflows")]
 mod workflow_tool;
 mod workspace_boundary;
 mod write_file;
 
+pub use captured_execution::{CapturedToolExecution, CapturedToolOutput, capturedfut};
+pub use native_mutation::{MAX_NATIVE_CAPTURE_FILE_BYTES, NativeFileChange, NativeMutationReceipt};
+pub use task_plan::UPDATE_PLAN;
 pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
 pub use web::WEB_SEARCH_RESULT_CAP;
 
@@ -64,6 +85,7 @@ pub use lsp::{
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 pub use memo::PureMemoCachePolicy;
 use memo::{Lookup, Memo};
+pub use operation_effects::{EffectKnowledge, OperationEffects, is_trust_path};
 pub use plantcore::{PUBLISH_ARTIFACT, REQUEST_USER_INPUT};
 pub use process::{
     ChildProcessEnvironmentPolicy, InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS,
@@ -311,7 +333,7 @@ pub mod effectfut {
 }
 
 struct RegisteredExecution {
-    outcome: ToolExecution,
+    outcome: CapturedToolExecution,
     /// Present only for a registry-minted, explicitly attributed MCP dispatch clock.
     dispatch_to_terminal_ms: Option<u64>,
 }
@@ -334,6 +356,7 @@ pub struct Tool {
     run: Arc<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
     output_owner: ToolOutputOwner,
     purpose: ToolPurpose,
+    recipe: Option<Arc<ordinary_recipe::RecipeBinding>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -376,6 +399,7 @@ pub struct Registry {
     /// registries intentionally retain the owner-directed host-wide path behavior documented by
     /// [`resolve_in_root`].
     workspace_boundary: bool,
+    inherited_write_scope: Arc<std::sync::OnceLock<inherited_write_scope::InheritedWriteScope>>,
     process_control: Option<ProcessControl>,
     lsp_control: Option<LspControl>,
     deferred_tool_catalog: Option<tool_search::DeferredToolCatalog>,
@@ -494,12 +518,14 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
         };
         fs_tools::register(&mut r)?;
         repair_evidence::register(&mut r)?;
+        task_plan::register(&mut r)?;
         git::register(&mut r)?;
         mem::register(&mut r)?;
         skill::register(&mut r)?;
@@ -523,6 +549,7 @@ impl Registry {
         register_dispatch_agent(&mut r)?;
         // The Workflow launch tool is a WRITER-only surface: it fans out real sub-agents, so it is
         // registered here and deliberately absent from `read_only` (design §4.1).
+        #[cfg(feature = "script-workflows")]
         workflow_tool::register(&mut r)?;
         r.deferred_tool_catalog = Some(tool_search::register(&mut r)?);
         Ok(r)
@@ -551,6 +578,7 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: true,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -586,6 +614,7 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -605,6 +634,29 @@ impl Registry {
     /// built-in description tunables namespace even if their spelling resembles an internal tool.
     pub fn register(&mut self, tool: Tool) -> Result<(), ToolError> {
         self.register_with_origin(tool, ToolOrigin::External)
+    }
+
+    /// Install immutable host authority after constructing an isolated writer registry. Empty
+    /// paths deny every write; transport/model input cannot widen this private owner value.
+    pub fn set_inherited_write_scope(&mut self, paths: Vec<String>) -> Result<(), ToolError> {
+        let scope = inherited_write_scope::InheritedWriteScope::new(paths)
+            .map_err(ToolError::Registration)?;
+        self.inherited_write_scope.set(scope).map_err(|_| {
+            ToolError::Registration("inherited write scope is already installed".into())
+        })?;
+        self.confine_execution
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+    /// A host can replace an isolated worktree between turns while retaining the same Agent.
+    /// Cached reads from the previous physical workspace must not survive that replacement.
+    pub fn invalidate_workspace_reads(&self) {
+        self.memo.invalidate();
+    }
+    pub(crate) fn inherited_write_scope_handle(
+        &self,
+    ) -> Arc<std::sync::OnceLock<inherited_write_scope::InheritedWriteScope>> {
+        self.inherited_write_scope.clone()
     }
 
     fn resolve_registered_builtin_description(&mut self, canonical_name: &str) {
@@ -870,11 +922,31 @@ impl Registry {
             .map(|t| t.spec.capability)
     }
 
+    /// Resolve operation effects from registered authority and actual arguments. A model's
+    /// declared write set is a scheduling hint and cannot narrow this host-owned result.
+    pub fn operation_effects(&self, call: &ToolUse) -> Option<OperationEffects> {
+        let tool = self.tools.iter().find(|tool| tool.spec.name == call.name)?;
+        let registered = tool.spec.capability;
+        let mut effects = if tool.recipe.is_some() {
+            Self::ordinary_effects(tool, call).ok()?
+        } else {
+            OperationEffects::classify(call, registered)
+        };
+        if registered == Capability::ReversibleLocal {
+            for target in effects.targets.clone() {
+                if let Ok(resolved) = resolve_in_root(&self.root, &target) {
+                    effects.include_resolved_target(&resolved.to_string_lossy());
+                }
+            }
+        }
+        Some(effects)
+    }
+
     /// Classify a model-emitted call through the pure `core/tool_policy` slot.
     ///
-    /// Registry metadata is the only source of purity and capability. This method does not
-    /// validate arguments or call an executor; the returned intent remains deny-by-default until
-    /// the kernel's gate records and applies its admission decision.
+    /// Registry metadata pins purity and minimum capability. Host classification adds operation
+    /// requirements from the arguments and resolved paths. This does not execute the call; the
+    /// returned intent remains deny-by-default until the kernel gate admits every requirement.
     pub fn propose_intent(
         &self,
         policy: &dyn StrategySlot,
@@ -882,13 +954,23 @@ impl Registry {
         argument_trust: Trust,
         ceiling: iteron_protocol::capability_set::CapabilitySet,
     ) -> Result<ToolPolicyProposal, ToolPolicyError> {
-        let spec = self
+        let tool = self
             .tools
             .iter()
             .find(|tool| tool.spec.name == call.name)
-            .map(|tool| &tool.spec)
             .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
-        ToolPolicy::propose_with(
+        if tool
+            .recipe
+            .as_ref()
+            .is_some_and(|binding| binding.revoked())
+        {
+            return Err(ToolPolicyError::ExtensionDenied);
+        }
+        let spec = &tool.spec;
+        let effects = self
+            .operation_effects(&call)
+            .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
+        let mut proposal = ToolPolicy::propose_with(
             policy,
             &ToolPolicyObservation {
                 version: TOOL_POLICY_SLOT_VERSION,
@@ -901,7 +983,23 @@ impl Registry {
                 argument_trust,
             },
             ceiling,
-        )
+        )?;
+        if !effects.required.is_subset_of(ceiling) {
+            return Err(ToolPolicyError::NotEligible);
+        }
+        if effects
+            .extension_ceiling
+            .is_some_and(|extension| !effects.required.is_subset_of(extension))
+        {
+            return Err(ToolPolicyError::ExtensionDenied);
+        }
+        let ceiling = effects
+            .extension_ceiling
+            .map_or(ceiling, |extension| ceiling.intersect(extension));
+        // The strategy can refuse the registered operation. Only this host classifier can add
+        // the *requirements* for its actual effects, all still bounded by the caller's ceiling.
+        proposal.eligible = effects.required.intersect(ceiling);
+        Ok(proposal)
     }
 
     /// Dispatch a pure tool only after the policy proposal and caller gate admitted its exact
@@ -917,25 +1015,64 @@ impl Registry {
 
     /// Execute an admitted post-stream call while preserving effect-outcome certainty.
     pub async fn run_admitted_intent(&self, intent: ToolIntent) -> ToolExecution {
-        if let Err(reason) = self.validate_admitted_intent(&intent, None) {
-            return ToolExecution::Definite(err_result(intent.call.id, reason));
+        self.run_admitted_intent_captured(intent).await.execution
+    }
+
+    pub async fn run_admitted_intent_captured(&self, intent: ToolIntent) -> CapturedToolExecution {
+        if self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == intent.call.name)
+            .and_then(|tool| tool.recipe.as_ref())
+            .is_some_and(|binding| binding.revoked())
+        {
+            return CapturedToolExecution::from(err_result(
+                intent.call.id,
+                "ordinary tool binding was revoked".into(),
+            ))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied);
         }
-        self.run_effect(intent.call).await
+        if let Err(reason) = self.validate_admitted_intent(&intent, None) {
+            return ToolExecution::Definite(err_result(intent.call.id, reason)).into();
+        }
+        self.run_effect_captured(intent.call).await
     }
 
     /// Own the executor future so an admitted call can run while its provider keeps streaming.
     /// Unlike `dispatch`, this preserves an executor's Unknown effect outcome.
-    pub fn dispatch_stream_intent(
+    pub fn dispatch_stream_intent(&self, intent: ToolIntent) -> effectfut::BoxFut {
+        let captured = self.dispatch_stream_intent_captured(intent);
+        effectfut::box_it(async move { captured.await.execution })
+    }
+
+    pub fn dispatch_stream_intent_captured(
         &self,
         intent: ToolIntent,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolExecution> + Send + 'static>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CapturedToolExecution> + Send + 'static>>
+    {
         let refused = |id: String,
                        reason: String|
          -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = ToolExecution> + Send + 'static>,
+            Box<dyn std::future::Future<Output = CapturedToolExecution> + Send + 'static>,
         > {
-            Box::pin(async move { ToolExecution::Definite(err_result(id, reason)) })
+            Box::pin(async move { ToolExecution::Definite(err_result(id, reason)).into() })
         };
+        if self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == intent.call.name)
+            .and_then(|tool| tool.recipe.as_ref())
+            .is_some_and(|binding| binding.revoked())
+        {
+            let id = intent.call.id;
+            return Box::pin(async move {
+                CapturedToolExecution::from(err_result(
+                    id,
+                    "ordinary tool binding was revoked".into(),
+                ))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied)
+            });
+        }
         if let Err(reason) = self.validate_admitted_intent(&intent, None) {
             return refused(intent.call.id, reason);
         }
@@ -949,10 +1086,23 @@ impl Registry {
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             return refused(call.id, error.model_json(&tool.spec.name));
         }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return refused(id, reason),
+            }
+        } else {
+            call
+        };
         let confine_execution = self.confine_execution.clone();
         let workspace_boundary = self.workspace_boundary;
+        let inherited_scope = self.inherited_write_scope.clone();
+        let inherited_capability = tool.spec.capability;
         let observation_focus = self.observation_focus.clone();
         let id = call.id.clone();
+        let tool_name = tool.spec.name.clone();
+        let native_owner = tool.purpose == ToolPurpose::CandidateChange;
         let executor = tool.run.clone();
         let root = self.root.clone();
         let memo = self.memo.clone();
@@ -961,16 +1111,32 @@ impl Registry {
             memo.invalidate();
         }
         Box::pin(async move {
+            if let Some(scope) = inherited_scope.get()
+                && let Err(reason) = scope
+                    .validate_tool(&call, inherited_capability)
+                    .and_then(|_| scope.validate_call(&root, &call))
+            {
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
+            }
             if confine_execution.load(std::sync::atomic::Ordering::Relaxed)
                 && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
                 && let Err(reason) = workspace_boundary::validate_coding_write_call(&root, &call)
             {
-                return ToolExecution::Definite(err_result(id, reason));
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
             }
             if workspace_boundary
                 && let Err(reason) = workspace_boundary::validate_call(&root, &call)
             {
-                return ToolExecution::Definite(err_result(id, reason));
+                return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                    id, reason,
+                )))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
             }
             // Cache lookup and closure invocation both belong behind the runtime gate.
             let pending = if !is_effecting {
@@ -997,7 +1163,7 @@ impl Registry {
                             }
                             hit.tool_use_id = id;
                             hit.latency_ms = 0;
-                            return ToolExecution::Definite(hit);
+                            return ToolExecution::Definite(hit).into();
                         }
                         Lookup::Miss(pending) => Some(pending),
                     },
@@ -1010,7 +1176,7 @@ impl Registry {
             // Invoking an extension closure can itself perform work. Keep invocation
             // behind the runtime's ordered lock and hook gates, not merely its future.
             let registered = executor(call, root).await;
-            let mut outcome = registered.outcome;
+            let mut outcome = registered.outcome.normalize(&id, &tool_name, native_owner);
             let result = outcome.result_mut();
             result.tool_use_id = id;
             result.latency_ms = registered
@@ -1019,7 +1185,7 @@ impl Registry {
             if is_effecting {
                 memo.invalidate();
             } else if let Some(pending) = pending
-                && let ToolExecution::Definite(result) = &outcome
+                && let ToolExecution::Definite(result) = &outcome.execution
             {
                 memo.complete(pending, result);
             }
@@ -1047,9 +1213,12 @@ impl Registry {
                 intent.call.name
             ));
         }
-        if !intent.admitted.contains(spec.capability) {
+        let effects = self
+            .operation_effects(&intent.call)
+            .ok_or_else(|| format!("unknown tool `{}`", intent.call.name))?;
+        if !effects.required.is_subset_of(intent.admitted) {
             return Err(format!(
-                "tool intent lacks registry capability admission for `{}`",
+                "tool intent lacks operation capability admission for `{}`",
                 intent.call.name
             ));
         }
@@ -1190,6 +1359,10 @@ impl Registry {
     /// EFFECTING tool bumps the memo generation on completion, invalidating every cached pure
     /// read (a write must never leave a stale read servable).
     pub async fn run_effect(&self, call: ToolUse) -> ToolExecution {
+        self.run_effect_captured(call).await.execution
+    }
+
+    pub async fn run_effect_captured(&self, call: ToolUse) -> CapturedToolExecution {
         let started = Instant::now();
         let id = call.id.clone();
         let Some(tool) = self.tools.iter().find(|tool| tool.spec.name == call.name) else {
@@ -1199,28 +1372,64 @@ impl Registry {
                 is_error: true,
                 trust: Trust::Trusted,
                 latency_ms: started.elapsed().as_millis() as u64,
-            });
+            })
+            .into();
         };
-        if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
-            return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)));
+        if tool
+            .recipe
+            .as_ref()
+            .is_some_and(|binding| binding.revoked())
+        {
+            return CapturedToolExecution::from(err_result(
+                id,
+                "ordinary tool binding was revoked".into(),
+            ))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::ExtensionDenied);
         }
+        if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
+            return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)))
+                .into();
+        }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return ToolExecution::Definite(err_result(id, reason)).into(),
+            }
+        } else {
+            call
+        };
         if self
             .confine_execution
             .load(std::sync::atomic::Ordering::Relaxed)
             && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
             && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
         {
-            return ToolExecution::Definite(err_result(id, reason));
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(id, reason)))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
+        }
+        if let Some(scope) = self.inherited_write_scope.get()
+            && let Err(reason) = scope
+                .validate_tool(&call, tool.spec.capability)
+                .and_then(|_| scope.validate_call(&self.root, &call))
+        {
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(
+                call.id, reason,
+            )))
+            .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
         }
         if self.workspace_boundary
             && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
         {
-            return ToolExecution::Definite(err_result(id, reason));
+            return CapturedToolExecution::from(ToolExecution::Definite(err_result(id, reason)))
+                .with_refusal(iteron_protocol::refusal::RefusalReasonV1::PermissionDenied);
         }
 
         let is_effecting = tool.spec.purity == Purity::Effecting;
+        let tool_name = tool.spec.name.clone();
+        let native_owner = tool.purpose == ToolPurpose::CandidateChange;
         let registered = (tool.run)(call, self.root.clone()).await;
-        let mut outcome = registered.outcome;
+        let mut outcome = registered.outcome.normalize(&id, &tool_name, native_owner);
         // A plugin closure does not own provider correlation identity. Normalize it at the
         // registry boundary so a buggy/malicious implementation cannot mis-associate a result.
         let result = outcome.result_mut();
@@ -1282,6 +1491,15 @@ impl Registry {
             let result = err_result(call.id.clone(), error.model_json(&tool.spec.name));
             return boxfut::box_it(async move { result });
         }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return boxfut::box_it(async move { err_result(id, reason) }),
+            }
+        } else {
+            call
+        };
         if self
             .confine_execution
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1289,6 +1507,14 @@ impl Registry {
             && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
         {
             let result = err_result(call.id.clone(), reason);
+            return boxfut::box_it(async move { result });
+        }
+        if let Some(scope) = self.inherited_write_scope.get()
+            && let Err(reason) = scope
+                .validate_tool(&call, tool.spec.capability)
+                .and_then(|_| scope.validate_call(&self.root, &call))
+        {
+            let result = err_result(call.id, reason);
             return boxfut::box_it(async move { result });
         }
         if self.workspace_boundary
@@ -1317,10 +1543,15 @@ impl Registry {
                 }
                 input
             });
-            let pending = match self
-                .memo
-                .key(&call.name, memo_input.as_ref().unwrap_or(&call.input))
-            {
+            // Memory eligibility depends on expiry and file fingerprints, including ambient
+            // changes. Keep early read-only dispatch but do not memoize this dynamic result.
+            let memo_key = if tool.spec.name == "read_memory" {
+                None
+            } else {
+                self.memo
+                    .key(&call.name, memo_input.as_ref().unwrap_or(&call.input))
+            };
+            let pending = match memo_key {
                 Some(key) => match self.memo.lookup(key) {
                     Lookup::Hit(mut hit) => {
                         if call.name == "read_file"
@@ -1384,12 +1615,10 @@ impl Registry {
         self.push_tool_with_origin_and_purpose(spec, run, ToolOrigin::BuiltIn, ToolPurpose::General)
     }
 
-    /// Native candidate changes may have an unknown outcome if their isolated helper exits
-    /// after receiving the request but before returning its authoritative result.
-    pub(crate) fn push_candidate_change_effect_tool(
+    pub(crate) fn push_native_change_captured_tool(
         &mut self,
         spec: ToolSpec,
-        run: impl Fn(ToolUse, PathBuf) -> effectfut::BoxFut + Send + Sync + 'static,
+        run: impl Fn(ToolUse, PathBuf) -> capturedfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
         let adapted = move |call, root| {
             let future = run(call, root);
@@ -1406,6 +1635,7 @@ impl Registry {
                 run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose: ToolPurpose::CandidateChange,
+                recipe: None,
             },
             ToolOrigin::BuiltIn,
         )
@@ -1435,7 +1665,7 @@ impl Registry {
             let future = run(call, root);
             registeredfut::box_it(async move {
                 RegisteredExecution {
-                    outcome: ToolExecution::Definite(future.await),
+                    outcome: ToolExecution::Definite(future.await).into(),
                     dispatch_to_terminal_ms: None,
                 }
             })
@@ -1446,6 +1676,7 @@ impl Registry {
                 run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose,
+                recipe: None,
             },
             origin,
         )
@@ -1480,6 +1711,36 @@ impl Registry {
             let future = run(call, root);
             registeredfut::box_it(async move {
                 RegisteredExecution {
+                    outcome: future.await.into(),
+                    dispatch_to_terminal_ms: None,
+                }
+            })
+        };
+        self.register(Tool {
+            spec,
+            run: Arc::new(adapted),
+            output_owner: ToolOutputOwner::Runtime,
+            purpose: ToolPurpose::General,
+            recipe: None,
+        })
+    }
+
+    /// Bounded captured data from an ordinary host effect executor; no MCP provenance or clock
+    /// can be imported through this adapter. Registry admission still seals the actual operation.
+    pub fn register_external_effect_captured(
+        &mut self,
+        spec: ToolSpec,
+        run: impl Fn(ToolUse, PathBuf) -> capturedfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        if spec.purity != Purity::Effecting {
+            return Err(ToolError::Registration(
+                "captured external executor requires Effecting".into(),
+            ));
+        }
+        let adapted = move |call, root| {
+            let future = run(call, root);
+            registeredfut::box_it(async move {
+                RegisteredExecution {
                     outcome: future.await,
                     dispatch_to_terminal_ms: None,
                 }
@@ -1490,6 +1751,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
 
@@ -1503,6 +1765,46 @@ impl Registry {
         spec: ToolSpec,
         attribution: McpEffectAttribution,
         run: impl Fn(ToolUse, PathBuf, McpDispatchClock) -> effectfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        let expected_name = attribution.namespaced_name();
+        if spec.name != expected_name {
+            return Err(ToolError::Registration(format!(
+                "MCP attribution `{expected_name}` does not match registered tool `{}`",
+                spec.name
+            )));
+        }
+        let adapted = move |call, root| {
+            let clock = McpDispatchClock::new(attribution.clone());
+            let future = run(call, root, clock.clone());
+            registeredfut::box_it(async move {
+                let outcome = future.await;
+                RegisteredExecution {
+                    outcome: outcome.into(),
+                    // `Some(0)` is intentional for a typed pre-dispatch MCP rejection: there is
+                    // no dispatch->terminal interval, and the ordinary registry-wide fallback
+                    // would incorrectly include local validation/serialization time.
+                    dispatch_to_terminal_ms: Some(clock.elapsed_to_terminal_ms().unwrap_or(
+                        iteron_tunables::param_integer(
+                            "tools.lib.mcp_pre_dispatch_terminal_ms",
+                            MCP_PRE_DISPATCH_TERMINAL_MS,
+                        ),
+                    )),
+                }
+            })
+        };
+        self.register(Tool {
+            spec,
+            run: Arc::new(adapted),
+            output_owner: ToolOutputOwner::Mcp,
+            purpose: ToolPurpose::General,
+            recipe: None,
+        })
+    }
+    pub fn register_mcp_effect_captured(
+        &mut self,
+        spec: ToolSpec,
+        attribution: McpEffectAttribution,
+        run: impl Fn(ToolUse, PathBuf, McpDispatchClock) -> capturedfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
         let expected_name = attribution.namespaced_name();
         if spec.name != expected_name {
@@ -1535,6 +1837,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
 }
@@ -1550,37 +1853,7 @@ pub const DISPATCH_AGENT: &str = "dispatch_agent";
 /// The name the kernel intercepts to launch a model-directed workflow (parallels
 /// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so
 /// the registered executor's fallback message is only reached by a non-kernel caller.
-pub use workflow_tool::WORKFLOW_TOOL;
-
-fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
-    r.push_tool(
-        ToolSpec {
-            name: DISPATCH_AGENT.into(),
-            description: "Delegate a READ-ONLY investigation to a subagent with its own fresh \
-                          context: it explores the repo (read/grep/list/repo_map) and returns a \
-                          concise summary. Use for wide search or multi-file investigation to \
-                          keep your own context clean. The subagent cannot edit or run code; you \
-                          remain the only writer. Give it a specific question and the output you \
-                          want."
-                .into(),
-            input_schema: serde_json::json!({
-                "type":"object",
-                "properties":{"task":{"type":"string","description":"the investigation question + desired output"}},
-                "required":["task"]
-            }),
-            // Effecting so it is not early-dispatched; the kernel intercepts by name before the
-            // normal effecting path and runs the subagent itself.
-            purity: Purity::Effecting,
-            capability: Capability::ReversibleLocal,
-        },
-        |call, _root| {
-            boxfut::box_it(async move {
-                // Never reached: the kernel intercepts DISPATCH_AGENT. This is a safety net.
-                err_result(call.id, "dispatch_agent must be handled by the kernel".into())
-            })
-        },
-    )
-}
+pub const WORKFLOW_TOOL: &str = "Workflow";
 
 /// Resolve a caller-supplied path to an absolute host path.
 ///
@@ -1790,6 +2063,7 @@ mod tests {
             lsp_control: None,
             deferred_tool_catalog: None,
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
         };
         let bad = ToolSpec {
             name: "leaky".into(),

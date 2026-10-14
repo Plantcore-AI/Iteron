@@ -609,7 +609,7 @@ pub(super) fn apply(
             ),
         ]),
     )?;
-    let queue = crate::app_server::AppServerQueuePolicy::owner();
+    let queue = crate::queue_policy::FrontendQueuePolicy::owner();
     attest_literal_owner(
         builder,
         report,
@@ -639,15 +639,15 @@ pub(super) fn apply(
             (
                 "cosmetic_overflow",
                 en(match queue.cosmetic_overflow() {
-                    crate::app_server::CosmeticOverflow::Drop => "drop",
-                    crate::app_server::CosmeticOverflow::Coalesce => "coalesce",
+                    crate::queue_policy::CosmeticOverflow::Drop => "drop",
+                    crate::queue_policy::CosmeticOverflow::Coalesce => "coalesce",
                 }),
             ),
             (
                 "authoritative_overflow",
                 en(match queue.authoritative_overflow() {
-                    crate::app_server::AuthoritativeOverflow::Wait => "wait",
-                    crate::app_server::AuthoritativeOverflow::Reject => "reject",
+                    crate::queue_policy::AuthoritativeOverflow::Wait => "wait",
+                    crate::queue_policy::AuthoritativeOverflow::Reject => "reject",
                 }),
             ),
         ]),
@@ -686,10 +686,8 @@ pub(super) fn apply(
         environment,
     )?;
 
-    // Family 68 is registry-literal because these are hard decoder/admission invariants rather
-    // than a runtime-selected policy. Still compare the literal against the actual rejecting
-    // owner on every fresh composition: a code/schema drift must abort resolution, not leave a
-    // plausible-looking checkpoint whose bytes are not enforced by the loader.
+    // Sample the admitted parameter owner before genesis. The resulting checkpoint carries
+    // these exact limits, including a default per-image ceiling narrowed by the aggregate.
     let multimodal = crate::image_input::multimodal_decode_envelope();
     attest_literal_owner(
         builder,
@@ -1283,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn multimodal_registry_literal_is_the_exact_rejecting_owner() {
+    fn multimodal_embedded_default_is_the_exact_unconfigured_owner() {
         let owner =
             multimodal_decode_envelope_value(crate::image_input::multimodal_decode_envelope())
                 .unwrap();
@@ -1291,7 +1289,7 @@ mod tests {
             .iter()
             .find(|family| family.id == "multimodal_input_admission_decode_envelope")
             .and_then(|family| family.default.value)
-            .expect("family 68 must retain a fixed literal");
+            .expect("family 68 retains its canonical unconfigured default");
         let literal = owned_literal(literal);
         assert_eq!(owner, literal);
     }

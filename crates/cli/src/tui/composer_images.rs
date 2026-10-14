@@ -1,182 +1,85 @@
-use super::*;
+#[cfg(test)]
+use super::MAX_REFUSED_IMAGE_PATHS;
+use super::{
+    App, AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
+    Session, SubmissionAdmission, block, file_input, image_input, notification, paste_input,
+    slash_command_body, submit_composer, submit_prepared_composer,
+};
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AttachmentFollowup {
-    None,
-    SubmitComposer,
-    QueueRunningDraft,
-}
-
-#[derive(Debug)]
-pub(super) enum AttachmentOrigin {
-    Clipboard,
-    Dropped {
-        original: String,
-    },
-    DroppedFile {
-        original: String,
-    },
-    ContextFile,
-    #[cfg(not(test))]
-    Bare {
-        original: String,
-        start: usize,
-        end: usize,
-        draft_revision: u64,
-        dropped_shape: bool,
-        followup: AttachmentFollowup,
-    },
-    ComposerSubmission {
-        raw: String,
-        draft_revision: u64,
-        image_mentions: Vec<image_input::ImageMention>,
-        file_mentions: Vec<file_input::FileMention>,
-    },
-}
-
-#[derive(Debug)]
-pub(super) enum AttachmentWorkerOutput {
-    Prepared(image_input::PreparedImage),
-    PreparedFile(file_input::PreparedFile),
-    PreparedSubmission {
-        images: Vec<image_input::PreparedImage>,
-        files: Vec<file_input::PreparedFile>,
-    },
-    PreparedContextDiff {
-        label: String,
-        document: String,
-    },
-    EmptyClipboard,
-}
-
-pub(super) fn queue_context_diff_effect(app: &mut App, workspace: PathBuf, scope: String) {
-    if let Some(previous) = app.attachment_job.take() {
-        previous.abort();
-        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+pub(super) fn queue_context_diff_effect(app: &mut App, workspace: PathBuf, scope: String) -> bool {
+    if app.attachments.queue_context_diff(workspace, scope) {
+        return true;
     }
-    app.attachment_generation = app.attachment_generation.wrapping_add(1);
-    let generation = app.attachment_generation;
-    app.attachment_effect_state = AttachmentEffectState::Queued;
-    app.attachment_job = Some(tokio::spawn(async move {
-        let result =
-            context_chips::diff_document(&workspace, &scope)
-                .await
-                .map(
-                    |(label, document)| AttachmentWorkerOutput::PreparedContextDiff {
-                        label,
-                        document,
-                    },
-                );
-        AttachmentEffectResult {
-            generation,
-            origin: AttachmentOrigin::ContextFile,
-            result,
-        }
-    }));
+    attachment_busy(app, None);
+    false
 }
-
-#[derive(Debug)]
-pub(super) struct AttachmentEffectResult {
-    pub(super) generation: u64,
-    pub(super) origin: AttachmentOrigin,
-    pub(super) result: Result<AttachmentWorkerOutput, String>,
-}
-
-/// Replace the one bounded attachment job. Cancellation is explicit state; its detached blocking
-/// read remains contained by `image_input`'s process-wide single-flight gate.
-pub(super) fn queue_image_path_effect(app: &mut App, path: PathBuf, origin: AttachmentOrigin) {
-    if let Some(previous) = app.attachment_job.take() {
-        previous.abort();
-        app.attachment_effect_state = AttachmentEffectState::Cancelled;
-    }
-    app.attachment_generation = app.attachment_generation.wrapping_add(1);
-    let generation = app.attachment_generation;
-    let preflight = app.editor.attachments().preflight_path(&path);
+pub(super) fn queue_image_path_effect(
+    app: &mut App,
+    path: PathBuf,
+    origin: AttachmentOrigin,
+) -> bool {
+    let preflight = app
+        .editor
+        .attachments()
+        .preflight_path(&path)
+        .map_err(|e| e.to_string());
     let preparer = app.editor.attachments().preparer();
-    app.attachment_effect_state = AttachmentEffectState::Queued;
-    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
-        let result = preflight
-            .and_then(|()| preparer.prepare_path(&path))
-            .map(AttachmentWorkerOutput::Prepared)
-            .map_err(|error| error.to_string());
-        AttachmentEffectResult {
-            generation,
-            origin,
-            result,
+    match app
+        .attachments
+        .queue_image(preparer, path, origin, preflight)
+    {
+        Ok(()) => true,
+        Err(origin) => {
+            attachment_busy(app, Some(origin));
+            false
         }
-    }));
-}
-
-pub(super) fn queue_clipboard_image_effect(app: &mut App) {
-    if let Some(previous) = app.attachment_job.take() {
-        previous.abort();
-        app.attachment_effect_state = AttachmentEffectState::Cancelled;
     }
-    app.attachment_generation = app.attachment_generation.wrapping_add(1);
-    let generation = app.attachment_generation;
-    let preflight = app.editor.attachments().preflight_label("clipboard.png");
-    let preparer = app.editor.attachments().preparer();
-    let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(2);
-    app.attachment_progress = Some(progress_rx);
-    app.attachment_effect_state = AttachmentEffectState::Queued;
-    app.attachment_job = Some(tokio::spawn(async move {
-        if let Err(error) = preflight {
-            return AttachmentEffectResult {
-                generation,
-                origin: AttachmentOrigin::Clipboard,
-                result: Err(error.to_string()),
-            };
-        }
-        let _ = progress_tx.send(AttachmentEffectState::Reading).await;
-        let result = match clipboard_image_bytes().await {
-            Ok(Some(bytes)) => {
-                let _ = progress_tx.send(AttachmentEffectState::Decoding).await;
-                tokio::task::spawn_blocking(move || {
-                    preparer
-                        .prepare_bytes("clipboard.png", &bytes)
-                        .map(AttachmentWorkerOutput::Prepared)
-                        .map_err(|error| error.to_string())
-                })
-                .await
-                .unwrap_or_else(|error| Err(format!("clipboard decoder worker failed: {error}")))
-            }
-            Ok(None) => Ok(AttachmentWorkerOutput::EmptyClipboard),
-            Err(error) => Err(error.to_owned()),
-        };
-        AttachmentEffectResult {
-            generation,
-            origin: AttachmentOrigin::Clipboard,
-            result,
-        }
-    }));
 }
-
+pub(super) fn queue_clipboard_image_effect(app: &mut App) -> bool {
+    let preflight = app
+        .editor
+        .attachments()
+        .preflight_label("clipboard.png")
+        .map_err(|e| e.to_string());
+    let preparer = app.editor.attachments().preparer();
+    if app.attachments.queue_clipboard(preparer, preflight) {
+        return true;
+    }
+    attachment_busy(app, None);
+    false
+}
 pub(super) fn queue_file_path_effect(
     app: &mut App,
     kind: file_input::ContextKind,
     workspace: PathBuf,
     path: PathBuf,
     origin: AttachmentOrigin,
-) {
-    if let Some(previous) = app.attachment_job.take() {
-        previous.abort();
-        app.attachment_effect_state = AttachmentEffectState::Cancelled;
-    }
-    app.attachment_generation = app.attachment_generation.wrapping_add(1);
-    let generation = app.attachment_generation;
+) -> bool {
     let preparer = app.editor.files().preparer();
-    app.attachment_effect_state = AttachmentEffectState::Queued;
-    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
-        let result = preparer
-            .prepare_typed_path(kind, &workspace, &path)
-            .map(AttachmentWorkerOutput::PreparedFile)
-            .map_err(|error| error.to_string());
-        AttachmentEffectResult {
-            generation,
-            origin,
-            result,
+    match app
+        .attachments
+        .queue_file(preparer, kind, workspace, path, origin)
+    {
+        Ok(()) => true,
+        Err(origin) => {
+            attachment_busy(app, Some(origin));
+            false
         }
-    }));
+    }
+}
+fn attachment_busy(app: &mut App, origin: Option<AttachmentOrigin>) {
+    restore_unprepared_origin(app, origin);
+    app.note(block::NoticeLevel::Warn, "attachment preparation is still running; the new request was not queued and its draft text is retained");
+}
+
+pub(super) fn restore_unprepared_origin(app: &mut App, origin: Option<AttachmentOrigin>) {
+    if let Some(
+        AttachmentOrigin::Dropped { original } | AttachmentOrigin::DroppedFile { original },
+    ) = origin
+    {
+        app.editor.insert_str(&original);
+    }
 }
 
 /// Apply only the actor's prepared value on the TUI thread. No path read, decoder, HEIC helper, or
@@ -187,8 +90,8 @@ pub(super) fn finish_attachment_effect(
     notifier: &mut notification::TerminalNotifier,
     effect: AttachmentEffectResult,
 ) {
-    if effect.generation != app.attachment_generation {
-        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+    if !app.attachments.is_current(&effect) {
+        app.attachments.draft_changed();
         return;
     }
     let AttachmentEffectResult { origin, result, .. } = effect;
@@ -205,7 +108,7 @@ pub(super) fn finish_attachment_effect(
                         chip.text_bytes(),
                         chip.digest().get(..12).unwrap_or(chip.digest()).to_owned(),
                     );
-                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    app.attachments.accepted();
                     app.note(
                         block::NoticeLevel::Ok,
                         format!(
@@ -215,7 +118,7 @@ pub(super) fn finish_attachment_effect(
                     );
                 }
                 Err(error) => {
-                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.attachments.refused();
                     app.note(
                         block::NoticeLevel::Warn,
                         format!("diff context refused: {error}"),
@@ -229,7 +132,7 @@ pub(super) fn finish_attachment_effect(
             match app.editor.admit_prepared_file(prepared) {
                 Ok(attachment) => {
                     let attachment_id = attachment.id();
-                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    app.attachments.accepted();
                     app.note(
                         block::NoticeLevel::Ok,
                         format!(
@@ -239,7 +142,7 @@ pub(super) fn finish_attachment_effect(
                     );
                 }
                 Err(error) => {
-                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.attachments.refused();
                     app.note(
                         block::NoticeLevel::Warn,
                         format!("file attachment refused: {error}"),
@@ -255,22 +158,22 @@ pub(super) fn finish_attachment_effect(
                 file_mentions,
             } = origin
             else {
-                app.attachment_effect_state = AttachmentEffectState::Failed;
+                app.attachments.refused();
                 app.note(
                     block::NoticeLevel::Warn,
                     "attachment worker returned a mismatched submission result",
                 );
                 return;
             };
-            if app.editor.persistence_revision() != draft_revision || app.editor.text() != raw {
-                app.attachment_effect_state = AttachmentEffectState::Cancelled;
+            if app.editor.draft_revision() != draft_revision || app.editor.text() != raw {
+                app.attachments.draft_changed();
                 app.note(
                     block::NoticeLevel::Info,
                     "attachments finished after the draft changed; submission kept for review",
                 );
                 return;
             }
-            app.attachment_effect_state = AttachmentEffectState::Ready;
+            app.attachments.accepted();
             submit_prepared_composer(
                 app,
                 session,
@@ -298,10 +201,10 @@ pub(super) fn finish_attachment_effect(
                     followup,
                     ..
                 } => {
-                    if app.editor.persistence_revision() != *draft_revision
+                    if app.editor.draft_revision() != *draft_revision
                         || app.editor.span(*start, *end) != *original
                     {
-                        app.attachment_effect_state = AttachmentEffectState::Cancelled;
+                        app.attachments.draft_changed();
                         app.note(
                             block::NoticeLevel::Info,
                             "image finished after the draft changed; path kept as text",
@@ -317,7 +220,7 @@ pub(super) fn finish_attachment_effect(
             match app.editor.admit_prepared_image(prepared) {
                 Ok(attachment) => {
                     let attachment_id = attachment.id();
-                    app.attachment_effect_state = AttachmentEffectState::Ready;
+                    app.attachments.accepted();
                     let (name, media_type, file_bytes) = prepared_summary;
                     app.note(
                         block::NoticeLevel::Ok,
@@ -338,7 +241,7 @@ pub(super) fn finish_attachment_effect(
                     }
                 }
                 Err(error) => {
-                    app.attachment_effect_state = AttachmentEffectState::Failed;
+                    app.attachments.refused();
                     #[cfg(not(test))]
                     if let AttachmentOrigin::Bare {
                         start, original, ..
@@ -355,14 +258,14 @@ pub(super) fn finish_attachment_effect(
             }
         }
         Ok(AttachmentWorkerOutput::EmptyClipboard) => {
-            app.attachment_effect_state = AttachmentEffectState::Failed;
+            app.attachments.refused();
             app.note(
                 block::NoticeLevel::Info,
                 "no supported clipboard image adapter found; paste or drag an image path instead",
             );
         }
         Err(error) => {
-            app.attachment_effect_state = AttachmentEffectState::Failed;
+            app.attachments.refused();
             match origin {
                 AttachmentOrigin::Dropped { original, .. } => {
                     app.editor.insert_str(&original);
@@ -449,7 +352,7 @@ pub(super) fn bare_image_path_spans(text: &str) -> Vec<(usize, usize, PathBuf)> 
 /// that existed: the parser was asked the right question in isolation and answered correctly, while
 /// the lane that actually receives a drop fell through to "ordinary pasted text" and said nothing.
 ///
-/// A drop is a drop whether or not a run is in flight. This used to be gated on `!app.running`,
+/// A drop is a drop whether or not a run is in flight. This used to be gated on `!app.run.running()`,
 /// which meant dragging a screenshot onto a working agent silently produced a line of path text —
 /// the operator's evidence that the feature exists at all is the chip, and there was none. The
 /// draft that carries the chip is queued rather than steered (`Op::Steer` cannot hold an image), so
@@ -485,10 +388,10 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                         note_image_refusal(app, &image_path, &error);
                     }
                 }
-                app.completion = None;
+                app.completions.dismiss();
             }
             #[cfg(not(test))]
-            queue_image_path_effect(
+            let queued = queue_image_path_effect(
                 app,
                 image_path.clone(),
                 AttachmentOrigin::Dropped {
@@ -496,13 +399,15 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                 },
             );
             #[cfg(not(test))]
-            app.note(
-                block::NoticeLevel::Info,
-                "image queued · reading and decoding in background · you can keep typing",
-            );
+            if queued {
+                app.note(
+                    block::NoticeLevel::Info,
+                    "image queued · reading and decoding in background · you can keep typing",
+                );
+            }
             #[cfg(not(test))]
             {
-                app.completion = None;
+                app.completions.dismiss();
             }
         }
         Ok(None) => {
@@ -511,11 +416,11 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
             // on the same terms; anything else is ordinary pasted text.
             // A dropped FILE is admitted on the same terms as a dropped image,
             // during a run as well: the chip lands on the draft and the draft is
-            // queued behind the turn. The `app.running` half of this match used to
+            // queued behind the turn. The `app.run.running()` half of this match used to
             // send it to the composer as raw path text instead.
             match file_input::parse_dropped_file_path(workspace, pasted) {
                 Some(dropped) => {
-                    queue_file_path_effect(
+                    let queued = queue_file_path_effect(
                         app,
                         file_input::ContextKind::File,
                         workspace.to_path_buf(),
@@ -524,11 +429,13 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                             original: pasted.to_owned(),
                         },
                     );
-                    app.note(
-                        block::NoticeLevel::Info,
-                        "file queued · reading in background · you can keep typing",
-                    );
-                    app.completion = None;
+                    if queued {
+                        app.note(
+                            block::NoticeLevel::Info,
+                            "file queued · reading in background · you can keep typing",
+                        );
+                    }
+                    app.completions.dismiss();
                 }
                 // A paste too big to read is held aside as one tag rather than
                 // dumped line by line into the composer: the operator keeps a
@@ -729,8 +636,8 @@ pub(super) fn queue_bare_image_path(
             workspace.join(path)
         };
         let original = app.editor.span(start, end);
-        let draft_revision = app.editor.persistence_revision();
-        queue_image_path_effect(
+        let draft_revision = app.editor.draft_revision();
+        let queued = queue_image_path_effect(
             app,
             absolute.clone(),
             AttachmentOrigin::Bare {
@@ -742,10 +649,14 @@ pub(super) fn queue_bare_image_path(
                 followup,
             },
         );
-        app.note(
-            block::NoticeLevel::Info,
-            "image queued · reading and decoding in background",
-        );
+        if queued {
+            app.note(
+                block::NoticeLevel::Info,
+                "image queued · reading and decoding in background",
+            );
+        }
+        // A bare path is retained on refusal; Enter must not submit it as plain text while the
+        // operator requested image preparation. A later explicit retry remains possible.
         return true;
     }
     #[cfg(not(test))]
@@ -793,7 +704,7 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
         );
         return false;
     }
-    let pending = app.queued.len().saturating_add(app.steer_previews.len());
+    let pending = app.input_lanes.pending_count();
     if matches!(
         app.submission_admission(&preview, pending, "pending input"),
         SubmissionAdmission::Reject
@@ -802,12 +713,14 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
     }
     let images = app.editor.attachments().clone();
     let files = app.editor.files().clone();
-    let text = app.editor.take_submit();
-    if let Err(text) = app.queue_after_turn_with(text, images, files) {
-        // Unreachable in practice: the same admission just accepted this text. Preserve the words
-        // rather than assume it.
-        app.editor.insert_str(&text);
+    let draft = app.editor.queued_draft_metadata();
+    if app
+        .queue_after_turn_with_draft(preview, images, files, Some(draft))
+        .is_err()
+    {
+        // The actual owner refused before composer mutation: words, pastes and chips remain exact.
         return false;
     }
+    let _ = app.editor.take_submit();
     true
 }

@@ -184,7 +184,7 @@ fn detect_with(mut get: impl FnMut(&str) -> Option<String>) -> Capability {
 pub(crate) fn apply_to_buffer(
     buffer: &mut Buffer,
     area: Rect,
-    scroll: u16,
+    scroll: usize,
     regions: &[HyperlinkRegion],
     policy: &Policy,
 ) {
@@ -194,7 +194,7 @@ pub(crate) fn apply_to_buffer(
 fn apply_to_buffer_with_chunk_width(
     buffer: &mut Buffer,
     area: Rect,
-    scroll: u16,
+    scroll: usize,
     regions: &[HyperlinkRegion],
     policy: &Policy,
     chunk_width_limit: u16,
@@ -206,7 +206,7 @@ fn apply_to_buffer_with_chunk_width(
     let mut osc_bytes = 0usize;
     // The renderer appends regions in row order. Binary-searching to the viewport prevents old,
     // off-screen links from consuming the per-frame admission limit in a long transcript.
-    let top = usize::from(scroll);
+    let top = scroll;
     let bottom = top.saturating_add(usize::from(area.height));
     let first_visible = regions.partition_point(|region| region.row < top);
     'regions: for region in regions[first_visible..]
@@ -532,12 +532,12 @@ mod tests {
             })
             .collect();
         regions.push(HyperlinkRegion {
-            row: 600,
+            row: 70_000,
             col: 0,
             width: 4,
             target: "https://example.com/late".into(),
         });
-        apply_to_buffer(&mut buffer, area, 600, &regions, &policy);
+        apply_to_buffer(&mut buffer, area, 70_000, &regions, &policy);
         assert!(buffer[(0, 0)].symbol().contains("https://example.com/late"));
         let _ = std::fs::remove_dir_all(workspace);
     }

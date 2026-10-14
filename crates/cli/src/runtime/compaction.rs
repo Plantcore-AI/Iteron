@@ -1,8 +1,6 @@
 use super::*;
 
-/// Coverage verdict recorded when the coverage check itself failed to complete: an unproven summary
-/// counts as uncovered, never as covered.
-const COVERAGE_UNPROVEN: bool = false;
+pub(super) use super::compaction_journal::CompactionCommitReceipt;
 
 impl Agent {
     fn apply_automatic_compaction_failure(
@@ -23,22 +21,26 @@ impl Agent {
         match self.compaction_failure_policy {
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal => {}
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::FailClosed => {
-                self.compaction_failed_closed = true;
+                self.compaction_state.close();
             }
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::TruncateBounded => {
                 let summary = format!(
                     "[bounded compaction fallback: {} middle message(s) omitted after {reason}]",
                     plan.to_summarize.len()
                 );
-                self.record_compaction(
-                    turn,
-                    messages,
-                    plan,
-                    &summary,
-                    "failure_truncate_bounded",
-                    false,
-                );
-                self.working_set = None;
+                if self
+                    .record_compaction_committed(
+                        turn,
+                        messages,
+                        plan,
+                        &summary,
+                        "failure_truncate_bounded",
+                        false,
+                    )
+                    .is_ok()
+                {
+                    self.transcript_state.replace_working(None);
+                }
             }
         }
     }
@@ -95,7 +97,7 @@ impl Agent {
         let mut first_item_at: Option<Instant> = None;
         let mut stream_items: u32 = 0;
         let turn_id = TurnId(self.seq_turn);
-        let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+        let (physical, admission) = self.admit_funded_provider_dispatch(turn_id, req).await?;
         let usd_attempt = admission.attempt_guard;
         let primary_route_permit = admission.primary_route_permit;
         let use_hedge = admission.use_hedge;
@@ -120,13 +122,23 @@ impl Agent {
             };
             let model_started = Instant::now();
             let response = self
-                .brokered_provider_turn(turn_id, &req, &mut sink, primary_route_permit, use_hedge)
+                .brokered_provider_turn(
+                    turn_id,
+                    physical,
+                    &mut sink,
+                    primary_route_permit,
+                    use_hedge,
+                )
                 .await;
             (response, model_started)
         };
         let (response, model_started) = response;
         match response {
-            Ok(res) => {
+            Ok(physical_response) => {
+                let super::provider_attempt_journal::ProviderPhysicalResponse {
+                    result: res,
+                    usage_evidence,
+                } = physical_response;
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
                         ttft_ms: Some(iteron_obs::duration_ms_ceil(
@@ -141,7 +153,7 @@ impl Agent {
                     turn_id,
                     res.usage,
                     model_started.elapsed().as_millis() as u64,
-                    usd_attempt.projected_at_unix_secs(),
+                    &usage_evidence,
                     stream_timing,
                 )?;
                 self.emit_plantcore_turn_usage(turn_id)?;
@@ -221,7 +233,7 @@ impl Agent {
     /// already holds, so writing it back out wrote the same bytes twice — one line, audited at
     /// 115949 of them, fsynced inline, inside the operator's turn. `replay_compaction` puts them
     /// back together and `messages_from_rollout` proves the result is identical.
-    pub(super) fn record_compaction(
+    pub(super) fn record_compaction_committed(
         &mut self,
         turn: TurnId,
         before_messages: &[Message],
@@ -229,138 +241,19 @@ impl Agent {
         summary: &str,
         reason_code: &'static str,
         coverage_verified: bool,
-    ) {
-        let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
-        let before = before_messages.len();
-        let after = rebuilt.len();
-        let tools = self.registry.specs();
-        let system = self.effective_system();
-        let before_estimate =
-            self.context_estimator
-                .estimate_uncached(&system, before_messages, &tools);
-        let after_estimate = self
-            .context_estimator
-            .estimate_uncached(&system, &rebuilt, &tools);
-        let trigger = self.compaction.effective_trigger_tokens(
-            self.execution_context_window(),
-            self.model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS),
-        );
-        let compaction = iteron_ctx::CompactionEvidence {
-            trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
-            before_tokens: u64::try_from(before_estimate.total_tokens).unwrap_or(u64::MAX),
-            after_tokens: u64::try_from(after_estimate.total_tokens).unwrap_or(u64::MAX),
-            obligations_preserved: plan.obligations_preserved().saturating_add(
-                if coverage_verified {
-                    plan.obligations_lost()
-                } else {
-                    0
-                },
-            ),
-            obligations_lost: if coverage_verified {
-                0
-            } else {
-                plan.obligations_lost()
-            },
-            reason_code: reason_code.into(),
-        };
-        let mut ledger =
-            iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
-        ledger.model_context_window = self.execution_context_window();
-        let output_reserve = self
-            .model_max_output_tokens
-            .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
-        ledger.usable_window = self
-            .execution_context_window()
-            .map(|window| window.saturating_sub(u64::from(output_reserve)));
-        ledger.output_reserved_tokens = u64::from(output_reserve);
-        ledger.record_transform(iteron_ctx::ContextTransformEvidence {
-            kind: iteron_ctx::ContextTransformKind::Compact,
-            policy_id: "core/compaction@1".into(),
-            input_segments: u32::try_from(before).unwrap_or(u32::MAX),
-            output_segments: u32::try_from(after).unwrap_or(u32::MAX),
-            input_bytes: before_messages.iter().fold(0u64, |total, message| {
-                total.saturating_add(
-                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
-                        .unwrap_or(u64::MAX),
-                )
-            }),
-            output_bytes: rebuilt.iter().fold(0u64, |total, message| {
-                total.saturating_add(
-                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
-                        .unwrap_or(u64::MAX),
-                )
-            }),
-            input_tokens: compaction.before_tokens,
-            output_tokens: compaction.after_tokens,
-            elapsed_us: 0,
-        });
-        ledger.compaction = Some(compaction.clone());
-        self.context_ledgers.publish(ledger);
-        self.compacted_in_run = true;
-        self.last_compaction_turn = Some(u64::from(turn.0));
-        self.emit(
+    ) -> Result<CompactionCommitReceipt, KernelError> {
+        let (mut journal, scope, estimator, state) = self.compaction_commit_ports();
+        journal.commit(
             turn,
-            EventKind::Compaction {
-                messages: iteron_ctx::compaction_seed(plan, summary),
-            },
-        );
-        self.lifecycle_event(
-            "context.compaction.completed",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
-                magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.segment.removed",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
-                reason_code: Some("compaction_range".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.segment.updated",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(1),
-                magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
-                reason_code: Some("compaction_summary".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        if compaction.obligations_preserved > 0 {
-            self.lifecycle_event(
-                "context.obligation.preserved",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(compaction.obligations_preserved)),
-                    reason_code: Some(reason_code.into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        if compaction.obligations_lost > 0 {
-            self.lifecycle_event(
-                "context.obligation.lost",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(compaction.obligations_lost)),
-                    reason_code: Some("obligation_preservation_bound".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.emit(
-            turn,
-            EventKind::Notice {
-                text: format!("compacted {before} messages -> {after}"),
-            },
-        );
+            before_messages,
+            plan,
+            summary,
+            reason_code,
+            coverage_verified,
+            scope,
+            estimator,
+            state,
+        )
     }
 
     /// Compaction at the END of the turn, not inside it (#I-58). The operator already has their
@@ -372,21 +265,19 @@ impl Agent {
     /// did not ask for, and the emergency valve inside the turn loop still guarantees that
     /// whatever comes next can be admitted.
     pub(super) async fn settle_compaction(&mut self) {
-        if self.compacted_in_run
+        if self.compaction_state.compacted()
             || self.record_failed
             || !self.compaction.enabled
             || self.delegation_depth > 0
-            || !self
-                .compaction
-                .hysteresis
-                .cooldown_allows(u64::from(self.seq_turn), self.last_compaction_turn)
+            || !self.compaction.hysteresis.cooldown_allows(
+                u64::from(self.seq_turn),
+                self.compaction_state.last_committed_turn(),
+            )
         {
             return;
         }
         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-        if !self.pending_steers.is_empty()
-            || !matches!(self.requested_control(), InboundControl::None)
-        {
+        if !self.inbox.is_empty() || !matches!(self.requested_control(), InboundControl::None) {
             return;
         }
         // Use the checkpointed interactive request reservation. Provider metadata is only its
@@ -401,7 +292,7 @@ impl Agent {
         // Use its incremental estimator as a cheap negative precheck; only a near-threshold turn
         // pays for durable replay and SHA verification. A missing working set means compaction or
         // recovery rewrote the record, so replay remains mandatory and authoritative.
-        let prechecked = self.working_set.clone().map(|projected| {
+        let prechecked = self.transcript_state.working().clone().map(|projected| {
             let estimate = self.context_estimator.estimate_with_tool_tokens(
                 &system,
                 &projected,
@@ -506,10 +397,7 @@ impl Agent {
                 let covered = if self.compaction.coverage_check {
                     self.verify_compaction_summary(&plan.to_summarize, &summary)
                         .await
-                        .unwrap_or(iteron_tunables::param_bool(
-                            "cli.runtime.compaction.coverage_unproven",
-                            COVERAGE_UNPROVEN,
-                        ))
+                        .unwrap_or(false)
                 } else {
                     true
                 };
@@ -528,20 +416,25 @@ impl Agent {
                     );
                     return;
                 }
-                self.record_compaction(
-                    compaction_result_turn,
-                    &messages,
-                    &plan,
-                    &summary,
-                    component_pressure.map_or("turn_end", |pressure| pressure.class.reason_code()),
-                    self.compaction.coverage_check && covered,
-                );
-                // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
-                // still holds the pre-compaction transcript. Dropping it makes the next follow-up
-                // replay from the rollout, which now carries the compaction — the one case where the
-                // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
-                // than one per turn.
-                self.working_set = None;
+                if self
+                    .record_compaction_committed(
+                        compaction_result_turn,
+                        &messages,
+                        &plan,
+                        &summary,
+                        component_pressure
+                            .map_or("turn_end", |pressure| pressure.class.reason_code()),
+                        self.compaction.coverage_check && covered,
+                    )
+                    .is_ok()
+                {
+                    // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
+                    // still holds the pre-compaction transcript. Dropping it makes the next follow-up
+                    // replay from the rollout, which now carries the compaction — the one case where the
+                    // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
+                    // than one per turn.
+                    self.transcript_state.replace_working(None);
+                }
             }
             Err(_) => self.apply_automatic_compaction_failure(
                 TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
@@ -630,14 +523,14 @@ impl Agent {
             ));
         }
         let after = 2 + plan.keep_verbatim.len();
-        self.record_compaction(
+        self.record_compaction_committed(
             TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
             &messages,
             &plan,
             &summary,
             "operator_forced",
             self.compaction.coverage_check,
-        );
+        )?;
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Notice {
