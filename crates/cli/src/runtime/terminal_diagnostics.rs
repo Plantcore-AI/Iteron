@@ -5,6 +5,13 @@ use iteron_protocol::PolicyHarnessErrorCode;
 use iteron_protocol::product_contract::{TerminalEffectStateV1, TerminalEvidenceV1};
 
 impl Agent {
+    /// Arm the retained effect owner at the actual physical head before this product turn can
+    /// admit work. Adoption clears it; legacy callers without this boundary retain verified replay.
+    pub(crate) fn begin_terminal_diagnostic_scope(&mut self, first_sequence: Seq) {
+        self.effect_journal
+            .begin_terminal_scope(&self.rollout, first_sequence);
+    }
+
     /// Classify the completed Product Turn without parsing a human-readable error. Admission
     /// captures this held physical rollout's next sequence before any run or follow-up work.
     /// A refusal can precede the kernel turn advance, so turn IDs cannot separate this scope.
@@ -42,6 +49,12 @@ impl Agent {
         // happens to show settled effects. Never turn that prefix into an AllSettled claim.
         if self.record_failed {
             return TerminalEffectStateV1::Unavailable;
+        }
+        if let Some(state) = self
+            .effect_journal
+            .terminal_state(&self.rollout, first_sequence)
+        {
+            return state;
         }
         let Ok(events) = iteron_record::replay(self.rollout.path()) else {
             return TerminalEffectStateV1::Unavailable;

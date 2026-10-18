@@ -81,11 +81,22 @@ pub struct ForegroundActivity {
     scope: Arc<Scope>,
 }
 
+impl ForegroundActivity {
+    pub(crate) fn scope(&self) -> Arc<Scope> {
+        Arc::clone(&self.scope)
+    }
+}
+
 pub(crate) fn foreground(
     runs: &Path,
     tenant: &TenantId,
 ) -> Result<ForegroundActivity, RecordError> {
-    let scope = scope(runs, tenant)?;
+    foreground_in(scope(runs, tenant)?)
+}
+
+/// A live writer already pins a canonical runs directory and tenant at open. Reuse that exact
+/// registration for nested activity windows instead of resolving the same path for every event.
+pub(crate) fn foreground_in(scope: Arc<Scope>) -> Result<ForegroundActivity, RecordError> {
     let started = Instant::now();
     let limit = crate::session_maintenance::wait_limit();
     let mut state = scope

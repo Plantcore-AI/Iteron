@@ -22,41 +22,12 @@ impl ContextUsageReconciliation<'_> {
         self.baselines.remove(index).map(|(_, tokens)| tokens)
     }
     pub(super) fn observe(&mut self, turn: TurnId, usage: Usage) {
-        use iteron_ctx::{ContextObservation, ContextObserver};
         let actual_input_tokens = usage
             .input
             .saturating_add(usage.cache_read)
             .saturating_add(usage.cache_creation);
-        let matching_ledger = self
-            .ledgers
-            .snapshot()
-            .ledgers
-            .into_iter()
-            .find(|ledger| ledger.turn_id == turn);
-        let estimated_input_tokens = matching_ledger
-            .as_ref()
-            .map(|ledger| ledger.totals.estimated_tokens);
+        let estimated_input_tokens = self.ledgers.reconcile_usage(turn, usage);
         let uncalibrated_input_tokens = self.take_baseline(turn);
-        if let Some(mut ledger) = matching_ledger {
-            // Provider usage is the first authority that can distinguish an actual cache hit,
-            // cache population, and uncached prefill. Replace the pre-dispatch estimate in the
-            // same bounded turn slot instead of leaving those three public counters at zero.
-            ledger.totals.actual_input_tokens = Some(actual_input_tokens);
-            ledger.cache.cache_read_tokens = usage.cache_read;
-            ledger.cache.cache_write_tokens = usage.cache_creation;
-            ledger.cache.uncached_tokens = usage.input;
-            self.ledgers.publish(ledger);
-        } else {
-            self.ledgers.observe(
-                turn,
-                ContextObservation::ProviderUsage {
-                    actual_input_tokens,
-                    cache_read_tokens: usage.cache_read,
-                    cache_write_tokens: usage.cache_creation,
-                    uncached_tokens: usage.input,
-                },
-            );
-        }
         self.events.emit_optional(
             "context.tokenizer.actual_observed",
             Some(turn),

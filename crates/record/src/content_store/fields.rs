@@ -2,6 +2,18 @@
 
 use serde_json::{Map, Value};
 
+pub(super) fn has_content_fields(payload: &mut Value) -> bool {
+    let mut found = false;
+    let result = visit_content_fields(payload, |_, _| {
+        found = true;
+        Ok::<(), std::convert::Infallible>(())
+    });
+    match result {
+        Ok(()) => found,
+        Err(never) => match never {},
+    }
+}
+
 pub(super) fn visit_content_fields<E>(
     payload: &mut Value,
     mut visit: impl FnMut(&'static str, &mut Value) -> Result<(), E>,

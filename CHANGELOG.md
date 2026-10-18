@@ -7,6 +7,29 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-10-18
+
+### Changed
+
+- Reduce repeated-tool continuation overhead with compact content reference and lineage
+  metadata, bounded incremental indexes, and descriptor reuse inside actual store leases.
+- Acknowledge ordinary journal events after complete OS writes, avoiding per-event forced
+  disk flushes and writer-thread round trips; retain the journal synchronization at Done.
+- Make full provider request archives opt-in with `--archive-requests`. Bound capture queues,
+  defer full archival publication, and report incomplete diagnostics separately from effects.
+- Maintain session, effect and context projections incrementally, reuse exact bounded summaries,
+  and coalesce lifecycle notifications while preserving waiting-consumer behavior.
+- Reduce repeated metadata path parsing and temporary allocations without changing path scope.
+
+### Compatibility
+
+- Ordinary event acknowledgement no longer promises power-loss durability. Done synchronizes
+  the journal, not an atomic checkpoint of the entire content store.
+- Existing metadata can be read and migrated. Once the new metadata format is written, do not
+  run older and newer versions against the same store or downgrade that migrated store.
+- Effect ordering, owner exclusion, secret redaction, revocation and bounded-resource checks
+  remain enforced. See `docs/spec/standalone-persistence.md` for the complete contract.
+
 ## [0.0.27] - 2026-10-08
 
 ### Added

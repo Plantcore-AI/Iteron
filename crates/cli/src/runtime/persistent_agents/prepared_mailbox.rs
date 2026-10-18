@@ -182,7 +182,7 @@ impl LiveAgentMailbox {
         })
     }
 
-    /// Called only after retained prepared-manifest publication, before local dispatch intent
+    /// Called only after native request preparation verifies actual wire inclusion, before local dispatch intent
     /// and actual transport. A failed/uncertain controller barrier stops provider IO.
     pub(in crate::runtime) fn confirm_prepared(
         &self,

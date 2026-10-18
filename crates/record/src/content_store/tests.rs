@@ -5,6 +5,156 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn content_publication_reuses_one_revocation_snapshot_under_each_store_lease() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("one-state-per-publication".into());
+    let original = serde_json::json!({"kind": {
+        "kind": "effect_intent", "arguments": {"path": "."},
+        "workspace": "fixture-workspace"
+    }});
+    for sequence in [1, 2] {
+        let mut payload = original.clone();
+        storage::STATE_READS.with(|reads| reads.set(0));
+        externalize_event_payload(&dir, &tenant, &run, Seq(sequence), &mut payload).unwrap();
+        assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+        hydrate_event_payload(&dir, &tenant, &mut payload).unwrap();
+        assert_eq!(payload, original);
+    }
+    storage::STATE_READS.with(|reads| reads.set(0));
+    storage::BLOB_READS.with(|reads| reads.set(0));
+    let sources = private_content_sources_for_run(&dir, &tenant, &run).unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    assert_eq!(storage::BLOB_READS.with(std::cell::Cell::get), 2);
+    let derivative = PrivateContentDerivativeStore::open_registered(
+        &dir,
+        tenant,
+        RunId("one-state-derived".into()),
+        PrivateContentNamespace::ToolArtifact,
+        PrivateContentClass::ToolOutput,
+        PrivateContentRetention::Session,
+        1024,
+    )
+    .unwrap();
+    storage::STATE_READS.with(|reads| reads.set(0));
+    let handle = derivative
+        .put_derived(Seq(3), b"actual derived bytes", &sources)
+        .unwrap();
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    storage::STATE_READS.with(|reads| reads.set(0));
+    assert_eq!(
+        derivative.read_at(Seq(3), &handle).unwrap(),
+        b"actual derived bytes"
+    );
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    drop(derivative);
+    storage::STATE_READS.with(|reads| reads.set(0));
+    assert_eq!(
+        guard_private_content_for_run(
+            &dir,
+            &TenantId::default(),
+            &RunId("one-state-derived".into())
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    // A new inventory still sees physical corruption; deduplication is confined to one lease.
+    let layout = Layout::new(&dir, &TenantId::default());
+    let blob = layout.object_path(&layout.blobs, &sources[0].digest);
+    std::fs::write(blob, b"corrupt source bytes").unwrap();
+    assert!(matches!(
+        private_content_sources_for_run(&dir, &TenantId::default(), &run),
+        Err(ContentStoreError::Unresolved {
+            reason: "authentication_failed",
+            ..
+        })
+    ));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn repeated_content_revalidates_physical_bytes_revocation_and_format_on_reacquire() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("revalidated-content".into());
+    let put = |sequence| {
+        put_private_content(
+            &dir,
+            &tenant,
+            &run,
+            Seq(sequence),
+            PrivateContentClass::Transcript,
+            PrivateContentRetention::Session,
+            b"same retained bytes",
+            0,
+        )
+    };
+    let handle = put(1).unwrap();
+    storage::STATE_READS.with(|reads| reads.set(0));
+    assert_eq!(put(2).unwrap(), handle);
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    let layout = Layout::new(&dir, &tenant);
+    let key_path = layout.object_path(&layout.keys, &handle.digest);
+    let blob_path = layout.object_path(&layout.blobs, &handle.digest);
+    let key = std::fs::read(&key_path).unwrap();
+    let blob = std::fs::read(&blob_path).unwrap();
+    let mut corrupt = blob.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    std::fs::write(&blob_path, &corrupt).unwrap();
+    assert!(matches!(
+        put(3),
+        Err(ContentStoreError::Unresolved {
+            reason: "authentication_failed",
+            ..
+        })
+    ));
+    std::fs::write(&blob_path, &blob).unwrap();
+    std::fs::remove_file(&key_path).unwrap();
+    assert!(matches!(
+        put(3),
+        Err(ContentStoreError::Unresolved {
+            reason: "partial_material",
+            ..
+        })
+    ));
+    std::fs::write(&key_path, key).unwrap();
+    assert_eq!(put(3).unwrap(), handle);
+    revoke_through_verification(&dir, &tenant, handle.digest).unwrap();
+    assert!(matches!(put(4), Err(ContentStoreError::Revoked { .. })));
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout.state).unwrap()).unwrap();
+    state["metadata_format"] = serde_json::json!(99);
+    std::fs::write(&layout.state, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(matches!(put(4), Err(ContentStoreError::Corrupt)));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn control_only_records_round_trip_without_an_available_content_store() {
+    let root = test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let unavailable_runs = root.join("occupied");
+    std::fs::write(&unavailable_runs, b"not a directory").unwrap();
+    let tenant = TenantId::default();
+    let run = RunId("control-only".into());
+    let original = serde_json::json!({"kind": {"kind": "turn_end"}});
+    let mut payload = original.clone();
+    externalize_event_payload(&unavailable_runs, &tenant, &run, Seq(1), &mut payload).unwrap();
+    assert!(
+        externalize_event_payload(&unavailable_runs, &tenant, &run, Seq(1), &mut payload).is_err()
+    );
+    hydrate_event_payload(&unavailable_runs, &tenant, &mut payload).unwrap();
+    assert_eq!(payload, original);
+    let mut content = serde_json::json!({"kind": {"kind": "text", "delta": "private"}});
+    assert!(
+        externalize_event_payload(&unavailable_runs, &tenant, &run, Seq(2), &mut content).is_err()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn tool_pixels_stay_out_of_jsonl_and_hydrate_only_through_owned_private_cas() {
     use iteron_protocol::{
         ImageContent, ImageMediaType, TurnId,
@@ -44,11 +194,11 @@ fn tool_pixels_stay_out_of_jsonl_and_hydrate_only_through_owned_private_cas() {
     let sources = private_content_sources_for_run(&dir, &tenant, &run).unwrap();
     assert_eq!(sources.len(), 1);
     assert_eq!(sources[0].owner, run);
-    let edges = std::fs::read_dir(Layout::new(&dir, &tenant).run_reference_dir(&run))
+    let edges = metadata::read_dir(Layout::new(&dir, &tenant).run_reference_dir(&run))
         .unwrap()
         .map(|entry| {
             serde_json::from_slice::<model::ReferenceEdge>(
-                &std::fs::read(entry.unwrap().path()).unwrap(),
+                &read_limited(&entry.unwrap().path(), MAX_REFERENCE_EDGE_BYTES).unwrap(),
             )
             .unwrap()
         })
@@ -154,6 +304,7 @@ fn graph_readers_wait_for_incomplete_derivative_publication() {
     let scratch = layout
         .run_reference_dir(&run)
         .join(".core-session-cache-pending.tmp");
+    std::fs::create_dir_all(scratch.parent().unwrap()).unwrap();
     std::fs::write(&scratch, b"{").unwrap();
     // Each synchronous read exhausts only the existing finite store acquisition window.
     // A missing lease would instead parse the writer-owned scratch member as a reference.
@@ -722,11 +873,22 @@ fn moved_reverse_edge_cannot_mint_verified_coverage() {
     )
     .unwrap();
     let layout = Layout::new(&dir, &tenant);
-    std::fs::rename(
-        layout.run_reference_dir(&run),
-        layout.run_refs.join("forged-owner-location"),
-    )
-    .unwrap();
+    {
+        let _lock = lock_store(&layout).unwrap();
+        let mut changes = Vec::new();
+        for entry in metadata::read_dir(layout.run_reference_dir(&run)).unwrap() {
+            let entry = entry.unwrap();
+            changes.push((
+                layout
+                    .run_refs
+                    .join("forged-owner-location")
+                    .join(entry.file_name()),
+                Some(read_limited(&entry.path(), MAX_REFERENCE_EDGE_BYTES).unwrap()),
+            ));
+            changes.push((entry.path(), None));
+        }
+        metadata::replace_batch(&changes).unwrap();
+    }
     assert!(matches!(
         revoke_through_verification(&dir, &tenant, handle.digest),
         Err(ContentStoreError::Corrupt)
@@ -751,7 +913,14 @@ fn orphaned_forward_edge_cannot_mint_an_absence_coverage_bit() {
     )
     .unwrap();
     let layout = Layout::new(&dir, &tenant);
-    std::fs::remove_dir_all(layout.run_reference_dir(&run)).unwrap();
+    {
+        let _lock = lock_store(&layout).unwrap();
+        let changes = metadata::read_dir(layout.run_reference_dir(&run))
+            .unwrap()
+            .map(|entry| (entry.unwrap().path(), None))
+            .collect::<Vec<_>>();
+        metadata::replace_batch(&changes).unwrap();
+    }
     assert!(matches!(
         revoke_through_verification(&dir, &tenant, handle.digest),
         Err(ContentStoreError::Corrupt)

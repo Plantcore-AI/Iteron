@@ -1094,6 +1094,8 @@ pub struct Agent {
     cohort_installation: Option<iteron_protocol::agent_cohort::AgentCohortInstallationV1>,
     cohort_replay_checked: bool,
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
+    /// Optional diagnostic request archival, independent of provider dispatch.
+    pub(super) request_archive: request_manifest::RequestArchive,
     client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
     plugin_management: Option<std::sync::Arc<crate::plugin_runtime::PluginManagementOwner>>,
     ordinary_extensions: Option<std::sync::Arc<ordinary_extensions::OrdinaryExtensionHost>>,
@@ -1545,6 +1547,7 @@ impl Agent {
         }
         .settle(outcome)
         .await;
+        self.flush_request_archive_after_invocation();
         if let Err(error) = self.settle_failed_policy_turn(&outcome) {
             outcome = Err(error);
         }
@@ -1616,8 +1619,19 @@ impl Agent {
         {
             outcome = Err(cleanup_error);
         }
+        self.flush_request_archive_after_invocation();
         self.settle_failed_policy_turn(&outcome)?;
         outcome
+    }
+
+    fn flush_request_archive_after_invocation(&self) {
+        // Failed invocations can bypass finish while their Agent remains resident. Provider and
+        // tool futures have settled here, so diagnostics can drain without overlapping their IO.
+        if let Err(error) = self.flush_request_archive() {
+            self.ui(UiEvent::Notice(format!(
+                "Request archive incomplete: {error}"
+            )));
+        }
     }
 
     async fn run_leaf_inner(&mut self, task: &str) -> Result<Outcome, KernelError> {

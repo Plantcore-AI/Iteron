@@ -378,6 +378,7 @@
 /crates/cli/src/runtime/model_context_projection/** @fr0m-scratch
 /crates/cli/src/runtime/persistent_native_generations/** @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence_recorder/** @fr0m-scratch
+/crates/cli/src/runtime/request_context_evidence/** @fr0m-scratch
 /crates/cli/src/runtime/telemetry/** @fr0m-scratch
 /crates/cli/src/runtime/tool_output_spill/** @fr0m-scratch
 /crates/cli/src/runtime/transcript/** @fr0m-scratch
@@ -734,6 +735,7 @@
 /crates/cli/src/runtime/persistent_agents/provider_budget.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/weak_mailbox.rs @fr0m-scratch
 /crates/cli/src/runtime/persistent_agents/workflow.rs @fr0m-scratch
+/crates/cli/src/runtime/request_manifest/archive.rs @fr0m-scratch
 /crates/cli/src/runtime/request_manifest/refusal.rs @fr0m-scratch
 /crates/cli/src/runtime/request_manifest_tests/material_journeys.rs @fr0m-scratch
 /crates/cli/src/runtime/resume/adoption_diagnostic.rs @fr0m-scratch

@@ -5,12 +5,11 @@
 //! known tool effect into an unknown effect.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use iteron_protocol::{RunId, Seq, TenantId, ToolResult, ToolUse};
+use iteron_protocol::{Seq, ToolResult, ToolUse};
 
-use crate::artifacts::{ArtifactSchema, DurableArtifactStore};
+use crate::artifacts::{ArtifactSchema, ArtifactStoreError, DurableArtifactStore};
 
 pub(crate) const PUBLICATION_UNAVAILABLE: &str =
     "Artifact retention is unavailable for this captured output";
@@ -71,22 +70,15 @@ impl ToolOutputPublicationFactory for CapturedOutputPublicationFactory {
 
 #[derive(Clone)]
 struct CapturedOutputPublisher {
-    runs: PathBuf,
-    tenant: TenantId,
-    run: RunId,
-    workspace: PathBuf,
+    store: Result<DurableArtifactStore, ArtifactStoreError>,
     sources: BTreeMap<String, u64>,
 }
 
 impl CapturedOutputPublisher {
-    fn store(&self) -> Result<DurableArtifactStore, String> {
-        DurableArtifactStore::open(
-            &self.runs,
-            self.tenant.clone(),
-            self.run.clone(),
-            &self.workspace,
-        )
-        .map_err(|_| PUBLICATION_UNAVAILABLE.into())
+    fn store(&self) -> Result<&DurableArtifactStore, String> {
+        self.store
+            .as_ref()
+            .map_err(|_| PUBLICATION_UNAVAILABLE.into())
     }
 
     fn publish_text(
@@ -221,14 +213,9 @@ fn admitted_replacement(call: &ToolUse) -> Option<String> {
 impl super::Agent {
     fn output_publisher(&self, sources: BTreeMap<String, u64>) -> CapturedOutputPublisher {
         CapturedOutputPublisher {
-            runs: self
-                .rollout
-                .path()
-                .parent()
-                .map_or_else(PathBuf::new, std::path::Path::to_path_buf),
-            tenant: self.rollout.tenant().clone(),
-            run: self.rollout.run_id().clone(),
-            workspace: self.workspace.clone(),
+            // Capture the current writer each time this factory is requested. A later adopted
+            // run gets its own scope; public readers retain their independent metadata checks.
+            store: DurableArtifactStore::from_rollout_writer(&self.rollout, &self.workspace),
             sources,
         }
     }
@@ -257,5 +244,127 @@ impl super::Agent {
         {
             self.ui(super::UiEvent::Notice(PUBLICATION_UNAVAILABLE.into()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iteron_protocol::client_artifact::ClientArtifactCommandV1;
+    use iteron_protocol::{Effort, Event, EventKind, RunId, SessionId, TenantId, Trust, TurnId};
+    use iteron_record::Rollout;
+    use std::path::Path;
+
+    fn writer(runs: &Path, workspace: &Path, run: &RunId) -> Rollout {
+        let mut rollout = Rollout::open(runs, run, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: workspace.to_string_lossy().into_owned(),
+                    model: "fixture".into(),
+                    effort: Effort::Low,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: String::new(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        rollout
+    }
+
+    fn publisher(rollout: &Rollout, workspace: &Path) -> CapturedOutputPublisher {
+        CapturedOutputPublisher {
+            store: DurableArtifactStore::from_rollout_writer(rollout, workspace),
+            sources: BTreeMap::from([("actual-call".into(), 1)]),
+        }
+    }
+
+    #[test]
+    fn writer_publication_keeps_call_scope_and_reopens_only_its_actual_run() {
+        let root = crate::runtime::test_tempdir::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let other_workspace = root.path().join("other");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&other_workspace).unwrap();
+        let runs = root.path().join("runs");
+        let first_run = RunId("first".into());
+        let first = writer(&runs, &workspace, &first_run);
+        let captured = publisher(&first, &workspace);
+        let call = ToolUse {
+            id: "actual-call".into(),
+            name: "list_dir".into(),
+            input: serde_json::json!({"path":"."}),
+        };
+        let mut result = ToolResult {
+            tool_use_id: "forged-call".into(),
+            content: "first output".into(),
+            is_error: false,
+            trust: Trust::Workspace,
+            latency_ms: 0,
+        };
+        assert!(captured.publish(&call, &result, true).is_err());
+        result.tool_use_id = call.id.clone();
+        captured.publish(&call, &result, true).unwrap();
+        let first_id = captured
+            .retain_text(1, ArtifactSchema::ToolOutput, "first output")
+            .unwrap()
+            .artifact_id;
+        drop(captured);
+        drop(first);
+
+        let second = writer(&runs, &workspace, &RunId("second".into()));
+        let second_capture = publisher(&second, &workspace);
+        let second_id = second_capture
+            .retain_text(1, ArtifactSchema::ToolOutput, "second output")
+            .unwrap()
+            .artifact_id;
+        drop(second_capture);
+        drop(second);
+        let reopened = Rollout::open_existing(&runs, &first_run, TenantId::default()).unwrap();
+        let restored = publisher(&reopened, &workspace);
+        let thread = SessionId("authenticated".into());
+        let listed = restored
+            .store()
+            .unwrap()
+            .read(
+                &thread,
+                ClientArtifactCommandV1::List {
+                    thread_id: thread.clone(),
+                },
+            )
+            .unwrap();
+        let artifacts = listed["artifacts"].as_array().unwrap();
+        assert!(
+            artifacts
+                .iter()
+                .any(|artifact| artifact["artifact_id"] == first_id)
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|artifact| artifact["artifact_id"] != second_id)
+        );
+        // Writer capture is internal only; public scope construction still independently checks
+        // tenant and canonical workspace against the recovered journal.
+        assert!(
+            DurableArtifactStore::open(
+                &runs,
+                TenantId("wrong-tenant".into()),
+                first_run.clone(),
+                &workspace
+            )
+            .is_err()
+        );
+        assert!(
+            DurableArtifactStore::open(&runs, TenantId::default(), first_run, &other_workspace)
+                .is_err()
+        );
     }
 }

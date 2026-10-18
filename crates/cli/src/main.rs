@@ -893,6 +893,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     )?;
     agent.set_retry_policy(effective_settings.retry);
     agent.set_provider_controls(effective_settings.provider_governor.controls)?;
+    agent
+        .set_request_archiving(cli.archive_requests)
+        .map_err(anyhow::Error::msg)?;
     let governed_route_ids = std::iter::once(current_route_id.clone())
         .chain(
             fallback_provider_routes

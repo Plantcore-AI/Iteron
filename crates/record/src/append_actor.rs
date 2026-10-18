@@ -3,20 +3,21 @@
 use super::{
     Barrier, ChainLine, MAX_ROLLOUT_BYTES, MAX_ROLLOUT_EVENTS, MAX_ROLLOUT_PHYSICAL_LINES,
     RecordError, Rollout, SessionProjectionState, barrier_for, content_store,
-    ensure_record_line_size, ensure_rollout_size, hash_line, policy_bundle, redact, sync_line,
+    ensure_record_line_size, ensure_rollout_size, hash_line, policy_bundle, redact,
     validate_event_bounds, validate_terminal_identity,
 };
 use iteron_protocol::{Event, EventKind, RunId, Seq};
 use std::fs::File;
 use std::io::Write as _;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex};
 
 const DEFAULT_APPEND_QUEUE: usize = 64;
 const HARD_MAX_APPEND_QUEUE: usize = 1_024;
 const MAX_APPEND_BATCH_EVENTS: usize = 256;
 
 fn closes_session_projection(kind: &EventKind) -> bool {
-    matches!(kind, EventKind::TurnEnd { .. } | EventKind::Done { .. })
+    matches!(kind, EventKind::Done { .. })
         || matches!(
             kind,
             EventKind::PolicyOutcome { evidence }
@@ -61,9 +62,9 @@ struct WriteBatch {
 }
 
 impl Rollout {
-    /// Append one semantic batch with exactly one durability barrier. At most one TurnEnd/Done may
-    /// occur and it must be the final event, so a caller cannot accidentally acknowledge two
-    /// semantic boundaries with one device flush. On any write/barrier failure the writer remains
+    /// Append one semantic batch with one ordered OS-write acknowledgement. At most one
+    /// TurnEnd/Done may occur and it must be the final event. Only Done forces the journal
+    /// to disk. On any write/barrier failure the writer remains
     /// poisoned and recovery proceeds through the ordinary reopen/tail-scan path.
     pub fn append_batch(&mut self, events: &[Event]) -> Result<Vec<Seq>, RecordError> {
         let _foreground = self.foreground_activity()?;
@@ -233,17 +234,13 @@ impl Rollout {
             .last()
             .map(|append| barrier_for(&append.event.kind))
             .unwrap_or(Barrier::Line);
-        let ticket = self
-            .append_actor
-            .enqueue(WriteBatch {
-                expected_bytes: current_bytes,
-                bytes: batch,
-                barrier,
-                #[cfg(test)]
-                inject_sync_fault: super::take_append_sync_fault(),
-            })
-            .map_err(RecordError::from)?;
-        ticket.wait()?;
+        self.append_actor.write(WriteBatch {
+            expected_bytes: current_bytes,
+            bytes: batch,
+            barrier,
+            #[cfg(test)]
+            inject_sync_fault: super::take_append_sync_fault(),
+        })?;
         #[cfg(test)]
         self.observe_barrier(barrier);
 
@@ -276,7 +273,7 @@ impl Rollout {
             .iter()
             .any(|append| closes_session_projection(&append.event.kind))
         {
-            // The rollout batch and its barrier are already durable. Refresh only the rebuildable
+            // The rollout batch already has its OS-write acknowledgement. Refresh the rebuildable
             // projection now, so a just-finished run is immediately visible through the bounded
             // session index with a tail that matches this boundary. The run-scoped policy terminal
             // is also a boundary: AppServer appends it during session shutdown, after `Done` and
@@ -314,55 +311,61 @@ impl From<AppendActorError> for RecordError {
     }
 }
 
-struct AppendTicket {
-    reply: Receiver<Result<(), RecordError>>,
+struct AppendFile {
+    file: File,
+    poisoned: bool,
 }
 
-impl AppendTicket {
-    fn wait(self) -> Result<(), RecordError> {
-        self.reply
-            .recv()
-            .unwrap_or(Err(RecordError::WriterPoisoned))
-    }
-}
-
-/// One bounded worker owns the only append descriptor for one live `Rollout`. The public façade
-/// prepares and validates a whole semantic batch before enqueueing it; the worker performs its one
-/// write and one durability barrier, then returns the authoritative commit receipt.
+/// One descriptor and poison state belong to one live `Rollout`. Its mutable façade serializes
+/// submissions and waits for each receipt. Ordinary OS writes run directly, avoiding two thread
+/// handoffs per event; final synchronization retains the bounded worker. Both paths take the same
+/// descriptor lock and use the same length checks and write/error handling.
 pub(crate) struct RolloutAppendActor {
+    file: Arc<Mutex<AppendFile>>,
     sender: SyncSender<Command>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RolloutAppendActor {
-    pub(super) fn spawn(mut file: File, run: &RunId) -> Result<Self, AppendActorError> {
+    pub(super) fn spawn(file: File, run: &RunId) -> Result<Self, AppendActorError> {
         let capacity = append_queue_capacity();
         let (sender, receiver) = std::sync::mpsc::sync_channel(capacity);
+        let file = Arc::new(Mutex::new(AppendFile {
+            file,
+            poisoned: false,
+        }));
+        let worker_file = Arc::clone(&file);
         let name = format!("iteron-record-{}", run.0);
         let worker = std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                run_worker(&mut file, receiver);
+                run_worker(&worker_file, receiver);
             })
             .map_err(AppendActorError::Spawn)?;
         Ok(Self {
+            file,
             sender,
             worker: Some(worker),
         })
     }
 
-    fn enqueue(&self, batch: WriteBatch) -> Result<AppendTicket, AppendActorError> {
+    // No pending ticket escapes this mutable borrow: a direct write cannot overtake a queued
+    // synchronization, even if a future caller uses this owner outside commit_prepared.
+    fn write(&mut self, batch: WriteBatch) -> Result<(), RecordError> {
+        if batch.barrier == Barrier::Line {
+            return write_batches(&self.file, std::iter::once(&batch));
+        }
         let (reply, receiver) = std::sync::mpsc::channel();
         match self.sender.try_send(Command::Write { batch, reply }) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                return Err(AppendActorError::QueueFull);
+                return Err(AppendActorError::QueueFull.into());
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                return Err(AppendActorError::QueueClosed);
+                return Err(AppendActorError::QueueClosed.into());
             }
         }
-        Ok(AppendTicket { reply: receiver })
+        receiver.recv().unwrap_or(Err(RecordError::WriterPoisoned))
     }
 
     fn stop(&mut self) -> Result<(), AppendActorError> {
@@ -383,8 +386,7 @@ impl RolloutAppendActor {
     }
 }
 
-fn run_worker(file: &mut File, receiver: Receiver<Command>) -> usize {
-    let mut poisoned = false;
+fn run_worker(file: &Mutex<AppendFile>, receiver: Receiver<Command>) -> usize {
     let mut pending = None;
     let mut barriers = 0usize;
     loop {
@@ -421,17 +423,10 @@ fn run_worker(file: &mut File, receiver: Receiver<Command>) -> usize {
                         Err(TryRecvError::Disconnected) => break,
                     }
                 }
-                let result = if poisoned {
-                    Err(RecordError::WriterPoisoned)
-                } else {
-                    poisoned = true;
-                    let result = write_queued_batches(file, &writes);
-                    if result.is_ok() {
-                        poisoned = false;
-                        barriers = barriers.saturating_add(1);
-                    }
-                    result
-                };
+                let result = write_batches(file, writes.iter().map(|(batch, _)| batch));
+                if result.is_ok() {
+                    barriers = barriers.saturating_add(1);
+                }
                 let failure = result.as_ref().err().map(super::RecordFailure::from_error);
                 for (_, reply) in writes {
                     let receipt = match failure {
@@ -442,7 +437,9 @@ fn run_worker(file: &mut File, receiver: Receiver<Command>) -> usize {
                 }
             }
             Command::Shutdown(reply) => {
-                let _ = file.unlock();
+                if let Ok(owner) = file.lock() {
+                    let _ = owner.file.unlock();
+                }
                 let _ = reply.send(());
                 break;
             }
@@ -473,13 +470,29 @@ impl Drop for RolloutAppendActor {
     }
 }
 
-fn write_queued_batches(
+fn write_batches<'a>(
+    owner: &Mutex<AppendFile>,
+    batches: impl Iterator<Item = &'a WriteBatch>,
+) -> Result<(), RecordError> {
+    let mut owner = owner.lock().map_err(|_| RecordError::WriterPoisoned)?;
+    if owner.poisoned {
+        return Err(RecordError::WriterPoisoned);
+    }
+    owner.poisoned = true;
+    let result = write_queued_batches(&mut owner.file, batches);
+    if result.is_ok() {
+        owner.poisoned = false;
+    }
+    result
+}
+
+fn write_queued_batches<'a>(
     file: &mut File,
-    batches: &[(WriteBatch, std::sync::mpsc::Sender<Result<(), RecordError>>)],
+    batches: impl Iterator<Item = &'a WriteBatch>,
 ) -> Result<(), RecordError> {
     let mut expected = file.metadata()?.len();
     let mut barrier = Barrier::Line;
-    for (batch, _) in batches {
+    for batch in batches {
         if expected != batch.expected_bytes {
             return Err(RecordError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -497,7 +510,7 @@ fn write_queued_batches(
         barrier = batch.barrier;
     }
     match barrier {
-        Barrier::Line => sync_line(file)?,
+        Barrier::Line => {}
         Barrier::Turn => file.sync_data()?,
     }
     Ok(())
@@ -508,6 +521,80 @@ mod tests {
     use super::*;
     use crate::replay;
     use iteron_protocol::{TenantId, TurnId};
+
+    #[test]
+    fn direct_writes_and_queued_barriers_share_order_and_poison_state() {
+        let dir =
+            std::env::temp_dir().join(format!("iteron-record-direct-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for queued_failure in [false, true] {
+            let path = dir.join(format!("{queued_failure}.jsonl"));
+            let file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            // Windows Rollout uses a separate lock sidecar so readers can inspect the WAL.
+            // The real writer/reopen test below covers that platform-specific ownership path.
+            #[cfg(not(windows))]
+            file.try_lock().unwrap();
+            let mut owner = RolloutAppendActor::spawn(file, &RunId("direct-order".into())).unwrap();
+            for (expected, bytes, barrier) in [
+                (0, b"a\n", Barrier::Line),
+                (2, b"b\n", Barrier::Turn),
+                (4, b"c\n", Barrier::Line),
+            ] {
+                owner
+                    .write(WriteBatch {
+                        expected_bytes: expected,
+                        bytes: bytes.to_vec(),
+                        barrier,
+                        inject_sync_fault: false,
+                    })
+                    .unwrap();
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), b"a\nb\nc\n");
+            let failure_barrier = if queued_failure {
+                Barrier::Turn
+            } else {
+                Barrier::Line
+            };
+            let other_barrier = if queued_failure {
+                Barrier::Line
+            } else {
+                Barrier::Turn
+            };
+            // A mismatch is detected before mutation on either dispatch path. The other path
+            // must then refuse even when its expected length would otherwise be correct.
+            assert!(
+                owner
+                    .write(WriteBatch {
+                        expected_bytes: 5,
+                        bytes: b"bad\n".to_vec(),
+                        barrier: failure_barrier,
+                        inject_sync_fault: false,
+                    })
+                    .is_err()
+            );
+            assert!(matches!(
+                owner.write(WriteBatch {
+                    expected_bytes: 6,
+                    bytes: b"late\n".to_vec(),
+                    barrier: other_barrier,
+                    inject_sync_fault: false,
+                }),
+                Err(RecordError::WriterPoisoned)
+            ));
+            drop(owner);
+            let reopened = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+            reopened.try_lock().unwrap();
+            drop(reopened);
+            assert_eq!(std::fs::read(&path).unwrap(), b"a\nb\nc\n");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn observations_wait_for_the_next_authoritative_barrier() {
@@ -579,7 +666,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("coalesced.jsonl");
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .read(true)
@@ -613,7 +700,11 @@ mod tests {
             .unwrap();
         drop(sender);
 
-        assert_eq!(run_worker(&mut file, receiver), 1);
+        let owner = Mutex::new(AppendFile {
+            file,
+            poisoned: false,
+        });
+        assert_eq!(run_worker(&owner, receiver), 1);
         first.recv().unwrap().unwrap();
         second.recv().unwrap().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"a\nb\n");
@@ -621,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_batch_uses_one_barrier_and_replays_every_event() {
+    fn semantic_batch_acknowledges_one_write_and_replays_every_event() {
         let dir = std::env::temp_dir().join(format!("iteron-record-batch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let run = RunId("batch".into());
@@ -644,7 +735,7 @@ mod tests {
             },
         ];
         assert_eq!(rollout.append_batch(&events).unwrap(), vec![Seq(0), Seq(1)]);
-        assert_eq!(rollout.barriers_taken(), (0, 1));
+        assert_eq!(rollout.barriers_taken(), (1, 0));
         drop(rollout);
         assert_eq!(replay(&dir.join("batch.jsonl")).unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(dir);

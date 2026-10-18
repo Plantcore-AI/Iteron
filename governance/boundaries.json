@@ -2513,12 +2513,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",
@@ -4617,12 +4625,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",
@@ -5747,12 +5763,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",
@@ -6453,12 +6477,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",
@@ -7095,12 +7127,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",
@@ -7747,12 +7787,20 @@
           "path": "crates/cli/src/runtime/request_context_evidence.rs"
         },
         {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/request_context_evidence"
+        },
+        {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_context_evidence_tests.rs"
         },
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/request_manifest.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_manifest/archive.rs"
         },
         {
           "kind": "file",

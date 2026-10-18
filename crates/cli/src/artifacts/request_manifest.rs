@@ -9,7 +9,7 @@ use iteron_ctx::{ContextSegmentEvidence, MAX_CONTEXT_LEDGER_SEGMENTS};
 use iteron_kernel::effects::EffectTicket;
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
 use iteron_protocol::{Budget, ProviderRouteAttemptIdentity, ReasoningEffort, Seq, TurnId};
-use iteron_provider::request_capture::ProviderWireRequest;
+use iteron_provider::{AdapterKind, request_capture::ProviderWireRequest};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +36,26 @@ struct ScopedRoute {
 }
 
 impl RequestManifestScope {
+    pub(crate) fn validate_ticket(
+        ticket: &EffectTicket,
+        budget: &Budget,
+        admitted_output_tokens: u32,
+    ) -> Result<(), ArtifactStoreError> {
+        let route: &ProviderRouteAttemptIdentity = ticket
+            .provider_route_attempt()
+            .ok_or(ArtifactStoreError::InvalidRequest)?;
+        if ticket.intent_sequence() == Seq::ZERO
+            || route.physical_attempt == 0
+            || route.route_id.len() > 512
+            || ticket.effect_id().0.len() > 512
+            || admitted_output_tokens == 0
+            || budget.validate().is_err()
+        {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture(
         ticket: &EffectTicket,
         budget: &Budget,
@@ -44,21 +64,16 @@ impl RequestManifestScope {
         materials_dropped: u32,
         admitted_output_tokens: u32,
     ) -> Result<Self, ArtifactStoreError> {
-        let route: &ProviderRouteAttemptIdentity = ticket
+        Self::validate_ticket(ticket, budget, admitted_output_tokens)?;
+        let route = ticket
             .provider_route_attempt()
             .ok_or(ArtifactStoreError::InvalidRequest)?;
-        if ticket.intent_sequence() == Seq::ZERO
-            || route.physical_attempt == 0
-            || route.route_id.len() > 512
-            || ticket.effect_id().0.len() > 512
-            || sources.len() > MAX_CONTEXT_LEDGER_SEGMENTS
+        if sources.len() > MAX_CONTEXT_LEDGER_SEGMENTS
             || materials.len() > MAX_CONTEXT_MATERIALS
             || materials
                 .iter()
                 .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
                 .is_none_or(|bytes| bytes > MAX_CONTEXT_PROVENANCE_BYTES)
-            || admitted_output_tokens == 0
-            || budget.validate().is_err()
         {
             return Err(ArtifactStoreError::InvalidRequest);
         }
@@ -78,6 +93,71 @@ impl RequestManifestScope {
             context_materials_dropped: materials_dropped,
             admitted_output_tokens,
         })
+    }
+}
+
+/// Immutable diagnostic snapshot. Only the actual body is retained; endpoints, system text and
+/// tool schemas are represented by commitments. No message history is cloned a second time.
+pub(crate) struct CapturedRequest {
+    adapter: AdapterKind,
+    body: Vec<u8>,
+    endpoint_sha256: String,
+    system_sha256: String,
+    tool_schemas_sha256: String,
+    max_output_tokens: u32,
+    serialized_output_tokens: u32,
+    reasoning_effort: ReasoningEffort,
+    thinking_budget_tokens: u32,
+    controls: PreparedControls,
+}
+
+impl CapturedRequest {
+    pub(crate) fn capture(wire: ProviderWireRequest<'_>) -> Result<Self, ArtifactStoreError> {
+        if wire.method != "POST"
+            || wire.content_type != "application/json"
+            || wire.body.len() > 32 * 1024 * 1024
+            || wire.endpoint.len() > 16 * 1024
+            || wire.serialized_output_tokens == 0
+            || std::str::from_utf8(wire.body).is_err()
+        {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
+        let controls = wire.request.controls;
+        Ok(Self {
+            adapter: wire.adapter,
+            body: wire.body.to_vec(),
+            endpoint_sha256: commitment(wire.endpoint.as_bytes()),
+            system_sha256: commitment(wire.request.system.as_bytes()),
+            tool_schemas_sha256: commitment(wire.request.tools.canonical_json().as_bytes()),
+            max_output_tokens: wire.request.max_tokens,
+            serialized_output_tokens: wire.serialized_output_tokens,
+            reasoning_effort: wire.request.reasoning_effort,
+            thinking_budget_tokens: wire.request.thinking_budget,
+            controls: PreparedControls {
+                service_tier: controls.service_tier.label(),
+                verbosity: controls.verbosity.label(),
+                compression: controls.compression.label(),
+                cache_breakpoint: format!("{:?}", controls.prompt_cache.breakpoint),
+                cache_scope: format!("{:?}", controls.prompt_cache.scope),
+                cache_ttl_seconds: controls.prompt_cache.ttl_seconds,
+                idempotent: controls.idempotent,
+                connect_tls_ms: controls.transport.connect_tls.as_millis(),
+                request_total_ms: controls.transport.request_total.as_millis(),
+                stream_idle_ms: controls.transport.stream_idle.as_millis(),
+            },
+        })
+    }
+}
+
+impl RequestManifestScope {
+    pub(crate) fn retained_bytes(&self) -> Option<usize> {
+        let metadata = serde_json::to_vec(self).ok()?.len();
+        self.context_materials
+            .iter()
+            .try_fold(metadata, |sum, item| {
+                sum.checked_add(item.captured_bytes())?
+                    .checked_add(serde_json::to_vec(item.view()).ok()?.len())
+            })
     }
 }
 
@@ -110,7 +190,7 @@ struct PreparedRequestManifest<'a> {
     per_material_origin_availability: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct PreparedControls {
     service_tier: &'static str,
     verbosity: &'static str,
@@ -149,23 +229,18 @@ impl DurableArtifactStore {
     pub(crate) fn publish_prepared_request(
         &self,
         scope: &RequestManifestScope,
-        wire: ProviderWireRequest<'_>,
+        capture: &CapturedRequest,
     ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
-        if wire.method != "POST"
-            || wire.content_type != "application/json"
-            || wire.body.len() > 32 * 1024 * 1024
-            || wire.endpoint.len() > 16 * 1024
-            || wire.serialized_output_tokens == 0
-            || wire.serialized_output_tokens > scope.admitted_output_tokens
-        {
+        if capture.serialized_output_tokens > scope.admitted_output_tokens {
             return Err(ArtifactStoreError::InvalidRequest);
         }
         let original =
-            std::str::from_utf8(wire.body).map_err(|_| ArtifactStoreError::InvalidRequest)?;
+            std::str::from_utf8(&capture.body).map_err(|_| ArtifactStoreError::InvalidRequest)?;
         let material_provenance = self.publish_material_provenance(
             scope.source_event_seq.0,
             &scope.context_materials,
-            &wire,
+            capture.adapter,
+            &capture.body,
         )?;
         // Scrub the complete body before splitting, so a credential crossing a chunk edge cannot
         // escape redaction. Chunk identities always refer to the actual scrubbed served bytes.
@@ -195,38 +270,26 @@ impl DurableArtifactStore {
             )?);
             remaining = &remaining[end..];
         }
-        let controls = wire.request.controls;
         let manifest = PreparedRequestManifest {
             kind: "provider_request_prepared_v1",
             scope,
-            adapter: match wire.adapter {
+            adapter: match capture.adapter {
                 iteron_provider::AdapterKind::AnthropicMessages => "anthropic_messages",
                 iteron_provider::AdapterKind::OpenAiCompatibleChat => "openai_chat_completions",
                 iteron_provider::AdapterKind::OpenAiResponses => "openai_responses",
             },
             method: "POST",
-            endpoint_sha256: commitment(wire.endpoint.as_bytes()),
+            endpoint_sha256: capture.endpoint_sha256.clone(),
             content_type: "application/json",
-            wire_body_sha256: commitment(wire.body),
-            wire_body_bytes: wire.body.len(),
-            system_sha256: commitment(wire.request.system.as_bytes()),
-            tool_schemas_sha256: commitment(wire.request.tools.canonical_json().as_bytes()),
-            max_output_tokens: wire.request.max_tokens,
-            serialized_output_tokens: wire.serialized_output_tokens,
-            reasoning_effort: wire.request.reasoning_effort,
-            thinking_budget_tokens: wire.request.thinking_budget,
-            controls: PreparedControls {
-                service_tier: controls.service_tier.label(),
-                verbosity: controls.verbosity.label(),
-                compression: controls.compression.label(),
-                cache_breakpoint: format!("{:?}", controls.prompt_cache.breakpoint),
-                cache_scope: format!("{:?}", controls.prompt_cache.scope),
-                cache_ttl_seconds: controls.prompt_cache.ttl_seconds,
-                idempotent: controls.idempotent,
-                connect_tls_ms: controls.transport.connect_tls.as_millis(),
-                request_total_ms: controls.transport.request_total.as_millis(),
-                stream_idle_ms: controls.transport.stream_idle.as_millis(),
-            },
+            wire_body_sha256: commitment(&capture.body),
+            wire_body_bytes: capture.body.len(),
+            system_sha256: capture.system_sha256.clone(),
+            tool_schemas_sha256: capture.tool_schemas_sha256.clone(),
+            max_output_tokens: capture.max_output_tokens,
+            serialized_output_tokens: capture.serialized_output_tokens,
+            reasoning_effort: capture.reasoning_effort,
+            thinking_budget_tokens: capture.thinking_budget_tokens,
+            controls: capture.controls.clone(),
             served_body_sha256: commitment(served.as_bytes()),
             served_body_bytes: served.len(),
             served_body_chunks: chunks.clone(),

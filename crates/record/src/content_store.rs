@@ -6,6 +6,7 @@ mod derivative;
 mod encoding;
 mod fields;
 mod lineage;
+mod metadata;
 mod model;
 mod references;
 mod revocation;
@@ -189,7 +190,8 @@ fn put_private_content_at_surface_with_sources(
     ensure_layout(&layout)?;
     // A retained artifact shares this tenant store with record publication. Wait only for
     // the existing bounded acquisition window, before any blob or reference mutation.
-    let _lock = lock_store_for_record(&layout, lock_store)?;
+    let store_lock = lock_store_for_record(&layout, lock_store)?;
+    let state = store_lock.write_state()?;
     if sources.len() > model::MAX_CONTENT_LINEAGE_EDGES {
         return Err(ContentStoreError::ReferenceBound {
             max: model::MAX_CONTENT_LINEAGE_EDGES,
@@ -200,10 +202,10 @@ fn put_private_content_at_surface_with_sources(
     sources.dedup();
     for source in &sources {
         references::verify_source_owner_locked(&layout, source)?;
-        ensure_available_locked(&layout, &source.digest)?;
+        ensure_available_locked(&layout, state, &source.digest)?;
     }
     let digest = digest_bytes(bytes);
-    store_locked(&layout, &digest, bytes)?;
+    store_locked(&layout, state, &digest, bytes)?;
     // Lineage is durable before the serving reference. A crash can therefore leave an
     // unreachable conservative descendant, never a readable derivative with missing sources.
     let lineage = match lineage::publish_locked(&layout, &sources, run, &digest, seq, surface) {
@@ -242,7 +244,7 @@ fn remove_unreferenced_material_locked(
     digest: &ErasureContentDigest,
 ) -> Result<(), ContentStoreError> {
     let reference_dir = layout.object_path(&layout.refs, digest);
-    let referenced = match std::fs::read_dir(&reference_dir) {
+    let referenced = match metadata::read_dir(&reference_dir) {
         Ok(mut entries) => entries.next().transpose()?.is_some(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
@@ -318,11 +320,12 @@ fn read_private_content_at_reference_locked(
     // A derivative is available only while every durable source edge is available. This is the
     // crash-safe half of propagation: a root tombstone immediately closes reads even if a process
     // died before it could tombstone or unlink the derivative itself.
+    let state = read_state(layout)?;
     for source in lineage::sources_for_reference(layout, owner, &handle.digest, seq, surface)? {
         references::verify_source_owner_locked(layout, &source)?;
-        load_bytes(layout, &source.digest)?;
+        storage::load_bytes_with_state(layout, &state, &source.digest)?;
     }
-    load_bytes(layout, &handle.digest)
+    storage::load_bytes_with_state(layout, &state, &handle.digest)
 }
 
 fn private_content_sources_at_reference(
@@ -337,9 +340,12 @@ fn private_content_sources_at_reference(
     ensure_layout(&layout)?;
     let _store_lock = lock_store_shared(&layout)?;
     let sources = lineage::sources_for_reference(&layout, owner, &handle.digest, seq, surface)?;
-    for source in &sources {
-        references::verify_source_owner_locked(&layout, source)?;
-        load_bytes(&layout, &source.digest)?;
+    if !sources.is_empty() {
+        let state = read_state(&layout)?;
+        for source in &sources {
+            references::verify_source_owner_locked(&layout, source)?;
+            storage::load_bytes_with_state(&layout, &state, &source.digest)?;
+        }
     }
     Ok(sources)
 }
@@ -406,7 +412,7 @@ impl ExactRunContentRelease {
         let store_lock = lock_store(&layout)?;
         let owner_lock = lock_owner(&layout, run)?;
         let run_dir = layout.run_reference_dir(run);
-        let entries = match std::fs::read_dir(&run_dir) {
+        let entries = match metadata::read_dir(&run_dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self {
@@ -505,7 +511,7 @@ pub(crate) fn release_private_content_for_absent_runs(
     let _lock = lock_store(&layout)?;
     let mut run_dirs = Vec::new();
     for entry in
-        std::fs::read_dir(&layout.run_refs)?.take(model::MAX_CONTENT_RUNS.saturating_add(1))
+        metadata::read_dir(&layout.run_refs)?.take(model::MAX_CONTENT_RUNS.saturating_add(1))
     {
         if run_dirs.len() == model::MAX_CONTENT_RUNS {
             return Err(ContentStoreError::ReferenceBound {
@@ -524,7 +530,7 @@ pub(crate) fn release_private_content_for_absent_runs(
         let mut owner = None;
         let mut has_record_edge = false;
         let mut edge_count = 0usize;
-        for entry in std::fs::read_dir(&run_dir)?.take(
+        for entry in metadata::read_dir(&run_dir)?.take(
             iteron_tunables::param_integer(
                 "record.content_store.model.max_content_references",
                 MAX_CONTENT_REFERENCES,
@@ -565,7 +571,7 @@ pub(crate) fn release_private_content_for_absent_runs(
             owner = Some(edge.run_id);
         }
         let Some(owner) = owner else {
-            std::fs::remove_dir(&run_dir)?;
+            metadata::remove_empty_dir(&run_dir)?;
             continue;
         };
         // Projection owners deliberately have no journal. They remain until their projection is
@@ -592,7 +598,7 @@ pub(crate) fn release_private_content_for_absent_runs(
 
 fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreError> {
     let run_dir = layout.run_reference_dir(run);
-    let entries = match std::fs::read_dir(&run_dir) {
+    let entries = match metadata::read_dir(&run_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error.into()),
@@ -636,7 +642,7 @@ fn release_run_locked(layout: &Layout, run: &RunId) -> Result<u32, ContentStoreE
         let digest_dir = layout.object_path(&layout.refs, &edge.digest);
         remove_if_present(&digest_dir.join(edge_id))?;
         remove_if_present(&run_edge)?;
-        let digest_has_references = match std::fs::read_dir(&digest_dir) {
+        let digest_has_references = match metadata::read_dir(&digest_dir) {
             Ok(mut entries) => entries.next().transpose()?.is_some(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(error.into()),
@@ -667,6 +673,9 @@ pub(crate) fn externalize_event_payload(
     seq: Seq,
     payload: &mut serde_json::Value,
 ) -> Result<(), ContentStoreError> {
+    if !fields::has_content_fields(payload) {
+        return mark_externalized_payload(payload);
+    }
     // A workspace checkpoint is a derivative of every record field admitted before its effect.
     // Capture the bounded source inventory before taking the store mutex, then revalidate it under
     // that mutex below. The checkpoint event itself is not yet a source and cannot create a cycle.
@@ -685,10 +694,11 @@ pub(crate) fn externalize_event_payload(
     // authoritative rollout. Their short critical sections may overlap an event append, but a
     // transient lock collision is not a broken audit trail. Wait only at lock acquisition, before
     // this append can mutate content or reference state, and keep the wait strictly bounded.
-    let _lock = lock_store_for_record(&layout, lock_store)?;
+    let store_lock = lock_store_for_record(&layout, lock_store)?;
+    let state = store_lock.write_state()?;
     for source in &checkpoint_sources {
         references::verify_source_owner_locked(&layout, source)?;
-        ensure_available_locked(&layout, &source.digest)?;
+        ensure_available_locked(&layout, state, &source.digest)?;
     }
     let mut ordinal = 0u16;
     fields::visit_content_fields(payload, |field_class, value| {
@@ -696,50 +706,36 @@ pub(crate) fn externalize_event_payload(
         let (bytes, encoding) = encoding::encode(value)?;
         ensure_content_bound(&bytes)?;
         let digest = digest_bytes(&bytes);
-        store_locked(&layout, &digest, &bytes)?;
-        write_edge_locked(
+        store_locked(&layout, state, &digest, &bytes)?;
+        let semantic = semantic_namespace.map(|namespace| namespace.surface());
+        // Publish checkpoint lineage before the atomic root/semantic pair. A crash may leave
+        // conservative lineage, but no readable checkpoint missing a source. Ordinary edge
+        // publication failure rolls that lineage back; the event is not yet appended.
+        let lineage = if semantic == Some(ContentReferenceSurface::Checkpoint) {
+            Some(lineage::publish_locked(
+                &layout,
+                &checkpoint_sources,
+                run,
+                &digest,
+                seq,
+                ContentReferenceSurface::Checkpoint,
+            )?)
+        } else {
+            None
+        };
+        if let Err(error) = storage::write_record_edges_locked(
             &layout,
             &digest,
             run,
             seq,
             ordinal,
             field_class,
-            ContentReferenceSurface::RecordField,
-            PrivateContentRetention::Session,
-        )?;
-        if let Some(namespace) = semantic_namespace {
-            let surface = namespace.surface();
-            // Publish all checkpoint lineage before its serving semantic reference. A crash can
-            // leave conservative lineage and the record-field root, but never a readable
-            // Checkpoint derivative missing one source. An ordinary reference failure rolls the
-            // lineage back; the not-yet-appended event cannot expose the conservative root.
-            let lineage = if surface == ContentReferenceSurface::Checkpoint {
-                Some(lineage::publish_locked(
-                    &layout,
-                    &checkpoint_sources,
-                    run,
-                    &digest,
-                    seq,
-                    surface,
-                )?)
-            } else {
-                None
-            };
-            if let Err(error) = write_edge_locked(
-                &layout,
-                &digest,
-                run,
-                seq,
-                ordinal,
-                field_class,
-                surface,
-                PrivateContentRetention::Session,
-            ) {
-                if let Some(lineage) = lineage {
-                    lineage.rollback()?;
-                }
-                return Err(error);
+            semantic,
+        ) {
+            if let Some(lineage) = lineage {
+                lineage.rollback()?;
             }
+            return Err(error);
         }
         ordinal = ordinal
             .checked_add(1)
@@ -749,6 +745,10 @@ pub(crate) fn externalize_event_payload(
         *value = serde_json::Value::String(encoding::marker(&digest, encoding));
         Ok::<(), ContentStoreError>(())
     })?;
+    mark_externalized_payload(payload)
+}
+
+fn mark_externalized_payload(payload: &mut serde_json::Value) -> Result<(), ContentStoreError> {
     let object = payload.as_object_mut().ok_or(ContentStoreError::Corrupt)?;
     if object
         .insert(
@@ -932,6 +932,11 @@ pub(crate) fn hydrate_event_payload_budgeted(
     };
     if version.as_u64() != Some(u64::from(STORE_VERSION)) {
         return Err(ContentStoreError::Corrupt);
+    }
+    // Control/accounting-only records carry no private references. They must not acquire the
+    // content owner or reread revocation state when appending or replaying a long journal.
+    if !fields::has_content_fields(payload) {
+        return Ok(());
     }
     let layout = Layout::new(runs_dir, tenant);
     let state = read_state(&layout)?;

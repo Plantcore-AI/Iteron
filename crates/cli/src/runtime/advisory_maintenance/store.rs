@@ -135,8 +135,6 @@ impl FileJournal {
             if first {
                 self.lease
                     .write_all(b"maintenance-genesis-v1")
-                    .and_then(|()| self.lease.sync_all())
-                    .and_then(|()| self.directory.sync_all())
                     .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             }
             // SAFETY: pinned live descriptor and static C string; unlink does not follow a link.
@@ -160,7 +158,6 @@ impl FileJournal {
             .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             staging
                 .write_all(bytes)
-                .and_then(|()| staging.sync_all())
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             // SAFETY: both fixed names live under the retained private directory descriptor.
             if unsafe {
@@ -174,9 +171,9 @@ impl FileJournal {
             {
                 return Err(MaintenanceReadError::ReconciliationNeeded);
             }
-            self.directory
-                .sync_all()
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+            // Advisory state follows the standalone OS-write contract. The pinned rename and
+            // complete writes preserve process-restart semantics; no device flush is promised.
+            Ok(())
         }
         #[cfg(windows)]
         {

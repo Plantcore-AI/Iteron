@@ -243,7 +243,8 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
     // A one-shot invocation is a sibling client of the same resident App Server as the TUI. It
     // deliberately leaves interactive approvals disabled, preserving the historical fail-closed
     // behavior of non-interactive runs.
-    let attached = app_server::attach(agent, false, true)?;
+    let publication = agent.rollout.foreground_activity()?;
+    let attached = app_server::attach_one_shot(agent, publication)?;
     let app_server::Attached {
         handle,
         task: server_task,

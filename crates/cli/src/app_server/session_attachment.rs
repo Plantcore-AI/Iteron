@@ -97,6 +97,22 @@ pub(crate) fn attach(
     )
 }
 
+/// One-shot shares the resident protocol, while its known session close coalesces derivative
+/// publication through the final policy record. The caller acquires the guard before attachment.
+pub(crate) fn attach_one_shot(
+    agent: Agent,
+    publication: iteron_record::ForegroundActivity,
+) -> Result<Attached, ProtocolVersionError> {
+    attach_with_inputs(
+        agent,
+        false,
+        true,
+        PlantcoreAdmission::disabled(),
+        false,
+        Some(publication),
+    )
+}
+
 /// Explicit authenticated remote interaction mode. The operator separately chooses the existing
 /// kernel approval channel; an ordinary connection cannot enable it. Forms use their same owner.
 pub(crate) fn attach_remote(
@@ -110,6 +126,7 @@ pub(crate) fn attach_remote(
         lossless_events,
         PlantcoreAdmission::disabled(),
         true,
+        None,
     )
 }
 
@@ -140,6 +157,7 @@ pub(super) fn attach_with_plantcore(
         lossless_events,
         plantcore,
         interactive_approvals,
+        None,
     )
 }
 fn attach_with_inputs(
@@ -148,6 +166,7 @@ fn attach_with_inputs(
     lossless_events: bool,
     plantcore: PlantcoreAdmission,
     input_handler: bool,
+    terminal_publication: Option<iteron_record::ForegroundActivity>,
 ) -> Result<Attached, ProtocolVersionError> {
     let machine_schema_version = if plantcore.is_enabled() {
         crate::machine_projection::V7_SCHEMA_VERSION
@@ -214,8 +233,9 @@ fn attach_with_inputs(
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
     let session_factory = super::session_factory::SessionFactory::capture(&agent, &handle.client);
-    let server =
+    let mut server =
         AppServer::new_with_session_factory(agent, ends, interactive_approvals, session_factory);
+    server.terminal_publication = terminal_publication;
     if input_handler && !interactive_approvals {
         server.enable_input_handler();
     }

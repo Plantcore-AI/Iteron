@@ -96,6 +96,13 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         self.ensure_record_healthy()?;
         self.publish_captured_answer();
+        // Optional diagnostics are drained once at task completion, never between model rounds.
+        // Failure is visible separately; it does not rewrite the observed outcome of tools.
+        if let Err(error) = self.flush_request_archive() {
+            self.ui(UiEvent::Notice(format!(
+                "Request archive incomplete: {error}"
+            )));
+        }
         if outcome == Outcome::Done && self.complete_plantcore_product().is_err() {
             outcome = Outcome::HarnessError;
         }

@@ -5,15 +5,12 @@ use iteron_provider::request_capture::RequestCaptureError;
 
 #[derive(Clone, Copy)]
 pub(super) enum Stage {
-    StoreCapture,
     TicketScope,
+    WireAdmission,
     StateLock,
     StateTransition,
     MailboxPreparation,
-    PreparedPublication,
     MailboxConfirmation,
-    DispatchPublication,
-    UnsupportedPublication,
     UnsupportedMailbox,
 }
 
@@ -46,15 +43,12 @@ pub(super) fn refused(
 
 fn labels(stage: Stage, cause: Cause) -> (&'static str, &'static str) {
     let stage = match stage {
-        Stage::StoreCapture => "store_capture",
         Stage::TicketScope => "ticket_scope",
+        Stage::WireAdmission => "wire_admission",
         Stage::StateLock => "state_lock",
         Stage::StateTransition => "state_transition",
         Stage::MailboxPreparation => "mailbox_preparation",
-        Stage::PreparedPublication => "prepared_publication",
         Stage::MailboxConfirmation => "mailbox_confirmation",
-        Stage::DispatchPublication => "dispatch_publication",
-        Stage::UnsupportedPublication => "unsupported_publication",
         Stage::UnsupportedMailbox => "unsupported_mailbox",
     };
     let code = match cause {
@@ -87,15 +81,12 @@ mod tests {
     #[test]
     fn diagnostics_are_bounded_closed_codes_without_foreign_error_content() {
         let stages = [
-            Stage::StoreCapture,
             Stage::TicketScope,
+            Stage::WireAdmission,
             Stage::StateLock,
             Stage::StateTransition,
             Stage::MailboxPreparation,
-            Stage::PreparedPublication,
             Stage::MailboxConfirmation,
-            Stage::DispatchPublication,
-            Stage::UnsupportedPublication,
             Stage::UnsupportedMailbox,
         ];
         let causes = [
@@ -125,17 +116,17 @@ mod tests {
         }
         assert_eq!(
             line(
-                Stage::PreparedPublication,
+                Stage::WireAdmission,
                 Cause::Artifact(ArtifactStoreError::Unavailable)
             ),
-            "request observation refused: stage=prepared_publication code=artifact_unavailable"
+            "request observation refused: stage=wire_admission code=artifact_unavailable"
         );
         assert_eq!(
             line(
-                Stage::DispatchPublication,
+                Stage::WireAdmission,
                 Cause::Artifact(ArtifactStoreError::PublicationUnknown)
             ),
-            "request observation refused: stage=dispatch_publication code=artifact_publication_unknown"
+            "request observation refused: stage=wire_admission code=artifact_publication_unknown"
         );
     }
 }

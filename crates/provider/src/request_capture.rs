@@ -39,7 +39,7 @@ pub trait ProviderRequestObserver: Send + Sync {
         true
     }
     fn prepared(&self, request: ProviderWireRequest<'_>) -> Result<(), RequestCaptureError>;
-    /// This proves only durable local dispatch intent. It is not a socket write or remote ack.
+    /// This proves only ordered local dispatch intent. It is not a socket write or remote ack.
     fn dispatching(&self) -> Result<(), RequestCaptureError>;
     fn unavailable(&self, reason: &'static str) -> Result<(), RequestCaptureError>;
 }

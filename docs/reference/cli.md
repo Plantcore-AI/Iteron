@@ -22,6 +22,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | --- | --- |
 | `--tui` | Force the interactive TUI (it is the default when a terminal is attached). |
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, iteron opens the interactive TUI (the default). |
+| `--archive-requests` | Retain full provider requests for diagnostics; publish the bounded archive at task completion. Disabled by default. Archive status is reported separately from task completion. |
 | `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
 | `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v8 default. |

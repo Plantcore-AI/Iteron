@@ -1,5 +1,7 @@
 # 3. 微内核规格 (Microkernel / TCB Specification)
 
+> **当前 standalone 持久化覆盖（2026-10-18）。** 本文下文关于逐事件、`EffectIntent` 或 `TurnEnd` 必须先 `fsync`，以及完整请求归档先于 provider 派发的历史表述，在当前 standalone 实现中由 [Standalone persistence contract](standalone-persistence.md) 覆盖。当前语义是：效果准入等待完整操作系统写入确认；普通 continuation 不强制刷盘；`Done` 同步 journal，但不构成整个私有内容存储的断电检查点；完整请求归档默认关闭，显式启用后在完成边界发布。身份、授权、脱敏、哈希链验证、unknown 效果不自动重放及版本化 ABI 的约束仍然有效。当前实现不承诺逐事件断电持久性；性能目标不等于已验证结果。
+
 本节规定 Iteron 的**受信计算基 (Trusted Computing Base, TCB)**,即**微内核 (microkernel)**,的确切边界:它包含哪些组件、每个组件的契约 (contract) 与一个具体示例、它所强制的不变量、以及它**绝不做**的事(负空间, negative space)。本节的所有 MUST / SHOULD / MAY 均按 RFC-2119 解读。
 
 微内核是整个 harness 中**唯一不可训练、不可进化、不可替换**的部分。§2 的论点(即「专门化一个 agent 是训练 harness,而不是训练模型」)只有在存在一个固定的、可信的安全内核时才成立:自我改进算子 (self-improving operator) 的每一个输出都必须落在这个内核所界定的授权范围之内。**安全不能是自我改进算子的不动点 (Safety cannot be a fixed point of the self-improving operator)**;因此内核位于 ABI 之外、位于进化回路之外,由人类治理(晋升与回滚的权威见 §3.2-K8 与 §6)。

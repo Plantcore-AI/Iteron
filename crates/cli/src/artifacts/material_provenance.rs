@@ -6,7 +6,7 @@ use iteron_ctx::context_provenance::{
     ContextMaterialViewV1, MAX_CONTEXT_MATERIALS, MAX_CONTEXT_PROVENANCE_BYTES,
 };
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
-use iteron_provider::{AdapterKind, request_capture::ProviderWireRequest};
+use iteron_provider::AdapterKind;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -197,7 +197,8 @@ impl DurableArtifactStore {
         &self,
         source_event_seq: u64,
         materials: &[CapturedContextMaterial],
-        wire: &ProviderWireRequest<'_>,
+        adapter: AdapterKind,
+        wire_body: &[u8],
     ) -> Result<MaterialProvenancePublication, ArtifactStoreError> {
         if materials.len() > MAX_CONTEXT_MATERIALS
             || materials
@@ -213,7 +214,7 @@ impl DurableArtifactStore {
                 archive: None,
             });
         }
-        let fields = PreparedContextFields::capture(wire);
+        let fields = PreparedContextFields::capture(adapter, wire_body);
         let mut archive = MaterialArchive::new();
         let mut pending = Vec::with_capacity(materials.len());
         for material in materials {
@@ -305,16 +306,16 @@ struct PreparedContextFields {
     unavailable: Option<&'static str>,
 }
 impl PreparedContextFields {
-    fn capture(wire: &ProviderWireRequest<'_>) -> Self {
+    fn capture(adapter: AdapterKind, wire_body: &[u8]) -> Self {
         let unavailable = |reason| Self {
             texts: Vec::new(),
             bytes: 0,
             unavailable: Some(reason),
         };
-        if wire.body.len() > 32 * 1024 * 1024 {
+        if wire_body.len() > 32 * 1024 * 1024 {
             return unavailable("prepared_body_bounds");
         }
-        let Ok(body) = serde_json::from_slice::<Value>(wire.body) else {
+        let Ok(body) = serde_json::from_slice::<Value>(wire_body) else {
             return unavailable("prepared_body_not_json");
         };
         let mut result = Self {
@@ -322,7 +323,7 @@ impl PreparedContextFields {
             bytes: 0,
             unavailable: None,
         };
-        match wire.adapter {
+        match adapter {
             AdapterKind::AnthropicMessages => {
                 if let Some(system) = body.get("system") {
                     result.push(system);

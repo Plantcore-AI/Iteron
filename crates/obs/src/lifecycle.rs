@@ -75,6 +75,10 @@ struct SubscriberQueue {
     capacity: usize,
     events: Mutex<PriorityEventQueue>,
     ready: Condvar,
+    // Registration and inspection are serialized by events, including Condvar's atomic unlock.
+    waiting: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    notifications: std::sync::atomic::AtomicUsize,
 }
 
 /// Two FIFO classes preserve value-aware boundedness without scanning the whole recorder on every
@@ -169,15 +173,31 @@ impl SubscriberQueue {
         let Ok(mut events) = self.events.try_lock() else {
             return SubscriberPush::Busy;
         };
+        self.push_locked(&mut events, event, low_value)
+    }
+
+    fn push_locked(
+        &self,
+        events: &mut PriorityEventQueue,
+        event: Arc<LifecycleEventEnvelope>,
+        low_value: bool,
+    ) -> SubscriberPush {
+        let was_empty = events.is_empty();
         let admitted = events.push(event, low_value, self.capacity);
-        drop(events);
+        if was_empty
+            && admitted != PriorityPush::DroppedIncoming
+            && self.waiting.load(Ordering::Relaxed) != 0
+        {
+            // The queue mutex also protects the receiver's empty check before waiting. A burst
+            // needs one notification; wake every waiter because the public subscriber may be
+            // shared by several consumers and more events can arrive before any waiter runs.
+            self.ready.notify_all();
+            #[cfg(test)]
+            self.notifications.fetch_add(1, Ordering::Relaxed);
+        }
         match admitted {
-            PriorityPush::Stored => {
-                self.ready.notify_one();
-                SubscriberPush::Stored
-            }
+            PriorityPush::Stored => SubscriberPush::Stored,
             PriorityPush::StoredAfterLowDrop | PriorityPush::StoredAfterHighDrop => {
-                self.ready.notify_one();
                 SubscriberPush::StoredAfterDrop
             }
             PriorityPush::DroppedIncoming => SubscriberPush::Dropped,
@@ -215,11 +235,13 @@ impl LifecycleSubscriber {
             if remaining.is_zero() {
                 return Err(mpsc::RecvTimeoutError::Timeout);
             }
+            self.inner.waiting.fetch_add(1, Ordering::Relaxed);
             let (next, wait) = self
                 .inner
                 .ready
                 .wait_timeout(events, remaining)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.inner.waiting.fetch_sub(1, Ordering::Relaxed);
             events = next;
             if wait.timed_out() && events.is_empty() {
                 return Err(mpsc::RecvTimeoutError::Timeout);
@@ -340,6 +362,9 @@ impl LifecycleBus {
                 capacity,
                 events: Mutex::new(PriorityEventQueue::default()),
                 ready: Condvar::new(),
+                waiting: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                notifications: std::sync::atomic::AtomicUsize::new(0),
             }),
         };
         let mut subscribers = self
@@ -486,6 +511,103 @@ mod tests {
         let mut event = event(ordinal);
         event.event_id = LifecycleEventId::new(id).unwrap();
         event
+    }
+
+    #[test]
+    fn subscriber_burst_coalesces_notifications_and_preserves_consumer_order() {
+        let bus = LifecycleBus::new(32);
+        let receiver = bus.subscribe(32).unwrap();
+        let queue = Arc::clone(&receiver.inner);
+        let (release, start) = mpsc::channel();
+        let consumer = std::thread::spawn(move || {
+            start.recv_timeout(Duration::from_secs(2)).unwrap();
+            (0..32)
+                .map(|_| {
+                    receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap()
+                        .ordinal
+                })
+                .collect::<Vec<_>>()
+        });
+        for ordinal in 0..32 {
+            let id = if ordinal % 2 == 0 {
+                "session.created"
+            } else {
+                "model.stream_item"
+            };
+            bus.record(named_event(ordinal, id)).unwrap();
+        }
+        assert_eq!(queue.notifications.load(Ordering::Relaxed), 0);
+        release.send(()).unwrap();
+        assert_eq!(consumer.join().unwrap(), (0..32).collect::<Vec<_>>());
+        assert_eq!(bus.snapshot().dropped_subscriber, 0);
+    }
+
+    #[test]
+    fn one_empty_transition_wakes_every_waiting_subscriber_consumer() {
+        let bus = LifecycleBus::new(2);
+        let receiver = bus.subscribe(2).unwrap();
+        let (completed, completions) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let consume = || {
+                let event = receiver.recv_timeout(Duration::from_secs(10));
+                completed.send(()).unwrap();
+                event
+            };
+            let first = scope.spawn(consume);
+            let second = scope.spawn(consume);
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while receiver.inner.waiting.load(Ordering::SeqCst) != 2 {
+                assert!(
+                    Instant::now() < deadline,
+                    "both consumers must enter the wait"
+                );
+                std::thread::yield_now();
+            }
+            // Acquiring this mutex after observing both registrations proves that both real
+            // Condvar waits released it. Keep it through the burst so neither consumer can
+            // empty the queue and conceal a missing notification for the other waiter.
+            let mut events = receiver.inner.events.lock().unwrap();
+            assert_eq!(receiver.inner.waiting.load(Ordering::SeqCst), 2);
+            for ordinal in 0..2 {
+                assert_eq!(
+                    receiver
+                        .inner
+                        .push_locked(&mut events, Arc::new(event(ordinal)), false),
+                    SubscriberPush::Stored
+                );
+            }
+            assert_eq!(receiver.inner.notifications.load(Ordering::Relaxed), 1);
+            drop(events);
+            // A missed notification can otherwise look successful: recv_timeout rechecks the
+            // queued predicate when its ten-second wait expires. Require both completions much
+            // earlier, and wake any stranded consumer before joining on a failed assertion.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let both_notified = (0..2).all(|_| {
+                completions
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .is_ok()
+            });
+            if !both_notified {
+                receiver.inner.ready.notify_all();
+            }
+            let mut ordinals = [
+                first.join().unwrap().unwrap().ordinal,
+                second.join().unwrap().unwrap().ordinal,
+            ];
+            assert!(
+                both_notified,
+                "both consumers must wake before their timeout"
+            );
+            ordinals.sort_unstable();
+            assert_eq!(ordinals, [0, 1]);
+            assert_eq!(receiver.inner.waiting.load(Ordering::SeqCst), 0);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        });
     }
 
     #[test]

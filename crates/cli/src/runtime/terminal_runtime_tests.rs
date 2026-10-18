@@ -364,6 +364,7 @@ async fn already_received_physical_reap_receipt_is_not_consumed_twice() {
     assert!(std::iter::from_fn(|| reader.try_recv().ok()).any(
         |event| matches!(event,UiEvent::Notice(text) if text.contains("Force cancel completed"))
     ));
+    agent.finish_advisory_maintenance_for_test().await.unwrap();
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
