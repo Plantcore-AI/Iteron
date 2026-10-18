@@ -1,5 +1,6 @@
 //! The actual cache mutation, with a host-only payload and pinned target parent. It is invoked
-//! after a durable Running receipt, and returns success only after the cache's own barrier.
+//! after a Running journal receipt, and returns success after complete cache publication under
+//! the standalone persistence contract (OS writes on Unix, native snapshot storage on Windows).
 use super::{MAX_INPUT_BYTES, MaintenanceKindV1, MaintenanceReadError, hash};
 use std::path::Path;
 #[cfg(unix)]
@@ -136,7 +137,6 @@ impl CacheLease {
             )
             .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             file.write_all(bytes)
-                .and_then(|()| file.sync_all())
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             // SAFETY: both names are bound to the pinned directory; rename never follows target.
             if unsafe {
@@ -150,9 +150,9 @@ impl CacheLease {
             {
                 return Err(MaintenanceReadError::ReconciliationNeeded);
             }
-            self.directory
-                .sync_all()
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+            // Advisory state follows the standalone OS-write contract. The pinned rename and
+            // complete writes preserve process-restart semantics; no device flush is promised.
+            Ok(())
         }
         #[cfg(windows)]
         {
@@ -179,8 +179,6 @@ impl CacheLease {
         {
             self.lease
                 .write_all(b"cache-write-pending-v1")
-                .and_then(|()| self.lease.sync_all())
-                .and_then(|()| self.directory.sync_all())
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
         }
         #[cfg(windows)]
@@ -204,8 +202,6 @@ impl CacheLease {
         {
             self.lease
                 .set_len(0)
-                .and_then(|()| self.lease.sync_all())
-                .and_then(|()| self.directory.sync_all())
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
         }
         #[cfg(windows)]
@@ -226,8 +222,6 @@ impl CacheLease {
         {
             self.lease
                 .write_all(b"cache-outcome-unknown-v1")
-                .and_then(|()| self.lease.sync_all())
-                .and_then(|()| self.directory.sync_all())
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
         }
         #[cfg(windows)]

@@ -13,6 +13,7 @@ use iteron_ctx::{
 };
 use iteron_protocol::{Block, LifecyclePayload, Message, Role, ToolSpec, Trust, TurnId};
 use sha2::{Digest, Sha256};
+mod cache;
 
 #[cfg(test)]
 #[path = "request_context_evidence_tests.rs"]
@@ -52,6 +53,7 @@ pub(super) struct RequestContextEvidenceOwner {
     frontend_template_sha256: Option<[u8; 32]>,
     frontend_template_dropped: u32,
     frontend_bound_scope_sha256: Option<[u8; 32]>,
+    summaries: std::sync::Mutex<cache::EvidenceCache>,
 }
 
 impl RequestContextEvidenceOwner {
@@ -249,6 +251,10 @@ impl RequestContextEvidenceOwner {
         observation: ContextRequestObservation<'_>,
     ) -> RequestContextReport {
         let estimator = scope.estimator;
+        let mut fallback = cache::EvidenceCache::default();
+        let mut retained = self.summaries.try_lock().ok();
+        let summaries = retained.as_deref_mut().unwrap_or(&mut fallback);
+        summaries.bind(estimator.tokenizer_identity());
         let ContextRequestObservation {
             system,
             messages,
@@ -274,37 +280,22 @@ impl RequestContextEvidenceOwner {
             &mut ledger,
             ordinal,
             ContextSourceClass::KernelSystem,
-            system.as_bytes(),
+            summaries.system(system, estimator),
             scope.request_trust,
-            u64::try_from(estimator.estimate_text(system)).unwrap_or(u64::MAX),
             CacheClass::StablePrefix,
         );
         ordinal = ordinal.saturating_add(1);
         if !tools.is_empty() {
-            let mut hasher = Sha256::new();
-            hasher.update(b"iteron-request-tool-schemas-v1\0");
-            hasher.update((tools.len() as u64).to_le_bytes());
-            let mut bytes = 0u64;
-            for tool in tools {
-                let schema = tool.input_schema.to_string();
-                for field in [&tool.name, &tool.description, &schema] {
-                    hasher.update((field.len() as u64).to_le_bytes());
-                    hasher.update(field.as_bytes());
-                }
-                bytes = bytes
-                    .saturating_add(u64::try_from(tool.name.len()).unwrap_or(u64::MAX))
-                    .saturating_add(u64::try_from(tool.description.len()).unwrap_or(u64::MAX))
-                    .saturating_add(u64::try_from(schema.len()).unwrap_or(u64::MAX));
-            }
+            let schema = summaries.schemas(tools);
             ledger.record_segment(ContextSegmentEvidence {
                 segment_id: ContextSegmentId(u64::from(ordinal)),
                 parent_segment_id: None,
                 source_class: ContextSourceClass::ToolSchema,
-                source_digest_sha256: hasher.finalize().into(),
+                source_digest_sha256: schema.digest,
                 trust: Trust::Trusted,
                 ordinal,
-                bytes_before: bytes,
-                bytes_after: bytes,
+                bytes_before: schema.bytes,
+                bytes_after: schema.bytes,
                 estimated_tokens: u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX),
                 actual_tokens: None,
                 token_range: None,
@@ -330,6 +321,7 @@ impl RequestContextEvidenceOwner {
         });
         let mut lsp_tool_use_ids = std::collections::BTreeSet::new();
         for (index, message) in messages.iter().enumerate() {
+            let summary = summaries.message(index, message, estimator);
             // Tool-result messages can contain the results of several parallel calls. Record each
             // result as its own source so an LSP result never disappears into an ordinary mixed
             // tool message. The exact tool-use identity, learned from the preceding request block,
@@ -346,7 +338,6 @@ impl RequestContextEvidenceOwner {
                 .iter()
                 .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)));
             if !has_tool_results {
-                let bytes = serde_json::to_vec(message).unwrap_or_default();
                 let source = if Some(index) == active_task_index {
                     ContextSourceClass::TaskPrompt
                 } else {
@@ -359,23 +350,15 @@ impl RequestContextEvidenceOwner {
                     &mut ledger,
                     ordinal,
                     source,
-                    &bytes,
+                    summary.whole.expect("ordinary message summary"),
                     scope.request_trust,
-                    u64::try_from(estimator.estimate_text(&String::from_utf8_lossy(&bytes)))
-                        .unwrap_or(u64::MAX),
                     CacheClass::Uncached,
                 );
                 ordinal = ordinal.saturating_add(1);
                 continue;
             }
 
-            let non_results = message
-                .content
-                .iter()
-                .filter(|block| !matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
-                .collect::<Vec<_>>();
-            if !non_results.is_empty() {
-                let bytes = serde_json::to_vec(&(message.role, non_results)).unwrap_or_default();
+            if let Some(non_results) = summary.non_results {
                 let source = if Some(index) == active_task_index {
                     ContextSourceClass::TaskPrompt
                 } else {
@@ -388,15 +371,13 @@ impl RequestContextEvidenceOwner {
                     &mut ledger,
                     ordinal,
                     source,
-                    &bytes,
+                    non_results,
                     scope.request_trust,
-                    u64::try_from(estimator.estimate_text(&String::from_utf8_lossy(&bytes)))
-                        .unwrap_or(u64::MAX),
                     CacheClass::Uncached,
                 );
                 ordinal = ordinal.saturating_add(1);
             }
-            for block in &message.content {
+            for (block_index, block) in message.content.iter().enumerate() {
                 if let Block::ToolImage(image) = block {
                     record_tool_image_segment(&mut ledger, ordinal, image, estimator);
                     ordinal = ordinal.saturating_add(1);
@@ -405,7 +386,6 @@ impl RequestContextEvidenceOwner {
                 let Block::ToolResult(result) = block else {
                     continue;
                 };
-                let bytes = serde_json::to_vec(block).unwrap_or_default();
                 let source = if lsp_tool_use_ids.contains(&result.tool_use_id) {
                     ContextSourceClass::LspResult
                 } else {
@@ -415,10 +395,8 @@ impl RequestContextEvidenceOwner {
                     &mut ledger,
                     ordinal,
                     source,
-                    &bytes,
+                    summary.result(block_index),
                     result.trust,
-                    u64::try_from(estimator.estimate_text(&result.content).saturating_add(8))
-                        .unwrap_or(u64::MAX),
                     CacheClass::Uncached,
                 );
                 ordinal = ordinal.saturating_add(1);
@@ -614,21 +592,20 @@ fn record_segment(
     ledger: &mut ContextLedger,
     ordinal: u32,
     source_class: ContextSourceClass,
-    bytes: &[u8],
+    summary: cache::Summary,
     trust: Trust,
-    estimated_tokens: u64,
     cache_class: CacheClass,
 ) {
     ledger.record_segment(ContextSegmentEvidence {
         segment_id: ContextSegmentId(u64::from(ordinal)),
         parent_segment_id: None,
         source_class,
-        source_digest_sha256: digest(bytes),
+        source_digest_sha256: summary.digest,
         trust,
         ordinal,
-        bytes_before: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        bytes_after: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        estimated_tokens,
+        bytes_before: summary.bytes,
+        bytes_after: summary.bytes,
+        estimated_tokens: summary.tokens,
         actual_tokens: None,
         token_range: None,
         cache_class,

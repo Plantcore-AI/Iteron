@@ -69,10 +69,6 @@ pub(super) fn provision(path: &Path) -> Result<File, MaintenanceReadError> {
             }
             // SAFETY: successful new fd is owned and transferred exactly once.
             let child = unsafe { File::from_raw_fd(raw) };
-            child
-                .sync_all()
-                .and_then(|()| directory.sync_all())
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
             directory = child;
         } else {
             if raw < 0 {

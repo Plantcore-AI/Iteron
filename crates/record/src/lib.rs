@@ -264,65 +264,25 @@ fn inject_append_sync_fault(file: &File, durable_prefix_bytes: u64) -> std::io::
     Err(error)
 }
 
-/// How hard one append pushes its line toward the platter.
-///
-/// `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms — it asks the *device* to flush its
-/// own volatile write cache, and profiling measured it at p50 4.09 ms against tens of microseconds
-/// for a plain `fsync(2)` in the same directory. A turn appends 15 to 20 events, so paying the full
-/// barrier on every one of them spends two orders of magnitude more than the turn boundary needs.
-///
-/// What the tiering does NOT change: a *process* crash (panic, SIGKILL, an OOM kill mid-turn) never
-/// loses an appended line under either tier, because `write(2)` already handed the bytes to the
-/// kernel's page cache and the kernel outlives the process. `Barrier::Line` additionally forces
-/// them out to the device, so an OS panic does not lose them either.
-///
-/// What it DOES change, precisely: sudden power loss (or a device that lies about its cache) can
-/// now lose the events appended since the last `Barrier::Turn`. That is the only weakened mode, and
-/// the chain already tolerates it by construction — `scan_tail` truncates a torn trailing line and
-/// resumes, and every surviving line is still chain-verified.
+/// Standalone persistence acknowledges each complete OS write before advancing the chain.
+/// Continuations do not force the device cache to disk. A process crash can recover complete
+/// records from the kernel page cache; a torn trailing record is discarded on reopen. Sudden
+/// power loss may lose recent records or referenced content. This is deliberately not a
+/// per-event power-loss durability guarantee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Barrier {
-    /// Per-event: a plain `fsync(2)`. Kernel and device hold the bytes; the device's write cache
-    /// may still be volatile.
+    /// Complete write to the operating system; no forced disk synchronization.
     Line,
-    /// Turn boundary: the platform's strongest flush (`F_FULLFSYNC` on Apple), which is what
-    /// survives power loss.
+    /// Final run boundary synchronizes the journal. Referenced content retains its separately
+    /// documented buffered persistence contract, so this is not a whole-store checkpoint.
     Turn,
 }
 
-/// Turn boundaries carry the full barrier. `TurnEnd` closes one turn's accounting and `Done` closes
-/// the run; those are the points an operator can observe as "the turn happened", so those are the
-/// points that must survive power loss, not every intermediate phase/tool line inside them.
 fn barrier_for(kind: &EventKind) -> Barrier {
     match kind {
-        EventKind::TurnEnd { .. } | EventKind::Done { .. } => Barrier::Turn,
+        EventKind::Done { .. } => Barrier::Turn,
         _ => Barrier::Line,
     }
-}
-
-/// A plain `fsync(2)`. std has no API for this on Apple platforms: both `sync_all` and `sync_data`
-/// route through `F_FULLFSYNC` there, so the cheap tier has to call libc directly.
-#[cfg(unix)]
-fn sync_line(file: &File) -> std::io::Result<()> {
-    // Fully qualified rather than a `use`: this file is a managed schema source whose import
-    // fingerprint is pinned, and a platform fd accessor is not a schema change.
-    let fd = <File as std::os::unix::io::AsRawFd>::as_raw_fd(file);
-    loop {
-        // SAFETY: `fd` is borrowed from `file`, which is alive for the whole call, and `fsync`
-        // neither takes ownership of it nor reads caller memory.
-        if unsafe { libc::fsync(fd) } == 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn sync_line(file: &File) -> std::io::Result<()> {
-    file.sync_data()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1087,11 +1047,12 @@ enum SessionProjectionState {
 /// while different run files remain independently writable.
 pub struct Rollout {
     path: PathBuf,
+    _pending_publication: session_maintenance::PendingPublication,
     /// The sole owner of the append descriptor and its exclusive OS lock. Keeping this inside the
     /// façade makes every production `Rollout::append[_batch]` cross one bounded per-run writer
-    /// protocol while preserving the synchronous durability contract exposed to callers.
-    _pending_publication: session_maintenance::PendingPublication,
+    /// protocol while preserving ordered OS-write acknowledgement for callers.
     append_actor: RolloutAppendActor,
+    publication_scope: std::sync::Arc<session_publication_admission::Scope>,
     pending_observations: Vec<Event>,
     pending_observation_bytes: usize,
     run: RunId,
@@ -1108,7 +1069,7 @@ pub struct Rollout {
     /// not change append admission or poison recovery; a new writer starts without the snapshot.
     retained_failure: Option<RecordFailure>,
     /// Record-owned so every public append path observes the actual redacted, stamped event only
-    /// after fsync. A caller cannot bypass the session projection by appending directly.
+    /// after a complete append. A caller cannot bypass the session projection by appending directly.
     session_projection: SessionProjectionState,
     /// This writer's monotonic origin, set when the descriptor opened. Every `ts_us` is measured
     /// from here, which is what makes a segment internally exact without claiming to be joinable
@@ -1129,13 +1090,7 @@ impl Rollout {
     /// Exclude this process's rebuildable session publications for a complete foreground
     /// operation. The owned guard can span awaits and nests across runs in the same tenant store.
     pub fn foreground_activity(&self) -> Result<ForegroundActivity, RecordError> {
-        let runs = self.path.parent().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "rollout has no runs directory",
-            )
-        })?;
-        session_publication_admission::foreground(runs, &self.tenant)
+        session_publication_admission::foreground_in(std::sync::Arc::clone(&self.publication_scope))
     }
 
     /// Monotonic time elapsed since this writer descriptor opened.
@@ -1455,6 +1410,7 @@ impl Rollout {
             _writer_lock: writer_lock,
             path,
             append_actor,
+            publication_scope: _foreground.scope(),
             _pending_publication: pending_publication,
             pending_observations: Vec::new(),
             pending_observation_bytes: 0,
@@ -1583,14 +1539,10 @@ impl Rollout {
         Ok((next_seq, event_count, physical_line_count, last))
     }
 
-    /// Append an event. Durably `fsync`s before returning (ADR-008 write-ahead durability) at the
-    /// tier [`barrier_for`] assigns — a plain `fsync(2)` inside a turn, the platform's full barrier
-    /// at the turn boundary — and
-    /// **only advances the in-memory chain state after durability succeeds** (code review: a
-    /// failed write must not leave `last_hash`/`seq` pointing past a line that was never written,
-    /// which would silently fork the chain). Once file I/O begins the writer is pessimistically
-    /// poisoned; only a successful durability barrier clears it. An I/O error therefore requires
-    /// close + reopen, where tail recovery establishes the authoritative chain head.
+    /// Append a complete event before returning and only then advance the in-memory chain.
+    /// Intermediate events, including provider TurnEnd, acknowledge OS writes without a forced
+    /// disk flush. Done additionally synchronizes the journal. An I/O error poisons the writer;
+    /// close + reopen uses bounded tail recovery to establish the actual chain head.
     pub fn append(&mut self, event: &Event) -> Result<Seq, RecordError> {
         let _foreground = self.foreground_activity()?;
         if !self.pending_observations.is_empty() {
@@ -1860,7 +1812,7 @@ impl Rollout {
         }
     }
 
-    /// `(cheap fsync appends, full F_FULLFSYNC barriers)` taken by this descriptor.
+    /// `(buffered OS write appends, full F_FULLFSYNC barriers)` taken by this descriptor.
     #[cfg(test)]
     pub(crate) fn barriers_taken(&self) -> (u64, u64) {
         self.barriers_taken
@@ -2547,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn i16_only_the_turn_boundary_pays_the_full_barrier() {
+    fn continuation_appends_recover_without_per_turn_disk_barriers() {
         let dir = test_dir("durability-tiering");
         let run = RunId("durability-tiering".into());
         let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
@@ -2571,8 +2523,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             rollout.barriers_taken(),
-            (16, 1),
-            "only TurnEnd may pay F_FULLFSYNC; the 16 intra-turn appends take a plain fsync"
+            (17, 0),
+            "provider continuation must not wait for a forced disk barrier"
         );
 
         rollout
@@ -2586,12 +2538,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             rollout.barriers_taken(),
-            (16, 2),
-            "the run terminal is a boundary too"
+            (17, 1),
+            "only the final run record synchronizes the journal"
         );
 
-        // The cheap tier is a durability tier, not a correctness shortcut: the chain still verifies
-        // and replays byte-for-byte, and a reopened writer still recovers the same head.
+        // Buffered persistence still verifies and replays the complete chain, and a reopened
+        // writer recovers the same head without requiring per-event disk synchronization.
         drop(rollout);
         let path = dir.join("durability-tiering.jsonl");
         assert_eq!(replay(&path).unwrap().len(), 18);

@@ -127,7 +127,7 @@ mod session_services;
 #[cfg(feature = "legacy-plantcore")]
 pub(crate) use session_attachment::attach_plantcore;
 pub(crate) use session_attachment::{
-    AppServerHandle, Attached, SessionFacts, ToolFact, attach, attach_remote,
+    AppServerHandle, Attached, SessionFacts, ToolFact, attach, attach_one_shot, attach_remote,
 };
 mod event_publisher;
 mod final_evidence;

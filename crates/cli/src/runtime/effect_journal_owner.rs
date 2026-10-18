@@ -10,6 +10,7 @@ use iteron_kernel::{effect_admission::EffectAdmissions, effect_class, effect_jou
 use iteron_obs::Ledger;
 #[cfg(test)]
 use iteron_protocol::ToolResult;
+use iteron_protocol::product_contract::TerminalEffectStateV1;
 use iteron_protocol::{Capability, Event, EventKind, Seq, ToolUse, TurnId};
 use iteron_record::Rollout;
 use std::{future::Future, path::Path, time::Instant};
@@ -35,6 +36,71 @@ pub(super) struct EffectJournalOwner {
     observation_unknown: bool,
     barrier_failed: bool,
     final_evidence: super::final_evidence::HostFinalEvidenceOwner,
+    terminal_scope: Option<TerminalScope>,
+}
+
+/// One product turn's content-free evidence, advanced only by this owner's actual sealed
+/// admission/settlement receipts. Counters remain constant-size across arbitrarily many rounds.
+struct TerminalScope {
+    tenant: iteron_protocol::TenantId,
+    run: iteron_protocol::RunId,
+    first: Seq,
+    admitted: bool,
+    pending: usize,
+    unknown: bool,
+    unavailable: bool,
+}
+
+impl TerminalScope {
+    fn new(rollout: &Rollout, first: Seq) -> Self {
+        Self {
+            tenant: rollout.tenant().clone(),
+            run: rollout.run_id().clone(),
+            first,
+            admitted: false,
+            pending: 0,
+            unknown: false,
+            unavailable: first != rollout.next_sequence(),
+        }
+    }
+
+    fn admitted(&mut self, sequence: Seq) {
+        if sequence.0 < self.first.0 {
+            self.unavailable = true;
+            return;
+        }
+        self.admitted = true;
+        match self.pending.checked_add(1) {
+            Some(pending) => self.pending = pending,
+            None => self.unavailable = true,
+        }
+    }
+
+    fn settled(&mut self, intent: Seq, terminal: Seq, unknown: bool) {
+        // A recovery terminal for an earlier product turn has no intent in this physical scope.
+        // The former scoped replay rejected that join; this projection must do the same.
+        if intent.0 < self.first.0 || terminal.0 <= intent.0 {
+            self.unavailable = true;
+            return;
+        }
+        match self.pending.checked_sub(1) {
+            Some(pending) => self.pending = pending,
+            None => self.unavailable = true,
+        }
+        self.unknown |= unknown;
+    }
+
+    fn state(&self) -> TerminalEffectStateV1 {
+        if self.unavailable {
+            TerminalEffectStateV1::Unavailable
+        } else if self.pending != 0 || self.unknown {
+            TerminalEffectStateV1::Unknown
+        } else if self.admitted {
+            TerminalEffectStateV1::AllSettled
+        } else {
+            TerminalEffectStateV1::NotDispatched
+        }
+    }
 }
 
 impl Default for EffectJournalOwner {
@@ -48,11 +114,29 @@ impl Default for EffectJournalOwner {
             observation_unknown: false,
             barrier_failed: false,
             final_evidence: Default::default(),
+            terminal_scope: None,
         }
     }
 }
 
 impl EffectJournalOwner {
+    pub(super) fn begin_terminal_scope(&mut self, rollout: &Rollout, first: Seq) {
+        self.terminal_scope = Some(TerminalScope::new(rollout, first));
+    }
+
+    pub(super) fn terminal_state(
+        &self,
+        rollout: &Rollout,
+        first: Seq,
+    ) -> Option<TerminalEffectStateV1> {
+        let scope = self.terminal_scope.as_ref()?;
+        (scope.first == first
+            && &scope.tenant == rollout.tenant()
+            && &scope.run == rollout.run_id()
+            && first.0 <= rollout.next_sequence().0)
+            .then(|| scope.state())
+    }
+
     pub(super) fn begin_operator_turn(&mut self, turn: TurnId) {
         self.workspace_mutated = false;
         self.final_evidence.begin(turn);
@@ -103,6 +187,9 @@ impl EffectJournalOwner {
         };
         match effects::open_effect(rollout, &mut self.admissions, effect) {
             Ok(ticket) => {
+                if let Some(scope) = &mut self.terminal_scope {
+                    scope.admitted(ticket.intent_sequence());
+                }
                 self.pending = self.pending.saturating_add(1);
                 if write_capable {
                     self.final_evidence.write_admitted();
@@ -111,6 +198,11 @@ impl EffectJournalOwner {
             }
             Err(error) => {
                 self.barrier_failed |= matches!(&error, effects::BrokerError::Record(_));
+                if self.barrier_failed
+                    && let Some(scope) = &mut self.terminal_scope
+                {
+                    scope.unavailable = true;
+                }
                 Err(error)
             }
         }
@@ -233,6 +325,7 @@ impl EffectJournalOwner {
                 | effects::Settlement::Definite(EventKind::EffectUnknown { .. })
         );
         let turn = ticket.turn();
+        let intent_sequence = ticket.intent_sequence();
         let tool_failed = match &settlement {
             effects::Settlement::Definite(EventKind::ToolDone {
                 result,
@@ -243,6 +336,9 @@ impl EffectJournalOwner {
         };
         match effects::settle_effect_with_sequence(rollout, ticket, settlement) {
             Ok(sequence) => {
+                if let Some(scope) = &mut self.terminal_scope {
+                    scope.settled(intent_sequence, sequence, unknown);
+                }
                 self.pending = self.pending.saturating_sub(1);
                 if let Some(failed) = tool_failed {
                     self.final_evidence.tool_terminal(turn, sequence, failed);
@@ -255,6 +351,11 @@ impl EffectJournalOwner {
             }
             Err(error) => {
                 self.barrier_failed |= matches!(&error, effects::BrokerError::Record(_));
+                if self.barrier_failed
+                    && let Some(scope) = &mut self.terminal_scope
+                {
+                    scope.unavailable = true;
+                }
                 Err(error)
             }
         }
@@ -320,8 +421,18 @@ impl EffectJournalOwner {
         if !self.replay_required {
             return self.require_known();
         }
-        let events = replay_logical_rollout(rollout.path())?;
-        let journal = effects::EffectJournal::replay(&events)?;
+        let events = replay_logical_rollout(rollout.path()).map_err(|error| {
+            if let Some(scope) = &mut self.terminal_scope {
+                scope.unavailable = true;
+            }
+            error
+        })?;
+        let journal = effects::EffectJournal::replay(&events).map_err(|error| {
+            if let Some(scope) = &mut self.terminal_scope {
+                scope.unavailable = true;
+            }
+            error
+        })?;
         self.admissions = EffectAdmissions::from_journal(&journal);
         let pending = journal.pending();
         self.pending = pending.len();
@@ -356,7 +467,13 @@ impl EffectJournalOwner {
             );
             if let Err(error) = appended {
                 self.barrier_failed = true;
+                if let Some(scope) = &mut self.terminal_scope {
+                    scope.unavailable = true;
+                }
                 return Err(error.into());
+            }
+            if let Some(scope) = &mut self.terminal_scope {
+                scope.unavailable = true;
             }
             self.pending = self.pending.saturating_sub(1);
             self.observation_unknown = true;

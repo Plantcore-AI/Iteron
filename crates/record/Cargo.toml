@@ -25,8 +25,8 @@ zeroize = { workspace = true }
 [dev-dependencies]
 iteron-tunables = { path = "../tunables", features = ["test-fixtures"] }
 
-# Tiered durability (I-16): `File::sync_data` is `fcntl(F_FULLFSYNC)` on Apple platforms, and std
-# offers no way to ask for a plain `fsync(2)`. Per-event appends need the cheap barrier; only the
-# turn boundary pays for the device cache flush.
+# Unix file-open protection (O_NOFOLLOW), ownership checks, and test error codes.
+# Ordinary standalone appends acknowledge OS writes; Done synchronizes the journal.
+# See docs/spec/standalone-persistence.md for the persistence and power-loss contract.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

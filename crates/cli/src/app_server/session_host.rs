@@ -18,6 +18,9 @@ use iteron_protocol::LifecycleState;
 
 /// Owns the actual resident Agent and its bounded admission/presentation ports.
 pub(crate) struct AppServer {
+    // Declared before Agent so early construction/serve failure releases the publication window
+    // before the writer's own close barrier. Only the one-shot frontend supplies this guard.
+    pub(super) terminal_publication: Option<iteron_record::ForegroundActivity>,
     pub(super) agent: Agent,
     pub(super) session_factory: Option<std::sync::Arc<super::session_factory::SessionFactory>>,
     pub(super) submissions: mpsc::Receiver<QueuedSubmission>,
@@ -84,6 +87,7 @@ impl AppServer {
             lifecycle_hook_runtime,
         } = session_hooks::SessionHooks::install(&mut agent, &mut ends);
         Self {
+            terminal_publication: None,
             agent,
             session_factory,
             submissions: ends.submissions,
@@ -138,6 +142,7 @@ impl AppServer {
     /// prints it after restoring the terminal rather than receiving it as an event.
     pub(crate) async fn serve(self) -> crate::workflow::ShutdownReport {
         let Self {
+            terminal_publication: publication_guard,
             mut agent,
             session_factory,
             mut submissions,
@@ -155,6 +160,8 @@ impl AppServer {
             mut plantcore,
             product_start_custody: _product_start_custody,
         } = self;
+        // A later local drops before Agent during unwinding as well as at the explicit close below.
+        let terminal_publication = publication_guard;
         let mut pending_mcp_inputs = mcp_input_owner;
         let mut maintenance =
             super::advisory_maintenance::MaintenanceObserver::new(events.contract.clone());
@@ -700,6 +707,7 @@ impl AppServer {
                 .expect("only an idle session admits a turn");
             let live_turn_id = agent.current_turn_id();
             let first_effect_sequence = agent.rollout.next_sequence();
+            agent.begin_terminal_diagnostic_scope(first_effect_sequence);
             if let Some(turn) = allocated_product_turn {
                 events.begin_allocated_contract_turn(
                     agent.rollout.run_id().clone(),
@@ -1301,6 +1309,9 @@ impl AppServer {
         // dispatcher clone is rejected after that transition and cannot extend the shutdown
         // snapshot. If the configured execution budget expires, the runtime explicitly cancels and
         // settles admitted work before raw task abortion is even eligible.
+        // One-shot coalesces Done and the final policy outcome into one derivative publication.
+        // Releasing before Agent lets its existing Rollout close barrier drain that publication.
+        drop(terminal_publication);
         drop(agent);
         drop(
             events

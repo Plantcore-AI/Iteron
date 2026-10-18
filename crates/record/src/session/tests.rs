@@ -1910,9 +1910,11 @@ fn d9_01_concurrent_upserts_preserve_exactly_one_entry_per_run() {
                 },
             })
             .unwrap();
+        assert!(rollout.refresh_session_cache().unwrap());
         rollouts.push(rollout);
     }
-    // TurnEnd performs the normal automatic boundary write. The barrier below exercises
+    // Explicit idle publication prepares the first row. Provider TurnEnd no longer
+    // schedules optional index IO. The barrier below exercises
     // simultaneous O(1) delta publications from eight live record-owned projections without
     // requiring or rewriting the sorted base index.
 
@@ -2000,6 +2002,7 @@ fn d9_01_cache_failure_never_poisons_the_authoritative_writer() {
         })
         .unwrap();
 
+    assert!(rollout.refresh_session_cache().unwrap());
     crate::session_maintenance::flush().unwrap();
     // Replace the O(1) append log with a directory to inject a projection-publication failure
     // at the next explicit refresh. The durable rollout writer must remain usable.

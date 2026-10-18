@@ -1,9 +1,10 @@
 //! Durable, bounded source-to-derivative lineage indexes.
 
+use super::metadata;
 use super::model::{
     LineageEdge, MAX_CONTENT_LINEAGE_EDGES, MAX_LINEAGE_EDGE_BYTES, ReferenceEdge, STORE_VERSION,
 };
-use super::storage::{Layout, private_replace, read_limited, remove_if_present};
+use super::storage::{Layout, read_limited, remove_if_present};
 use super::{ContentReferenceSurface, ContentStoreError, PrivateContentSource};
 use iteron_protocol::{ErasureContentDigest, RunId, Seq};
 use sha2::{Digest, Sha256};
@@ -79,21 +80,29 @@ pub(super) fn publish_locked(
 
     preflight_capacity(&prepared)?;
     let mut created = Vec::with_capacity(prepared.len().saturating_mul(2));
+    let mut changes = Vec::new();
     for (from, to, bytes) in prepared {
-        let result = (|| {
-            if ensure_index_path(&from, &bytes)? {
-                created.push(from.clone());
+        for path in [from, to] {
+            if metadata::is_file(&path)? {
+                continue;
             }
-            if ensure_index_path(&to, &bytes)? {
-                created.push(to.clone());
-            }
-            Ok::<(), ContentStoreError>(())
-        })();
-        if let Err(error) = result {
-            PublishedLineage { created }.rollback()?;
-            return Err(error);
+            #[cfg(test)]
+            FAIL_AFTER_WRITES.with(|slot| {
+                if let Some(remaining) = slot.get() {
+                    if remaining == 0 {
+                        return Err(ContentStoreError::Io(std::io::Error::other(
+                            "injected lineage publication failure",
+                        )));
+                    }
+                    slot.set(Some(remaining - 1));
+                }
+                Ok(())
+            })?;
+            created.push(path.clone());
+            changes.push((path, Some(bytes.clone())));
         }
     }
+    metadata::replace_batch(&changes)?;
     Ok(PublishedLineage { created })
 }
 
@@ -168,65 +177,11 @@ pub(super) fn remove_for_reference_locked(
     })
 }
 
-fn ensure_index_path(path: &Path, bytes: &[u8]) -> Result<bool, ContentStoreError> {
-    let dir = path.parent().ok_or(ContentStoreError::Corrupt)?;
-    std::fs::create_dir_all(dir)?;
-    if path.exists() {
-        let existing = read_limited(
-            path,
-            iteron_tunables::param_integer(
-                "record.content_store.model.max_lineage_edge_bytes",
-                MAX_LINEAGE_EDGE_BYTES,
-            ),
-        )?;
-        return if existing == bytes {
-            Ok(false)
-        } else {
-            Err(ContentStoreError::Corrupt)
-        };
-    }
-    let count = std::fs::read_dir(dir)?
-        .take(
-            iteron_tunables::param_integer(
-                "record.content_store.model.max_content_lineage_edges",
-                MAX_CONTENT_LINEAGE_EDGES,
-            ) + 1,
-        )
-        .count();
-    if count
-        >= iteron_tunables::param_integer(
-            "record.content_store.model.max_content_lineage_edges",
-            MAX_CONTENT_LINEAGE_EDGES,
-        )
-    {
-        return Err(ContentStoreError::ReferenceBound {
-            max: iteron_tunables::param_integer(
-                "record.content_store.model.max_content_lineage_edges",
-                MAX_CONTENT_LINEAGE_EDGES,
-            ),
-        });
-    }
-    #[cfg(test)]
-    FAIL_AFTER_WRITES.with(|slot| {
-        if let Some(remaining) = slot.get() {
-            if remaining == 0 {
-                return Err(ContentStoreError::Io(std::io::Error::other(
-                    "injected lineage publication failure",
-                )));
-            }
-            slot.set(Some(remaining - 1));
-        }
-        Ok(())
-    })?;
-    private_replace(path, bytes)?;
-    Ok(true)
-}
-
 fn preflight_capacity(prepared: &[(PathBuf, PathBuf, Vec<u8>)]) -> Result<(), ContentStoreError> {
     let mut additions = std::collections::BTreeMap::<PathBuf, usize>::new();
     for (from, to, bytes) in prepared {
         for path in [from, to] {
-            if path.exists() {
+            if metadata::is_file(path)? {
                 if read_limited(
                     path,
                     iteron_tunables::param_integer(
@@ -247,7 +202,7 @@ fn preflight_capacity(prepared: &[(PathBuf, PathBuf, Vec<u8>)]) -> Result<(), Co
         }
     }
     for (dir, adding) in additions {
-        let current = match std::fs::read_dir(&dir) {
+        let current = match metadata::read_dir(&dir) {
             Ok(entries) => entries
                 .take(
                     iteron_tunables::param_integer(
@@ -287,7 +242,7 @@ fn read_index(
     expected: &ErasureContentDigest,
     direction: Direction,
 ) -> Result<Vec<LineageEdge>, ContentStoreError> {
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match metadata::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),

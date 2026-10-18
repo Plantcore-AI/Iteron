@@ -134,6 +134,7 @@ struct Projection {
     artifacts: super::client_artifacts::ArtifactCatalog,
     publications: super::turn_publication::PublicationReader,
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
+    request_archive: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
     maintenance_gaps: u64,
     mcp_inputs: Option<super::mcp_input_public::InputBinding>,
@@ -344,6 +345,7 @@ impl ContractReader {
         let final_evidence = agent.host_final_evidence();
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
+            projection.request_archive = Some(agent.request_archive_reader());
             if let Some(snapshot) = projection.snapshot.as_ref() {
                 projection.refusals.bind(
                     snapshot.thread_id.clone(),
@@ -752,7 +754,7 @@ impl ContractReader {
         command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
     ) -> serde_json::Value {
         // Never hold the event projection lock across disk hydration or content-graph validation.
-        let (resident, scope, identity) = self.with_mut(|projection| {
+        let (resident, scope, identity, archive) = self.with_mut(|projection| {
             (
                 projection.artifacts.read(command.clone()),
                 projection.artifact_scope.clone(),
@@ -760,6 +762,7 @@ impl ContractReader {
                     .snapshot
                     .as_ref()
                     .map(|snapshot| (snapshot.thread_id.clone(), snapshot.run_id.clone())),
+                projection.request_archive.clone(),
             )
         });
         let Some((thread, run)) = identity else {
@@ -804,6 +807,9 @@ impl ContractReader {
                 reply["run_id"] = serde_json::json!(run);
                 reply["retained_catalog_available"] = serde_json::json!(retained_catalog_available);
                 reply["retention"] = serde_json::json!("per_artifact_provenance");
+                reply["request_archive"] = archive
+                    .map(|read| read())
+                    .unwrap_or(serde_json::Value::Null);
                 reply["provenance"] =
                     serde_json::json!("retained_owner_manifest_or_resident_public_event");
                 reply["resident_evicted_artifacts"] = resident["evicted_artifacts"].clone();

@@ -92,7 +92,9 @@ impl PreparedTurnAdvance {
             .sequence
             .checked_add(1)
             .ok_or(KernelError::IdentityExhausted("turn"))?;
-        let _ = ports.rollout.refresh_session_cache_async();
+        // Intermediate model rounds only advance the record-owned projection. Invocation
+        // completion and durable terminal boundaries publish sidecars; explicit readers validate
+        // the journal tail/pending marker and repair incomplete invocations, including errors.
         ports.failed_actions.finish_turn();
         *ports.sequence = next;
         Ok(())

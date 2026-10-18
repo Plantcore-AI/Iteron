@@ -1,5 +1,6 @@
 //! Executable production-adapter coverage for private-content revocation.
 
+use super::metadata;
 use super::model::{
     MAX_CONTENT_REFERENCES, MAX_CONTENT_RUNS, MAX_REFERENCE_EDGE_BYTES, PrivateContentClass,
     PrivateContentNamespace, ReferenceEdge, RevocationState, STORE_VERSION,
@@ -287,7 +288,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
     let mut edges = Vec::new();
     let mut reverse_identities = BTreeSet::new();
     let mut runs = 0usize;
-    match std::fs::read_dir(&layout.run_refs) {
+    match metadata::read_dir(&layout.run_refs) {
         Ok(run_dirs) => {
             for run_dir in run_dirs.take(
                 iteron_tunables::param_integer(
@@ -316,7 +317,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                 let run_path = run_dir.path();
                 let mut owner = None;
                 let mut directory_edges = 0usize;
-                for edge in std::fs::read_dir(&run_path)?.take(
+                for edge in metadata::read_dir(&run_path)?.take(
                     iteron_tunables::param_integer(
                         "record.content_store.model.max_content_references",
                         MAX_CONTENT_REFERENCES,
@@ -353,7 +354,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                     let expected_forward = layout
                         .object_path(&layout.refs, &edge.digest)
                         .join(&expected_name);
-                    let forward_metadata = std::fs::symlink_metadata(&expected_forward)?;
+                    let forward_is_file = metadata::is_file(&expected_forward)?;
                     if edge.version != STORE_VERSION
                         || crate::validate_run_id(&edge.run_id).is_err()
                         || layout.run_reference_dir(&edge.run_id) != run_path
@@ -362,7 +363,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                             .is_some_and(|candidate| candidate != &edge.run_id)
                         || path.file_name().and_then(std::ffi::OsStr::to_str)
                             != Some(expected_name.as_str())
-                        || !forward_metadata.file_type().is_file()
+                        || !forward_is_file
                         || read_limited(
                             &expected_forward,
                             iteron_tunables::param_integer(
@@ -391,7 +392,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
     // otherwise evade every namespace gate. Exhaust the forward index and require exact bijection.
     let mut forward_identities = BTreeSet::new();
     let mut forward_count = 0usize;
-    match std::fs::read_dir(&layout.refs) {
+    match metadata::read_dir(&layout.refs) {
         Ok(digest_dirs) => {
             for digest_dir in digest_dirs.take(
                 iteron_tunables::param_integer(
@@ -404,7 +405,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                     return Err(ContentStoreError::Corrupt);
                 }
                 let mut directory_edges = 0usize;
-                for entry in std::fs::read_dir(digest_dir.path())?.take(
+                for entry in metadata::read_dir(digest_dir.path())?.take(
                     iteron_tunables::param_integer(
                         "record.content_store.model.max_content_references",
                         MAX_CONTENT_REFERENCES,
@@ -445,7 +446,7 @@ fn all_reference_edges(layout: &Layout) -> Result<Vec<ReferenceEdge>, ContentSto
                         || crate::validate_run_id(&edge.run_id).is_err()
                         || digest_dir.file_name().to_str() != Some(digest_name)
                         || entry.file_name().to_str() != Some(expected_name.as_str())
-                        || !expected_reverse.is_file()
+                        || !metadata::is_file(&expected_reverse)?
                         || read_limited(
                             &expected_reverse,
                             iteron_tunables::param_integer(

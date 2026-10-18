@@ -275,3 +275,87 @@ fn tool_pixels_are_untrusted_tool_sources_without_becoming_the_operator_prompt()
             .contains(image.image.data.as_str())
     );
 }
+
+#[test]
+fn cached_history_recomputes_active_prompt_lsp_classification_and_request_trust() {
+    use iteron_protocol::{Block, Message, Role, ToolResult, ToolUse};
+    let owner = RequestContextEvidenceOwner::default();
+    let estimator = RequestEstimator::new();
+    let build = |owner: &RequestContextEvidenceOwner, messages: &[Message], trust: Trust| {
+        owner
+            .build_request(
+                TurnId(9),
+                RequestContextScope {
+                    execution_window: None,
+                    request_trust: trust,
+                    estimator: &estimator,
+                    file: None,
+                    image: None,
+                },
+                ContextRequestObservation {
+                    system: "stable system",
+                    messages,
+                    tools: &[],
+                    images: &[],
+                    estimate: iteron_ctx::estimate_request_context("stable system", messages, &[]),
+                    output_reserved_tokens: 200,
+                    elapsed_us: 0,
+                },
+            )
+            .ledger
+    };
+    let mut messages = vec![
+        Message::user_text("first prompt"),
+        Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse(ToolUse {
+                id: "call".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({"path":"file"}),
+            })],
+        },
+        Message {
+            role: Role::User,
+            content: vec![Block::ToolResult(ToolResult {
+                tool_use_id: "call".into(),
+                content: "unchanged result".into(),
+                is_error: false,
+                trust: Trust::Workspace,
+                latency_ms: 0,
+            })],
+        },
+        Message::user_text("later prompt"),
+    ];
+    build(&owner, &messages, Trust::Trusted);
+    messages.swap(0, 3);
+    let Block::ToolUse(call) = &mut messages[1].content[0] else {
+        panic!("tool use");
+    };
+    call.name = "lsp_query".into();
+    let actual = build(&owner, &messages, Trust::Untrusted);
+    let fresh = build(
+        &RequestContextEvidenceOwner::default(),
+        &messages,
+        Trust::Untrusted,
+    );
+    assert_eq!(
+        serde_json::to_value(&actual).unwrap(),
+        serde_json::to_value(&fresh).unwrap()
+    );
+    assert!(
+        actual
+            .segments
+            .iter()
+            .any(|segment| segment.source_class == ContextSourceClass::LspResult)
+    );
+    let active = actual
+        .segments
+        .iter()
+        .find(|segment| segment.source_class == ContextSourceClass::TaskPrompt)
+        .unwrap();
+    assert_eq!(
+        active.source_digest_sha256,
+        <[u8; 32]>::from(Sha256::digest(serde_json::to_vec(&messages[3]).unwrap()))
+    );
+    assert_eq!(active.trust, Trust::Untrusted);
+}

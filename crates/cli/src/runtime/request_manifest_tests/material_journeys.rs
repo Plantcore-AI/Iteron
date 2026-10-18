@@ -99,6 +99,7 @@ async fn actual_main_materials_reconstruct_after_source_removal_and_artifact_reo
     let run = RunId("main-material-source-reopen".into());
     let provider = Arc::new(ExactRequest::default());
     let mut owner = agent(&workspace, &run, provider.clone());
+    owner.set_request_archiving(true).unwrap();
     owner.memory_workspace = Some(workspace.clone());
     install_frontend(&mut owner, &workspace);
     assert_eq!(
@@ -113,6 +114,7 @@ async fn actual_main_materials_reconstruct_after_source_removal_and_artifact_reo
     assert!(system.contains("current record provenance calibration"));
     assert!(system.contains("permaterial_anchor"));
     let record = owner.rollout.path().to_owned();
+    owner.flush_request_archive().unwrap();
     drop(owner);
     std::fs::remove_file(workspace.join("AGENTS.md")).unwrap();
     std::fs::remove_file(workspace.join("imported.md")).unwrap();
@@ -202,6 +204,7 @@ async fn new_main_decision_removes_deleted_memory_and_preserves_admitted_fronten
         provider.clone(),
         Some(("admitted_environment_reference".into(), Trust::Untrusted)),
     );
+    owner.set_request_archiving(true).unwrap();
     owner.memory_workspace = Some(workspace.clone());
     install_frontend(&mut owner, &workspace);
     assert_eq!(
@@ -224,6 +227,7 @@ async fn new_main_decision_removes_deleted_memory_and_preserves_admitted_fronten
     assert!(!second.contains("changed_live_frontend"));
     assert!(!second.contains("stale_memory_reference"));
     let path = owner.rollout.path().to_owned();
+    owner.flush_request_archive().unwrap();
     drop(owner);
     let injections = iteron_record::replay(&path)
         .unwrap()
@@ -274,6 +278,7 @@ async fn cold_main_refresh_does_not_attribute_current_disk_to_old_admitted_prefi
     let run = RunId("cold-material-refresh".into());
     let provider = Arc::new(ExactRequest::default());
     let mut owner = agent(&workspace, &run, provider.clone());
+    owner.set_request_archiving(true).unwrap();
     owner.memory_workspace = Some(workspace.clone());
     install_frontend(&mut owner, &workspace);
     assert_eq!(
@@ -282,10 +287,12 @@ async fn cold_main_refresh_does_not_attribute_current_disk_to_old_admitted_prefi
     );
     assert!(native_system(&provider, 0).contains("old_memory_reference"));
     let path = owner.rollout.path().to_owned();
+    owner.flush_request_archive().unwrap();
     drop(owner);
     assert!(memory.remove_checked(&id).unwrap());
     std::fs::write(workspace.join("AGENTS.md"), current).unwrap();
     let mut resumed = agent(&workspace, &run, provider.clone());
+    resumed.set_request_archiving(true).unwrap();
     resumed.memory_workspace = Some(workspace.clone());
     install_frontend(&mut resumed, &workspace);
     resumed
@@ -309,6 +316,7 @@ async fn cold_main_refresh_does_not_attribute_current_disk_to_old_admitted_prefi
     assert!(fresh.contains(original));
     assert!(!fresh.contains(current));
     assert!(!fresh.contains("old_memory_reference"));
+    resumed.flush_request_archive().unwrap();
     drop(resumed);
     let store = DurableArtifactStore::open(
         &workspace.join(".iteron/runs"),
@@ -350,6 +358,7 @@ async fn actual_native_plan_material_resolves_exact_wal_publication_and_observat
     let run = RunId("native-plan-material".into());
     let provider = Arc::new(ExactRequest::default());
     let mut owner = agent(&workspace, &run, provider.clone());
+    owner.set_request_archiving(true).unwrap();
     owner.registry = iteron_tools::Registry::coding_agent_for_tests(&workspace).unwrap();
     owner
         .admit_submission("continue the multi-module refactor")
@@ -376,6 +385,7 @@ async fn actual_native_plan_material_resolves_exact_wal_publication_and_observat
     let system = native_system(&provider, 0);
     assert!(system.contains("Newly admitted input changed the context"));
     let record = owner.rollout.path().to_owned();
+    owner.flush_request_archive().unwrap();
     drop(owner);
     let events = iteron_record::replay(&record).unwrap();
     let publication = events

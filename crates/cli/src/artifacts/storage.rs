@@ -199,15 +199,56 @@ impl ManifestFile {
             {
                 return Err(ArtifactStoreError::Corrupt);
             }
-            crate::config::write_private_atomic(&self.path, &bytes)
-                .map_err(|_| ArtifactStoreError::PublicationUnknown)?;
-            #[cfg(unix)]
-            File::open(self.path.parent().ok_or(ArtifactStoreError::Corrupt)?)
-                .and_then(|directory| directory.sync_all())
+            // Retained artifact metadata follows the standalone buffered persistence contract.
+            // Atomic replacement protects readers/process restart; per-object device barriers
+            // do not belong between a tool result and the next provider request.
+            buffered_private_replace(&self.path, &bytes)
                 .map_err(|_| ArtifactStoreError::PublicationUnknown)?;
         }
         Ok(())
     }
+}
+
+#[cfg(not(windows))]
+fn buffered_private_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("manifest has no parent"))?;
+    for _ in 0..16 {
+        let temp = parent.join(format!(
+            ".manifest-{}-{}.pending",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = (|| {
+            file.write_all(bytes)?;
+            drop(file);
+            fs::rename(&temp, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temp);
+        }
+        return result;
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "manifest temporary names exhausted",
+    ))
 }
 
 fn directory(path: &Path, create: bool) -> Result<bool, ArtifactStoreError> {
@@ -233,10 +274,7 @@ fn directory(path: &Path, create: bool) -> Result<bool, ArtifactStoreError> {
                     .create(path)
                     .map_err(|_| ArtifactStoreError::Unavailable)?;
             }
-            #[cfg(unix)]
-            File::open(path.parent().ok_or(ArtifactStoreError::Corrupt)?)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| ArtifactStoreError::Unavailable)?;
+            // Directory creation shares the buffered artifact persistence contract.
             Ok(true)
         }
         Err(_) => Err(ArtifactStoreError::Unavailable),

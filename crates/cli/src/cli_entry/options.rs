@@ -329,6 +329,11 @@ pub(crate) struct Cli {
     #[arg(short = 'p', long)]
     pub(crate) print: bool,
 
+    /// Retain full provider requests for diagnostics; publish the bounded archive at task completion.
+    /// Disabled by default. Archive status is reported separately from task completion.
+    #[arg(long)]
+    pub(crate) archive_requests: bool,
+
     /// Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally
     /// normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ.
     #[arg(long = "image", value_name = "PATH")]

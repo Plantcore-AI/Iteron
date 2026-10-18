@@ -88,6 +88,10 @@ pub(super) enum ContentTombstoneReason {
 #[serde(deny_unknown_fields)]
 pub(super) struct RevocationState {
     pub version: u16,
+    /// Durable format fence: pre-compact binaries reject this unknown field before serving,
+    /// writing, or revoking content through their revocation-state gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_format: Option<u16>,
     pub generation: u64,
     pub tombstones: Vec<ContentTombstone>,
 }
@@ -96,6 +100,7 @@ impl RevocationState {
     pub(super) fn empty() -> Self {
         Self {
             version: STORE_VERSION,
+            metadata_format: None,
             generation: 0,
             tombstones: Vec::new(),
         }

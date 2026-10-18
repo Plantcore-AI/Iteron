@@ -88,6 +88,36 @@ impl ContextLedgerStore {
         }
     }
 
+    /// Reconcile one provider receipt in place without waiting for diagnostic readers or
+    /// cloning the accumulated turn history. Return the pre-dispatch estimate for calibration.
+    pub fn reconcile_usage(&self, turn_id: TurnId, usage: iteron_protocol::Usage) -> Option<u64> {
+        let Ok(mut ledgers) = self.inner.ledgers.try_lock() else {
+            self.inner
+                .dropped_contention
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        let Some(ledger) = ledgers
+            .iter_mut()
+            .rev()
+            .find(|ledger| ledger.turn_id == turn_id)
+        else {
+            self.inner.dropped_unmatched.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        let estimate = ledger.totals.estimated_tokens;
+        ledger.totals.actual_input_tokens = Some(
+            usage
+                .input
+                .saturating_add(usage.cache_read)
+                .saturating_add(usage.cache_creation),
+        );
+        ledger.cache.cache_read_tokens = usage.cache_read;
+        ledger.cache.cache_write_tokens = usage.cache_creation;
+        ledger.cache.uncached_tokens = usage.input;
+        Some(estimate)
+    }
+
     pub fn snapshot(&self) -> ContextLedgerSnapshot {
         let ledgers = self
             .inner
@@ -273,5 +303,40 @@ mod tests {
         assert_eq!(ledger.cache.cache_read_tokens, 700);
         assert_eq!(ledger.cache.cache_write_tokens, 100);
         assert_eq!(ledger.cache.uncached_tokens, 200);
+    }
+    #[test]
+    fn usage_reconciliation_updates_one_turn_and_does_not_wait_for_readers() {
+        let store = ContextLedgerStore::default();
+        let turn = TurnId(4);
+        let mut ledger = ContextLedger::new(
+            turn,
+            TokenizerIdentity {
+                catalog_id: "heuristic".into(),
+                version: 1,
+                exact: false,
+            },
+        );
+        ledger.totals.estimated_tokens = 90;
+        store.publish(ledger);
+        let usage = iteron_protocol::Usage {
+            input: 20,
+            cache_read: 70,
+            cache_creation: 10,
+            ..Default::default()
+        };
+        let reader = store.inner.ledgers.lock().unwrap();
+        assert_eq!(store.reconcile_usage(turn, usage), None);
+        drop(reader);
+        assert_eq!(store.reconcile_usage(turn, usage), Some(90));
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.dropped_contention, 1);
+        assert_eq!(snapshot.ledgers.len(), 1);
+        let ledger = &snapshot.ledgers[0];
+        assert_eq!(ledger.totals.actual_input_tokens, Some(100));
+        assert_eq!(ledger.cache.cache_read_tokens, 70);
+        assert_eq!(ledger.cache.cache_write_tokens, 10);
+        assert_eq!(ledger.cache.uncached_tokens, 20);
+        assert_eq!(store.reconcile_usage(TurnId(999), usage), None);
+        assert_eq!(store.snapshot().dropped_unmatched, 1);
     }
 }

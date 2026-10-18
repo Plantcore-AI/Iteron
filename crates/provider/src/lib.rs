@@ -1386,6 +1386,13 @@ impl PreparedToolSchemas {
         &self.canonical_json
     }
 
+    /// Compare the retained immutable specifications themselves. This does not trust a caller's
+    /// canonical JSON, revision, or truncated cache identity, and says nothing about other request
+    /// metadata. Keeping either snapshot alive prevents its allocation identity from being reused.
+    pub fn shares_specs_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.specs, &other.specs)
+    }
+
     pub fn estimated_tokens(&self) -> usize {
         self.estimated_tokens
     }

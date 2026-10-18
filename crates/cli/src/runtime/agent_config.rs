@@ -139,6 +139,7 @@ impl Agent {
             cohort_installation: None,
             cohort_replay_checked,
             persistent_mailbox: None,
+            request_archive: super::request_manifest::RequestArchive::default(),
             client_inventory: None,
             plugin_management: None,
             ordinary_extensions: None,

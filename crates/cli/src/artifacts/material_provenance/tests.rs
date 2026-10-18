@@ -110,17 +110,6 @@ fn request(system: String) -> TurnRequest {
         controls: Default::default(),
     }
 }
-fn wire<'a>(request: &'a TurnRequest, bytes: &'a [u8]) -> ProviderWireRequest<'a> {
-    ProviderWireRequest {
-        adapter: AdapterKind::OpenAiCompatibleChat,
-        method: "POST",
-        endpoint: "https://fixture.invalid/request",
-        content_type: "application/json",
-        body: bytes,
-        serialized_output_tokens: 16,
-        request,
-    }
-}
 
 #[test]
 fn actual_source_capture_and_retained_offset_reconstruct_after_owner_restart_and_file_deletion() {
@@ -143,7 +132,7 @@ fn actual_source_capture_and_retained_offset_reconstruct_after_owner_restart_and
     .unwrap();
     let publication = fixture
         .store()
-        .publish_material_provenance(2, &materials, &wire(&request, &bytes))
+        .publish_material_provenance(2, &materials, AdapterKind::OpenAiCompatibleChat, &bytes)
         .unwrap();
     std::fs::remove_file(workspace.join("AGENTS.md")).unwrap();
     let descriptor = publication.archive.unwrap();
@@ -186,7 +175,7 @@ fn actual_secret_scrub_retains_only_a_derivative_and_missing_native_text_is_unco
     .unwrap();
     let publication = fixture
         .store()
-        .publish_material_provenance(2, &materials, &wire(&request, &absent))
+        .publish_material_provenance(2, &materials, AdapterKind::OpenAiCompatibleChat, &absent)
         .unwrap();
     let retained = fixture.download(&publication.archive.unwrap());
     assert!(!std::str::from_utf8(&retained).unwrap().contains(original));
@@ -206,7 +195,7 @@ fn actual_secret_scrub_retains_only_a_derivative_and_missing_native_text_is_unco
         &serde_json::json!({"messages":[{"role":"system","content":request.system}]}),
     )
     .unwrap();
-    let fields = PreparedContextFields::capture(&wire(&request, &present));
+    let fields = PreparedContextFields::capture(AdapterKind::OpenAiCompatibleChat, &present);
     assert!(matches!(
         fields.inclusion(&materials[0]),
         MaterialPreparedInclusionV1::ScrubbedRendering { .. }
@@ -225,7 +214,7 @@ fn actual_frozen_source_without_original_owner_has_explicit_unavailability() {
     .unwrap();
     let publication = fixture
         .store()
-        .publish_material_provenance(2, &[material], &wire(&request, &bytes))
+        .publish_material_provenance(2, &[material], AdapterKind::OpenAiCompatibleChat, &bytes)
         .unwrap();
     assert!(matches!(
         publication.resolutions[0].source,

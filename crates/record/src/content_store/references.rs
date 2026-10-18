@@ -1,11 +1,12 @@
 //! Bounded reconciliation for mutable derivative manifests backed by immutable content blobs.
 
+use super::metadata;
 use super::model::{
     MAX_CONTENT_REFERENCES, MAX_REFERENCE_EDGE_BYTES, ReferenceEdge, STORE_VERSION,
 };
 use super::storage::{
-    Layout, crate_sync_dir, ensure_layout, load_bytes, lock_owner_shared, lock_store,
-    lock_store_shared, read_limited, remove_if_present,
+    Layout, crate_sync_dir, ensure_layout, load_bytes_with_state, lock_owner_shared, lock_store,
+    lock_store_shared, read_limited, read_state, remove_if_present,
 };
 use super::{
     ContentReferenceSurface, ContentStoreError, PrivateContentSource, lineage,
@@ -21,7 +22,7 @@ pub(super) fn verify_source_owner_locked(
 ) -> Result<(), ContentStoreError> {
     crate::validate_run_id(&source.owner).map_err(|_| ContentStoreError::Corrupt)?;
     let run_dir = layout.run_reference_dir(&source.owner);
-    let entries = std::fs::read_dir(&run_dir).map_err(|error| {
+    let entries = metadata::read_dir(&run_dir).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             ContentStoreError::Unresolved {
                 digest: source.digest.clone(),
@@ -96,7 +97,7 @@ pub fn guard_private_content_for_run(
     let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     let _owner_lock = lock_owner_shared(&layout, run)?;
     let run_dir = layout.run_reference_dir(run);
-    let entries = match std::fs::read_dir(&run_dir) {
+    let entries = match metadata::read_dir(&run_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error.into()),
@@ -147,12 +148,15 @@ pub fn guard_private_content_for_run(
             digests.insert(edge.digest);
         }
     }
-    for source in &sources {
-        verify_source_owner_locked(&layout, source)?;
-        let _ = load_bytes(&layout, &source.digest)?;
-    }
-    for digest in &digests {
-        let _ = load_bytes(&layout, digest)?;
+    if !sources.is_empty() || !digests.is_empty() {
+        let state = read_state(&layout)?;
+        for source in &sources {
+            verify_source_owner_locked(&layout, source)?;
+            load_bytes_with_state(&layout, &state, &source.digest)?;
+        }
+        for digest in &digests {
+            load_bytes_with_state(&layout, &state, digest)?;
+        }
     }
     u32::try_from(digests.len()).map_err(|_| ContentStoreError::ReferenceBound {
         max: iteron_tunables::param_integer(
@@ -179,7 +183,7 @@ pub fn private_content_sources_for_run(
     let _store_lock = lock_store_for_record(&layout, lock_store_shared)?;
     let _owner_lock = lock_owner_shared(&layout, run)?;
     let run_dir = layout.run_reference_dir(run);
-    let entries = match std::fs::read_dir(&run_dir) {
+    let entries = match metadata::read_dir(&run_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
@@ -217,11 +221,18 @@ pub fn private_content_sources_for_run(
             return Err(ContentStoreError::Corrupt);
         }
         if edge.surface == ContentReferenceSurface::RecordField {
-            load_bytes(&layout, &edge.digest)?;
             sources.insert(PrivateContentSource {
                 owner: run.clone(),
                 digest: edge.digest,
             });
+        }
+    }
+    if !sources.is_empty() {
+        // The same digest may occur in many record fields. The shared store lease keeps both
+        // revocation and physical material stable while every distinct source is authenticated.
+        let state = read_state(&layout)?;
+        for source in &sources {
+            load_bytes_with_state(&layout, &state, &source.digest)?;
         }
     }
     Ok(sources.into_iter().collect())
@@ -261,7 +272,7 @@ pub fn retain_private_content_references(
     ensure_layout(&layout)?;
     let _store_lock = lock_store(&layout)?;
     let run_dir = layout.run_reference_dir(owner);
-    let entries = match std::fs::read_dir(&run_dir) {
+    let entries = match metadata::read_dir(&run_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && desired.is_empty() => {
             return Ok(0);
@@ -319,11 +330,7 @@ pub fn retain_private_content_references(
         let identity = (edge.seq, edge.digest.clone());
         if edge.ordinal == 0 && desired.contains(&identity) {
             let name = reverse_path.file_name().ok_or(ContentStoreError::Corrupt)?;
-            if !layout
-                .object_path(&layout.refs, &edge.digest)
-                .join(name)
-                .is_file()
-            {
+            if !metadata::is_file(&layout.object_path(&layout.refs, &edge.digest).join(name))? {
                 return Err(ContentStoreError::Unresolved {
                     digest: edge.digest,
                     reason: "reference_missing",
@@ -354,7 +361,7 @@ pub fn retain_private_content_references(
         let digest_dir = layout.object_path(&layout.refs, &edge.digest);
         remove_if_present(&digest_dir.join(name))?;
         remove_if_present(&reverse_path)?;
-        let has_references = match std::fs::read_dir(&digest_dir) {
+        let has_references = match metadata::read_dir(&digest_dir) {
             Ok(mut entries) => entries.next().transpose()?.is_some(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(error.into()),
@@ -367,8 +374,8 @@ pub fn retain_private_content_references(
             let _ = std::fs::remove_dir(&digest_dir);
         }
     }
-    if std::fs::read_dir(&run_dir)?.next().transpose()?.is_none() {
-        std::fs::remove_dir(&run_dir)?;
+    if metadata::read_dir(&run_dir)?.next().transpose()?.is_none() {
+        metadata::remove_empty_dir(&run_dir)?;
     }
     crate_sync_dir(&layout.run_refs)?;
     u32::try_from(removed).map_err(|_| ContentStoreError::ReferenceBound {
@@ -395,7 +402,7 @@ pub(super) fn release_private_content_reference(
     ensure_layout(&layout)?;
     let _store_lock = lock_store(&layout)?;
     let run_dir = layout.run_reference_dir(owner);
-    let entries = match std::fs::read_dir(&run_dir) {
+    let entries = match metadata::read_dir(&run_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
@@ -453,7 +460,7 @@ pub(super) fn release_private_content_reference(
     let digest_dir = layout.object_path(&layout.refs, &edge.digest);
     remove_if_present(&digest_dir.join(name))?;
     remove_if_present(&reverse_path)?;
-    let has_references = match std::fs::read_dir(&digest_dir) {
+    let has_references = match metadata::read_dir(&digest_dir) {
         Ok(mut entries) => entries.next().transpose()?.is_some(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
@@ -465,8 +472,8 @@ pub(super) fn release_private_content_reference(
         crate_sync_dir(&layout.blobs)?;
         let _ = std::fs::remove_dir(&digest_dir);
     }
-    if std::fs::read_dir(&run_dir)?.next().transpose()?.is_none() {
-        std::fs::remove_dir(&run_dir)?;
+    if metadata::read_dir(&run_dir)?.next().transpose()?.is_none() {
+        metadata::remove_empty_dir(&run_dir)?;
     }
     crate_sync_dir(&layout.run_refs)?;
     Ok(true)

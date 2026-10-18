@@ -1,5 +1,7 @@
 # 4. 稳定类型 ABI (The Stable Typed ABI)
 
+> **当前 standalone 持久化覆盖（2026-10-18）。** 本文下文关于逐事件、`EffectIntent` 或 `TurnEnd` 必须先 `fsync`，以及完整请求归档先于 provider 派发的历史表述，在当前 standalone 实现中由 [Standalone persistence contract](standalone-persistence.md) 覆盖。当前语义是：效果准入等待完整操作系统写入确认；普通 continuation 不强制刷盘；`Done` 同步 journal，但不构成整个私有内容存储的断电检查点；完整请求归档默认关闭，显式启用后在完成边界发布。身份、授权、脱敏、哈希链验证、unknown 效果不自动重放及版本化 ABI 的约束仍然有效。当前实现不承诺逐事件断电持久性；性能目标不等于已验证结果。
+
 ### 4.1 为什么需要一个稳定的 seam
 
 前面几节确立了 Iteron 的承重不变式：microkernel（TCB）冻结，其余每个 module 都是一个可 tune / train / evolve 的 strategy slot。这条不变式只有在**module 与 kernel、module 与 module 之间存在一个稳定、类型化、版本化的接缝（seam）**时才成立。这个接缝就是 **Stable Typed ABI**。
