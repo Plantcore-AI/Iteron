@@ -7,6 +7,14 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-10-18
+
+### Changed
+
+- Refresh release metadata for a unified macOS Apple Silicon, Linux ARM64/x86_64,
+  and Windows x86_64 distribution. Runtime behavior and dependencies are unchanged
+  from v0.0.28; its persistence, migration and diagnostic-archive contract still applies.
+
 ## [0.0.28] - 2026-10-18
 
 ### Changed
