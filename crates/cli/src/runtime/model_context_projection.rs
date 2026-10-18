@@ -94,15 +94,27 @@ pub(super) fn messages(messages: &mut [Message]) -> Result<bool, ProjectionRefus
                     // Physical output already has an admitted visible byte envelope. Never
                     // enlarge it by replacing a short credential with a longer marker.
                     let maximum = result.content.len();
-                    let changed = text(&mut result.content);
-                    if result.content.len() > maximum {
-                        let mut end = maximum;
-                        while !result.content.is_char_boundary(end) {
-                            end -= 1;
+                    if let Some(projected) =
+                        super::tool_output_spill::mcp_search::project(&result.content, maximum)
+                    {
+                        match projected {
+                            std::borrow::Cow::Borrowed(_) => false,
+                            std::borrow::Cow::Owned(content) => {
+                                result.content = content;
+                                true
+                            }
                         }
-                        result.content.truncate(end);
+                    } else {
+                        let changed = text(&mut result.content);
+                        if result.content.len() > maximum {
+                            let mut end = maximum;
+                            while !result.content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            result.content.truncate(end);
+                        }
+                        changed
                     }
-                    changed
                 }
                 Block::ToolUse(call) => {
                     if !structural_text_is_clean(&call.name) {

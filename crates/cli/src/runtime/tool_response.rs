@@ -173,6 +173,12 @@ impl ToolResponseOwner {
 /// admitted visible byte envelope so a redaction marker cannot enlarge the next request.
 fn model_visible_result(mut result: ToolResult) -> ToolResult {
     let visible_bytes = result.content.len();
+    if let Some(projected) =
+        super::tool_output_spill::mcp_search::project(&result.content, visible_bytes)
+    {
+        result.content = projected.into_owned();
+        return result;
+    }
     result.content = iteron_record::redact::scrub(&result.content);
     let mut projection = super::tool_output_spill::ManagedToolResult::unspilled(result);
     projection.project_visible(visible_bytes);

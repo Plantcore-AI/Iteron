@@ -655,23 +655,14 @@ impl ManagedStdioServer {
             .expect("initialized above")
             .search_tools(query, limit, &cancellation)
             .await?;
+        let content = result.to_json()?;
+        crate::runtime::tool_output_spill::mcp_search::ensure_discovery_safe(&content)?;
         for matched in &result.matches {
             state
                 .identities
                 .insert(matched.name.clone(), matched.identity.clone());
         }
-        serde_json::to_string(&json!({
-            "server": self.config.name,
-            "generation": result.generation.get(),
-            "tools": result.matches.iter().map(|matched| json!({
-                "name": matched.name,
-                "description": matched.description,
-            })).collect::<Vec<_>>(),
-            "total_matches": result.total_matches,
-            "truncated": result.truncated,
-            "note": "Call only an exact returned name through this server's tool_call proxy.",
-        }))
-        .map_err(iteron_mcp::McpError::from)
+        Ok(content)
     }
 
     async fn call<F>(
@@ -1102,23 +1093,14 @@ impl ManagedHttpServer {
             .ensure_ready(&mut state, &cancellation, deadline)
             .await?;
         let result = state.catalog.search(generation, query, limit)?;
+        let content = result.to_json()?;
+        crate::runtime::tool_output_spill::mcp_search::ensure_discovery_safe(&content)?;
         for matched in &result.matches {
             state
                 .identities
                 .insert(matched.name.clone(), matched.identity.clone());
         }
-        serde_json::to_string(&json!({
-            "server": self.config.name,
-            "generation": generation.get(),
-            "tools": result.matches.iter().map(|matched| json!({
-                "name": matched.name,
-                "description": matched.description,
-            })).collect::<Vec<_>>(),
-            "total_matches": result.total_matches,
-            "truncated": result.truncated,
-            "note": "Call only an exact returned name through this server's tool_call proxy.",
-        }))
-        .map_err(iteron_mcp::McpError::from)
+        Ok(content)
     }
 
     async fn call<F>(

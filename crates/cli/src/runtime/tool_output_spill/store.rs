@@ -163,6 +163,11 @@ impl ToolOutputSpillStore {
     /// raw result can leak into the record/model boundary.
     pub(crate) fn apply(&self, mut result: ToolResult) -> ManagedToolResult {
         if result.content.len() <= self.policy.memory_threshold_bytes() {
+            if let Some(std::borrow::Cow::Owned(content)) =
+                super::mcp_search::project(&result.content, self.policy.memory_threshold_bytes())
+            {
+                result.content = content;
+            }
             return ManagedToolResult::unspilled(result);
         }
 
@@ -186,11 +191,18 @@ impl ToolOutputSpillStore {
         match self.retain(result.content.as_bytes()) {
             Ok(RetainOutcome::Retained(lease)) => {
                 debug_assert_eq!(lease.handle, advertised);
-                result.content = bounded_preview(
+                result.content = super::mcp_search::project(
                     &result.content,
-                    &marker,
                     self.policy.memory_threshold_bytes(),
-                );
+                )
+                .map(std::borrow::Cow::into_owned)
+                .unwrap_or_else(|| {
+                    bounded_preview(
+                        &result.content,
+                        &marker,
+                        self.policy.memory_threshold_bytes(),
+                    )
+                });
                 ManagedToolResult {
                     result,
                     lease: Some(lease),

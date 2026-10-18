@@ -6,6 +6,7 @@
 
 use iteron_protocol::ToolResult;
 
+pub(crate) mod mcp_search;
 mod store;
 
 pub(crate) use store::{ToolOutputSpillLease, ToolOutputSpillStore};
@@ -165,6 +166,15 @@ impl ManagedToolResult {
     /// are both kept so compiler summaries and terminal failure lines survive without allowing one
     /// result to consume the entire transcript-owned partition.
     pub(crate) fn project_visible(&mut self, maximum_bytes: usize) -> bool {
+        if let Some(projected) = mcp_search::project(&self.result.content, maximum_bytes) {
+            return match projected {
+                std::borrow::Cow::Borrowed(_) => false,
+                std::borrow::Cow::Owned(content) => {
+                    self.result.content = content;
+                    true
+                }
+            };
+        }
         let original_bytes = self.result.content.len();
         if original_bytes <= maximum_bytes {
             return false;

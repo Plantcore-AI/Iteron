@@ -1123,3 +1123,6 @@ fn managed_timeout_after_an_authoritative_round_is_definite() {
         iteron_mcp::McpToolOutcome::Unknown { .. }
     ));
 }
+
+#[path = "tests/schema_discovery.rs"]
+mod schema_discovery;
