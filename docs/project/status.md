@@ -2,7 +2,7 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
-The current source workspace declares **v0.0.22**. Published versions are listed
+The current source workspace declares **v0.0.30**. Published versions are listed
 on [GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases).
 
 ## Delivered baseline
@@ -10,7 +10,7 @@ on [GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases).
 The repository currently contains:
 
 - a Rust workspace split across protocol, record, observability, provider, tools,
-  sandbox, context, verification, MCP, scheduling, agent policy, kernel, CLI,
+  sandbox, context, verification, MCP, scheduling, agent policy, kernel, host, App Server, CLI,
   evaluation, and evolution-contract crates;
 - an interactive TUI and one-shot text/JSON/JSONL frontend;
 - Anthropic Messages, OpenAI Responses, and OpenAI-compatible Chat adapters;
@@ -25,12 +25,8 @@ The repository currently contains:
 - a repository-only `iteron-harness` research executable, versioned JSON protocol schema,
   stdlib-only Python client, and credential-free fixture optimizer; these research tools are
   source interfaces and are deliberately absent from release archives and the installer;
-- nine published pre-alpha releases: `v0.0.1` through `v0.0.5`, plus `v0.0.7`,
-  `v0.0.9`, `v0.0.19`, and `v0.0.20`. The first four are historical local macOS
-  builds; `v0.0.20` is the latest published release. The immutable `v0.0.6` tag has no release or
-  assets because its schema-chronology validation failed before publication.
-  Each published release's manifest and GitHub asset list are authoritative for
-  its exact targets and attestations;
+- versioned pre-alpha releases. The GitHub release page, manifest and asset list
+  are authoritative for each version's published targets and attestations;
 - a release workflow covering macOS arm64, Linux arm64/x86-64, and Windows
   x86-64, with installers, checksums, license evidence, SBOMs, provenance, and
   public-install canaries. Windows distribution remains narrower than full

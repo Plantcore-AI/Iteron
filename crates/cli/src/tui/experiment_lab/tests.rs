@@ -1,7 +1,7 @@
 use super::*;
 use crate::client_effects::experiment_lab::{
     NativeExperimentLab,
-    tests::{KEY, fixture, install_evidence, request},
+    fixtures::{KEY, fixture, install_evidence, request},
 };
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]

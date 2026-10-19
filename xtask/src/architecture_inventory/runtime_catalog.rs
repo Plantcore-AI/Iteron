@@ -3,7 +3,7 @@ use super::Surface;
 
 pub(super) const SURFACES: &[Surface] = &[
     Surface {
-        path: "crates/cli/src/runtime/context_injection.rs",
+        path: "crates/host/src/runtime/context_injection.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain historical or live stable prefix materialization until the actual context publication receipt",
@@ -14,7 +14,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/context_injection_gate.rs",
+        path: "crates/host/src/runtime/context_injection_gate.rs",
         boundary: "cli-host",
         responsibilities: &[
             "consume existing context and optional memory hook gates through the real hook execution owner",
@@ -24,7 +24,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/context_injection_journal.rs",
+        path: "crates/host/src/runtime/context_injection_journal.rs",
         boundary: "cli-host",
         responsibilities: &[
             "publish actual context and frozen policy decisions through the sole transcript writer",
@@ -34,7 +34,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_run_coordinator.rs",
+        path: "crates/host/src/runtime/coding_run_coordinator.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain finite pending external IO, hedge, kernel and completion handoffs with consumed private phases",
@@ -43,7 +43,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and real client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_run_composition.rs",
+        path: "crates/host/src/runtime/coding_run_composition.rs",
         boundary: "cli-host",
         responsibilities: &[
             "capture actual current immutable scope and concrete IO ports for each pending handoff",
@@ -51,7 +51,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and real client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_response_phase.rs",
+        path: "crates/host/src/runtime/coding_response_phase.rs",
         boundary: "cli-host",
         responsibilities: &[
             "own actual post-provider phase clock, projection allowance and settled tool message",
@@ -59,7 +59,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and real client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/persistent_native_generations.rs",
+        path: "crates/host/src/runtime/persistent_native_generations.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain bounded immutable actual native provider generations and exact resident bindings",
@@ -70,7 +70,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/workflow_spawner/native_policy_source.rs",
+        path: "crates/host/src/runtime/workflow_spawner/native_policy_source.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain original validated source policy independently of current operator model selection",
@@ -80,7 +80,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_execution_journal.rs",
+        path: "crates/host/src/runtime/coding_execution_journal.rs",
         boundary: "cli-host",
         responsibilities: &[
             "sequentially reborrow the sole actual invocation WAL, effects, ledger and terminal owners",
@@ -88,7 +88,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_provider_session.rs",
+        path: "crates/host/src/runtime/coding_provider_session.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain actual admitted provider obligation and resident native route slots through physical pump",
@@ -97,7 +97,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_request_session.rs",
+        path: "crates/host/src/runtime/coding_request_session.rs",
         boundary: "cli-host",
         responsibilities: &[
             "run actual request gate, hook and ordered control polling before media and native projection",
@@ -106,7 +106,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_image_admission.rs",
+        path: "crates/host/src/runtime/tool_image_admission.rs",
         boundary: "cli-host",
         responsibilities: &[
             "admit confirmed tool image receipts against actual route and pinned aggregate decoder budget",
@@ -114,7 +114,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/turn_advance.rs",
+        path: "crates/host/src/runtime/turn_advance.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain a prepared turn transition only after real tool and MCP private-content cleanup",
@@ -125,7 +125,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_request_execution.rs",
+        path: "crates/host/src/runtime/coding_request_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain actual working transcript, recovery and admission state across fallible host work",
@@ -134,7 +134,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, refusal and cancellation evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/invocation_admission.rs",
+        path: "crates/host/src/runtime/invocation_admission.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual invocation recovery, policy, control, media, memory reset and deadline lifetime",
@@ -142,7 +142,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/invocation_funding.rs",
+        path: "crates/host/src/runtime/invocation_funding.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual write-ahead monetary policy and signed physical charge recovery before installation",
@@ -150,7 +150,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/invocation_cleanup.rs",
+        path: "crates/host/src/runtime/invocation_cleanup.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual private tool and MCP output stores settle before parent terminal",
@@ -158,7 +158,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/persistent_writer_settlement.rs",
+        path: "crates/host/src/runtime/persistent_writer_settlement.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual resident writer discard, merge, and durable workspace witness settlement",
@@ -166,7 +166,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_execution_scope.rs",
+        path: "crates/host/src/runtime/provider_execution_scope.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual per-round governor, queue, gate and cancellation resources",
@@ -175,7 +175,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["route selection and monetary journals remain distinct owners"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_followup.rs",
+        path: "crates/host/src/runtime/provider_followup.rs",
         boundary: "cli-host",
         responsibilities: &["settled physical retry waits, bounded refusal and fallback proposals"],
         next_seams: &[
@@ -183,7 +183,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_response.rs",
+        path: "crates/host/src/runtime/tool_response.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single declaration-ordered result/error/image working set",
@@ -192,7 +192,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["actual executors retain their independent physical effect truth"],
     },
     Surface {
-        path: "crates/cli/src/runtime/session_transcript.rs",
+        path: "crates/host/src/runtime/session_transcript.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private restored and resident working transcript state",
@@ -203,7 +203,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_usage_reservation.rs",
+        path: "crates/host/src/runtime/provider_usage_reservation.rs",
         boundary: "cli-host",
         responsibilities: &["checked native mutually exclusive usage-partition monetary ceiling"],
         next_seams: &[
@@ -211,7 +211,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs",
+        path: "crates/host/src/runtime/persistent_agents/prepared_mailbox.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private exact host-rendered commitments to native full user-text inclusion",
@@ -222,7 +222,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_dispatch.rs",
+        path: "crates/host/src/runtime/provider_dispatch.rs",
         boundary: "cli-host",
         responsibilities: &[
             "consumed concrete physical admission journal and authenticated dispatch scope",
@@ -231,7 +231,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["transport, route selection and monetary state retain independent owners"],
     },
     Surface {
-        path: "crates/cli/src/runtime/model_response.rs",
+        path: "crates/host/src/runtime/model_response.rs",
         boundary: "cli-host",
         responsibilities: &[
             "no-tool stop reason and existing invocation recovery decision",
@@ -242,7 +242,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/approval_wait.rs",
+        path: "crates/host/src/runtime/approval_wait.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual approval wait over the single resident inbox without moving its receiver",
@@ -251,7 +251,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["remembered policy changes remain a separate write-ahead transaction"],
     },
     Surface {
-        path: "crates/cli/src/runtime/control_terminal.rs",
+        path: "crates/host/src/runtime/control_terminal.rs",
         boundary: "cli-host",
         responsibilities: &[
             "requested control settlement and actual retained process cleanup receipt",
@@ -260,7 +260,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["unknown or failed recording never becomes a successful cleanup claim"],
     },
     Surface {
-        path: "crates/cli/src/runtime/run_finalization.rs",
+        path: "crates/host/src/runtime/run_finalization.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual run finalization through physical terminal and bounded publication ports",
@@ -271,7 +271,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/ordinary_extensions.rs",
+        path: "crates/host/src/runtime/ordinary_extensions.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single optional ordinary SDK host and same-owner read-only event/status ports",
@@ -282,7 +282,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/request_preparation.rs",
+        path: "crates/host/src/runtime/request_preparation.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual undispatched request and bounded compaction candidate",
@@ -291,7 +291,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["host retains physical summary IO, real hook gates and control safe points"],
     },
     Surface {
-        path: "crates/cli/src/runtime/request_accounting.rs",
+        path: "crates/host/src/runtime/request_accounting.rs",
         boundary: "cli-host",
         responsibilities: &[
             "source-separated context accounting over immutable admitted evidence",
@@ -300,7 +300,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["physical provider usage remains owned by the calibration journal"],
     },
     Surface {
-        path: "crates/cli/src/runtime/optional_tool_round.rs",
+        path: "crates/host/src/runtime/optional_tool_round.rs",
         boundary: "cli-host",
         responsibilities: &[
             "optional proposal classification, candidate path and completed-result state for one round",
@@ -311,7 +311,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime.rs",
+        path: "crates/host/src/runtime.rs",
         boundary: "cli-host",
         responsibilities: &[
             "turn admission and ordered control",
@@ -328,25 +328,25 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/frontend_events.rs",
+        path: "crates/host/src/runtime/frontend_events.rs",
         boundary: "cli-host",
         responsibilities: &["immutable frontend event/control-resolution contract"],
         next_seams: &["never treat presentation values as execution authority"],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_presentation.rs",
+        path: "crates/host/src/runtime/tool_presentation.rs",
         boundary: "cli-host",
         responsibilities: &["pure bounded tool/UI output and approval evidence projection"],
         next_seams: &["canonical raw output belongs to publication/spill owners"],
     },
     Surface {
-        path: "crates/cli/src/runtime/stream_progress.rs",
+        path: "crates/host/src/runtime/stream_progress.rs",
         boundary: "cli-host",
         responsibilities: &["single output/thinking counter and coalesced emission owner"],
         next_seams: &["immutable stream timing evidence"],
     },
     Surface {
-        path: "crates/cli/src/runtime/deferred_batch_executor.rs",
+        path: "crates/host/src/runtime/deferred_batch_executor.rs",
         boundary: "cli-host",
         responsibilities: &[
             "already-admitted physical tool futures and governor permits",
@@ -356,7 +356,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["WAL admission/settlement stay with the journal owner"],
     },
     Surface {
-        path: "crates/cli/src/runtime/early_tool_gate.rs",
+        path: "crates/host/src/runtime/early_tool_gate.rs",
         boundary: "cli-host",
         responsibilities: &[
             "bounded operator-configured hook predispatch coordinator",
@@ -365,7 +365,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["hook journal and kernel effect admission remain independent owners"],
     },
     Surface {
-        path: "crates/cli/src/runtime/kernel_effect_bridge.rs",
+        path: "crates/host/src/runtime/kernel_effect_bridge.rs",
         boundary: "cli-host",
         responsibilities: &[
             "typed non-registry effect descriptor and single kernel broker adapter",
@@ -374,7 +374,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["disjoint journal/admission ports; no executor receives mutable Agent"],
     },
     Surface {
-        path: "crates/cli/src/runtime/session_control.rs",
+        path: "crates/host/src/runtime/session_control.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single cooperative control latches and inherited signal owner",
@@ -385,7 +385,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/session_inbox.rs",
+        path: "crates/host/src/runtime/session_inbox.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single SQ receiver, product epoch and bounded pending-steer owner",
@@ -396,7 +396,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/submitted_turn_state.rs",
+        path: "crates/host/src/runtime/submitted_turn_state.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single submission recovery receipt/error/continuation owner",
@@ -405,7 +405,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["private state; typed context/recovery mutations only"],
     },
     Surface {
-        path: "crates/cli/src/runtime/request_context_evidence.rs",
+        path: "crates/host/src/runtime/request_context_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single bounded materialized/recorded source evidence state",
@@ -416,7 +416,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_stream_attempt.rs",
+        path: "crates/host/src/runtime/provider_stream_attempt.rs",
         boundary: "cli-host",
         responsibilities: &["actual physical provider stream pump and quota receipt"],
         next_seams: &[
@@ -424,13 +424,13 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_transport_attempt.rs",
+        path: "crates/host/src/runtime/provider_transport_attempt.rs",
         boundary: "cli-host",
         responsibilities: &["actual admitted transport controls, cancellation and deadline"],
         next_seams: &["retries, durable intent and financial accounting remain separate owners"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_output_request.rs",
+        path: "crates/host/src/runtime/provider_output_request.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual adapter-attested physical request output bound",
@@ -439,7 +439,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["immutable provider proof port only; no budget or route selection mutation"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_charge_evidence.rs",
+        path: "crates/host/src/runtime/provider_charge_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single exact physical charge ledger and signed receipt/replay evidence",
@@ -447,7 +447,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["read-only proof validation; mutation remains in the shared monetary owner"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_financial_context.rs",
+        path: "crates/host/src/runtime/provider_financial_context.rs",
         boundary: "cli-host",
         responsibilities: &[
             "immutable authenticated route pricing/scope and actual USD/cohort admission/settlement ports",
@@ -457,7 +457,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_attempt_journal.rs",
+        path: "crates/host/src/runtime/provider_attempt_journal.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual provider physical intent/terminal and downstream financial CAS adapter",
@@ -467,7 +467,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_attempt_pump.rs",
+        path: "crates/host/src/runtime/provider_attempt_pump.rs",
         boundary: "cli-host",
         responsibilities: &["single observed physical attempt stream-to-terminal phase owner"],
         next_seams: &[
@@ -475,7 +475,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_route_admission.rs",
+        path: "crates/host/src/runtime/provider_route_admission.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual same-governor permit queue, cancellation and physical quota/circuit observation",
@@ -485,7 +485,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_route_journal.rs",
+        path: "crates/host/src/runtime/provider_route_journal.rs",
         boundary: "cli-host",
         responsibilities: &["closed quota/circuit Notice durable projection adapter"],
         next_seams: &[
@@ -493,7 +493,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_selection.rs",
+        path: "crates/host/src/runtime/provider_selection.rs",
         boundary: "cli-host",
         responsibilities: &[
             "sole executable selection epoch, exact provider binding and authenticated pricing card",
@@ -503,7 +503,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_selection_journal.rs",
+        path: "crates/host/src/runtime/provider_selection_journal.rs",
         boundary: "cli-host",
         responsibilities: &["closed ModelSelected and RateCardBound durable writer"],
         next_seams: &[
@@ -511,7 +511,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_route_turn.rs",
+        path: "crates/host/src/runtime/provider_route_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single actual request/route/retry/ticket/permit/physical identity owner",
@@ -522,7 +522,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_route_events.rs",
+        path: "crates/host/src/runtime/provider_route_events.rs",
         boundary: "cli-host",
         responsibilities: &[
             "concrete immutable lifecycle/activity projection and actual bounded retry wait",
@@ -533,7 +533,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_turn_evidence.rs",
+        path: "crates/host/src/runtime/provider_turn_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single transport/semantic/timing/quota observation owner",
@@ -542,7 +542,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["physical provider dispatch and monetary admission remain independent"],
     },
     Surface {
-        path: "crates/cli/src/runtime/early_tool_executor.rs",
+        path: "crates/host/src/runtime/early_tool_executor.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual streamed tool task, lock queue and governor permit owner",
@@ -551,7 +551,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["admission/journal ownership remains disjoint; no mutable Agent"],
     },
     Surface {
-        path: "crates/cli/src/runtime/terminal_record.rs",
+        path: "crates/host/src/runtime/terminal_record.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single mutable turn cost/counter/verifier terminal evidence owner",
@@ -560,7 +560,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["typed disjoint recorder/rollout/ledger ports; no mutable Agent"],
     },
     Surface {
-        path: "crates/cli/src/runtime/turn_publication.rs",
+        path: "crates/host/src/runtime/turn_publication.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual non-tool EndTurn answer Message join and confirmed Done sequence projection",
@@ -569,7 +569,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["readonly frontend facts; no terminal or ancestor scope inference"],
     },
     Surface {
-        path: "crates/cli/src/runtime/workspace_checkpoint.rs",
+        path: "crates/host/src/runtime/workspace_checkpoint.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single confirmed workspace checkpoint and cadence state",
@@ -578,7 +578,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["failed snapshot publication retains previous confirmed rollback point"],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_round.rs",
+        path: "crates/host/src/runtime/provider_round.rs",
         boundary: "cli-host",
         responsibilities: &[
             "one model round's actual stream/declaration/physical pump lifetime and settlement-dependent route phase owner",
@@ -588,7 +588,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/provider_stream_observer.rs",
+        path: "crates/host/src/runtime/provider_stream_observer.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual provider-item activity/frontend/lifecycle observation owner",
@@ -599,7 +599,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_turn.rs",
+        path: "crates/host/src/runtime/tool_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single mutable tool declaration/identity/failure/routing owner",
@@ -610,7 +610,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/effect_journal_owner.rs",
+        path: "crates/host/src/runtime/effect_journal_owner.rs",
         boundary: "cli-host",
         responsibilities: &[
             "single mutable admission/unknown/recovery/workspace-effect owner",
@@ -622,13 +622,13 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/effect_descriptor.rs",
+        path: "crates/host/src/runtime/effect_descriptor.rs",
         boundary: "cli-host",
         responsibilities: &["pure typed effect identity/audit/terminal projections"],
         next_seams: &["no mutable state or execution/writer port"],
     },
     Surface {
-        path: "crates/cli/src/runtime/stream_tool_admission.rs",
+        path: "crates/host/src/runtime/stream_tool_admission.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual structural/policy/operation/hook/tool streamed admission coordinator",
@@ -637,19 +637,19 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["disjoint actual owners and immutable trusted scopes; no mutable Agent"],
     },
     Surface {
-        path: "crates/cli/src/runtime/stream_tool_journal.rs",
+        path: "crates/host/src/runtime/stream_tool_journal.rs",
         boundary: "cli-host",
         responsibilities: &["physical policy decision/hook/tool/ToolReady durable admission ports"],
         next_seams: &["concrete borrowed recorder/journal/ledger owners; no execution authority"],
     },
     Surface {
-        path: "crates/cli/src/runtime/stream_tool_events.rs",
+        path: "crates/host/src/runtime/stream_tool_events.rs",
         boundary: "cli-host",
         responsibilities: &["immutable shared tool frontend/lifecycle/process/projection evidence"],
         next_seams: &["observations neither execute processes nor grant operation authority"],
     },
     Surface {
-        path: "crates/cli/src/runtime/stream_tools.rs",
+        path: "crates/host/src/runtime/stream_tools.rs",
         boundary: "cli-host",
         responsibilities: &[
             "pure operation-specific overlap eligibility and actual cancellation snapshot",
@@ -657,13 +657,13 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
     },
     Surface {
-        path: "crates/cli/src/runtime/deferred_tools.rs",
+        path: "crates/host/src/runtime/deferred_tools.rs",
         boundary: "cli-host",
         responsibilities: &["pure auto/authority/repeat/conflict leading-batch selection"],
         next_seams: &["frozen actual registry/operator ceilings; no approval or effect writer"],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_execution_journal.rs",
+        path: "crates/host/src/runtime/tool_execution_journal.rs",
         boundary: "cli-host",
         responsibilities: &[
             "physical registry intent/known terminal/refused terminal append and ledger ports",
@@ -673,7 +673,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/early_tool_collection.rs",
+        path: "crates/host/src/runtime/early_tool_collection.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual streamed task join/abort/reap and hook/tool ordered settlement",
@@ -684,7 +684,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/ordered_tool_call.rs",
+        path: "crates/host/src/runtime/ordered_tool_call.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual ordered registry intent, captured execution future, physical terminal, spill and post observer lifetime owner",
@@ -694,7 +694,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/deferred_tool_batch.rs",
+        path: "crates/host/src/runtime/deferred_tool_batch.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual admitted batch intent/executor/ordered terminal/post-hook coordinator",
@@ -705,7 +705,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/hook_execution.rs",
+        path: "crates/host/src/runtime/hook_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual configured hook dispatch, universal ticket retention and settlement",
@@ -716,7 +716,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_run_driver.rs",
+        path: "crates/host/src/runtime/coding_run_driver.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private working transcript and current submitted-turn/request/response/tool phases",
@@ -727,7 +727,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/runtime/coding_provider_execution.rs",
+        path: "crates/host/src/runtime/coding_provider_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "physical provider driver and USD obligation lifetime",
@@ -736,7 +736,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate native stream/cancellation/usage evidence remains pending"],
     },
     Surface {
-        path: "crates/cli/src/runtime/kernel_special_execution.rs",
+        path: "crates/host/src/runtime/kernel_special_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "exact Plan/direct-child/Workflow special declaration execution",
@@ -745,7 +745,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["storage uncertainty and accounting unavailability remain separate facts"],
     },
     Surface {
-        path: "crates/cli/src/runtime/kernel_child_accounting.rs",
+        path: "crates/host/src/runtime/kernel_child_accounting.rs",
         boundary: "cli-host",
         responsibilities: &[
             "real owned native ledger or controller receipt observation",
@@ -754,7 +754,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate restart/fault/child attribution evidence remains pending"],
     },
     Surface {
-        path: "crates/cli/src/runtime/direct_child_execution.rs",
+        path: "crates/host/src/runtime/direct_child_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual native or controller direct investigation",
@@ -763,7 +763,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["current-parent native route binding and cleanup proof remain under review"],
     },
     Surface {
-        path: "crates/cli/src/runtime/workflow_execution.rs",
+        path: "crates/host/src/runtime/workflow_execution.rs",
         boundary: "cli-host",
         responsibilities: &[
             "actual bounded native/controller workflow invocation",
@@ -772,7 +772,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["held script reads and native writer cleanup source remain in progress"],
     },
     Surface {
-        path: "crates/cli/src/runtime/workflow_preparation.rs",
+        path: "crates/host/src/runtime/workflow_preparation.rs",
         boundary: "cli-host",
         responsibilities: &[
             "bounded workflow specification and actual child source composition",
@@ -781,7 +781,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["held script capability/FIFO source fix remains in progress"],
     },
     Surface {
-        path: "crates/cli/src/runtime/tool_image_projection.rs",
+        path: "crates/host/src/runtime/tool_image_projection.rs",
         boundary: "cli-host",
         responsibilities: &[
             "post-terminal raw captured pixel retention",

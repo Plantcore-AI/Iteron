@@ -21,14 +21,22 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         &source_root.join("crates/cli/src/cli_entry"),
         &temp.join("crates/cli/src/cli_entry"),
     );
+    copy_tree(
+        &source_root.join("crates/host/src/cli_entry"),
+        &temp.join("crates/host/src/cli_entry"),
+    );
     for relative in [
+        "crates/host/src/lib.rs",
+        "crates/host/src/launch.rs",
+        "crates/host/src/server.rs",
+        "crates/app-server/src/main.rs",
         "crates/record/src/lib.rs",
         "crates/kernel/src/diagnostics.rs",
         "crates/kernel/src/lib.rs",
-        "crates/cli/src/runtime.rs",
-        "crates/cli/src/runtime/frontend_events.rs",
-        "crates/cli/src/output.rs",
-        "crates/cli/src/machine_projection.rs",
+        "crates/host/src/runtime.rs",
+        "crates/host/src/runtime/frontend_events.rs",
+        "crates/host/src/output.rs",
+        "crates/host/src/machine_projection.rs",
         "crates/cli/src/main.rs",
         "crates/eval/src/contract.rs",
         // Without this the fixture is missing a source `compare` insists on, every assertion below
@@ -59,6 +67,8 @@ fn trusted_base_rejects_type_serde_and_runtime_dataflow_bypasses() {
         ],
     );
     let contract = super::super::super::manifest::load_candidate(source_root).unwrap();
+    compare(&temp, "HEAD", &contract, &contract)
+        .expect("the complete unmodified extraction fixture must pass before adversarial edits");
 
     let event_path = temp.join("crates/protocol/src/event.rs");
     let event = std::fs::read_to_string(&event_path).unwrap();

@@ -140,6 +140,8 @@ impl Rollout {
         let mut next_hash = self.last_hash.clone();
         let mut next_bytes = current_bytes;
         let mut prepared = Vec::with_capacity(events.len());
+        let mut content_batch =
+            content_store::EventPayloadBatch::new(runs_dir, &self.tenant, &self.run);
         for source in events {
             if matches!(&source.kind, EventKind::PolicyBundleSnapshot { .. }) && next_seq != Seq(2)
             {
@@ -159,13 +161,7 @@ impl Rollout {
             event.seq = next_seq;
             validate_event_bounds(&event)?;
             let mut payload = serde_json::to_value(&event)?;
-            content_store::externalize_event_payload(
-                runs_dir,
-                &self.tenant,
-                &self.run,
-                next_seq,
-                &mut payload,
-            )?;
+            content_batch.externalize(next_seq, &mut payload)?;
             let hash = hash_line(&next_hash, next_seq.0, &payload);
             let line = ChainLine {
                 seq: next_seq.0,
@@ -201,6 +197,9 @@ impl Rollout {
             next_seq = next_seq.next();
         }
 
+        // Release content ownership before the journal acknowledgement and projection replay.
+        // A subsequent append must refresh peer metadata and revocation under a new lease.
+        drop(content_batch);
         self.commit_prepared(prepared, current_bytes, next_hash, next_seq, next_bytes)
     }
 

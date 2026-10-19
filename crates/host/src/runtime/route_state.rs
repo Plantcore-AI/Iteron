@@ -1,0 +1,474 @@
+use super::*;
+use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
+use sha2::{Digest, Sha256};
+
+pub(super) const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
+
+impl Agent {
+    pub fn set_last_success_route_path(&mut self, path: Option<std::path::PathBuf>) {
+        self.last_success_route_path = path;
+    }
+
+    pub(super) fn persist_last_success_route(&mut self, turn: TurnId) {
+        let (Some(path), Some(selected)) = (
+            self.last_success_route_path.as_deref(),
+            self.provider_selection.selected(),
+        ) else {
+            return;
+        };
+        let selection = crate::providers::ModelSelection {
+            provider_id: selected.route.provider_id.clone(),
+            model_id: selected.route.model_id.clone(),
+        };
+        let snapshot = crate::providers::LastSuccessRouteSnapshot::successful(
+            &selection,
+            selected.route.catalog_digest.clone(),
+            selected.route.capability_digest.clone(),
+        );
+        let queued = snapshot.maintenance_bytes().ok().is_some_and(|bytes| {
+            self.advisory_maintenance_owner().is_some_and(|owner| {
+                owner.enqueue(MaintenanceKindV1::LastSuccessfulRoute, turn.0, &bytes, path)
+            })
+        });
+        if !queued {
+            self.lifecycle_event(
+                "model.route_failed",
+                Some(turn),
+                LifecyclePayload {
+                    reason_code: Some("last_success_snapshot_queue_full".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+    }
+
+    /// Record the composition root's already-resolved initial route as one deterministic
+    /// `core/model_router` decision before the route itself becomes executable.
+    pub fn record_initial_model_selection(
+        &mut self,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        let provider = self.provider.clone();
+        if let Err(error) = self.validate_model_selection(
+            &provider,
+            &provider_id,
+            &model_id,
+            &catalog_digest,
+            &capability_digest,
+        ) {
+            self.record_model_router_abstention(None, "initial", "invalid_route_metadata")?;
+            return Err(error);
+        }
+        self.record_model_router_selection(
+            None,
+            "initial",
+            &provider_id,
+            &model_id,
+            &catalog_digest,
+            &capability_digest,
+        )?;
+        self.record_model_selection(provider_id, model_id, catalog_digest, capability_digest)
+    }
+
+    fn record_inherited_model_selection(
+        &mut self,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        let provider = self.provider.clone();
+        if let Err(error) = self.validate_model_selection(
+            &provider,
+            &provider_id,
+            &model_id,
+            &catalog_digest,
+            &capability_digest,
+        ) {
+            self.record_model_router_abstention(None, "inherited_child", "invalid_route_metadata")?;
+            return Err(error);
+        }
+        self.record_model_router_selection(
+            None,
+            "inherited_child",
+            &provider_id,
+            &model_id,
+            &catalog_digest,
+            &capability_digest,
+        )?;
+        self.record_model_selection(provider_id, model_id, catalog_digest, capability_digest)
+    }
+
+    /// Write-ahead record one provider/model route before the frontend commits the in-memory swap.
+    /// A failed durable append is returned so the old pair can remain active.
+    pub fn record_model_selection(
+        &mut self,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        let provider = self.provider.clone();
+        let turn = TurnId(self.seq_turn);
+        let route = PricingRoute {
+            provider_id,
+            model_id,
+            catalog_digest,
+            capability_digest,
+        };
+        let (selection, mut journal) = self.provider_selection_ports();
+        selection.select(provider, route, turn, &mut journal)?;
+        Ok(())
+    }
+
+    /// Atomically authorize and commit a newly constructed provider/model pair. The record append
+    /// is the commit barrier: on failure the old public provider/model and private route binding
+    /// remain unchanged; on success all four advance together.
+    #[cfg(test)]
+    pub fn record_provider_model_selection(
+        &mut self,
+        provider: std::sync::Arc<dyn Provider>,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        self.record_governed_provider_model_selection(
+            provider,
+            provider_id,
+            model_id,
+            catalog_digest,
+            capability_digest,
+            None,
+            "runtime",
+        )
+    }
+
+    /// Apply an operator `/model` selection. The UI and App Server share this exact route, so one
+    /// control request produces one durable model-router decision rather than separate frontend
+    /// and runtime guesses.
+    pub fn record_operator_model_selection(
+        &mut self,
+        provider: std::sync::Arc<dyn Provider>,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        self.record_governed_provider_model_selection(
+            provider,
+            provider_id,
+            model_id,
+            catalog_digest,
+            capability_digest,
+            None,
+            "operator",
+        )
+    }
+
+    /// Re-bind the route after an in-process session adoption. This is a new top-level route
+    /// opportunity even when the adopted journal last used the same bytes as the old session.
+    pub fn record_adopted_model_selection(
+        &mut self,
+        provider: std::sync::Arc<dyn Provider>,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+    ) -> Result<(), KernelError> {
+        self.record_governed_provider_model_selection(
+            provider,
+            provider_id,
+            model_id,
+            catalog_digest,
+            capability_digest,
+            None,
+            "adopted_session",
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one route selection is exactly this many independent facts; grouping them would hide which ones the record actually binds"
+    )]
+    pub(super) fn record_fallback_model_selection(
+        &mut self,
+        turn: TurnId,
+        provider: std::sync::Arc<dyn Provider>,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+        reason: &'static str,
+    ) -> Result<(), KernelError> {
+        self.record_governed_provider_model_selection(
+            provider,
+            provider_id,
+            model_id,
+            catalog_digest,
+            capability_digest,
+            Some(turn),
+            reason,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one route selection is exactly this many independent facts; grouping them would hide which ones the record actually binds"
+    )]
+    fn record_governed_provider_model_selection(
+        &mut self,
+        provider: std::sync::Arc<dyn Provider>,
+        provider_id: String,
+        model_id: String,
+        catalog_digest: String,
+        capability_digest: String,
+        turn: Option<TurnId>,
+        source: &'static str,
+    ) -> Result<(), KernelError> {
+        let selection_turn = TurnId(self.seq_turn);
+        self.provider_route_binding(selection_turn)?.select(
+            provider,
+            PricingRoute {
+                provider_id,
+                model_id,
+                catalog_digest,
+                capability_digest,
+            },
+            turn,
+            source,
+        )
+    }
+
+    fn validate_model_selection(
+        &self,
+        provider: &std::sync::Arc<dyn Provider>,
+        provider_id: &str,
+        model_id: &str,
+        catalog_digest: &str,
+        capability_digest: &str,
+    ) -> Result<(), KernelError> {
+        super::provider_selection::ProviderSelectionOwner::validate_selection(
+            provider,
+            &PricingRoute {
+                provider_id: provider_id.to_owned(),
+                model_id: model_id.to_owned(),
+                catalog_digest: catalog_digest.to_owned(),
+                capability_digest: capability_digest.to_owned(),
+            },
+        )
+    }
+
+    fn provider_selection_ports(
+        &mut self,
+    ) -> (
+        &mut super::provider_selection::ProviderSelectionOwner,
+        super::provider_selection_journal::ProviderSelectionJournal<'_>,
+    ) {
+        (
+            &mut self.provider_selection,
+            super::provider_selection_journal::ProviderSelectionJournal {
+                rollout: &mut self.rollout,
+                ledger: &mut self.ledger,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+        )
+    }
+
+    fn record_model_router_selection(
+        &mut self,
+        turn: Option<TurnId>,
+        source: &'static str,
+        provider_id: &str,
+        model_id: &str,
+        catalog_digest: &str,
+        capability_digest: &str,
+    ) -> Result<(), KernelError> {
+        let selected_route_identity =
+            model_route_action_id(provider_id, model_id, catalog_digest, capability_digest);
+        let previous_route_identity = self.provider_selection.selected().map(|selected| {
+            model_route_action_id(
+                &selected.route.provider_id,
+                &selected.route.model_id,
+                &selected.route.catalog_digest,
+                &selected.route.capability_digest,
+            )
+        });
+        let features = (
+            source,
+            selected_route_identity.as_str(),
+            previous_route_identity.as_deref(),
+        );
+        let eligible = [iteron_protocol::PolicyActionV1::ModelRouterPreAttestedRoute];
+
+        // An interactive launch with no selectable model retains a non-executable placeholder so
+        // `/model` can repair it. Say that explicitly as a fallback; never feed an empty identity
+        // to a strategy or pretend it selected an executable route.
+        if model_id.is_empty() {
+            let draft = policy_evidence::PolicyDecisionDraft::baseline_fallback(
+                policy_evidence::MODEL_ROUTER_SLOT,
+                &eligible,
+                MODEL_ROUTE_FEATURE_SCHEMA,
+                &features,
+                &"empty_model_is_a_non_executable_picker_placeholder",
+            )?;
+            return self.record_completed_policy_decision(
+                policy_evidence::MODEL_ROUTER_SLOT,
+                turn,
+                draft,
+            );
+        }
+
+        let observation = iteron_provider::catalog::ModelRouterObservation::single_route(
+            model_id.to_owned(),
+            None,
+            None,
+        );
+        match iteron_provider::catalog::ModelRouterStrategy::route_with(
+            self.compiled_policy_bundle.slots().model_router.as_ref(),
+            &observation,
+            self.authority_ceiling,
+        ) {
+            Ok(proposal) if proposal.model == model_id => self.record_completed_policy_decision(
+                policy_evidence::MODEL_ROUTER_SLOT,
+                turn,
+                policy_evidence::PolicyDecisionDraft::selected(
+                    policy_evidence::MODEL_ROUTER_SLOT,
+                    &eligible,
+                    iteron_protocol::PolicyActionV1::ModelRouterPreAttestedRoute,
+                    MODEL_ROUTE_FEATURE_SCHEMA,
+                    &features,
+                    &"selected_route_must_be_the_single_pre_attested_candidate",
+                )?,
+            ),
+            Ok(_) | Err(_) => {
+                let draft = policy_evidence::PolicyDecisionDraft::abstained(
+                    policy_evidence::MODEL_ROUTER_SLOT,
+                    &eligible,
+                    MODEL_ROUTE_FEATURE_SCHEMA,
+                    &features,
+                    &"model_router_refusal_cannot_widen_the_pre_attested_route",
+                )?;
+                self.record_completed_policy_decision(
+                    policy_evidence::MODEL_ROUTER_SLOT,
+                    turn,
+                    draft,
+                )?;
+                Err(KernelError::InvalidRoute(
+                    "model-router policy refused the selected route",
+                ))
+            }
+        }
+    }
+
+    pub(super) fn record_model_router_abstention(
+        &mut self,
+        turn: Option<TurnId>,
+        source: &'static str,
+        reason: &'static str,
+    ) -> Result<(), KernelError> {
+        let draft = policy_evidence::PolicyDecisionDraft::abstained(
+            policy_evidence::MODEL_ROUTER_SLOT,
+            &[iteron_protocol::PolicyActionV1::ModelRouterRouteCandidate],
+            MODEL_ROUTE_FEATURE_SCHEMA,
+            &(source, reason),
+            &"no_unattested_or_ineligible_route_may_be_selected",
+        )?;
+        self.record_completed_policy_decision(policy_evidence::MODEL_ROUTER_SLOT, turn, draft)
+    }
+
+    /// Install an operator-trusted pricing strategy. The trait object, not the kernel, owns any
+    /// HMAC material. Replacing trust invalidates the current public binding until it is resolved
+    /// again for the selected route.
+    pub fn set_pricing_port(&mut self, pricing: std::sync::Arc<dyn PricingPort>) {
+        self.provider_selection.set_pricing_port(pricing);
+    }
+
+    /// Authenticate and durably bind the exact selection epoch through the sole selection owner.
+    pub fn bind_selected_rate_card(&mut self) -> Result<bool, KernelError> {
+        let turn = TurnId(self.seq_turn);
+        let now = self.pricing_now();
+        let (selection, mut journal) = self.provider_selection_ports();
+        selection.bind_card(turn, now, &mut journal)
+    }
+
+    pub(super) fn inherit_route_and_pricing(&self, child: &mut Agent) -> Result<(), KernelError> {
+        // One injected evidence plane and one emission bound cover the whole parent/descendant
+        // tree. A child must never fall back to the default null port or multiply the cap.
+        child.diagnostics = self.diagnostics.clone();
+        if self.usd_budget.is_some() {
+            child.usd_budget = self.usd_budget.clone();
+        }
+        child.authority_ceiling = self.authority_ceiling;
+        child.policy_capabilities = self.policy_capabilities;
+        child.token_calibration = self.token_calibration.clone();
+        if let Some(pricing) = self.provider_selection.pricing_port() {
+            child.set_pricing_port(pricing.clone());
+        }
+        if let Some(selected) = self.provider_selection.selected() {
+            child.record_inherited_model_selection(
+                selected.route.provider_id.clone(),
+                selected.route.model_id.clone(),
+                selected.route.catalog_digest.clone(),
+                selected.route.capability_digest.clone(),
+            )?;
+        }
+        child.set_provider_controls(self.provider_controls)?;
+        let current_route_id = self.governed_route_id();
+        let fallback_start = self
+            .fallback_provider_routes
+            .iter()
+            .position(|route| route.id() == current_route_id)
+            .map_or(0, |index| index.saturating_add(1));
+        let remaining_fallbacks = self
+            .fallback_provider_routes
+            .iter()
+            .skip(fallback_start)
+            .filter(|route| route.id() != current_route_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        child.install_fallback_provider_routes(remaining_fallbacks.clone())?;
+        if let Some(governor) = &self.provider_governor {
+            // ProviderGovernor is an Arc-backed session owner. A child clone must retain the
+            // parent's in-flight/quota/circuit state rather than minting an independent ceiling.
+            child.install_shared_provider_governor(governor.clone())?;
+        }
+        if self.provider_selection.card().is_some() && !child.bind_selected_rate_card()? {
+            return Err(KernelError::UnpricedUsdCeiling);
+        }
+        Ok(())
+    }
+}
+
+fn model_route_action_id(
+    provider_id: &str,
+    model_id: &str,
+    catalog_digest: &str,
+    capability_digest: &str,
+) -> String {
+    fn field(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"iteron.model-route-action.v1");
+    field(&mut hasher, provider_id);
+    field(&mut hasher, model_id);
+    field(&mut hasher, catalog_digest);
+    field(&mut hasher, capability_digest);
+    let digest = hasher.finalize();
+    let mut action = String::with_capacity(6 + digest.len() * 2);
+    action.push_str("route.");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(action, "{byte:02x}");
+    }
+    action
+}

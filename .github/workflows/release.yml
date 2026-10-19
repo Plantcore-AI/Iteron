@@ -1229,7 +1229,7 @@ jobs:
         shell: bash
         run: >-
           cargo +"$RUST_VERSION" test
-          --locked -p iteron-cli --bin iteron
+          --locked -p iteron-host --lib
           --target "${{ matrix.target }}"
           output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
       # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
@@ -1246,10 +1246,11 @@ jobs:
           ITERON_BUILD_DATE=$(python3 -c 'import os, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(os.environ["SOURCE_DATE_EPOCH"]))))')
           export ITERON_BUILD_DATE
           cargo +"$RUST_VERSION" auditable build \
-            --release --locked -p iteron-cli \
+            --release --locked -p iteron-cli -p iteron-app-server \
             --target "${{ matrix.target }}"
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
+          app_server="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-app-server${{ matrix.tool-suffix }}"
           cp "$binary" "$workspace_hook"
       # `file`, `jq`, and ELF/Mach-O linkage vocabulary do not exist on Windows; the leg below
       # asserts the same properties against a PE image instead.
@@ -1260,6 +1261,7 @@ jobs:
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
+          app_server="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-app-server${{ matrix.tool-suffix }}"
           target=${{ matrix.target }}
           test -x "$binary"
           test -x "$workspace_hook"
@@ -1276,16 +1278,18 @@ jobs:
             and (.default_cli_stream_version | type) == "number"
             and (.resident_protocol_version | type) == "number"
           ' "$RUNNER_TEMP/MACHINE-CONTRACT.json" >/dev/null
-          description=$(file "$binary")
-          case "$target" in
-            aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
-            aarch64-unknown-linux-musl) grep -Eq 'ARM aarch64|aarch64' <<<"$description" ;;
-            x86_64-unknown-linux-musl) grep -q 'x86-64' <<<"$description" ;;
-            *) printf 'unexpected release target %s\n' "$target" >&2; exit 1 ;;
-          esac
-          if [[ "$target" == *-unknown-linux-musl ]]; then
-            grep -Eq 'statically linked|static-pie linked' <<<"$description"
-          fi
+          for executable in "$binary" "$app_server"; do
+            description=$(file "$executable")
+            case "$target" in
+              aarch64-apple-darwin) grep -q 'arm64' <<<"$description" ;;
+              aarch64-unknown-linux-musl) grep -Eq 'ARM aarch64|aarch64' <<<"$description" ;;
+              x86_64-unknown-linux-musl) grep -q 'x86-64' <<<"$description" ;;
+              *) printf 'unexpected release target %s\n' "$target" >&2; exit 1 ;;
+            esac
+            if [[ "$target" == *-unknown-linux-musl ]]; then
+              grep -Eq 'statically linked|static-pie linked' <<<"$description"
+            fi
+          done
       # The Windows counterpart of the step above. It must also leave MACHINE-CONTRACT.json in
       # RUNNER_TEMP, because the packaging step copies that file into `dist` as this target's
       # capability report and the release manifest digests it. The child process writes the file
@@ -1347,6 +1351,19 @@ jobs:
               throw "release binary reported a non-numeric $field"
             }
           }
+      - name: Verify independent AppServer identity and shared protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_server="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-app-server${{ matrix.tool-suffix }}"
+          if [[ '${{ matrix.target }}' == x86_64-pc-windows-msvc ]]; then
+            "${{ matrix.python }}" release-tools/verify_pe.py --binary "$app_server"
+          fi
+          "${{ matrix.python }}" release-tools/verify_app_server.py \
+            --binary "$app_server" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --commit "${{ needs.validate.outputs.commit }}" \
+            --cli-contract "$RUNNER_TEMP/MACHINE-CONTRACT.json"
       - name: Complete one task with the native release client
         id: native-client
         run: >-
@@ -1400,7 +1417,7 @@ jobs:
           }
 
           run_exact tui \
-            cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+            cargo +"$RUST_VERSION" test --locked -p iteron-host --lib \
               --target "$target" \
               app_server::tests::version_skew_is_refused_up_front -- --exact
           run_exact one-shot \
@@ -1435,9 +1452,11 @@ jobs:
           # These tests execute on the selected native host. Version compatibility and a
           # compiled archive alone do not observe process custody or native filesystem barriers.
           cargo +"$RUST_VERSION" test --locked -p iteron-sandbox --lib --target "$target"
-          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+          cargo +"$RUST_VERSION" test --locked -p iteron-app-server \
+            --test standalone --target "$target"
+          cargo +"$RUST_VERSION" test --locked -p iteron-host --lib \
             --target "$target" client_effects::
-          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+          cargo +"$RUST_VERSION" test --locked -p iteron-host --lib \
             --target "$target" app_server::model_preferences::
           if [[ "$target" == x86_64-pc-windows-msvc ]]; then
             cargo +"$RUST_VERSION" test --locked -p iteron-support \
@@ -1454,12 +1473,16 @@ jobs:
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
+          app_server="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-app-server${{ matrix.tool-suffix }}"
           mkdir -p dist
           syft scan "$binary" -o "spdx-json=$RUNNER_TEMP/raw.spdx.json"
+          syft scan "$app_server" -o "spdx-json=$RUNNER_TEMP/server-raw.spdx.json"
           "${{ matrix.python }}" release-tools/sbom.py \
             --input "$RUNNER_TEMP/raw.spdx.json" \
+            --app-server-input "$RUNNER_TEMP/server-raw.spdx.json" \
             --binary "$binary" \
             --workspace-hook "$workspace_hook" \
+            --app-server "$app_server" \
             --output "$RUNNER_TEMP/SBOM.spdx.json" \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
@@ -1471,6 +1494,7 @@ jobs:
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
           workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
+          app_server="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-app-server${{ matrix.tool-suffix }}"
           "${{ matrix.python }}" release-tools/manifest.py build-info \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
@@ -1481,6 +1505,7 @@ jobs:
           "${{ matrix.python }}" release-tools/package.py \
             --binary "$binary" \
             --workspace-hook "$workspace_hook" \
+            --app-server "$app_server" \
             --license LICENSE \
             --readme README.md \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
@@ -1884,6 +1909,11 @@ jobs:
           "${{ matrix.python }}" release-tools/verify_release.py contract \
             --manifest "$canary/download/release-manifest.json" \
             --report "$canary/live-machine-contract.json"
+          "${{ matrix.python }}" release-tools/verify_app_server.py \
+            --binary "$(dirname "$binary")/iteron-app-server" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --commit "${{ needs.validate.outputs.commit }}" \
+            --cli-contract "$canary/live-machine-contract.json"
   curl-canary:
     name: release / curl canary / ${{ matrix.target }}
     if: startsWith(github.ref, 'refs/tags/v')
@@ -1914,6 +1944,7 @@ jobs:
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh" \
             | sh -s -- --version "$GITHUB_REF_NAME" --bin-dir "$bin_dir"
           test "$("$bin_dir/iteron" -V)" = "iteron ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/iteron-app-server" -V)" = "iteron-app-server ${{ needs.validate.outputs.version }}"
       - name: Verify the latest installer redirect
         shell: bash
         run: |
@@ -1924,3 +1955,4 @@ jobs:
             "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" \
             | sh -s -- --bin-dir "$bin_dir"
           test "$("$bin_dir/iteron" -V)" = "iteron ${{ needs.validate.outputs.version }}"
+          test "$("$bin_dir/iteron-app-server" -V)" = "iteron-app-server ${{ needs.validate.outputs.version }}"

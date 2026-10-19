@@ -37,8 +37,9 @@
 Iteron 是用于构建、评估和治理**任意垂类 AI Agent Harness Checkpoint** 的开源
 substrate。它提供覆盖上下文、工具、策略、权限、证据与 checkpoint 生命周期的
 模块化 Rust 运行时契约。终端编码智能体是第一个参考实现，支持交互式工作、有界
-自动化、提供商路由、持久会话、验证和机器可读输出。当前工作区与最新公开版本均为
-**v0.0.20**。
+自动化、提供商路由、持久会话、验证和机器可读输出。当前工作区目标版本为
+**v0.0.30**；最新公开版本及可下载产物以
+[GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases/latest) 为准。
 
 ## 安装
 
@@ -54,8 +55,8 @@ Windows PowerShell：
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 ```
 
-v0.0.20 发布 macOS arm64、Linux arm64、Linux x86-64 与 Windows x86-64
-二进制。安装器会校验所选归档，并以当前用户身份安装，无需提权。Windows 获得
+发行包覆盖 macOS arm64、Linux arm64、Linux x86-64 与 Windows x86-64。
+安装器会校验所选归档，并以当前用户身份安装，无需提权。Windows 获得
 分发包并不改变其没有代码执行沙箱的边界。版本固定、校验和、证明材料和源码构建
 说明见[安装与验证指南](docs/getting-started/installation.md)。
 

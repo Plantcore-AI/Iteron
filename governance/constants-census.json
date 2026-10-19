@@ -11,9 +11,9 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 217,
-      "searchable": 264,
-      "structural": 389
+      "bounded": 64,
+      "searchable": 75,
+      "structural": 71
     },
     "ctx": {
       "bounded": 53,
@@ -34,6 +34,11 @@
       "bounded": 0,
       "searchable": 0,
       "structural": 3
+    },
+    "host": {
+      "bounded": 153,
+      "searchable": 189,
+      "structural": 343
     },
     "kernel": {
       "bounded": 8,
@@ -73,7 +78,7 @@
     "record": {
       "bounded": 31,
       "searchable": 22,
-      "structural": 68
+      "structural": 88
     },
     "sandbox": {
       "bounded": 6,
@@ -118,6 +123,6 @@
   },
   "schema_version": 1,
   "settable": 1467,
-  "structural": 1182,
-  "total": 2649
+  "structural": 1227,
+  "total": 2694
 }

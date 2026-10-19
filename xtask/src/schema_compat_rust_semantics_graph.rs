@@ -24,7 +24,16 @@ impl SourceView<'_> {
     ) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Base { root, revision } => {
-                read_revision_file_bounded(root, revision, relative, MAX_FILE_BYTES)
+                let current = read_revision_file_bounded(root, revision, relative, MAX_FILE_BYTES)?;
+                if current.is_some() {
+                    return Ok(current);
+                }
+                match crate::source_owners::historical(relative) {
+                    Some(previous) => {
+                        read_revision_file_bounded(root, revision, previous, MAX_FILE_BYTES)
+                    }
+                    None => Ok(None),
+                }
             }
             Self::Candidate { root } => match std::fs::symlink_metadata(root.join(relative)) {
                 Ok(_) => read_candidate_file_bounded(root, relative, MAX_FILE_BYTES).map(Some),

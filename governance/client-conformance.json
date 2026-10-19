@@ -17,7 +17,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/cli/src/output.rs",
+          "path": "crates/host/src/output.rs",
           "selector": "fn stream_events_have_stable_names_and_correlations()"
         },
         {
@@ -130,7 +130,7 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/app_server/tests.rs",
+          "path": "crates/host/src/app_server/tests.rs",
           "selector": "fn version_skew_is_refused_up_front()"
         },
         {
@@ -148,12 +148,12 @@
       "evidence": [
         {
           "kind": "test",
-          "path": "crates/cli/src/app_server/tests.rs",
+          "path": "crates/host/src/app_server/tests.rs",
           "selector": "fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events()"
         },
         {
           "kind": "test",
-          "path": "crates/cli/src/tui/headless.rs",
+          "path": "crates/host/src/transport/headless.rs",
           "selector": "fn client_frame_bound_covers_the_protocol_image_and_escaped_text_ceilings()"
         }
       ]
@@ -176,7 +176,7 @@
     "evidence": [
       {
         "kind": "test",
-        "path": "crates/cli/src/app_server/tests.rs",
+        "path": "crates/host/src/app_server/tests.rs",
         "selector": "fn version_skew_is_refused_up_front()"
       },
       {

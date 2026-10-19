@@ -303,7 +303,7 @@ fn validate_source_bindings(root: &Path, c: &Contract) -> Result<()> {
     let governor = source(root, "crates/provider/src/governor_policy.rs")?;
     let effective_provider = source(
         root,
-        "crates/cli/src/runtime_tunables/effective_provider.rs",
+        "crates/host/src/runtime_tunables/effective_provider.rs",
     )?;
     let tui = source(root, "crates/cli/src/tui.rs")?;
     let status = source(root, "crates/cli/src/tui/status_render.rs")?;
@@ -710,15 +710,15 @@ fn validate_reqwest_http2(root: &Path, c: &Contract) -> Result<()> {
 fn validate_behavior_test_seams(root: &Path) -> Result<()> {
     let required = [
         (
-            "crates/cli/src/providers/directory/tests.rs",
+            "crates/host/src/providers/directory/tests.rs",
             "a_launch_paints_before_any_provider_network_settles",
         ),
         (
-            "crates/cli/src/runtime/frontend_tests.rs",
+            "crates/host/src/runtime/frontend_tests.rs",
             "same_task_structural_saturation_returns_instead_of_waiting_for_its_consumer",
         ),
         (
-            "crates/cli/src/app_server/tests.rs",
+            "crates/host/src/app_server/tests.rs",
             "a_saturated_sq_applies_backpressure_within_a_fixed_bound",
         ),
         (

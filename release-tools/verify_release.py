@@ -19,7 +19,9 @@ from common import (
     ReleaseToolError,
     WINDOWS_TARGET,
     archive_filename,
+    app_server_filename,
     binary_filename,
+    includes_app_server,
     require_regular_file,
     run_main,
     sha256_file,
@@ -32,7 +34,7 @@ from common import (
 MAX_JSON_BYTES = 1024 * 1024
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024
-MAX_UNPACKED_BYTES = 128 * 1024 * 1024
+MAX_UNPACKED_BYTES = 256 * 1024 * 1024
 INSTALLER_NAMES = {"posix": "install.sh", "windows": "install.ps1"}
 ARCHIVE_FILES = (
     "LICENSE",
@@ -216,13 +218,15 @@ def verify_contract(document: dict[str, object], report_path: Path) -> None:
         raise ReleaseToolError("binary capability report disagrees with the release manifest")
 
 
-def expected_members(root: str, target: str) -> set[str]:
+def expected_members(root: str, target: str, standalone: bool = False) -> set[str]:
     names = {
         f"{root}/",
         f"{root}/{binary_filename(target)}",
         f"{root}/{workspace_hook_filename(target)}",
     }
     names.update(f"{root}/{name}" for name in ARCHIVE_FILES)
+    if standalone:
+        names.add(f"{root}/{app_server_filename(target)}")
     names.update(
         f"{root}/contracts/plantcore/{name}" for name in PLANTCORE_CONTRACT_FILES
     )
@@ -251,8 +255,8 @@ def copy_bounded(source, destination: Path, expected_size: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def extract_tar(archive_path: Path, root: str, target: str, destination: Path) -> None:
-    expected = expected_members(root, target)
+def extract_tar(archive_path: Path, root: str, target: str, destination: Path, standalone: bool = False) -> None:
+    expected = expected_members(root, target, standalone)
     expected.remove(f"{root}/")
     expected.add(root)
     with tarfile.open(archive_path, mode="r:gz") as archive:
@@ -262,8 +266,10 @@ def extract_tar(archive_path: Path, root: str, target: str, destination: Path) -
         if len({member.name for member in members}) != len(members):
             raise ReleaseToolError("release archive repeats a member")
         total = 0
-        command = None
-        command_name = f"{root}/{binary_filename(target)}"
+        commands = {}
+        command_names = {f"{root}/{binary_filename(target)}": destination}
+        if standalone:
+            command_names[f"{root}/{app_server_filename(target)}"] = destination.parent / app_server_filename(target)
         for member in members:
             if member.name == root:
                 if not member.isdir():
@@ -274,19 +280,22 @@ def extract_tar(archive_path: Path, root: str, target: str, destination: Path) -
             total += member.size
             if total > MAX_UNPACKED_BYTES:
                 raise ReleaseToolError("release archive exceeds the unpacked byte bound")
-            if member.name == command_name:
-                command = member
-        if command is None:
+            if member.name in command_names:
+                if member.mode & 0o111 == 0:
+                    raise ReleaseToolError("release archive command lacks executable permissions")
+                commands[member.name] = member
+        if set(commands) != set(command_names):
             raise ReleaseToolError("release archive lacks the command")
-        source = archive.extractfile(command)
-        if source is None:
-            raise ReleaseToolError("release archive command cannot be read")
-        with source:
-            copy_bounded(source, destination, command.size)
+        for name, command in commands.items():
+            source = archive.extractfile(command)
+            if source is None:
+                raise ReleaseToolError("release archive command cannot be read")
+            with source:
+                copy_bounded(source, command_names[name], command.size)
 
 
-def extract_zip(archive_path: Path, root: str, target: str, destination: Path) -> None:
-    expected = expected_members(root, target)
+def extract_zip(archive_path: Path, root: str, target: str, destination: Path, standalone: bool = False) -> None:
+    expected = expected_members(root, target, standalone)
     with zipfile.ZipFile(archive_path) as archive:
         members = archive.infolist()
         if len(members) != len(expected) or {member.filename for member in members} != expected:
@@ -294,8 +303,10 @@ def extract_zip(archive_path: Path, root: str, target: str, destination: Path) -
         if len({member.filename for member in members}) != len(members):
             raise ReleaseToolError("release archive repeats a member")
         total = 0
-        command = None
-        command_name = f"{root}/{binary_filename(target)}"
+        commands = {}
+        command_names = {f"{root}/{binary_filename(target)}": destination}
+        if standalone:
+            command_names[f"{root}/{app_server_filename(target)}"] = destination.parent / app_server_filename(target)
         for member in members:
             file_type = stat.S_IFMT(member.external_attr >> 16)
             if member.filename == f"{root}/":
@@ -307,12 +318,13 @@ def extract_zip(archive_path: Path, root: str, target: str, destination: Path) -
             total += member.file_size
             if member.file_size <= 0 or total > MAX_UNPACKED_BYTES:
                 raise ReleaseToolError("release archive exceeds the unpacked byte bound")
-            if member.filename == command_name:
-                command = member
-        if command is None:
+            if member.filename in command_names:
+                commands[member.filename] = member
+        if set(commands) != set(command_names):
             raise ReleaseToolError("release archive lacks the command")
-        with archive.open(command) as source:
-            copy_bounded(source, destination, command.file_size)
+        for name, command in commands.items():
+            with archive.open(command) as source:
+                copy_bounded(source, command_names[name], command.file_size)
 
 
 def verify_artifact(arguments: argparse.Namespace) -> Path:
@@ -345,12 +357,14 @@ def verify_artifact(arguments: argparse.Namespace) -> Path:
         raise ReleaseToolError("release archive filename is not canonical")
     root = expected_archive.removesuffix(".zip").removesuffix(".tar.gz")
     destination = arguments.extract_dir / root / binary_filename(target)
-    if destination.exists():
+    standalone = includes_app_server(document["version"])
+    server_destination = destination.parent / app_server_filename(target)
+    if destination.exists() or (standalone and server_destination.exists()):
         raise ReleaseToolError("verified extraction destination already exists")
     if target == WINDOWS_TARGET:
-        extract_zip(arguments.archive, root, target, destination)
+        extract_zip(arguments.archive, root, target, destination, standalone)
     else:
-        extract_tar(arguments.archive, root, target, destination)
+        extract_tar(arguments.archive, root, target, destination, standalone)
     return destination
 
 

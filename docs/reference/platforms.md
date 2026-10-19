@@ -1,7 +1,7 @@
 # Supported platforms
 
 Iteron is developed and tested primarily on macOS and Linux. Those remain the
-only platforms where the whole product is supported. Release v0.0.26 ships
+only platforms where the whole product is supported. Release v0.0.29 ships
 macOS arm64, Linux arm64, Linux x86-64, and Windows x86-64 assets. Windows
 remains a non-required CI surface. Source includes a Windows LPAC backend with
 Job, pipe, and ConPTY ownership; actual native acceptance and interactive TUI
@@ -13,14 +13,16 @@ support remain pending.
 | macOS x86-64 | source/internal CI only | supported from source | system Seatbelt interface |
 | Linux x86-64 on `dgx` | release target and CI | supported | usable bubblewrap/user-namespace boundary required |
 | Linux arm64 on `dgx` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
-| Windows x86-64 | v0.0.26 release asset; non-required CI | not claimed | LPAC implementation; native acceptance pending |
+| Windows x86-64 | v0.0.29 release asset; non-required CI | not claimed | LPAC implementation; native acceptance pending |
 
 ## Windows
 
-Windows can be installed from the v0.0.26 release or built from source, has a
-non-required CI lane, and is packaged as `x86_64-pc-windows-msvc` with a
-version-bound `install.ps1`. The release artifact does not imply full runtime
-support.
+Windows can be installed from the v0.0.29 archive or built from source. It has a
+non-required CI lane and is packaged as `x86_64-pc-windows-msvc`. Starting with
+v0.0.30, a version-bound `install.ps1` also installs the manual archive layout;
+that newer script can install v0.0.29 with `-Version v0.0.29`. The v0.0.29
+release itself has no installer asset. Windows requires the Microsoft Visual C++
+x64 runtime. Archive availability does not imply full runtime support.
 
 What exists:
 
@@ -35,9 +37,11 @@ What exists:
   The actual suspended process token is checked before its initial resume.
   One Job and its native transport retain cleanup custody until physical terminal
   observations; a Job alone does not establish filesystem or network isolation.
-- `v0.0.26` publishes `install.ps1` and an
-  `x86_64-pc-windows-msvc` archive with manifest, checksum, SBOM, and provenance
-  material. Workflow releases render and verify the installer before publication.
+- `v0.0.26` publishes a workflow installer and archive. `v0.0.29` publishes a
+  manual `x86_64-pc-windows-msvc` archive with checksums, a manual manifest,
+  source SBOM, and build records; it does not claim workflow provenance or
+  Authenticode. Newer installers validate both documented archive layouts and
+  retain the previous executable set for `-Rollback`.
 
 What remains unverified, and is not implied by any of the above:
 
@@ -72,8 +76,9 @@ contain the Windows archive or installer.
 
 ## Linux requirements
 
-Code execution needs bubblewrap, and the backend fails **closed**: with no usable
-`bwrap` there is no `bash` tool at all, only reading and editing. Having a `bwrap`
+Explicit `--confine` code execution needs bubblewrap, and the backend fails
+**closed** when it cannot establish that boundary. Ordinary sessions use host
+authority and do not require bubblewrap. Having a `bwrap`
 executable is not sufficient either — it must be a root-owned, non-group/world-
 writable file at `/usr/bin/bwrap`, `/bin/bwrap`, or `/usr/local/bin/bwrap`, and
 the operating system must permit the confinement probe to establish the required

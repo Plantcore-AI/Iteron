@@ -17,6 +17,32 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
         return None;
     }
     match (relative, name) {
+        // The authoritative metadata log uses a fixed header layout and shared writer/reopen
+        // bounds. Compaction thresholds coordinate tombstone reclamation with that same finite
+        // log/index envelope while the exclusive store lease is held.
+        ("crates/record/src/content_store/metadata.rs", "HEADER_BYTES") => {
+            Some(InvariantReason::WireCompatibility)
+        }
+        (
+            "crates/record/src/content_store/metadata.rs",
+            "MAX_FRAME_BYTES" | "MAX_LOG_BYTES" | "MAX_INDEX_BYTES" | "MAX_INDEX_ENTRIES"
+                | "MAX_DIRECTORY_ENTRIES" | "COMPACT_LOG_BYTES" | "COMPACT_DELETED_ENTRIES",
+        )
+        | ("crates/record/src/content_store/metadata/snapshot.rs", "SNAPSHOT_FRAME_BYTES") => {
+            Some(InvariantReason::DurabilityReplay)
+        }
+        // These optional caches retain physical index/lease facts and exact reference counts.
+        // Cache pressure falls back to authoritative reads; it cannot alter reference quotas.
+        (
+            "crates/record/src/content_store/metadata.rs",
+            "MAX_CACHED_STORES" | "MAX_LEASE_DIRECTORY_FACTS",
+        )
+        | ("crates/record/src/content_store/metadata/counts.rs", "MAX_CACHED_REFERENCE_COUNTS")
+        // The publication queue keeps custody of the admitted physical scope. Its separate
+        // WAIT_LIMIT remains a real runtime-resolved inspection timeout.
+        | ("crates/record/src/session_maintenance.rs", "QUEUE_CAPACITY") => {
+            Some(InvariantReason::HardBudgetEffectLedger)
+        }
         // The bounded native coordination-file creation retry precedes lease acquisition and
         // never retries publication or treats an unobserved lease as success. Both cfg variants
         // implement this same durable owner, rather than two independently selectable policies.
@@ -270,6 +296,41 @@ pub(super) fn reason(relative: &str, name: &str, owner: &str) -> Option<Invarian
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_bounds_keep_exact_owners_and_leave_inspection_timeout_configurable() {
+        use super::{InvariantReason, reason};
+        let metadata = "crates/record/src/content_store/metadata.rs";
+        assert_eq!(
+            reason(metadata, "HEADER_BYTES", "HEADER_BYTES"),
+            Some(InvariantReason::WireCompatibility)
+        );
+        assert_eq!(
+            reason(metadata, "MAX_FRAME_BYTES", "MAX_FRAME_BYTES"),
+            Some(InvariantReason::DurabilityReplay)
+        );
+        assert_eq!(
+            reason(metadata, "MAX_FRAME_BYTES", "unrelated::MAX_FRAME_BYTES"),
+            None
+        );
+        assert_eq!(reason(metadata, "NEW_LIMIT", "NEW_LIMIT"), None);
+        assert_eq!(
+            reason(
+                "crates/record/src/session_maintenance.rs",
+                "QUEUE_CAPACITY",
+                "QUEUE_CAPACITY"
+            ),
+            Some(InvariantReason::HardBudgetEffectLedger)
+        );
+        assert_eq!(
+            reason(
+                "crates/record/src/session_maintenance.rs",
+                "WAIT_LIMIT",
+                "WAIT_LIMIT"
+            ),
+            None
+        );
+    }
+
     use super::{InvariantReason, reason};
 
     #[test]

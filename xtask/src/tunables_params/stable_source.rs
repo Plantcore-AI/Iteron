@@ -2,6 +2,11 @@
 //! This mapping changes identity/classification provenance only; owner and use-site paths remain actual.
 
 pub(super) fn original_source(relative: &str, name: &str) -> Option<&'static str> {
+    let moved = crate::source_owners::historical(relative);
+    original_declaration(moved.unwrap_or(relative), name).or(moved)
+}
+
+fn original_declaration(relative: &str, name: &str) -> Option<&'static str> {
     match (relative, name) {
         ("crates/sandbox/src/pty_size.rs", "MAX_WINDOW_DIMENSION") => {
             Some("crates/sandbox/src/pty.rs")
@@ -559,7 +564,10 @@ mod tests {
             ),
         ] {
             assert_eq!(super::super::base_param_id("cli", path, name), id);
-            let source = std::fs::read_to_string(root.join(path)).unwrap();
+            let source = std::fs::read_to_string(
+                root.join(crate::source_owners::canonical(path).unwrap_or(path)),
+            )
+            .unwrap();
             let parsed = syn::parse_file(&source).unwrap();
             let mut probe = ActualHelper {
                 id,

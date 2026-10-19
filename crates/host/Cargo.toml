@@ -1,0 +1,78 @@
+[package]
+name = "iteron-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+test-fixtures = ["iteron-record/test-fixtures", "iteron-tools/test-helper"]
+legacy-plantcore = []
+ticket-investigation = []
+script-workflows = ["iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
+
+[dependencies]
+iteron-protocol = { path = "../protocol" }
+iteron-record = { path = "../record" }
+iteron-obs = { path = "../obs" }
+iteron-provider = { path = "../provider" }
+iteron-tools = { path = "../tools" }
+iteron-sched = { path = "../sched" }
+iteron-workflow = { path = "../workflow" }
+iteron-kernel = { path = "../kernel" }
+iteron-ctx = { path = "../ctx" }
+iteron-agents = { path = "../agents" }
+iteron-evolve = { path = "../evolve" }
+iteron-eval = { path = "../eval" }
+iteron-mcp = { path = "../mcp" }
+iteron-verify = { path = "../verify" }
+iteron-sandbox = { path = "../sandbox" }
+iteron-tunables = { path = "../tunables" }
+iteron-changeset = { path = "../changeset" }
+iteron-marketplace = { path = "../marketplace" }
+iteron-extension-sdk = { path = "../extension-sdk" }
+iteron-statusline = { path = "../statusline" }
+iteron-support = { path = "../support" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }
+async-trait = "0.1"
+url = "2"
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+zeroize = { workspace = true }
+libc = "0.2"
+base64 = { workspace = true }
+png = { workspace = true }
+gif = { workspace = true }
+image-webp = { workspace = true }
+zune-jpeg = { workspace = true }
+unicode-normalization = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_SystemInformation",
+] }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+# Tests pin a registry-driven resolved tunable set rather than inventing a snapshot.
+iteron-record = { path = "../record", features = ["test-fixtures"] }
+# CLI unit tests run under libtest, which cannot self-exec the production helper entry point.
+# The explicit registry fixture still runs native mutations in a Landlock-confined test thread.
+iteron-tools = { path = "../tools", features = ["test-helper"] }
+jsonschema = { version = "0.28", default-features = false }
+rcgen = "0.13.2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio = { workspace = true, features = ["test-util"] }

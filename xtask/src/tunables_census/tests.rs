@@ -55,6 +55,67 @@ fn moved_source_forms_keep_id_and_real_owner_evidence() {
 }
 
 #[test]
+fn moved_host_source_forms_keep_historical_ids_and_physical_host_evidence() {
+    for (old_path, new_path, source) in [
+        (
+            "crates/cli/src/config.rs",
+            "crates/host/src/config.rs",
+            "struct Config { #[serde(default)] retries: usize }",
+        ),
+        (
+            "crates/cli/src/tui/headless/input.rs",
+            "crates/host/src/transport/headless/input.rs",
+            "struct ClientFrame { #[serde(default)] observation_only: bool }",
+        ),
+        (
+            "crates/cli/src/mcp/commands.rs",
+            "crates/host/src/mcp/commands.rs",
+            "fn add() { let value = McpServerConfig { transport: McpTransportConfig::Http }; let value = McpServerConfig { transport: McpTransportConfig::Stdio }; }",
+        ),
+        (
+            "crates/cli/src/keymap.rs",
+            "crates/host/src/keymap.rs",
+            "struct Config { #[serde(default)] mode: Mode, #[serde(default)] bindings: Map }",
+        ),
+    ] {
+        let before = discover_source("cli", old_path, source).unwrap();
+        let after = discover_source("host", new_path, source).unwrap();
+        assert!(!before.is_empty(), "{old_path}");
+        assert_eq!(before.len(), after.len());
+        for (previous, current) in before.iter().zip(&after) {
+            assert_eq!(previous.id, current.id);
+            assert_eq!(current.owner.krate, "host");
+            assert_eq!(current.owner.path, new_path);
+            assert!(current.use_sites.iter().all(|site| site.path == new_path));
+        }
+    }
+    // The keymap split gives no historical identity to a newly introduced field/type.
+    let unrelated = discover_source(
+        "host",
+        "crates/host/src/keymap.rs",
+        "struct NewConfig { #[serde(default)] mode: Mode }",
+    )
+    .unwrap();
+    assert!(
+        unrelated
+            .iter()
+            .all(|row| row.id.starts_with("host.keymap."))
+    );
+    // An arbitrary new host file cannot inherit a neighboring moved owner's overrides.
+    let unrelated = discover_source(
+        "host",
+        "crates/host/src/mcp/new_commands.rs",
+        "fn add() { let value = McpServerConfig { transport: McpTransportConfig::Http }; }",
+    )
+    .unwrap();
+    assert!(
+        unrelated
+            .iter()
+            .all(|row| row.id.starts_with("host.mcp.new.commands."))
+    );
+}
+
+#[test]
 fn moved_session_hard_envelope_remains_readonly_and_validates_actual_source() {
     let source = "struct SessionDeltaHardLimits { rows: u64, bytes: u64 }\n\
                   const SESSION_DELTA_HARD_LIMITS: SessionDeltaHardLimits =\n\
@@ -331,7 +392,7 @@ fn quality_affecting_invariant_requires_an_explicit_override() {
 fn exact_client_invariant_row() -> CensusRow {
     let mut row = discover_source(
         "cli",
-        "crates/cli/src/app_server/thread_inspection.rs",
+        "crates/host/src/app_server/thread_inspection.rs",
         "struct Inspection { #[serde(default)] max_events: usize }",
     )
     .unwrap()
@@ -943,17 +1004,17 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let cases = [
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "cli.app.server.plantcore.plantcoreadmission.disabled.inline.self.field.state.1",
             InvariantKind::Authority,
         ),
         (
-            "crates/cli/src/mcp/commands.rs",
+            "crates/host/src/mcp/commands.rs",
             "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.1",
             InvariantKind::Authority,
         ),
         (
-            "crates/cli/src/mcp/commands.rs",
+            "crates/host/src/mcp/commands.rs",
             "cli.mcp.commands.add.inline.mcpserverconfig.field.transport.2",
             InvariantKind::Authority,
         ),
@@ -978,57 +1039,57 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
             InvariantKind::HardBudget,
         ),
         (
-            "crates/cli/src/app_server/session_factory.rs",
+            "crates/host/src/app_server/session_factory.rs",
             "cli.app.server.session.factory.sessionfactory.verified.inline.replayreadlimits.field.events.1",
             InvariantKind::HardBudget,
         ),
         (
-            "crates/cli/src/queue_policy.rs",
+            "crates/host/src/queue_policy.rs",
             "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.3.1",
             InvariantKind::NonValueStructural,
         ),
         (
-            "crates/cli/src/queue_policy.rs",
+            "crates/host/src/queue_policy.rs",
             "cli.queue.policy.frontendqueuepolicy.owner.inline.self.new.argument.4.1",
             InvariantKind::Durability,
         ),
         (
-            "crates/cli/src/runtime/budget_control.rs",
+            "crates/host/src/runtime/budget_control.rs",
             "cli.runtime.budget.control.agent.admit.operator.tool.call.inline.super.permission.policy.operationpolicy.field.governing.trust.1",
             InvariantKind::Authority,
         ),
         (
-            "crates/cli/src/runtime/invocation_admission.rs",
+            "crates/host/src/runtime/invocation_admission.rs",
             "cli.runtime.invocation.admission.invocationadmissionsession.prepare.inline.invocationadmission.field.phase.1",
             InvariantKind::NonValueStructural,
         ),
         (
-            "crates/cli/src/runtime/memory_activation.rs",
+            "crates/host/src/runtime/memory_activation.rs",
             "cli.runtime.memory.activation.memoryactivation.resolve.inline.memoryreferenceadmissionv1.field.version.1",
             InvariantKind::WireCompatibility,
         ),
         (
-            "crates/cli/src/runtime/permission_policy.rs",
+            "crates/host/src/runtime/permission_policy.rs",
             "cli.runtime.permission.policy.evaluate.operation.inline.operationadmission.field.verdict.1",
             InvariantKind::Authority,
         ),
         (
-            "crates/cli/src/runtime/persistent_agents/input_admission.rs",
+            "crates/host/src/runtime/persistent_agents/input_admission.rs",
             "cli.runtime.persistent.agents.input.admission.liveagentmailbox.source.admission.inline.agentinputadmissionv1.field.version.1",
             InvariantKind::WireCompatibility,
         ),
         (
-            "crates/cli/src/runtime/pricing.rs",
+            "crates/host/src/runtime/pricing.rs",
             "cli.runtime.pricing.sharedusdbudget.from.microusd.inline.self.field.depth.1",
             InvariantKind::Authority,
         ),
         (
-            "crates/cli/src/runtime/request_admission.rs",
+            "crates/host/src/runtime/request_admission.rs",
             "cli.runtime.request.admission.requestadmission.a.from.bound.inline.self.field.phase.1",
             InvariantKind::NonValueStructural,
         ),
         (
-            "crates/cli/src/runtime/workspace_rewind.rs",
+            "crates/host/src/runtime/workspace_rewind.rs",
             "cli.runtime.workspace.rewind.agent.admit.workspace.rewind.inline.operationpolicy.field.governing.trust.1",
             InvariantKind::Authority,
         ),
@@ -1135,11 +1196,11 @@ fn actual_fixed_inline_owners_retain_exact_source_and_literal_proofs() {
 fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
     for (path, source) in [
         (
-            "crates/cli/src/mcp/commands.rs",
+            "crates/host/src/mcp/commands.rs",
             "fn add() { let _ = McpServerConfig { transport: OtherTransport::Http }; }",
         ),
         (
-            "crates/cli/src/mcp/commands.rs",
+            "crates/host/src/mcp/commands.rs",
             "fn other_add() { let _ = McpServerConfig { transport: McpTransportConfig::Http }; }",
         ),
         (
@@ -1159,19 +1220,19 @@ fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
             "impl OtherMemBudget { fn fit_content_bytes() -> Self { Self { index_bytes: 0, recall_bytes: 0 } } }",
         ),
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Required } } }",
         ),
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "impl OtherPlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
         ),
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "impl PlantcoreAdmission { fn disabled() -> Self { Self { other_state: State::Disabled } } }",
         ),
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "impl PlantcoreAdmission { fn disabled() -> Self { OtherAdmission { state: State::Disabled } } }",
         ),
         (
@@ -1179,15 +1240,15 @@ fn fixed_inline_rules_do_not_hide_other_strategy_fields_or_initializers() {
             "impl PlantcoreAdmission { fn disabled() -> Self { Self { state: State::Disabled } } }",
         ),
         (
-            "crates/cli/src/runtime/permission_policy.rs",
+            "crates/host/src/runtime/permission_policy.rs",
             "fn evaluate_operation() { let _ = OtherAdmission { verdict: Verdict::Auto }; }",
         ),
         (
-            "crates/cli/src/runtime/memory_activation.rs",
+            "crates/host/src/runtime/memory_activation.rs",
             "impl MemoryActivation { fn resolve() { let _ = MemoryReferenceAdmissionV1 { version: 2 }; } }",
         ),
         (
-            "crates/cli/src/queue_policy.rs",
+            "crates/host/src/queue_policy.rs",
             "impl FrontendQueuePolicy { fn owner() { let _ = Self::new(1, 2, 3, CosmeticOverflow::Drop, AuthoritativeOverflow::Reject); } }",
         ),
         (

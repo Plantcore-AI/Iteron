@@ -77,9 +77,9 @@ fn older_source_reason(relative: &str, name: &str, owner: &str) -> Option<Invari
         // Actual immutable disabled/empty fallback state and an AtomicUsize worker census are
         // observations, not configuration. Ordinary tool visibility still intersects admission;
         // the table cannot mint execution authority or replace tool-ranking controls.
-        ("crates/cli/src/runtime/context_runtime.rs", "ORDINARY_CODING_TOOLS")
-        | ("crates/cli/src/runtime/optional_tool_round.rs", "EMPTY_INDICES")
-        | ("crates/cli/src/runtime/tool_image_projection.rs", "IMAGE_UNAVAILABLE")
+        ("crates/host/src/runtime/context_runtime.rs", "ORDINARY_CODING_TOOLS")
+        | ("crates/host/src/runtime/optional_tool_round.rs", "EMPTY_INDICES")
+        | ("crates/host/src/runtime/tool_image_projection.rs", "IMAGE_UNAVAILABLE")
         | ("crates/tools/src/contained_source.rs", "WORKERS") => {
             Some(InvariantReason::RuntimeStateNotAValue)
         }

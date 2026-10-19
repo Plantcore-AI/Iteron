@@ -45,7 +45,7 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
         names: &["main"],
     },
     FreeFunctions {
-        path: "crates/cli/src/output.rs",
+        path: "crates/host/src/output.rs",
         // `stream_event` is the versioned producer itself, so a full-body fingerprint would make
         // an additive schema release impossible. It evolves behind the CLI parse/token/exact and
         // writer authorities, which bind the direct UiEvent match, JSON producers, compatibility
@@ -109,12 +109,12 @@ const METHODS: &[Methods] = &[
         names: &["current", "into_current"],
     },
     Methods {
-        path: "crates/cli/src/output.rs",
+        path: "crates/host/src/output.rs",
         target: "OutputFormat",
         names: &["is_machine"],
     },
     Methods {
-        path: "crates/cli/src/output.rs",
+        path: "crates/host/src/output.rs",
         target: "Emitter",
         names: &[
             "new",
@@ -127,7 +127,7 @@ const METHODS: &[Methods] = &[
         ],
     },
     Methods {
-        path: "crates/cli/src/output.rs",
+        path: "crates/host/src/output.rs",
         target: "StreamingScrubber",
         names: &["push", "finish"],
     },
@@ -145,7 +145,7 @@ const METHODS: &[Methods] = &[
 
 const TYPES: &[Types] = &[
     Types {
-        path: "crates/cli/src/runtime.rs",
+        path: "crates/host/src/runtime.rs",
         names: &[
             "UiEvent",
             "WorkflowTaskUi",
@@ -181,16 +181,18 @@ pub(super) fn compare_critical_functions(
         if loaded.contains_key(path) {
             continue;
         }
-        let (base, current) = if path == "crates/cli/src/runtime.rs" {
+        let (base, current) = if path == "crates/host/src/runtime.rs" {
             (
                 super::super::frontend_owner::runtime_scope(base_view)?,
                 super::super::frontend_owner::runtime_scope(candidate_view)?,
             )
-        } else if path == "crates/cli/src/output.rs" {
+        } else if path == "crates/host/src/output.rs" {
             (
                 super::super::machine_owner::scope(base_view)?,
                 super::super::machine_owner::scope(candidate_view)?,
             )
+        } else if path == "crates/cli/src/main.rs" {
+            (cli_root_scope(base_view)?, cli_root_scope(candidate_view)?)
         } else {
             (
                 base_view.parse_file(path)?,
@@ -205,7 +207,7 @@ pub(super) fn compare_critical_functions(
     }
 
     let machine_schema_version = crate::rust_source::public_decimal_const(
-        loaded["crates/cli/src/output.rs"]
+        loaded["crates/host/src/output.rs"]
             .1
             .to_token_stream()
             .to_string()
@@ -214,7 +216,7 @@ pub(super) fn compare_critical_functions(
         "u32",
     )?;
     if machine_schema_version == 8 {
-        validate_submission_receipt_types(&loaded["crates/cli/src/runtime.rs"].1)?;
+        validate_submission_receipt_types(&loaded["crates/host/src/runtime.rs"].1)?;
     }
 
     for group in FREE_FUNCTIONS {
@@ -225,7 +227,7 @@ pub(super) fn compare_critical_functions(
             let old = free_function(base, name)?;
             let new = free_function(current, name)?;
             if function_fingerprint(old) != function_fingerprint(new)
-                && !(group.path == "crates/cli/src/output.rs"
+                && !(group.path == "crates/host/src/output.rs"
                     && *name == "is_token_boundary"
                     && exact_url_boundary_upgrade(old, new))
             {
@@ -270,7 +272,7 @@ pub(super) fn compare_critical_functions(
             let old = named_type(base, name)?;
             let new = named_type(current, name)?;
             if semantic_item(old) != semantic_item(new)
-                && !(group.path == "crates/cli/src/runtime.rs"
+                && !(group.path == "crates/host/src/runtime.rs"
                     && *name == "UiEvent"
                     && machine_schema_version == 8
                     && exact_submission_event_upgrade(old, new))
@@ -281,6 +283,50 @@ pub(super) fn compare_critical_functions(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn cli_root_scope(view: SourceView<'_>) -> Result<syn::File> {
+    let mut main = view.parse_file("crates/cli/src/main.rs")?;
+    if view.read_optional("crates/host/src/lib.rs")?.is_some() {
+        normalize_host_root_modules(&mut main, &view.parse_file("crates/host/src/lib.rs")?)?;
+    }
+    Ok(main)
+}
+
+/// These two historical lint-attributed declarations remain unknown-name bindings in the
+/// conservative scope check. Prove their exact new ownership before restoring their old
+/// declaration witnesses; every other import, module and crate attribute remains compared.
+fn normalize_host_root_modules(main: &mut syn::File, host: &syn::File) -> Result<()> {
+    if host
+        .attrs
+        .iter()
+        .any(|attribute| !attribute.path().is_ident("doc"))
+    {
+        bail!("shared host root has active crate authority");
+    }
+    for name in ["bundle_adapter", "client_event"] {
+        super::super::cli_entry::require_binding(main, name, &["iteron_host", name])?;
+        let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
+        let expected_export: syn::Item = syn::parse_quote!(pub use iteron_host::#ident;);
+        let expected_module: syn::Item = syn::parse_quote!(pub mod #ident;);
+        let modules = host
+            .items
+            .iter()
+            .filter(|item| matches!(item, syn::Item::Mod(module) if module.ident == name))
+            .collect::<Vec<_>>();
+        if modules.len() != 1 || semantic_item(modules[0]) != semantic_item(&expected_module) {
+            bail!("shared host module '{name}' is missing, conditional or redirected");
+        }
+        let export = main
+            .items
+            .iter_mut()
+            .find(|item| semantic_item(item) == semantic_item(&expected_export))
+            .with_context(|| {
+                format!("shared host module '{name}' lacks its exact public re-export")
+            })?;
+        *export = syn::parse_quote!(#[allow(dead_code)] mod #ident;);
     }
     Ok(())
 }
@@ -684,6 +730,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_root_relocation_preserves_only_proved_historical_modules() {
+        let base: syn::File = syn::parse_quote! {
+            #[allow(dead_code)] mod bundle_adapter;
+            #[allow(dead_code)] mod client_event;
+        };
+        let current: syn::File = syn::parse_quote! {
+            pub use iteron_host::bundle_adapter;
+            pub use iteron_host::client_event;
+        };
+        let host: syn::File = syn::parse_quote! {
+            pub mod bundle_adapter;
+            pub mod client_event;
+        };
+        let mut normalized = current.clone();
+        normalize_host_root_modules(&mut normalized, &host).unwrap();
+        compare_frozen_scope("crates/cli/src/main.rs", &base, &normalized).unwrap();
+        for changed in [
+            "pub use evil::bundle_adapter; pub use iteron_host::client_event;",
+            "#[cfg(test)] pub use iteron_host::bundle_adapter; pub use iteron_host::client_event;",
+            "pub use iteron_host::bundle_adapter; pub use iteron_host::client_event; mod bundle_adapter;",
+        ] {
+            assert!(
+                normalize_host_root_modules(&mut syn::parse_file(changed).unwrap(), &host).is_err()
+            );
+        }
+        for changed in [
+            "#[path = \"evil.rs\"] pub mod bundle_adapter; pub mod client_event;",
+            "#[cfg(test)] pub mod bundle_adapter; pub mod client_event;",
+            "pub mod bundle_adapter {} pub mod client_event;",
+            "mod bundle_adapter; pub mod client_event;",
+            "pub mod bundle_adapter; pub mod bundle_adapter; pub mod client_event;",
+        ] {
+            assert!(
+                normalize_host_root_modules(
+                    &mut current.clone(),
+                    &syn::parse_file(changed).unwrap()
+                )
+                .is_err()
+            );
+        }
+        normalized.items.push(syn::parse_quote!(
+            #[macro_use]
+            mod other;
+        ));
+        assert!(compare_frozen_scope("crates/cli/src/main.rs", &base, &normalized).is_err());
+    }
+
+    #[test]
     fn staged_url_boundary_repair_is_exact_and_directional() {
         let old: syn::ItemFn = syn::parse_quote! {
             fn is_token_boundary(c: char) -> bool {
@@ -895,7 +989,7 @@ mod tests {
         // `WHOLE_FILES`). The illustration has to stand on a path that is still frozen here, or it
         // argues from an example this module no longer governs.
         let names = referenced("writer.write_all(line.as_bytes())");
-        assert!(path_has_frozen_executable("crates/cli/src/output.rs"));
+        assert!(path_has_frozen_executable("crates/host/src/output.rs"));
         assert_eq!(
             scope_drift(&base, &redirected, Some(&names)),
             None,

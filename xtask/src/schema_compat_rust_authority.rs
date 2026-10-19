@@ -6,6 +6,8 @@ use std::path::{Component, Path};
 
 const MEMBERS: &[(&str, &str)] = &[
     ("crates/agents", "iteron-agents"),
+    ("crates/app-server", "iteron-app-server"),
+    ("crates/host", "iteron-host"),
     ("crates/changeset", "iteron-changeset"),
     ("crates/cli", "iteron-cli"),
     ("crates/ctx", "iteron-ctx"),
@@ -339,10 +341,13 @@ fn validate_internal_dependencies(
 /// or optional/version/git/package override allowance for internal dependencies.
 fn fixture_dependency_feature(member: &str, dependency: &str) -> Option<&'static str> {
     match (member, dependency) {
-        ("crates/extension-sdk" | "crates/cli", "iteron-tools") => Some("test-helper"),
-        ("crates/record", "iteron-tunables") | ("crates/cli", "iteron-record") => {
+        ("crates/extension-sdk" | "crates/cli" | "crates/host", "iteron-tools") => {
+            Some("test-helper")
+        }
+        ("crates/record", "iteron-tunables") | ("crates/cli" | "crates/host", "iteron-record") => {
             Some("test-fixtures")
         }
+        ("crates/cli", "iteron-host") => Some("test-fixtures"),
         _ => None,
     }
 }
@@ -449,6 +454,7 @@ fn validate_dependency_authority(root: &Path, workspace: &toml::Value) -> Result
         ("crates/kernel/Cargo.toml", &["serde", "serde_json"][..]),
         ("crates/eval/Cargo.toml", &["serde", "serde_json"][..]),
         ("crates/cli/Cargo.toml", &["serde", "serde_json"][..]),
+        ("crates/host/Cargo.toml", &["serde", "serde_json"][..]),
     ] {
         let package = read_toml(root, manifest)?;
         let dependencies = package
@@ -480,6 +486,11 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
         validate_member_target(root, &member, &package_name)?;
     }
     validate_bin_targets(root, "crates/cli/Cargo.toml", &[("iteron", "src/main.rs")])?;
+    validate_bin_targets(
+        root,
+        "crates/app-server/Cargo.toml",
+        &[("iteron-app-server", "src/main.rs")],
+    )?;
     validate_bin_targets(
         root,
         "crates/eval/Cargo.toml",
@@ -534,10 +545,15 @@ fn reject_implicit_targets(
     package_name: &str,
     manifest: &toml::Value,
 ) -> Result<()> {
-    let has_lib = !matches!(package_name, "iteron-cli" | "iteron-xtask");
+    let has_lib = !matches!(
+        package_name,
+        "iteron-cli" | "iteron-app-server" | "iteron-xtask"
+    );
     let explicit_bin = manifest.get("bin");
-    let has_bin = matches!(package_name, "iteron-cli" | "iteron-eval" | "iteron-xtask")
-        || (package_name == "iteron-evolve" && explicit_bin.is_some());
+    let has_bin = matches!(
+        package_name,
+        "iteron-cli" | "iteron-app-server" | "iteron-eval" | "iteron-xtask"
+    ) || (package_name == "iteron-evolve" && explicit_bin.is_some());
     if has_lib {
         let source = format!("{member}/src/lib.rs");
         let _ = read_bounded(root, &source, MAX_SOURCE_BYTES)?;
@@ -555,7 +571,10 @@ fn reject_implicit_targets(
             bail!("managed package '{member}' gains implicit Cargo target '{relative}'");
         }
     }
-    if matches!(package_name, "iteron-cli" | "iteron-eval") {
+    if matches!(
+        package_name,
+        "iteron-cli" | "iteron-app-server" | "iteron-eval"
+    ) {
         if explicit_bin.is_none() {
             bail!("managed package '{member}' loses its explicit canonical binary target");
         }
@@ -627,7 +646,7 @@ fn validate_managed_modules(root: &Path) -> Result<()> {
         ("crates/eval/src/lib.rs", "contract", true),
         ("crates/eval/src/lib.rs", "runner", true),
         ("crates/eval/src/lib.rs", "strict_json", false),
-        ("crates/cli/src/main.rs", "output", false),
+        ("crates/host/src/lib.rs", "output", true),
     ] {
         let bytes = read_bounded(root, source, MAX_SOURCE_BYTES)?;
         let source_text = std::str::from_utf8(&bytes)

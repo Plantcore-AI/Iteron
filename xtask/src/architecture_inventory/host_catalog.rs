@@ -181,7 +181,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/app_server/path_completion.rs",
+        path: "crates/host/src/app_server/path_completion.rs",
         boundary: "cli-host",
         responsibilities: &[
             "bind actual current workspace read scope and retain finite native worker custody independently of presentation",
@@ -189,7 +189,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, behavioral and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/path_completion.rs",
+        path: "crates/host/src/client_effects/path_completion.rs",
         boundary: "cli-host",
         responsibilities: &[
             "read held directory metadata beneath the captured workspace and own bounded identity-checked completion cache",
@@ -222,7 +222,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/app_server/experiment_lab.rs",
+        path: "crates/host/src/app_server/experiment_lab.rs",
         boundary: "cli-host",
         responsibilities: &[
             "admit existing offline lab intent and retain native publication and session exclusion independently of the observer",
@@ -230,7 +230,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/experiment_lab.rs",
+        path: "crates/host/src/client_effects/experiment_lab.rs",
         boundary: "cli-host",
         responsibilities: &[
             "execute bounded native request publication and offline inventory under the captured host authority",
@@ -238,7 +238,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/experiment_lab/model.rs",
+        path: "crates/host/src/client_effects/experiment_lab/model.rs",
         boundary: "cli-host",
         responsibilities: &[
             "validate existing immutable request identity and project bounded redacted offline facts without runtime activation",
@@ -246,7 +246,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/experiment_lab/comparison.rs",
+        path: "crates/host/src/client_effects/experiment_lab/comparison.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain a bounded native evidence source and project only the actual signed recomputed comparison",
@@ -254,7 +254,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/workspace_storage.rs",
+        path: "crates/host/src/client_effects/workspace_storage.rs",
         boundary: "cli-host",
         responsibilities: &[
             "select the actual finite native workspace directory capability and closed publication outcomes",
@@ -262,7 +262,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/workspace_storage/unix.rs",
+        path: "crates/host/src/client_effects/workspace_storage/unix.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain Unix namespace and regular file identities through finite enumeration, read and create-only publication",
@@ -270,7 +270,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/workspace_storage/windows.rs",
+        path: "crates/host/src/client_effects/workspace_storage/windows.rs",
         boundary: "cli-host",
         responsibilities: &[
             "compose held ordinary NTFS read and private staged by-handle publication capabilities",
@@ -312,7 +312,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native execution remain required"],
     },
     Surface {
-        path: "crates/cli/src/app_server/tunables_simulation.rs",
+        path: "crates/host/src/app_server/tunables_simulation.rs",
         boundary: "cli-host",
         responsibilities: &[
             "admit existing simulation file read under actual host policy and retain submission and adoption custody",
@@ -320,7 +320,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler, native and real client evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/workspace_read.rs",
+        path: "crates/host/src/client_effects/workspace_read.rs",
         boundary: "cli-host",
         responsibilities: &[
             "read actual bounded regular workspace bytes through held native handles and version and path rebinding",
@@ -348,7 +348,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/app_server/model_preferences.rs",
+        path: "crates/host/src/app_server/model_preferences.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain actual selected-route preference write under submission and adoption custody",
@@ -359,7 +359,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/config/preferences.rs",
+        path: "crates/host/src/config/preferences.rs",
         boundary: "cli-host",
         responsibilities: &[
             "capture existing user preference path and own bounded global config lock and atomic native write",
@@ -370,7 +370,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/app_server/project_init.rs",
+        path: "crates/host/src/app_server/project_init.rs",
         boundary: "cli-host",
         responsibilities: &[
             "capture existing project scaffold intent under actual host write authority and session scope",
@@ -378,7 +378,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/project_init.rs",
+        path: "crates/host/src/client_effects/project_init.rs",
         boundary: "cli-host",
         responsibilities: &[
             "retain real bounded native initialization worker and create-only publication through physical completion",
@@ -386,7 +386,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate compiler and native integrated evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/app_server/client_shell.rs",
+        path: "crates/host/src/app_server/client_shell.rs",
         boundary: "cli-host",
         responsibilities: &[
             "capture actual idle host authority and scope for existing operator shell execution",
@@ -395,7 +395,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["native Windows job ownership and same-candidate execution remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/shell.rs",
+        path: "crates/host/src/client_effects/shell.rs",
         boundary: "cli-host",
         responsibilities: &[
             "own actual bounded shell process, cancellation, sanitized environment and output",
@@ -428,7 +428,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/client_effects/export_macos.rs",
+        path: "crates/host/src/client_effects/export_macos.rs",
         boundary: "cli-host",
         responsibilities: &[
             "anonymous same-volume source and create-only APFS descriptor clone publication",
@@ -444,7 +444,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate executed and native evidence remain required"],
     },
     Surface {
-        path: "crates/cli/src/providers.rs",
+        path: "crates/host/src/providers.rs",
         boundary: "cli-host",
         responsibilities: &[
             "provider value contracts, immutable bootstrap policy and physical discovery composition",
@@ -454,7 +454,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/providers/directory.rs",
+        path: "crates/host/src/providers/directory.rs",
         boundary: "cli-host",
         responsibilities: &[
             "whole private captured catalog/health/deferred-selection owner",
@@ -465,7 +465,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/providers/catalog_cache.rs",
+        path: "crates/host/src/providers/catalog_cache.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private retained credential-scoped catalog candidates and bounded validated lookup/update",
@@ -473,7 +473,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["raw scope key and namespace publication stay behind storage ports"],
     },
     Surface {
-        path: "crates/cli/src/providers/probe_cache.rs",
+        path: "crates/host/src/providers/probe_cache.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private retained account evidence and bounded positive-reuse/failure-backoff decision",
@@ -481,7 +481,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["account availability never follows catalog visibility alone"],
     },
     Surface {
-        path: "crates/cli/src/providers/cache_storage.rs",
+        path: "crates/host/src/providers/cache_storage.rs",
         boundary: "cli-host",
         responsibilities: &[
             "installation-local scope key and checked private namespace atomic byte publication",
@@ -489,7 +489,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["no formatting or serialization port for scope secret bytes"],
     },
     Surface {
-        path: "crates/cli/src/providers/cache_writeback.rs",
+        path: "crates/host/src/providers/cache_writeback.rs",
         boundary: "cli-host",
         responsibilities: &[
             "consumed actual discovery snapshot/probe observation writeback lifetime",
@@ -497,7 +497,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["best-effort cache refusal never changes provider execution truth"],
     },
     Surface {
-        path: "crates/cli/src/providers/instance_factory.rs",
+        path: "crates/host/src/providers/instance_factory.rs",
         boundary: "cli-host",
         responsibilities: &[
             "operator configuration to exact immutable provider routes and explicit model catalogs",
@@ -505,7 +505,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["construction performs no physical discovery or validation request"],
     },
     Surface {
-        path: "crates/cli/src/providers/selection_identity.rs",
+        path: "crates/host/src/providers/selection_identity.rs",
         boundary: "cli-host",
         responsibilities: &[
             "pure identity over actual captured entry, selected model and admitted capability evidence",
@@ -564,7 +564,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/providers/discovery.rs",
+        path: "crates/host/src/providers/discovery.rs",
         boundary: "cli-host",
         responsibilities: &[
             "dormant network work and the unique physical discovery task",
@@ -575,7 +575,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/machine_projection.rs",
+        path: "crates/host/src/machine_projection.rs",
         boundary: "cli-output",
         responsibilities: &[
             "pure shared result/event schema and canonical v7 projection",
@@ -595,7 +595,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/queue_policy.rs",
+        path: "crates/host/src/queue_policy.rs",
         boundary: "cli-host",
         responsibilities: &[
             "shared SQ/EQ capacities and bounded overflow contract",
@@ -606,7 +606,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/tui/headless/connection.rs",
+        path: "crates/host/src/transport/headless/connection.rs",
         boundary: "cli-tui",
         responsibilities: &[
             "physical socket and immutable authenticated client negotiation",
@@ -617,7 +617,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/tui/headless/commands.rs",
+        path: "crates/host/src/transport/headless/commands.rs",
         boundary: "cli-tui",
         responsibilities: &[
             "run-local command receipts and bounded exact command replay",
@@ -628,7 +628,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/app_server.rs",
+        path: "crates/host/src/app_server.rs",
         boundary: "cli-host",
         responsibilities: &[
             "public wire negotiation and client sessions",
@@ -645,10 +645,10 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/main.rs",
+        path: "crates/host/src/launch.rs",
         boundary: "cli-host",
         responsibilities: &[
-            "command parsing and dispatch",
+            "shared admitted launch and runtime assembly",
             "provider/config/profile binding",
             "interactive/headless startup",
             "maintenance and standalone tools",
@@ -679,7 +679,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/workflow.rs",
+        path: "crates/host/src/workflow.rs",
         boundary: "cli-host",
         responsibilities: &[
             "workflow module assembly",
@@ -699,7 +699,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["future narrow schema-repair port if this coordinator grows"],
     },
     Surface {
-        path: "crates/cli/src/workflow/supervisor.rs",
+        path: "crates/host/src/workflow/supervisor.rs",
         boundary: "cli-host",
         responsibilities: &[
             "detached run handle ownership",
@@ -709,7 +709,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["final host/provider cleanup and restart integration evidence"],
     },
     Surface {
-        path: "crates/cli/src/workflow/progress.rs",
+        path: "crates/host/src/workflow/progress.rs",
         boundary: "cli-host",
         responsibilities: &[
             "partial and degraded result retention",
@@ -718,7 +718,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["retain separate effect-free progress contracts"],
     },
     Surface {
-        path: "crates/cli/src/workflow/run_store.rs",
+        path: "crates/host/src/workflow/run_store.rs",
         boundary: "cli-host",
         responsibilities: &[
             "workflow sidecar filesystem adapter",
@@ -729,7 +729,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/workflow/launch.rs",
+        path: "crates/host/src/workflow/launch.rs",
         boundary: "cli-host",
         responsibilities: &[
             "directional launch/collect/cancel contract",
@@ -738,7 +738,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["no mutable detached owner state"],
     },
     Surface {
-        path: "crates/cli/src/workflow/summary.rs",
+        path: "crates/host/src/workflow/summary.rs",
         boundary: "cli-host",
         responsibilities: &["pure settled/interrupted evidence projections"],
         next_seams: &["no filesystem or process state"],
@@ -784,7 +784,7 @@ pub(super) const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/workflow/live_session/registry.rs",
+        path: "crates/host/src/workflow/live_session/registry.rs",
         boundary: "cli-host",
         responsibilities: &[
             "durable live graph instance admission and retained aggregate reservations",
@@ -794,7 +794,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["final product/provider/native platform journey evidence"],
     },
     Surface {
-        path: "crates/cli/src/workflow/live_session/mod.rs",
+        path: "crates/host/src/workflow/live_session/mod.rs",
         boundary: "cli-host",
         responsibilities: &[
             "bounded owned operator command admission and observer cancellation",
@@ -804,7 +804,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["maintain provider-independent typed controller composition"],
     },
     Surface {
-        path: "crates/cli/src/workflow/live_session/store.rs",
+        path: "crates/host/src/workflow/live_session/store.rs",
         boundary: "cli-host",
         responsibilities: &[
             "private durable registry CAS/filesystem adapter",
@@ -813,7 +813,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["native Windows and storage fault evidence remains"],
     },
     Surface {
-        path: "crates/cli/src/workflow/live_session/pump.rs",
+        path: "crates/host/src/workflow/live_session/pump.rs",
         boundary: "cli-host",
         responsibilities: &[
             "bounded graph/controller command coordination",
@@ -822,7 +822,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["no independently mutable graph or agent state"],
     },
     Surface {
-        path: "crates/cli/src/app_server/client_export.rs",
+        path: "crates/host/src/app_server/client_export.rs",
         boundary: "cli-host",
         responsibilities: &[
             "strict operator transcript command and observed current run opaque port",
@@ -831,7 +831,7 @@ pub(super) const SURFACES: &[Surface] = &[
         next_seams: &["same-candidate TCP/observer/adoption/cancellation evidence pending"],
     },
     Surface {
-        path: "crates/cli/src/client_effects.rs",
+        path: "crates/host/src/client_effects.rs",
         boundary: "cli-host",
         responsibilities: &[
             "shared native export custody independent of frontend observers",

@@ -326,3 +326,4 @@ fi
 test -d "$hook_race_install/iteron-workspace-hook"
 
 printf 'installer integration tests passed\n'
+python3 "$repo_root/release-tools/tests/test_install_manual.py"

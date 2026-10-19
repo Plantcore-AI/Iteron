@@ -12,7 +12,7 @@ use syn::visit::{self, Visit};
 mod frozen_model;
 mod research_distribution;
 
-const RUNTIME_SOURCE: &str = "crates/cli/src/runtime/kernel_special_assembly.rs";
+const RUNTIME_SOURCE: &str = "crates/host/src/runtime/kernel_special_assembly.rs";
 const KERNEL_MANIFEST: &str = "crates/kernel/Cargo.toml";
 const KERNEL_SOURCE_DIR: &str = "crates/kernel/src";
 const MAX_RUNTIME_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -106,7 +106,7 @@ const KERNEL_MATRIX: [MatrixRow; 23] = [
     MatrixRow {
         group: "component",
         id: "K6 bounded-cancellation",
-        path: "crates/cli/src/runtime/tests.rs",
+        path: "crates/host/src/runtime/tests.rs",
         test: "max_tokens_is_a_hard_recorded_terminal_at_the_safe_turn_boundary",
     },
     MatrixRow {
@@ -234,7 +234,7 @@ pub fn validate(root: &Path) -> Result<()> {
     validate_runtime_budget_binding(&runtime)?;
     validate_direct_child_allocation(&read_bounded_utf8(
         root,
-        "crates/cli/src/runtime_tunables/execution_policy.rs",
+        "crates/host/src/runtime_tunables/execution_policy.rs",
         MAX_RUNTIME_SOURCE_BYTES,
     )?)
 }
@@ -415,21 +415,21 @@ fn run_matrix_tests(root: &Path) -> Result<()> {
             "test",
             "--locked",
             "-p",
-            "iteron-cli",
+            "iteron-host",
             "max_tokens_is_a_hard_recorded_terminal_at_the_safe_turn_boundary",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "iteron-cli",
+            "iteron-host",
             "max_tokens_fails_closed_when_provider_usage_is_missing",
         ],
         &[
             "test",
             "--locked",
             "-p",
-            "iteron-cli",
+            "iteron-host",
             "readme_prompt_injection_cannot_push_through_the_effect_boundary",
         ],
         &[
@@ -1601,7 +1601,7 @@ mod tests {
 
     #[test]
     fn d11_10_runtime_budget_drift_fails() {
-        let source = include_str!("../../crates/cli/src/runtime/kernel_special_assembly.rs");
+        let source = include_str!("../../crates/host/src/runtime/kernel_special_assembly.rs");
         validate_runtime_budget_binding(source).unwrap();
         for changed in [
             source.replace("iteron_agents::subagent_budget(turns,", "iteron_agents::subagent_budget(u32::MAX,"),
@@ -1628,7 +1628,7 @@ mod tests {
 
     #[test]
     fn direct_child_narrowing_cannot_widen_any_parent_ceiling() {
-        let source = include_str!("../../crates/cli/src/runtime_tunables/execution_policy.rs");
+        let source = include_str!("../../crates/host/src/runtime_tunables/execution_policy.rs");
         validate_direct_child_allocation(source).unwrap();
         for changed in [
             source.replace(".min(ceiling.max_turns)", ".max(ceiling.max_turns)"),

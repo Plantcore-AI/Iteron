@@ -29,10 +29,10 @@ pub(crate) fn validate(root: &Path) -> Result<()> {
     validate_script_profile(root)?;
     validate_legacy_profile(root)?;
     validate_extracted_owners(root)?;
-    if root.join("crates/cli/src/queue_policy.rs").is_file() {
+    if root.join("crates/host/src/queue_policy.rs").is_file() {
         validate_runtime_direction(root)?;
     }
-    if root.join("crates/cli/src/machine_projection.rs").is_file() {
+    if root.join("crates/host/src/machine_projection.rs").is_file() {
         validate_frontend_projection_direction(root)?;
     }
     // The direct public module declaration activates this new contract for historical trusted
@@ -71,7 +71,35 @@ fn validate_ticket_profile(root: &Path) -> Result<()> {
     if !default.is_empty() {
         bail!("ordinary production must not enable optional ticket features");
     }
-    let runtime = read(root, "crates/cli/src/runtime.rs", MAX_SOURCE_BYTES)?;
+    let runtime = read(root, "crates/host/src/runtime.rs", MAX_SOURCE_BYTES)?;
+    let host: toml::Value =
+        toml::from_str(&read(root, "crates/host/Cargo.toml", MAX_MANIFEST_BYTES)?)?;
+    if !host
+        .get("features")
+        .and_then(|f| f.get("default"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        bail!("shared host must not enable optional strategy features by default");
+    }
+    for feature in [
+        "ticket-investigation",
+        "legacy-plantcore",
+        "script-workflows",
+    ] {
+        let expected = format!("iteron-host/{feature}");
+        if !features
+            .get(feature)
+            .and_then(toml::Value::as_array)
+            .is_some_and(|edges| {
+                edges
+                    .iter()
+                    .any(|edge| edge.as_str() == Some(expected.as_str()))
+            })
+        {
+            bail!("CLI profile must forward {expected}");
+        }
+    }
     validate_ticket_declaration(&runtime)
 }
 
@@ -315,11 +343,11 @@ fn validate_legacy_profile(root: &Path) -> Result<()> {
         bail!("standalone default must not enable legacy project integrations");
     }
     for (file, name) in [
-        ("crates/cli/src/runtime.rs", "plantcore"),
-        ("crates/cli/src/main.rs", "recording_provider"),
-        ("crates/cli/src/app_server.rs", "plantcore"),
-        ("crates/cli/src/app_server.rs", "recording_fault"),
-        ("crates/cli/src/tui/headless.rs", "commands"),
+        ("crates/host/src/runtime.rs", "plantcore"),
+        ("crates/host/src/lib.rs", "recording_provider"),
+        ("crates/host/src/app_server.rs", "plantcore"),
+        ("crates/host/src/app_server.rs", "recording_fault"),
+        ("crates/host/src/transport/headless.rs", "commands"),
     ] {
         validate_legacy_declaration(&read(root, file, MAX_SOURCE_BYTES)?, name)?;
     }
@@ -388,198 +416,202 @@ fn validate_legacy_declaration(source: &str, name: &str) -> Result<()> {
 }
 
 fn validate_extracted_owners(root: &Path) -> Result<()> {
-    let facade = read(root, "crates/cli/src/workflow.rs", MAX_SOURCE_BYTES)?;
+    let facade = read(root, "crates/host/src/workflow.rs", MAX_SOURCE_BYTES)?;
     if !facade.lines().any(|l| l.trim() == "mod supervisor;") {
         return Ok(());
     }
     for path in [
-        "crates/cli/src/workflow/launch.rs",
-        "crates/cli/src/workflow/progress.rs",
-        "crates/cli/src/workflow/run_store.rs",
-        "crates/cli/src/workflow/summary.rs",
-        "crates/cli/src/workflow/supervisor.rs",
-        "crates/cli/src/workflow/live_session/mod.rs",
-        "crates/cli/src/workflow/live_session/types.rs",
-        "crates/cli/src/workflow/live_session/registry.rs",
-        "crates/cli/src/workflow/live_session/pump.rs",
-        "crates/cli/src/workflow/live_session/store.rs",
-        "crates/cli/src/runtime/frontend_events.rs",
-        "crates/cli/src/runtime/tool_presentation.rs",
-        "crates/cli/src/runtime/stream_progress.rs",
-        "crates/cli/src/runtime/deferred_batch_executor.rs",
-        "crates/cli/src/runtime/deferred_tool_batch.rs",
-        "crates/cli/src/runtime/ordered_tool_call.rs",
-        "crates/cli/src/runtime/optional_tool_round.rs",
-        "crates/cli/src/runtime/request_preparation.rs",
-        "crates/cli/src/runtime/request_accounting.rs",
-        "crates/cli/src/runtime/provider_dispatch.rs",
-        "crates/cli/src/runtime/control_ingress.rs",
-        "crates/cli/src/runtime/permission_transaction.rs",
-        "crates/cli/src/runtime/tool_declaration_admission.rs",
-        "crates/cli/src/runtime/model_response.rs",
-        "crates/cli/src/runtime/approval_wait.rs",
-        "crates/cli/src/runtime/control_terminal.rs",
-        "crates/cli/src/runtime/run_finalization.rs",
-        "crates/cli/src/runtime/terminal_runtime.rs",
-        "crates/cli/src/runtime/ordinary_extensions.rs",
-        "crates/cli/src/runtime/ordinary_extension_runtime.rs",
-        "crates/cli/src/providers/discovery.rs",
-        "crates/cli/src/machine_projection.rs",
+        "crates/host/src/workflow/launch.rs",
+        "crates/host/src/workflow/progress.rs",
+        "crates/host/src/workflow/run_store.rs",
+        "crates/host/src/workflow/summary.rs",
+        "crates/host/src/workflow/supervisor.rs",
+        "crates/host/src/workflow/live_session/mod.rs",
+        "crates/host/src/workflow/live_session/types.rs",
+        "crates/host/src/workflow/live_session/registry.rs",
+        "crates/host/src/workflow/live_session/pump.rs",
+        "crates/host/src/workflow/live_session/store.rs",
+        "crates/host/src/runtime/frontend_events.rs",
+        "crates/host/src/runtime/tool_presentation.rs",
+        "crates/host/src/runtime/stream_progress.rs",
+        "crates/host/src/runtime/deferred_batch_executor.rs",
+        "crates/host/src/runtime/deferred_tool_batch.rs",
+        "crates/host/src/runtime/ordered_tool_call.rs",
+        "crates/host/src/runtime/optional_tool_round.rs",
+        "crates/host/src/runtime/request_preparation.rs",
+        "crates/host/src/runtime/request_accounting.rs",
+        "crates/host/src/runtime/provider_dispatch.rs",
+        "crates/host/src/runtime/control_ingress.rs",
+        "crates/host/src/runtime/permission_transaction.rs",
+        "crates/host/src/runtime/tool_declaration_admission.rs",
+        "crates/host/src/runtime/model_response.rs",
+        "crates/host/src/runtime/approval_wait.rs",
+        "crates/host/src/runtime/control_terminal.rs",
+        "crates/host/src/runtime/run_finalization.rs",
+        "crates/host/src/runtime/terminal_runtime.rs",
+        "crates/host/src/runtime/ordinary_extensions.rs",
+        "crates/host/src/runtime/ordinary_extension_runtime.rs",
+        "crates/host/src/providers/discovery.rs",
+        "crates/host/src/machine_projection.rs",
         "crates/cli/src/tui/input_lanes.rs",
         "crates/cli/src/tui/completion_owner.rs",
         "crates/cli/src/tui/attachment_owner.rs",
         "crates/cli/src/tui/picker_owner.rs",
         "crates/cli/src/tui/ordinary_extensions.rs",
-        "crates/cli/src/queue_policy.rs",
-        "crates/cli/src/tui/headless/commands.rs",
-        "crates/cli/src/tui/headless/connection.rs",
-        "crates/cli/src/runtime/deferred_tools.rs",
-        "crates/cli/src/runtime/early_tool_gate.rs",
-        "crates/cli/src/runtime/early_tool_executor.rs",
-        "crates/cli/src/runtime/early_tool_collection.rs",
-        "crates/cli/src/runtime/tool_execution_journal.rs",
-        "crates/cli/src/runtime/terminal_record.rs",
-        "crates/cli/src/runtime/turn_publication.rs",
-        "crates/cli/src/runtime/workspace_checkpoint.rs",
-        "crates/cli/src/runtime/provider_stream_observer.rs",
-        "crates/cli/src/runtime/provider_round.rs",
-        "crates/cli/src/runtime/provider_stream_attempt.rs",
-        "crates/cli/src/runtime/provider_transport_attempt.rs",
-        "crates/cli/src/runtime/provider_output_request.rs",
-        "crates/cli/src/runtime/provider_charge_evidence.rs",
-        "crates/cli/src/runtime/provider_financial_context.rs",
-        "crates/cli/src/runtime/provider_attempt_journal.rs",
-        "crates/cli/src/runtime/provider_attempt_pump.rs",
-        "crates/cli/src/runtime/provider_route_admission.rs",
-        "crates/cli/src/runtime/provider_route_journal.rs",
-        "crates/cli/src/runtime/provider_selection.rs",
-        "crates/cli/src/runtime/provider_selection_journal.rs",
-        "crates/cli/src/runtime/provider_route_turn.rs",
-        "crates/cli/src/runtime/provider_route_events.rs",
-        "crates/cli/src/runtime/tool_turn.rs",
-        "crates/cli/src/runtime/kernel_effect_bridge.rs",
-        "crates/cli/src/runtime/effect_descriptor.rs",
-        "crates/cli/src/runtime/effect_journal_owner.rs",
-        "crates/cli/src/runtime/stream_tool_admission.rs",
-        "crates/cli/src/runtime/stream_tool_journal.rs",
-        "crates/cli/src/runtime/stream_tool_events.rs",
-        "crates/cli/src/runtime/stream_tools.rs",
-        "crates/cli/src/runtime/hook_execution.rs",
-        "crates/cli/src/runtime/session_control.rs",
-        "crates/cli/src/runtime/session_inbox.rs",
-        "crates/cli/src/runtime/submitted_turn_state.rs",
-        "crates/cli/src/runtime/provider_turn_evidence.rs",
-        "crates/cli/src/runtime/request_context_evidence.rs",
+        "crates/host/src/queue_policy.rs",
+        "crates/host/src/transport/headless/commands.rs",
+        "crates/host/src/transport/headless/connection.rs",
+        "crates/host/src/runtime/deferred_tools.rs",
+        "crates/host/src/runtime/early_tool_gate.rs",
+        "crates/host/src/runtime/early_tool_executor.rs",
+        "crates/host/src/runtime/early_tool_collection.rs",
+        "crates/host/src/runtime/tool_execution_journal.rs",
+        "crates/host/src/runtime/terminal_record.rs",
+        "crates/host/src/runtime/turn_publication.rs",
+        "crates/host/src/runtime/workspace_checkpoint.rs",
+        "crates/host/src/runtime/provider_stream_observer.rs",
+        "crates/host/src/runtime/provider_round.rs",
+        "crates/host/src/runtime/provider_stream_attempt.rs",
+        "crates/host/src/runtime/provider_transport_attempt.rs",
+        "crates/host/src/runtime/provider_output_request.rs",
+        "crates/host/src/runtime/provider_charge_evidence.rs",
+        "crates/host/src/runtime/provider_financial_context.rs",
+        "crates/host/src/runtime/provider_attempt_journal.rs",
+        "crates/host/src/runtime/provider_attempt_pump.rs",
+        "crates/host/src/runtime/provider_route_admission.rs",
+        "crates/host/src/runtime/provider_route_journal.rs",
+        "crates/host/src/runtime/provider_selection.rs",
+        "crates/host/src/runtime/provider_selection_journal.rs",
+        "crates/host/src/runtime/provider_route_turn.rs",
+        "crates/host/src/runtime/provider_route_events.rs",
+        "crates/host/src/runtime/tool_turn.rs",
+        "crates/host/src/runtime/kernel_effect_bridge.rs",
+        "crates/host/src/runtime/effect_descriptor.rs",
+        "crates/host/src/runtime/effect_journal_owner.rs",
+        "crates/host/src/runtime/stream_tool_admission.rs",
+        "crates/host/src/runtime/stream_tool_journal.rs",
+        "crates/host/src/runtime/stream_tool_events.rs",
+        "crates/host/src/runtime/stream_tools.rs",
+        "crates/host/src/runtime/hook_execution.rs",
+        "crates/host/src/runtime/session_control.rs",
+        "crates/host/src/runtime/session_inbox.rs",
+        "crates/host/src/runtime/submitted_turn_state.rs",
+        "crates/host/src/runtime/provider_turn_evidence.rs",
+        "crates/host/src/runtime/request_context_evidence.rs",
         "crates/workflow/src/bindings.rs",
         "crates/workflow/src/bindings/run_state.rs",
         "crates/workflow/src/bindings/attempt_executor.rs",
         "crates/tools/src/desktop/mod.rs",
         "crates/tools/src/desktop/driver.rs",
         "crates/tools/src/desktop/types.rs",
-        "crates/cli/src/providers.rs",
-        "crates/cli/src/providers/directory.rs",
-        "crates/cli/src/providers/catalog_cache.rs",
-        "crates/cli/src/providers/probe_cache.rs",
-        "crates/cli/src/providers/cache_storage.rs",
-        "crates/cli/src/providers/cache_writeback.rs",
-        "crates/cli/src/providers/instance_factory.rs",
-        "crates/cli/src/providers/selection_identity.rs",
-        "crates/cli/src/runtime/provider_execution_scope.rs",
-        "crates/cli/src/runtime/provider_followup.rs",
-        "crates/cli/src/runtime/tool_response.rs",
-        "crates/cli/src/runtime/tool_round_driver.rs",
-        "crates/cli/src/runtime/tool_round_execution.rs",
-        "crates/cli/src/runtime/tool_execution_session.rs",
-        "crates/cli/src/runtime/provider_response_commit.rs",
-        "crates/cli/src/runtime/provider_usage_journal.rs",
-        "crates/cli/src/runtime/context_usage_reconciliation.rs",
-        "crates/cli/src/runtime/request_cycle.rs",
-        "crates/cli/src/runtime/provider_turn_entry.rs",
-        "crates/cli/src/runtime/coding_run_driver.rs",
-        "crates/cli/src/runtime/coding_request_execution.rs",
-        "crates/cli/src/runtime/context_injection.rs",
-        "crates/cli/src/runtime/context_injection_assembly.rs",
-        "crates/cli/src/runtime/context_injection_gate.rs",
-        "crates/cli/src/runtime/context_injection_journal.rs",
-        "crates/cli/src/runtime/coding_run_coordinator.rs",
-        "crates/cli/src/runtime/coding_run_composition.rs",
-        "crates/cli/src/runtime/coding_response_phase.rs",
-        "crates/cli/src/runtime/tool_result_projection.rs",
-        "crates/cli/src/runtime/plantcore_response.rs",
-        "crates/cli/src/app_server/tunables_simulation.rs",
-        "crates/cli/src/client_effects/tunables_simulation.rs",
-        "crates/cli/src/client_effects/workspace_read.rs",
-        "crates/cli/src/app_server/experiment_lab.rs",
-        "crates/cli/src/client_effects/experiment_lab.rs",
-        "crates/cli/src/client_effects/experiment_lab/model.rs",
-        "crates/cli/src/client_effects/experiment_lab/comparison.rs",
-        "crates/cli/src/client_effects/workspace_storage.rs",
-        "crates/cli/src/client_effects/workspace_storage/unix.rs",
-        "crates/cli/src/client_effects/workspace_storage/windows.rs",
+        "crates/host/src/providers.rs",
+        "crates/host/src/providers/directory.rs",
+        "crates/host/src/providers/catalog_cache.rs",
+        "crates/host/src/providers/probe_cache.rs",
+        "crates/host/src/providers/cache_storage.rs",
+        "crates/host/src/providers/cache_writeback.rs",
+        "crates/host/src/providers/instance_factory.rs",
+        "crates/host/src/providers/selection_identity.rs",
+        "crates/host/src/runtime/provider_execution_scope.rs",
+        "crates/host/src/runtime/provider_followup.rs",
+        "crates/host/src/runtime/tool_response.rs",
+        "crates/host/src/runtime/tool_round_driver.rs",
+        "crates/host/src/runtime/tool_round_execution.rs",
+        "crates/host/src/runtime/tool_execution_session.rs",
+        "crates/host/src/runtime/provider_response_commit.rs",
+        "crates/host/src/runtime/provider_usage_journal.rs",
+        "crates/host/src/runtime/context_usage_reconciliation.rs",
+        "crates/host/src/runtime/request_cycle.rs",
+        "crates/host/src/runtime/provider_turn_entry.rs",
+        "crates/host/src/runtime/coding_run_driver.rs",
+        "crates/host/src/runtime/coding_request_execution.rs",
+        "crates/host/src/runtime/context_injection.rs",
+        "crates/host/src/runtime/context_injection_assembly.rs",
+        "crates/host/src/runtime/context_injection_gate.rs",
+        "crates/host/src/runtime/context_injection_journal.rs",
+        "crates/host/src/runtime/coding_run_coordinator.rs",
+        "crates/host/src/runtime/coding_run_composition.rs",
+        "crates/host/src/runtime/coding_response_phase.rs",
+        "crates/host/src/runtime/tool_result_projection.rs",
+        "crates/host/src/runtime/plantcore_response.rs",
+        "crates/host/src/app_server/tunables_simulation.rs",
+        "crates/host/src/client_effects/tunables_simulation.rs",
+        "crates/host/src/client_effects/workspace_read.rs",
+        "crates/host/src/app_server/experiment_lab.rs",
+        "crates/host/src/client_effects/experiment_lab.rs",
+        "crates/host/src/client_effects/experiment_lab/model.rs",
+        "crates/host/src/client_effects/experiment_lab/comparison.rs",
+        "crates/host/src/client_effects/workspace_storage.rs",
+        "crates/host/src/client_effects/workspace_storage/unix.rs",
+        "crates/host/src/client_effects/workspace_storage/windows.rs",
         "crates/support/src/durable_windows_state/workspace_directory_read.rs",
-        "crates/cli/src/runtime/kernel_tool_assembly.rs",
-        "crates/cli/src/runtime/coding_execution_journal.rs",
-        "crates/cli/src/runtime/coding_provider_assembly.rs",
-        "crates/cli/src/runtime/coding_provider_session.rs",
-        "crates/cli/src/runtime/coding_request_assembly.rs",
-        "crates/cli/src/runtime/coding_request_session.rs",
-        "crates/cli/src/runtime/tool_image_admission.rs",
-        "crates/cli/src/app_server/project_init.rs",
-        "crates/cli/src/app_server/model_preferences.rs",
-        "crates/cli/src/config/preferences.rs",
-        "crates/cli/src/client_effects/project_init.rs",
-        "crates/cli/src/runtime/coding_provider_execution.rs",
-        "crates/cli/src/runtime/tool_image_projection.rs",
-        "crates/cli/src/runtime/kernel_dispatch_control.rs",
-        "crates/cli/src/runtime/kernel_dispatch_journal.rs",
-        "crates/cli/src/runtime/kernel_special_execution.rs",
-        "crates/cli/src/runtime/kernel_child_accounting.rs",
-        "crates/cli/src/runtime/invocation_funding.rs",
-        "crates/cli/src/runtime/invocation_funding_assembly.rs",
-        "crates/cli/src/runtime/invocation_admission.rs",
-        "crates/cli/src/runtime/invocation_admission_assembly.rs",
-        "crates/cli/src/runtime/invocation_cleanup.rs",
-        "crates/cli/src/runtime/turn_advance.rs",
-        "crates/cli/src/runtime/turn_advance_assembly.rs",
-        "crates/cli/src/runtime/persistent_writer_settlement.rs",
-        "crates/cli/src/runtime/persistent_native_context.rs",
-        "crates/cli/src/runtime/persistent_native_generations.rs",
-        "crates/cli/src/runtime/persistent_native_generations/archive.rs",
-        "crates/cli/src/runtime/workflow_spawner/native_context.rs",
-        "crates/cli/src/runtime/workflow_spawner/native_policy_source.rs",
+        "crates/host/src/runtime/kernel_tool_assembly.rs",
+        "crates/host/src/runtime/coding_execution_journal.rs",
+        "crates/host/src/runtime/coding_provider_assembly.rs",
+        "crates/host/src/runtime/coding_provider_session.rs",
+        "crates/host/src/runtime/coding_request_assembly.rs",
+        "crates/host/src/runtime/coding_request_session.rs",
+        "crates/host/src/runtime/tool_image_admission.rs",
+        "crates/host/src/app_server/project_init.rs",
+        "crates/host/src/app_server/model_preferences.rs",
+        "crates/host/src/config/preferences.rs",
+        "crates/host/src/client_effects/project_init.rs",
+        "crates/host/src/runtime/coding_provider_execution.rs",
+        "crates/host/src/runtime/tool_image_projection.rs",
+        "crates/host/src/runtime/kernel_dispatch_control.rs",
+        "crates/host/src/runtime/kernel_dispatch_journal.rs",
+        "crates/host/src/runtime/kernel_special_execution.rs",
+        "crates/host/src/runtime/kernel_child_accounting.rs",
+        "crates/host/src/runtime/invocation_funding.rs",
+        "crates/host/src/runtime/invocation_funding_assembly.rs",
+        "crates/host/src/runtime/invocation_admission.rs",
+        "crates/host/src/runtime/invocation_admission_assembly.rs",
+        "crates/host/src/runtime/invocation_cleanup.rs",
+        "crates/host/src/runtime/turn_advance.rs",
+        "crates/host/src/runtime/turn_advance_assembly.rs",
+        "crates/host/src/runtime/persistent_writer_settlement.rs",
+        "crates/host/src/runtime/persistent_native_context.rs",
+        "crates/host/src/runtime/persistent_native_generations.rs",
+        "crates/host/src/runtime/persistent_native_generations/archive.rs",
+        "crates/host/src/runtime/workflow_spawner/native_context.rs",
+        "crates/host/src/runtime/workflow_spawner/native_policy_source.rs",
         "crates/agents/src/controller/native_spawn.rs",
         "crates/record/src/native_child_context.rs",
         "crates/protocol/src/native_child_context.rs",
         "crates/protocol/src/image_record.rs",
-        "crates/cli/src/runtime/workflow_spawner/writer_settlement.rs",
-        "crates/cli/src/runtime/workflow_spawner/worktree/evidence.rs",
+        "crates/host/src/runtime/workflow_spawner/writer_settlement.rs",
+        "crates/host/src/runtime/workflow_spawner/worktree/evidence.rs",
         "crates/tools/src/contained_source.rs",
         "crates/support/src/durable_windows_state/contained_read.rs",
         "crates/support/src/durable_windows_state/workspace_publication.rs",
-        "crates/cli/src/client_effects/export_macos.rs",
-        "crates/cli/src/client_effects/export_windows.rs",
+        "crates/host/src/client_effects/export_macos.rs",
+        "crates/host/src/client_effects/export_windows.rs",
         "crates/sandbox/src/owned_process_cleanup.rs",
         "crates/sandbox/src/collected_child.rs",
         "crates/support/src/owned_windows_job.rs",
         "crates/support/src/owned_windows_job/custody.rs",
-        "crates/cli/src/runtime/direct_child_execution.rs",
-        "crates/cli/src/runtime/workflow_execution.rs",
-        "crates/cli/src/runtime/workflow_preparation.rs",
-        "crates/cli/src/client_effects.rs",
-        "crates/cli/src/client_effects/export.rs",
-        "crates/cli/src/client_effects/payload.rs",
-        "crates/cli/src/client_effects/process.rs",
-        "crates/cli/src/client_effects/worker.rs",
-        "crates/cli/src/app_server/client_export.rs",
-        "crates/cli/src/app_server/client_shell.rs",
-        "crates/cli/src/client_effects/shell.rs",
-        "crates/cli/src/runtime/session_transcript.rs",
-        "crates/cli/src/runtime/provider_usage_reservation.rs",
-        "crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs",
+        "crates/host/src/runtime/direct_child_execution.rs",
+        "crates/host/src/runtime/workflow_execution.rs",
+        "crates/host/src/runtime/workflow_preparation.rs",
+        "crates/host/src/client_effects.rs",
+        "crates/host/src/client_effects/export.rs",
+        "crates/host/src/client_effects/payload.rs",
+        "crates/host/src/client_effects/process.rs",
+        "crates/host/src/client_effects/worker.rs",
+        "crates/host/src/app_server/client_export.rs",
+        "crates/host/src/app_server/client_shell.rs",
+        "crates/host/src/client_effects/shell.rs",
+        "crates/host/src/runtime/session_transcript.rs",
+        "crates/host/src/runtime/provider_usage_reservation.rs",
+        "crates/host/src/runtime/persistent_agents/prepared_mailbox.rs",
         "crates/cli/src/tui/session_navigation.rs",
         "crates/cli/src/main.rs",
-        "crates/cli/src/runtime.rs",
-        "crates/cli/src/app_server.rs",
+        "crates/host/src/launch.rs",
+        "crates/host/src/lib.rs",
+        "crates/host/src/server.rs",
+        "crates/app-server/src/main.rs",
+        "crates/host/src/runtime.rs",
+        "crates/host/src/app_server.rs",
         "crates/cli/src/tui.rs",
         "crates/provider/src/usage_bounds.rs",
         "crates/provider/src/catalog/discovery.rs",
@@ -587,8 +619,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/provider/src/catalog/routing.rs",
         "xtask/src/tunables_params/source_wiring.rs",
         "xtask/src/tunables_params/use_evidence.rs",
-        "crates/cli/src/app_server/path_completion.rs",
-        "crates/cli/src/client_effects/path_completion.rs",
+        "crates/host/src/app_server/path_completion.rs",
+        "crates/host/src/client_effects/path_completion.rs",
         "crates/cli/src/block/diff.rs",
         "crates/ctx/src/memory/file_store.rs",
         "crates/ctx/src/memory/operator_store.rs",
@@ -622,12 +654,12 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
 /// the reverse import would make replacement of a transport or presentation require core edits.
 fn validate_runtime_direction(root: &Path) -> Result<()> {
     let mut paths = vec![
-        "crates/cli/src/runtime.rs".to_owned(),
-        "crates/cli/src/queue_policy.rs".to_owned(),
+        "crates/host/src/runtime.rs".to_owned(),
+        "crates/host/src/queue_policy.rs".to_owned(),
     ];
     let mut directories = vec![
-        "crates/cli/src/runtime".to_owned(),
-        "crates/cli/src/runtime_tunables".to_owned(),
+        "crates/host/src/runtime".to_owned(),
+        "crates/host/src/runtime_tunables".to_owned(),
     ];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(root.join(&directory))? {
@@ -680,13 +712,13 @@ fn validate_runtime_source_direction(relative: &str, source: &str) -> Result<()>
 fn validate_frontend_projection_direction(root: &Path) -> Result<()> {
     for (parent, tree, forbidden) in [
         (
-            "crates/cli/src/app_server.rs",
-            "crates/cli/src/app_server",
+            "crates/host/src/app_server.rs",
+            "crates/host/src/app_server",
             &["output", "options", "tui"][..],
         ),
         (
-            "crates/cli/src/machine_projection.rs",
-            "crates/cli/src/machine_projection",
+            "crates/host/src/machine_projection.rs",
+            "crates/host/src/machine_projection",
             &["app_server", "tui", "cli_entry", "output", "options"][..],
         ),
     ] {
@@ -860,6 +892,21 @@ fn validate_graph(graph: &BTreeMap<String, BTreeSet<String>>) -> Result<()> {
                 *indegree.get_mut(name).context("package missing in graph")? += 1;
                 dependents.entry(dependency).or_default().push(name);
             }
+        }
+        if name == "iteron-host" || name == "iteron-app-server" {
+            for forbidden in ["iteron-cli", "ratatui", "crossterm"] {
+                if dependencies.contains(forbidden) {
+                    bail!(
+                        "shared host and AppServer must not depend on terminal frontend {forbidden}"
+                    );
+                }
+            }
+        }
+        if dependencies.contains("iteron-host")
+            && name != "iteron-cli"
+            && name != "iteron-app-server"
+        {
+            bail!("domain package {name} cannot depend on the shared host assembly");
         }
         // The assembly crate is the only frontend entry; it cannot be a domain dependency.
         if name != "iteron-cli" && dependencies.contains("iteron-cli") {

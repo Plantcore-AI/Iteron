@@ -6,7 +6,7 @@
 //! could not discover that a flag skipping the entire capability gate exists.
 //!
 //! Prose cannot be trusted to track a `#[derive(Parser)]` struct, so it no longer has to. This
-//! parses `crates/cli/src/cli_entry/options.rs`, reads the clap attributes and doc comments that already are the
+//! parses `crates/host/src/cli_entry/options.rs`, reads the clap attributes and doc comments that already are the
 //! specification, and renders the page. `docs check` compares the file on disk against that
 //! rendering, so adding a flag without regenerating fails the build (`cargo test -p iteron-xtask`
 //! runs the same comparison), and the drift cannot come back.
@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-const CLI_SOURCE: &str = "crates/cli/src/cli_entry/options.rs";
+const CLI_SOURCE: &str = "crates/host/src/cli_entry/options.rs";
 const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[
-    ("mcp::commands", "crates/cli/src/mcp/commands.rs"),
-    ("plugin", "crates/cli/src/plugin.rs"),
-    ("tunables", "crates/cli/src/tunables.rs"),
+    ("mcp::commands", "crates/host/src/mcp/commands.rs"),
+    ("plugin", "crates/host/src/plugin.rs"),
+    ("tunables", "crates/host/src/tunables.rs"),
 ];
 const GENERATED_DOC: &str = "docs/reference/cli.md";
 const ROOT_STRUCT: &str = "Cli";

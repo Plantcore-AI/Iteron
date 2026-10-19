@@ -20,6 +20,9 @@ pub(super) fn validate(root: &Path, main: &str) -> Result<MachineOwner> {
         .any(|item| matches!(item, syn::Item::Mod(m) if m.ident == "cli_entry"))
     {
         require_module(&file, "cli_entry")?;
+        if root.join("crates/host/src/lib.rs").is_file() {
+            return validate_host(root, main);
+        }
         require_module(&file, "output")?;
         let entry = load(root, "crates/cli/src/cli_entry/mod.rs")?;
         for module in ["frontend", "options", "preflight", "run_options"] {
@@ -44,6 +47,363 @@ pub(super) fn validate(root: &Path, main: &str) -> Result<MachineOwner> {
             function: "run_cli",
         })
     }
+}
+
+/// Resolve a real, unconditional named import and reject a duplicate declaration.
+pub(super) fn require_binding(file: &syn::File, name: &str, expected: &[&str]) -> Result<()> {
+    let mut origins = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Use(import) = item {
+            let mut bindings = Vec::new();
+            flatten_use(&import.tree, &mut Vec::new(), &mut bindings)?;
+            for (binding, origin, renamed) in bindings {
+                if binding == name {
+                    if renamed || import.attrs.iter().any(|a| !a.path().is_ident("doc")) {
+                        bail!("shared host binding '{name}' is conditional or renamed");
+                    }
+                    origins.push(origin);
+                }
+            }
+        }
+        let declared = match item {
+            syn::Item::Mod(v) => Some(&v.ident),
+            syn::Item::Fn(v) => Some(&v.sig.ident),
+            syn::Item::Struct(v) => Some(&v.ident),
+            syn::Item::Enum(v) => Some(&v.ident),
+            syn::Item::Type(v) => Some(&v.ident),
+            syn::Item::Const(v) => Some(&v.ident),
+            syn::Item::Static(v) => Some(&v.ident),
+            syn::Item::ExternCrate(v) => Some(&v.ident),
+            _ => None,
+        };
+        if declared.is_some_and(|ident| ident == name) {
+            bail!("shared host binding '{name}' is shadowed");
+        }
+    }
+    let expected = expected.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    if origins != [expected] {
+        bail!("shared host binding '{name}' has redirected authority");
+    }
+    Ok(())
+}
+
+fn validate_host(root: &Path, main: &str) -> Result<MachineOwner> {
+    let file = parse(main)?;
+    for module in ["output", "machine_projection", "runtime"] {
+        require_binding(&file, module, &["iteron_host", module])?;
+    }
+    let host = load(root, "crates/host/src/lib.rs")?;
+    for module in [
+        "output",
+        "machine_projection",
+        "runtime",
+        "launch",
+        "cli_entry",
+        "server",
+        "transport",
+    ] {
+        require_module(&host, module)?;
+    }
+    let adapter = read(root, "crates/cli/src/cli_entry/mod.rs")?;
+    let expected: syn::File = syn::parse_quote! {
+        pub(crate) use iteron_host::cli_entry::*;
+        pub(crate) mod frontend;
+        pub(crate) mod local_commands;
+        mod workflow_command;
+        pub(crate) use workflow_command::run_workflow_command;
+    };
+    let mut parsed = parse(&adapter)?;
+    parsed.attrs.clear();
+    if parsed.to_token_stream().to_string() != expected.to_token_stream().to_string() {
+        bail!("CLI entry adapter redirects the shared host admission exports");
+    }
+    let entry = load(root, "crates/host/src/cli_entry/mod.rs")?;
+    for module in ["options", "preflight", "run_options"] {
+        require_module(&entry, module)?;
+    }
+    validate_server_ports(
+        &read(root, "crates/host/src/server.rs")?,
+        &read(root, "crates/app-server/src/main.rs")?,
+    )?;
+    let frontend = read(root, "crates/cli/src/cli_entry/frontend.rs")?;
+    validate_host_extracted(
+        main,
+        &frontend,
+        &read(root, "crates/host/src/launch.rs")?,
+        &read(root, "crates/host/src/cli_entry/options.rs")?,
+        &read(root, "crates/host/src/cli_entry/preflight.rs")?,
+        &read(root, "crates/host/src/cli_entry/run_options.rs")?,
+    )?;
+    Ok(MachineOwner {
+        source: frontend,
+        function: "drive",
+    })
+}
+
+fn validate_host_extracted(
+    main: &str,
+    frontend: &str,
+    assembly: &str,
+    options: &str,
+    preflight: &str,
+    run_options: &str,
+) -> Result<()> {
+    let main = parse(main)?;
+    for module in ["output", "machine_projection", "runtime"] {
+        require_binding(&main, module, &["iteron_host", module])?;
+    }
+    super::cli_main::validate_entrypoint(&main)?;
+    let wrapper = validate_startup_wrapper(&main)?;
+    let mut entry_probe = CoordinatorProbe {
+        startup_wrapper: wrapper,
+        ..Default::default()
+    };
+    entry_probe.visit_block(&unique_function(&main, "main")?.block);
+    if entry_probe.invalid || entry_probe.stdout {
+        bail!("CLI entry has a startup shadow or stdout bypass");
+    }
+    let run = unique_function(&main, "run_cli")?;
+    let signature: syn::Signature = syn::parse_quote!(async fn run_cli() -> anyhow::Result<u8>);
+    if run.sig.to_token_stream().to_string() != signature.to_token_stream().to_string()
+        || !run.attrs.is_empty()
+        || !matches!(run.vis, syn::Visibility::Inherited)
+    {
+        bail!("CLI launch coordinator has redirected authority");
+    }
+    let expected_tail: syn::Stmt = syn::parse_quote! {
+        match startup_future!(iteron_host::launch::assemble(cli, startup, validated)).await? {
+            iteron_host::launch::AssemblyOutcome::Exit(code) => Ok(code),
+            iteron_host::launch::AssemblyOutcome::Ready(launch) => {
+                startup_future!(cli_entry::frontend::drive(launch)).await
+            }
+        }
+    };
+    if run
+        .block
+        .stmts
+        .last()
+        .map(|s| s.to_token_stream().to_string())
+        != Some(expected_tail.to_token_stream().to_string())
+    {
+        bail!("CLI launch must forward the admitted host envelope directly to one frontend");
+    }
+    validate_projection(run, &["validated", "cli", "startup"], wrapper)?;
+    for name in ["output_format", "machine_schema_version"] {
+        let mut probe = ProjectionProbe {
+            name,
+            bindings: 0,
+            invalid: false,
+            startup_wrapper: wrapper,
+        };
+        probe.visit_block(&run.block);
+        if probe.bindings != 0 || probe.invalid {
+            bail!("CLI coordinator shadows shared output authority");
+        }
+    }
+    let mut probe = CoordinatorProbe {
+        startup_wrapper: wrapper,
+        ..Default::default()
+    };
+    probe.visit_block(&run.block);
+    if probe.frontend_calls != 1
+        || probe.preflight_calls != 1
+        || probe.assembly_calls != 1
+        || probe.stdout
+        || probe.invalid
+    {
+        bail!("CLI launch must admit, assemble and dispatch exactly once without stdout bypasses");
+    }
+    let admission: syn::Stmt = syn::parse_quote! {
+        let validated = match cli_entry::preflight::validate(&cli)? {
+            cli_entry::preflight::PreflightOutcome::Exit(code) => return Ok(code),
+            cli_entry::preflight::PreflightOutcome::Run(launch) => launch,
+        };
+    };
+    if !run
+        .block
+        .stmts
+        .iter()
+        .any(|s| s.to_token_stream().to_string() == admission.to_token_stream().to_string())
+    {
+        bail!("CLI coordinator does not preserve the preflight admission result");
+    }
+    let assembly = parse(assembly)?;
+    require_binding(&assembly, "cli_entry", &["crate", "cli_entry"])?;
+    require_binding(
+        &assembly,
+        "OutputFormat",
+        &["crate", "output", "OutputFormat"],
+    )?;
+    let assembly_wrapper = validate_startup_wrapper_for(&assembly, true)?;
+    let assemble = unique_function(&assembly, "assemble")?;
+    let mut assembly_probe = CoordinatorProbe {
+        startup_wrapper: assembly_wrapper,
+        ..Default::default()
+    };
+    assembly_probe.visit_block(&assemble.block);
+    if assembly_probe.invalid
+        || assembly_probe.stdout
+        || assembly_probe.frontend_calls != 0
+        || assembly_probe.preflight_calls != 0
+        || assembly_probe.assembly_calls != 0
+    {
+        bail!("shared host assembly contains an output bypass or repeated admission/dispatch");
+    }
+    let signature: syn::Signature = syn::parse_quote!(async fn assemble(cli: cli_entry::Cli,
+        mut startup: startup::StartupTiming, validated: cli_entry::preflight::ValidatedLaunch,) -> anyhow::Result<AssemblyOutcome>);
+    if assemble.sig.to_token_stream().to_string() != signature.to_token_stream().to_string()
+        || !matches!(assemble.vis, syn::Visibility::Public(_))
+        || !assemble.attrs.is_empty()
+    {
+        bail!("shared host assembly redirects its admission signature");
+    }
+    validate_projection(
+        assemble,
+        &["output_format", "machine_schema_version"],
+        assembly_wrapper,
+    )?;
+    let schema: syn::Stmt = syn::parse_quote! {
+        let cli_entry::preflight::ValidatedLaunch { machine_schema_version, tunables_profile_document, } = validated;
+    };
+    if !assemble
+        .block
+        .stmts
+        .iter()
+        .any(|s| s.to_token_stream().to_string() == schema.to_token_stream().to_string())
+    {
+        bail!("shared host transforms the admitted machine schema");
+    }
+    let format: syn::Stmt = syn::parse_quote! {
+        let cli_entry::run_options::ResolvedLaunchOptions {
+            max_turns, max_turns_origin, max_usd, max_usd_origin, max_tokens,
+            max_tokens_origin, max_wall_secs, max_wall_secs_origin, allow_code,
+            allow_code_origin, effort_runtime_override, resolved_effort, effort_origin,
+            headless_serve, one_shot, output_format, mode_runtime_override, mode,
+            mode_origin, one_shot_images, runtime_profile,
+        } = cli_entry::run_options::resolve(&cli, &file, &user_file)?;
+    };
+    if !assemble
+        .block
+        .stmts
+        .iter()
+        .any(|s| s.to_token_stream().to_string() == format.to_token_stream().to_string())
+    {
+        bail!("shared host transforms the resolved output format");
+    }
+    for field in ["output_format", "machine_schema_version"] {
+        validate_envelope_projection(assemble, "FrontendLaunch", field)?;
+    }
+    let frontend = parse(frontend)?;
+    authority_import(&frontend, "Emitter", &["crate", "output", "Emitter"])?;
+    authority_import(&frontend, "output", &["crate", "output"])?;
+    require_binding(
+        &frontend,
+        "FrontendLaunch",
+        &["iteron_host", "launch", "FrontendLaunch"],
+    )?;
+    let drive = unique_function(&frontend, "drive")?;
+    let signature: syn::Signature =
+        syn::parse_quote!(async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8>);
+    if drive.sig.to_token_stream().to_string() != signature.to_token_stream().to_string()
+        || !matches!(drive.vis, syn::Visibility::Restricted(_))
+    {
+        bail!("CLI presentation owner signature is redirected");
+    }
+    validate_immutable_projection(drive, &["output_format", "machine_schema_version"])?;
+    super::cli_main::validate_machine_driver(drive, true)?;
+    authority_import(
+        &parse(options)?,
+        "OutputFormat",
+        &["crate", "output", "OutputFormat"],
+    )?;
+    validate_admission(&parse(preflight)?, &parse(run_options)?)
+}
+
+fn validate_server_ports(server: &str, entry: &str) -> Result<()> {
+    let server = parse(server)?;
+    let entry = parse(entry)?;
+    let expected_host: syn::ItemFn = syn::parse_quote! {
+    pub async fn run(options: Cli) -> anyhow::Result<u8> {
+        if !matches!(options.command, Some(LocalCommand::Serve { .. })) {
+            anyhow::bail!("the AppServer host requires server launch options");
+        }
+        let startup = crate::startup::StartupTiming::from_env();
+        let validated = match crate::cli_entry::preflight::validate(&options)? {
+            crate::cli_entry::preflight::PreflightOutcome::Exit(code) => return Ok(code),
+            crate::cli_entry::preflight::PreflightOutcome::Run(launch) => launch,
+        };
+        #[cfg(windows)]
+        let assembled =
+            boxed_startup_future(|| crate::launch::assemble(options, startup, validated)).await?;
+        #[cfg(not(windows))]
+        let assembled = crate::launch::assemble(options, startup, validated).await?;
+        match assembled {
+            AssemblyOutcome::Exit(code) => Ok(code),
+            AssemblyOutcome::Ready(launch) => {
+                #[cfg(windows)]
+                {
+                    boxed_startup_future(|| serve(launch)).await
+                }
+                #[cfg(not(windows))]
+                {
+                    serve(launch).await
+                }
+            }
+        }
+    }
+        };
+    let expected_entry: syn::ItemFn = syn::parse_quote! {
+    fn run(args: ServerArgs) -> anyhow::Result<u8> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        #[cfg(windows)]
+        let launch = boxed_startup_future(|| iteron_host::server::run(args.into_launch()));
+        #[cfg(not(windows))]
+        let launch = iteron_host::server::run(args.into_launch());
+        runtime.block_on(launch)
+    }
+        };
+    let expected_factory: syn::ItemFn = syn::parse_quote! {
+    #[cfg(windows)]
+    #[inline(never)]
+    fn boxed_startup_future<F: std::future::Future>(construct: impl FnOnce() -> F,) -> std::pin::Pin<Box<F>> {
+        Box::pin(construct())
+    }
+        };
+    for (file, expected) in [(&server, &expected_host), (&entry, &expected_entry)] {
+        let mut function = unique_function(file, "run")?.clone();
+        function.attrs.retain(|attr| !attr.path().is_ident("doc"));
+        if function.to_token_stream().to_string() != expected.to_token_stream().to_string() {
+            bail!("AppServer must forward one admitted launch through the canonical shared host");
+        }
+        let factory = unique_function(file, "boxed_startup_future")?;
+        if factory.to_token_stream().to_string() != expected_factory.to_token_stream().to_string() {
+            bail!("AppServer Windows startup factory redirects the shared launch");
+        }
+        for item in &file.items {
+            if matches!(item, syn::Item::Macro(_) | syn::Item::ExternCrate(_)) {
+                bail!("AppServer forwarding scope has an unproved macro or extern crate");
+            }
+        }
+    }
+    require_binding(&server, "Cli", &["crate", "cli_entry", "Cli"])?;
+    require_binding(
+        &server,
+        "LocalCommand",
+        &["crate", "cli_entry", "LocalCommand"],
+    )?;
+    require_binding(
+        &server,
+        "AssemblyOutcome",
+        &["crate", "launch", "AssemblyOutcome"],
+    )?;
+    require_binding(
+        &server,
+        "FrontendLaunch",
+        &["crate", "launch", "FrontendLaunch"],
+    )?;
+    Ok(())
 }
 
 fn read(root: &Path, path: &str) -> Result<String> {
@@ -116,6 +476,10 @@ fn authority_import(file: &syn::File, name: &str, expected: &[&str]) -> Result<(
 // This is a platform allocation seam, not a second presentation authority. Match both
 // definitions exactly before treating its one expression as transparent to the probes.
 fn validate_startup_wrapper(file: &syn::File) -> Result<bool> {
+    validate_startup_wrapper_for(file, false)
+}
+
+fn validate_startup_wrapper_for(file: &syn::File, host: bool) -> Result<bool> {
     let expected_macro: syn::ItemMacro = syn::parse_quote! {
         macro_rules! startup_future {
             ($future:expr) => {{
@@ -162,10 +526,13 @@ fn validate_startup_wrapper(file: &syn::File) -> Result<bool> {
             syn::Item::Use(item) => {
                 let mut bindings = Vec::new();
                 flatten_use(&item.tree, &mut Vec::new(), &mut bindings)?;
-                if bindings
-                    .iter()
-                    .any(|(name, _, _)| startup_binding(name) || name == "cli_entry")
-                {
+                if bindings.iter().any(|(name, origin, renamed)| {
+                    startup_binding(name)
+                        || (name == "cli_entry"
+                            && !(host
+                                && !renamed
+                                && origin == &["crate".to_owned(), "cli_entry".to_owned()]))
+                }) {
                     bail!("CLI startup authority is shadowed by an import");
                 }
             }
@@ -200,7 +567,7 @@ fn validate_startup_wrapper(file: &syn::File) -> Result<bool> {
 fn startup_binding(name: &str) -> bool {
     matches!(
         name,
-        "startup_future" | "boxed_startup_future" | "Box" | "FnOnce" | "std"
+        "startup_future" | "boxed_startup_future" | "Box" | "FnOnce" | "std" | "iteron_host"
     )
 }
 
@@ -510,6 +877,7 @@ impl<'ast> Visit<'ast> for ProjectionProbe<'_> {
 struct CoordinatorProbe {
     frontend_calls: usize,
     preflight_calls: usize,
+    assembly_calls: usize,
     stdout: bool,
     startup_wrapper: bool,
     inside_startup: bool,
@@ -543,6 +911,9 @@ impl<'ast> Visit<'ast> for CoordinatorProbe {
         if path_is(&call.func, &["cli_entry", "preflight", "validate"]) {
             self.preflight_calls += 1;
         }
+        if path_is(&call.func, &["iteron_host", "launch", "assemble"]) {
+            self.assembly_calls += 1;
+        }
         if path_is(&call.func, &["stdout"]) || path_is(&call.func, &["std", "io", "stdout"]) {
             self.stdout = true;
         }
@@ -560,6 +931,7 @@ impl<'ast> Visit<'ast> for CoordinatorProbe {
                     nested.visit_expr(&expr);
                     self.frontend_calls += nested.frontend_calls;
                     self.preflight_calls += nested.preflight_calls;
+                    self.assembly_calls += nested.assembly_calls;
                     self.stdout |= nested.stdout;
                     self.invalid |= nested.invalid;
                 }

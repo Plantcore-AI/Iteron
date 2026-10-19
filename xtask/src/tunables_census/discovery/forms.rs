@@ -214,7 +214,7 @@ pub(super) fn source_invariant_disposition(
     };
     for (path, owner, symbol, expected, kind, rationale) in [
         (
-            "crates/cli/src/app_server/plantcore.rs",
+            "crates/host/src/app_server/plantcore.rs",
             "PlantcoreAdmission::disabled",
             "inline::Self::field::state",
             "State :: Disabled",
@@ -254,7 +254,7 @@ pub(super) fn source_invariant_disposition(
             "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
         ),
         (
-            "crates/cli/src/queue_policy.rs",
+            "crates/host/src/queue_policy.rs",
             "FrontendQueuePolicy::owner",
             "inline::Self::new::argument_3",
             "CosmeticOverflow :: Coalesce",
@@ -262,7 +262,7 @@ pub(super) fn source_invariant_disposition(
             "the fixed queue owner coalesces only cosmetic projections; restoring its pinned checkpoint is not a strategy setter",
         ),
         (
-            "crates/cli/src/queue_policy.rs",
+            "crates/host/src/queue_policy.rs",
             "FrontendQueuePolicy::owner",
             "inline::Self::new::argument_4",
             "AuthoritativeOverflow :: Wait",
@@ -270,7 +270,7 @@ pub(super) fn source_invariant_disposition(
             "the fixed queue owner retains authoritative events through backpressure; restoring its pinned checkpoint grants no replacement or drop authority",
         ),
         (
-            "crates/cli/src/app_server/session_factory.rs",
+            "crates/host/src/app_server/session_factory.rs",
             "SessionFactory::verified",
             "inline::ReplayReadLimits::field::events",
             "100_000",
@@ -278,7 +278,7 @@ pub(super) fn source_invariant_disposition(
             "verified session adoption has an owner-fixed aggregate event ceiling before retaining history",
         ),
         (
-            "crates/cli/src/runtime/budget_control.rs",
+            "crates/host/src/runtime/budget_control.rs",
             "Agent::admit_operator_tool_call",
             "inline::super::permission_policy::OperationPolicy::field::governing_trust",
             "iteron_protocol :: Trust :: Trusted",
@@ -286,7 +286,7 @@ pub(super) fn source_invariant_disposition(
             "only this authenticated host-operator admission treats the exact operator command as trusted; capability and named deny gates still apply",
         ),
         (
-            "crates/cli/src/runtime/invocation_admission.rs",
+            "crates/host/src/runtime/invocation_admission.rs",
             "InvocationAdmissionSession<'_>::prepare",
             "inline::InvocationAdmission::field::phase",
             "AdmissionPhase :: Prepared",
@@ -294,7 +294,7 @@ pub(super) fn source_invariant_disposition(
             "the admitted invocation starts in its privately consumed Prepared phase, not a selectable execution stage",
         ),
         (
-            "crates/cli/src/runtime/memory_activation.rs",
+            "crates/host/src/runtime/memory_activation.rs",
             "MemoryActivation::resolve",
             "inline::MemoryReferenceAdmissionV1::field::version",
             "1",
@@ -302,7 +302,7 @@ pub(super) fn source_invariant_disposition(
             "the validated memory reference admission uses its actual V1 wire version",
         ),
         (
-            "crates/cli/src/runtime/permission_policy.rs",
+            "crates/host/src/runtime/permission_policy.rs",
             "evaluate_operation",
             "inline::OperationAdmission::field::verdict",
             "Verdict :: Auto",
@@ -310,7 +310,7 @@ pub(super) fn source_invariant_disposition(
             "Auto initializes the permission reduction before every required class, named deny, taint and ceiling gate is evaluated",
         ),
         (
-            "crates/cli/src/runtime/persistent_agents/input_admission.rs",
+            "crates/host/src/runtime/persistent_agents/input_admission.rs",
             "LiveAgentMailbox::source_admission",
             "inline::AgentInputAdmissionV1::field::version",
             "1",
@@ -318,7 +318,7 @@ pub(super) fn source_invariant_disposition(
             "the provenance-validated agent input admission uses its actual V1 wire version",
         ),
         (
-            "crates/cli/src/runtime/pricing.rs",
+            "crates/host/src/runtime/pricing.rs",
             "SharedUsdBudget::from_microusd",
             "inline::Self::field::depth",
             "0",
@@ -326,7 +326,7 @@ pub(super) fn source_invariant_disposition(
             "a monetary root has no ancestor; only actual child construction advances the bounded parent-chain depth",
         ),
         (
-            "crates/cli/src/runtime/request_admission.rs",
+            "crates/host/src/runtime/request_admission.rs",
             "RequestAdmission<'a>::from_bound",
             "inline::Self::field::phase",
             "AdmissionPhase :: Prepared",
@@ -334,7 +334,7 @@ pub(super) fn source_invariant_disposition(
             "a retained request starts in its privately consumed Prepared phase before validation and dispatch",
         ),
         (
-            "crates/cli/src/runtime/workspace_rewind.rs",
+            "crates/host/src/runtime/workspace_rewind.rs",
             "Agent::admit_workspace_rewind",
             "inline::OperationPolicy::field::governing_trust",
             "Trust :: Trusted",
@@ -420,7 +420,7 @@ pub(super) fn source_invariant_disposition(
         if value == expected.to_ascii_lowercase()
             && inline_identity_matches_at(
                 &identity,
-                "crates/cli/src/mcp/commands.rs",
+                "crates/host/src/mcp/commands.rs",
                 "add",
                 "inline::McpServerConfig::field::transport",
                 ordinal,
@@ -432,7 +432,7 @@ pub(super) fn source_invariant_disposition(
             ));
         }
     }
-    if (identity.contains("crates/cli/src/machine_contract.rs")
+    if (identity.contains("crates/host/src/machine_contract.rs")
         || identity.contains("cli.machine.contract"))
         && identity.contains("machinecontract::current")
         && (identity.contains("logical_v7_event_max_bytes")
@@ -443,7 +443,7 @@ pub(super) fn source_invariant_disposition(
             "the advertised logical v7 event ceiling is fixed by the digest-pinned output contract",
         ));
     }
-    if identity.contains("crates/cli/src/providers.rs")
+    if identity.contains("crates/host/src/providers.rs")
         && identity.contains("eager_discovery_budget")
     {
         return Some(invariant(
@@ -470,7 +470,7 @@ pub(super) fn source_invariant_disposition(
             "the one-shot execution entry point cannot acquire persistent-process authority",
         ));
     }
-    if identity.contains("crates/cli/src/providers.rs")
+    if identity.contains("crates/host/src/providers.rs")
         && identity.contains("last_success_route_version")
     {
         return Some(invariant(
@@ -478,7 +478,7 @@ pub(super) fn source_invariant_disposition(
             "the persisted last-success route version is the decoder's wire identity",
         ));
     }
-    if identity.contains("crates/cli/src/runtime/deferred_tools.rs")
+    if identity.contains("crates/host/src/runtime/deferred_tools.rs")
         && identity.contains("bash_write_domain")
     {
         return Some(invariant(
@@ -909,9 +909,15 @@ pub(super) fn manifest_kind(name: &str) -> Option<CensusCandidateKind> {
 }
 
 pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
-    // Only these existing declarations moved. Preserve their external identities without
-    // replacing actual owner/use-site provenance or giving new source forms historical aliases.
-    let (relative, symbol) = original_source_form(relative, symbol);
+    // Whole-file host relocations retain their historical ID namespace. Partial extractions
+    // below retain only the specified declarations. Physical owner/use-site provenance stays
+    // with the actual source and is independently checked by each invariant proof.
+    let previous = crate::source_owners::historical(relative).unwrap_or(relative);
+    let (relative, symbol) = original_source_form(previous, symbol);
+    let krate = relative
+        .strip_prefix("crates/")
+        .and_then(|path| path.split('/').next())
+        .unwrap_or(krate);
     let module = relative
         .rsplit_once("/src/")
         .map(|(_, tail)| tail)
@@ -935,6 +941,14 @@ pub(super) fn stable_id(krate: &str, relative: &str, symbol: &str) -> String {
 
 fn original_source_form<'a>(relative: &'a str, symbol: &'a str) -> (&'a str, &'a str) {
     match relative {
+        "crates/host/src/keymap.rs"
+            if matches!(
+                symbol,
+                "Config.mode.serde_default" | "Config.bindings.serde_default"
+            ) =>
+        {
+            ("crates/cli/src/keymap.rs", symbol)
+        }
         "crates/record/src/session/model.rs"
             if symbol.starts_with("SessionMeta.")
                 || symbol.starts_with("SessionAncestryReceipt.") =>

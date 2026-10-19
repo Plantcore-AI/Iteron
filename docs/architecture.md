@@ -2,6 +2,29 @@
 
 ## Ordinary coding runtime
 
+### Build and package boundaries
+
+`iteron-host` owns session construction, the resident runtime, App Server commands,
+socket transport and shared machine projection. Both executables use its launch
+assembly and the same resident `Agent` loop. The host library does not depend on
+`iteron-cli`, `ratatui` or `crossterm`.
+
+`iteron-cli` owns the `iteron` terminal command, TUI renderer and terminal input
+adapters. `iteron-app-server` is a separate executable with a server-only argument
+parser; it starts the shared host without linking the terminal renderer. Existing
+`iteron serve` remains a compatible launch adapter. Both server entries use the
+same authenticated transport and request identity rules.
+
+```sh
+cargo build --locked --release -p iteron-app-server
+iteron-app-server --help
+iteron-app-server --machine-contract
+```
+
+Runtime source paths in the table below are relative to `crates/host/src` unless
+they explicitly name another crate. Terminal UI paths remain under
+`crates/cli/src`.
+
 The ordinary product has one resident `Agent` execution path. CLI launch adapters and the
 App Server session host submit work to that path; terminal rendering and socket observers
 do not own another model/tool loop. The runtime imports shared command/event contracts and
@@ -59,7 +82,7 @@ frontend execution loop.
 | Model response | `runtime/model_response.rs` | Provider stop reason and existing invocation state; continuation, answer candidate, bounded stop or refusal. |
 | Terminal and publication | `runtime/control_terminal.rs`, `run_finalization.rs`, `terminal_record.rs`, `turn_publication.rs` | Actual cleanup and committed terminal receipts; read-only answer/finalization facts. |
 | Persistent collaboration | `crates/agents`, `runtime/persistent_agents`, `workflow/live_session` | Host-bound identities, bounded mailbox and controller budgets; exact task/attempt receipts. |
-| Client transport | `app_server/session_host.rs`, `tui/headless/connection.rs`, protocol client commands | Resident Agent ownership, authenticated run-scoped commands and bounded observation subscriptions. |
+| Client transport | `app_server/session_host.rs`, `transport/headless/connection.rs`, protocol client commands | Resident Agent ownership, authenticated run-scoped commands and bounded observation subscriptions. |
 | Session construction and navigation | `cli_entry/`, `app_server/session_factory.rs`, `session_factory/` | Trusted host bootstrap, frozen provider directory and verified history; prepared native writer and route before observed adoption. |
 | Native client actions | `app_server/client_export.rs`, `client_shell.rs`, `project_init.rs`, `model_preferences.rs`, `path_completion.rs`, `client_effects/` | Host-captured policy, run scope and retained physical/submission leases; native completion, explicit unknown publication and scoped receipts. |
 | Shared presentation | `machine_projection.rs`, `machine_projection/` | Immutable runtime/protocol facts to the canonical machine schema; no provider, terminal or socket authority. |

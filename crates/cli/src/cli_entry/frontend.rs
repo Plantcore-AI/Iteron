@@ -1,52 +1,25 @@
 //! Client attachment and presentation after the host has admitted a complete session.
 //! Consumes one Agent; runtime identity, permissions and policy are already pinned by the host.
 use super::{
-    Cli, LocalCommand, StderrDiagnosticDrain, agent_discovery_activity, erasure_now_unix_ms,
-    report_agent_catalog_scan, safe_agent_diagnostic, scan_agent_catalog, submit_one_shot,
+    LocalCommand, agent_discovery_activity, erasure_now_unix_ms, report_agent_catalog_scan,
+    safe_agent_diagnostic, scan_agent_catalog, submit_one_shot,
 };
-use crate::output::{Emitter, OutputFormat};
-use crate::runtime::Agent;
-use crate::{
-    app_server, config, image_input, output, plugin_runtime, providers, route, runtime, startup,
-    tui,
-};
-use iteron_protocol::{Outcome, RunId};
-use std::path::PathBuf;
+use crate::output::Emitter;
+use crate::{app_server, output, runtime, tui};
+use iteron_protocol::Outcome;
 
-pub(crate) struct FrontendLaunch {
-    pub(crate) agent: Agent,
-    pub(crate) cli: Cli,
-    pub(crate) one_shot: bool,
-    pub(crate) confine_execution: bool,
-    pub(crate) selected_api_root: String,
-    pub(crate) recording_app_server_fault: Option<app_server::RecordingAppServerFault>,
-    pub(crate) diagnostic_drain: StderrDiagnosticDrain,
-    pub(crate) config_warnings: Vec<String>,
-    pub(crate) provider_directory: providers::ProviderDirectory,
-    pub(crate) route: route::RouteView,
-    pub(crate) repo: PathBuf,
-    pub(crate) refresh_agent_catalog_after_paint: bool,
-    pub(crate) plugin_agents: Vec<plugin_runtime::AgentArtifact>,
-    pub(crate) agent_snapshot_path: Option<PathBuf>,
-    pub(crate) completion_notifications: config::CompletionNotificationResolution,
-    pub(crate) user_file: crate::config::FileConfig,
-    pub(crate) credential_env_names: Vec<String>,
-    pub(crate) resumed_transcript_events:
-        Option<iteron_protocol::session_navigation::SessionTranscriptV1>,
-    pub(crate) startup: startup::StartupTiming,
-    pub(crate) run: RunId,
-    pub(crate) output_format: OutputFormat,
-    pub(crate) machine_schema_version: u32,
-    pub(crate) one_shot_images: image_input::ImageAttachments,
-}
+pub(crate) use iteron_host::launch::FrontendLaunch;
 pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
+    if matches!(launch.cli.command, Some(LocalCommand::Serve { .. })) {
+        return iteron_host::server::serve(launch).await;
+    }
     let FrontendLaunch {
         agent,
         cli,
         one_shot,
         confine_execution,
         selected_api_root: _selected_api_root,
-        recording_app_server_fault,
+        recording_app_server_fault: _,
         diagnostic_drain,
         config_warnings,
         provider_directory,
@@ -65,33 +38,6 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         machine_schema_version,
         one_shot_images,
     } = launch;
-    if let Some(LocalCommand::Serve {
-        listen,
-        plantcore,
-        client_approvals,
-        ..
-    }) = &cli.command
-    {
-        if let Some(fault) = recording_app_server_fault {
-            fault.consume_marker()?;
-        }
-        #[cfg(feature = "legacy-plantcore")]
-        let attached = if *plantcore {
-            app_server::attach_plantcore(agent, false, true, _selected_api_root.clone())?
-        } else {
-            app_server::attach_remote(agent, true, *client_approvals)?
-        };
-        #[cfg(not(feature = "legacy-plantcore"))]
-        let attached = {
-            if *plantcore || recording_app_server_fault.is_some() {
-                anyhow::bail!("legacy resident transport is unavailable in standalone Iteron");
-            }
-            app_server::attach_remote(agent, true, *client_approvals)?
-        };
-        tui::headless::serve(attached, *listen, *plantcore, recording_app_server_fault).await?;
-        diagnostic_drain.flush();
-        return Ok(output::EXIT_SUCCESS);
-    }
 
     if !one_shot {
         // The alternate screen intentionally replaces the primary-screen startup transcript.

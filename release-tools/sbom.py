@@ -10,8 +10,10 @@ from pathlib import Path
 
 from common import (
     ReleaseToolError,
+    app_server_filename,
     atomic_write_text,
     canonical_json,
+    includes_app_server,
     require_regular_file,
     run_main,
     sha256_file,
@@ -27,6 +29,8 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--input", required=True, type=Path)
     result.add_argument("--binary", required=True, type=Path)
+    result.add_argument("--app-server", type=Path)
+    result.add_argument("--app-server-input", type=Path)
     result.add_argument("--workspace-hook", required=True, type=Path)
     result.add_argument("--output", required=True, type=Path)
     result.add_argument("--version", required=True)
@@ -53,6 +57,7 @@ def normalize(
     binary_digest: str,
     binary_name: str = "iteron",
     additional_files: tuple[tuple[str, str], ...] = (),
+    package_name: str = "iteron-cli",
 ) -> dict:
     if document.get("spdxVersion") != "SPDX-2.3":
         raise ReleaseToolError("SBOM must use SPDX-2.3")
@@ -89,7 +94,7 @@ def normalize(
     cli_packages = [
         package
         for package in packages
-        if package.get("name") == "iteron-cli" and package.get("versionInfo") == version
+        if package.get("name") == package_name and package.get("versionInfo") == version
     ]
     if len(roots) != 1 or len(cli_packages) != 1:
         root_names = sorted(
@@ -103,11 +108,11 @@ def normalize(
             {
                 f"{package.get('name')}={package.get('versionInfo')}"
                 for package in packages
-                if package.get("name") == "iteron-cli"
+                if package.get("name") == package_name
             }
         )
         raise ReleaseToolError(
-            f"SBOM root digest or iteron-cli version is not uniquely bound "
+            f"SBOM root digest or {package_name} version is not uniquely bound "
             f"(binary_name={binary_name!r}, roots={len(roots)}, "
             f"cli_packages={len(cli_packages)}, "
             f"root_candidates={root_names}, cli_candidates={cli_names})"
@@ -139,7 +144,7 @@ def normalize(
         and relationship.get("relatedSpdxElement") == cli_id
         for relationship in relationships
     ):
-        raise ReleaseToolError("SBOM binary root does not contain the iteron-cli package")
+        raise ReleaseToolError(f"SBOM binary root does not contain the {package_name} package")
     for file_name, file_digest in additional_files:
         file_id = f"SPDXRef-File-{file_name.replace('.', '-')}"
         if file_id in known_ids:
@@ -203,6 +208,38 @@ def normalize(
     return document
 
 
+def merge_app_server(document: dict, server: dict) -> dict:
+    """Join two independently validated binary inventories without conflating their SPDX IDs."""
+    primary_ids = {document["SPDXID"]} | {
+        item["SPDXID"] for item in document["packages"] + document.get("files", [])
+    }
+    remap = {server["SPDXID"]: document["SPDXID"]}
+    for item in server["packages"] + server.get("files", []):
+        old = item["SPDXID"]
+        renamed = "SPDXRef-AppServer-" + old.removeprefix("SPDXRef-")
+        if renamed in primary_ids or renamed in remap.values():
+            raise ReleaseToolError("AppServer SBOM identifier collides with the CLI inventory")
+        remap[old] = renamed
+
+    def replace(value):
+        if isinstance(value, str):
+            return remap.get(value, value)
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        return value
+
+    for field in ("packages", "files", "relationships"):
+        combined = document.get(field, []) + replace(server.get(field, []))
+        document[field] = sorted(combined, key=canonical_json)
+    if "documentDescribes" in document or "documentDescribes" in server:
+        document["documentDescribes"] = sorted(set(
+            document.get("documentDescribes", []) + replace(server.get("documentDescribes", []))
+        ))
+    return document
+
+
 def main() -> None:
     arguments = parser().parse_args()
     version = validate_version(arguments.version)
@@ -221,17 +258,37 @@ def main() -> None:
         raise ReleaseToolError("SBOM is not valid UTF-8 JSON") from error
     if not isinstance(document, dict):
         raise ReleaseToolError("SBOM root must be an object")
-    output = canonical_json(
-        normalize(
-            document,
-            version,
-            target,
-            arguments.source_date_epoch,
-            sha256_file(arguments.binary),
-            arguments.binary.name,
-            ((arguments.workspace_hook.name, sha256_file(arguments.workspace_hook)),),
-        )
+    normalized = normalize(
+        document,
+        version,
+        target,
+        arguments.source_date_epoch,
+        sha256_file(arguments.binary),
+        arguments.binary.name,
+        ((arguments.workspace_hook.name, sha256_file(arguments.workspace_hook)),),
     )
+    if includes_app_server(version):
+        if arguments.app_server is None or arguments.app_server_input is None:
+            raise ReleaseToolError("standalone release SBOM requires the AppServer binary and its scan")
+        require_regular_file(arguments.app_server, max_bytes=512 * 1024 * 1024)
+        require_regular_file(arguments.app_server_input, max_bytes=MAX_SBOM_BYTES)
+        if arguments.app_server.name != app_server_filename(target):
+            raise ReleaseToolError("AppServer filename does not match the release target")
+        try:
+            server = json.loads(arguments.app_server_input.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ReleaseToolError("AppServer SBOM is not valid UTF-8 JSON") from error
+        if not isinstance(server, dict):
+            raise ReleaseToolError("AppServer SBOM root must be an object")
+        server = normalize(
+            server, version, target, arguments.source_date_epoch,
+            sha256_file(arguments.app_server), arguments.app_server.name,
+            package_name="iteron-app-server",
+        )
+        normalized = merge_app_server(normalized, server)
+    elif arguments.app_server is not None or arguments.app_server_input is not None:
+        raise ReleaseToolError("historical release SBOMs do not include the standalone AppServer")
+    output = canonical_json(normalized)
     if len(output.encode("utf-8")) > MAX_SBOM_BYTES:
         raise ReleaseToolError("normalized SBOM exceeds GitHub's 16 MiB attestation limit")
     atomic_write_text(arguments.output, output)

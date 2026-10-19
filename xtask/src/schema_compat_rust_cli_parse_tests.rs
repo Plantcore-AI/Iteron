@@ -322,7 +322,7 @@ fn staged_v6_source() -> String {
         }
         if function.sig.ident == "project_schema" {
             *function = syn::parse_quote! {
-                pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
+                pub fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
                     if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,

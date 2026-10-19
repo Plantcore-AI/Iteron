@@ -1,0 +1,20 @@
+[package]
+name = "iteron-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "iteron-app-server"
+path = "src/main.rs"
+
+[dependencies]
+iteron-host = { path = "../host" }
+iteron-tools = { path = "../tools" }
+iteron-record = { path = "../record" }
+iteron-protocol = { path = "../protocol" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
