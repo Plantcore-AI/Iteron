@@ -7,15 +7,16 @@ publish.workspace = true
 
 [features]
 default = []
-legacy-plantcore = []
-ticket-investigation = []
-script-workflows = ["iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
+legacy-plantcore = ["iteron-host/legacy-plantcore"]
+ticket-investigation = ["iteron-host/ticket-investigation"]
+script-workflows = ["iteron-host/script-workflows", "iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
 
 [[bin]]
 name = "iteron"
 path = "src/main.rs"
 
 [dependencies]
+iteron-host = { path = "../host" }
 iteron-protocol = { path = "../protocol" }
 iteron-record = { path = "../record" }
 iteron-obs = { path = "../obs" }
@@ -75,6 +76,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+iteron-host = { path = "../host", features = ["test-fixtures"] }
 ed25519-dalek = { workspace = true }
 # Tests pin a registry-driven resolved tunable set rather than inventing a snapshot.
 iteron-record = { path = "../record", features = ["test-fixtures"] }

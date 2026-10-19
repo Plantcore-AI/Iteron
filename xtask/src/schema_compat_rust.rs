@@ -63,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
-const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/cli/src/machine_projection.rs";
+const CLI_MACHINE_OUTPUT_SOURCE: &str = "crates/host/src/machine_projection.rs";
 const OP_SOURCE: &str = "crates/protocol/src/lib.rs";
 const OP_SIGNATURE: &str = "pub enum Op {";
 const OP_SURFACE_PREFIX: &str = "protocol.op.";

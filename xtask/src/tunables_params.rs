@@ -17,7 +17,7 @@ use syn::spanned::Spanned as _;
 use syn::visit::{self, Visit};
 
 mod cfg;
-pub(crate) use cfg::has_cfg_test;
+pub(crate) use cfg::{has_cfg_test, is_fixture_source};
 
 mod fixed_client;
 mod fixed_core;
@@ -351,7 +351,7 @@ pub(crate) fn scan(root: &Path) -> Result<Vec<ParamRow>> {
             .unwrap_or(&file)
             .to_string_lossy()
             .replace('\\', "/");
-        if is_test_path(&relative) {
+        if is_test_path(&relative) || is_fixture_source(root, &relative)? {
             continue;
         }
         let Some(krate) = crate_of(&relative) else {
@@ -831,8 +831,10 @@ fn row_for(
     declaration_line: usize,
 ) -> ParamRow {
     let actual_source = relative;
+    let actual_krate = krate;
     let fixed_reason = explicit_invariant_reason(actual_source, name, owner_symbol);
     let relative = stable_source::original_source(relative, name).unwrap_or(relative);
+    let krate = crate_of(relative).unwrap_or(krate);
     let ty = param_type(ty_text, value);
     let cryptographic_shape = (krate == "record"
         && relative.ends_with("/content_store/crypto.rs")
@@ -1176,14 +1178,14 @@ fn row_for(
         unit: duration_unit(ty, value),
         default: value.to_owned(),
         domain,
-        krate: krate.to_owned(),
+        krate: actual_krate.to_owned(),
         decl: actual_source.to_owned(),
         applied: false,
         candidate_kind,
         disposition,
         invariant_reason,
         owner: OwnerRow {
-            krate: krate.to_owned(),
+            krate: actual_krate.to_owned(),
             path: actual_source.to_owned(),
             symbol: owner_symbol.to_owned(),
         },
@@ -1312,11 +1314,13 @@ fn module_path(relative: &str) -> String {
 
 fn base_param_id(krate: &str, relative: &str, name: &str) -> String {
     let relative = stable_source::original_source(relative, name).unwrap_or(relative);
+    let krate = crate_of(relative).unwrap_or(krate);
     format!("{krate}.{}.{}", module_path(relative), name.to_lowercase())
 }
 
 fn qualified_param_id(krate: &str, relative: &str, owner: &str, name: &str) -> String {
     let relative = stable_source::original_source(relative, name).unwrap_or(relative);
+    let krate = crate_of(relative).unwrap_or(krate);
     let owner = owner
         .strip_suffix(name)
         .unwrap_or(owner)

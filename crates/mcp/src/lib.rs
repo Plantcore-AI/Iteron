@@ -205,6 +205,10 @@ pub enum McpError {
     StaleToolIdentity,
     #[error("MCP catalog violates the managed lifecycle contract: {reason}")]
     CatalogContract { reason: &'static str },
+    #[error(
+        "MCP discovery schema withheld: secret redaction would alter its contract; ask the server owner to remove sensitive values from tool metadata"
+    )]
+    SensitiveToolSchema,
     #[error("MCP server lifecycle is stopped")]
     LifecycleStopped,
     #[error("MCP server lifecycle failed terminally")]
@@ -362,6 +366,7 @@ impl McpError {
             Self::CatalogContract { .. } => {
                 "MCP catalog violates the managed lifecycle contract".into()
             }
+            Self::SensitiveToolSchema => "MCP discovery schema withheld: secret redaction would alter its contract; ask the server owner to remove sensitive values from tool metadata".into(),
             Self::LifecycleStopped => "MCP server lifecycle is stopped".into(),
             Self::LifecycleFailed => "MCP server lifecycle failed terminally".into(),
             Self::Server { code, .. } => format!("MCP server returned error code {code}"),

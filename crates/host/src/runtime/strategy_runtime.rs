@@ -1,0 +1,289 @@
+//! Small runtime adapters for pure strategy slots.
+//!
+//! The strategies see only already-gathered observations. World access stays in `ContextPort`,
+//! while authority stays in the kernel gate and Registry.
+
+use iteron_ctx::{ContextPort, ContextPortInput, ContextSlotObservation, ContextStrategy};
+use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::context::RequestId;
+use iteron_protocol::slot::StrategySlot;
+use iteron_protocol::{Capability, ToolUse, Trust, TurnId, context::ContextSource};
+use iteron_tools::{Registry, ToolPolicyError, ToolPolicyProposal};
+use std::path::Path;
+
+#[cfg(test)]
+#[path = "context403_regression_tests.rs"]
+mod context403_regression_tests;
+
+pub struct LiveContext {
+    pub text: String,
+    pub governing_trust: Trust,
+    pub policy_observation: ContextSlotObservation,
+    pub policy_plan: iteron_ctx::ContextPlan,
+    /// Exact bounded source projection used to assemble `text`. The runtime consumes this only for
+    /// content-free decision evidence; durable provider bytes remain the authoritative record.
+    pub segments: Vec<iteron_protocol::context::ContextSegment>,
+    pub memory_audit: Option<iteron_ctx::MemoryRecallAudit>,
+    pub materialization_audit: iteron_ctx::ContextMaterializationAudit,
+    pub benchmark_memory_rejections: u32,
+}
+
+pub struct LiveContextRequest<'a> {
+    pub workspace: &'a Path,
+    pub home_dir: Option<&'a Path>,
+    pub dependency_skill_dirs: &'a [(std::path::PathBuf, std::path::PathBuf)],
+    pub turn: TurnId,
+    pub task: &'a str,
+    pub memory_benchmark_scope: Option<[u8; 32]>,
+    pub materialization: iteron_ctx::ContextMaterializationPolicy,
+}
+
+pub fn resolve_live_context(
+    strategy: &dyn StrategySlot,
+    memory_strategy: &dyn StrategySlot,
+    port: &dyn ContextPort,
+    request: LiveContextRequest<'_>,
+) -> Result<LiveContext, String> {
+    let mut observation = ContextSlotObservation::baseline(
+        RequestId(u64::from(request.turn.0)),
+        ContextSlotObservation::bounded_task_query(request.task),
+    );
+    observation.include_outline = false;
+    observation.instruction_scopes.clear();
+    observation.include_environment = false;
+    observation.transcript_turns = 0;
+    observation.max_bytes = request.materialization.max_bytes;
+    let plan = ContextStrategy::select_with(
+        strategy,
+        &observation,
+        CapabilitySet::only(Capability::ReadOnly),
+    )
+    .map_err(str::to_owned)?;
+    let (mut grant, memory_audit, materialization_audit) = port
+        .resolve_with_decision_audit(
+            &plan,
+            &ContextPortInput {
+                workspace: request.workspace.to_path_buf(),
+                home_dir: request.home_dir.map(Path::to_path_buf),
+                active_dir: request.workspace.to_path_buf(),
+                environment: None,
+                transcript: Vec::new(),
+                dependency_skill_dirs: request.dependency_skill_dirs.to_vec(),
+                memory_benchmark_scope: request.memory_benchmark_scope,
+                materialization: request.materialization,
+            },
+            memory_strategy,
+        )
+        .map_err(|error| error.to_string())?;
+    // A replacement port crosses the same boundary as the built-in adapter. Validate its
+    // original grant before benchmark filtering can hide an invalid segment or byte count.
+    grant.validate_for(&plan.request).map_err(str::to_owned)?;
+    let mut benchmark_memory_rejections = 0u32;
+    if request.memory_benchmark_scope.is_some() {
+        grant.segments.retain(|segment| {
+            let keep = segment.source != ContextSource::Memory;
+            if !keep {
+                benchmark_memory_rejections = benchmark_memory_rejections.saturating_add(1);
+            }
+            keep
+        });
+        grant.bytes = grant.segments.iter().fold(0u32, |total, segment| {
+            total.saturating_add(u32::try_from(segment.text.len()).unwrap_or(u32::MAX))
+        });
+    }
+    let governing_trust = grant.governing_trust().unwrap_or(Trust::Trusted);
+    let segments = grant.segments;
+    let mut text = String::with_capacity(grant.bytes as usize);
+    for segment in &segments {
+        text.push_str(&segment.text);
+    }
+    Ok(LiveContext {
+        text,
+        governing_trust,
+        policy_observation: observation,
+        policy_plan: plan,
+        segments,
+        memory_audit,
+        materialization_audit,
+        benchmark_memory_rejections,
+    })
+}
+
+pub fn propose_tool(
+    registry: &Registry,
+    policy: &dyn StrategySlot,
+    call: ToolUse,
+    argument_trust: Trust,
+) -> Result<ToolPolicyProposal, ToolPolicyError> {
+    registry.propose_intent(policy, call, argument_trust, all_tool_capabilities())
+}
+
+fn all_tool_capabilities() -> CapabilitySet {
+    CapabilitySet::from_iter_capabilities([
+        Capability::ReadOnly,
+        Capability::ReversibleLocal,
+        Capability::CodeExecuting,
+        Capability::TrustMutating,
+        Capability::IrreversibleExternal,
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iteron_protocol::context::{ContextSegment, ContextSource};
+
+    #[test]
+    fn replacement_port_grants_are_validated_before_benchmark_filtering() {
+        struct InvalidPort(u8);
+        impl ContextPort for InvalidPort {
+            fn resolve(
+                &self,
+                plan: &iteron_ctx::ContextPlan,
+                _input: &ContextPortInput,
+            ) -> Result<iteron_protocol::context::ContextGrant, iteron_ctx::ContextPortError>
+            {
+                let mut grant = iteron_protocol::context::ContextGrant {
+                    request_id: plan.request.request_id,
+                    bytes: 6,
+                    segments: vec![ContextSegment {
+                        text: "memory".into(),
+                        trust: Trust::Workspace,
+                        source: ContextSource::Memory,
+                    }],
+                };
+                match self.0 {
+                    0 => grant.request_id = RequestId(u64::MAX),
+                    1 => grant.bytes = 0,
+                    2 => grant.segments[0].trust = Trust::Trusted,
+                    3 => grant.bytes = plan.request.max_bytes + 1,
+                    _ => unreachable!(),
+                }
+                Ok(grant)
+            }
+        }
+        for (case, expected) in [
+            "grant does not answer this request",
+            "granted bytes under-report the segments, so the bound is unenforceable",
+            "a segment exceeds the trust ceiling the request declared",
+            "granted context bytes exceed the bound the request declared",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for benchmark in [None, Some([7; 32])] {
+                let result = resolve_live_context(
+                    &iteron_ctx::ContextStrategy::default(),
+                    &iteron_ctx::MemoryRecallStrategy::default(),
+                    &InvalidPort(case as u8),
+                    LiveContextRequest {
+                        workspace: Path::new("/synthetic-context"),
+                        home_dir: None,
+                        dependency_skill_dirs: &[],
+                        turn: TurnId(6),
+                        task: "inspect",
+                        memory_benchmark_scope: benchmark,
+                        materialization: iteron_ctx::ContextMaterializationPolicy {
+                            max_bytes: 1_024,
+                            ..Default::default()
+                        },
+                    },
+                );
+                assert_eq!(result.err().as_deref(), Some(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_scope_strips_memory_even_from_a_replacement_context_port() {
+        let workspace = std::env::temp_dir().join(format!(
+            "core-benchmark-context-isolation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let port = iteron_ctx::PortStub::new(vec![
+            ContextSegment {
+                text: "parent memory".into(),
+                trust: Trust::Trusted,
+                source: ContextSource::Memory,
+            },
+            ContextSegment {
+                text: "workspace outline".into(),
+                trust: Trust::Workspace,
+                source: ContextSource::RepoOutline,
+            },
+        ]);
+        let resolved = resolve_live_context(
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
+            &port,
+            LiveContextRequest {
+                workspace: &workspace,
+                home_dir: None,
+                dependency_skill_dirs: &[],
+                turn: TurnId(1),
+                task: "inspect",
+                memory_benchmark_scope: Some([7; 32]),
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.text, "workspace outline");
+        assert_eq!(resolved.benchmark_memory_rejections, 1);
+        assert!(
+            resolved
+                .segments
+                .iter()
+                .all(|segment| segment.source != ContextSource::Memory)
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn large_multibyte_submission_keeps_both_relevance_ends_without_refusing_context() {
+        let workspace =
+            std::env::temp_dir().join(format!("core-large-context-query-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let task = format!("start/path.rs {} latest request", "界".repeat(28_000));
+        assert!(task.len() > 64 * 1024);
+        assert_eq!(
+            iteron_ctx::ContextStrategy::default().select(
+                &ContextSlotObservation::baseline(RequestId(6), &task),
+                CapabilitySet::only(Capability::ReadOnly),
+            ),
+            Err("context task exceeds its local observation bound")
+        );
+        let resolved = resolve_live_context(
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
+            &iteron_ctx::DefaultContextPort,
+            LiveContextRequest {
+                workspace: &workspace,
+                home_dir: None,
+                dependency_skill_dirs: &[],
+                turn: TurnId(6),
+                task: &task,
+                memory_benchmark_scope: None,
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
+            },
+        )
+        .unwrap();
+        assert!(resolved.policy_observation.task.len() <= 64 * 1024);
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .starts_with("start/path.rs")
+        );
+        assert!(resolved.policy_observation.task.ends_with("latest request"));
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .contains("context query middle omitted")
+        );
+        assert_eq!(resolved.policy_plan.task, resolved.policy_observation.task);
+        assert!(task.ends_with("latest request"));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+}

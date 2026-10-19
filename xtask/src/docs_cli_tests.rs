@@ -12,7 +12,7 @@ fn repository_root() -> std::path::PathBuf {
 #[test]
 fn the_published_reference_matches_the_argument_parser() {
     check(&repository_root()).expect(
-        "docs/reference/cli.md drifted from crates/cli/src/cli_entry/options.rs; run \
+        "docs/reference/cli.md drifted from crates/host/src/cli_entry/options.rs; run \
          `cargo run --locked -p iteron-xtask -- docs generate`",
     );
 }
@@ -72,9 +72,9 @@ fn attach_requires_the_service_identity_while_serve_options_remain_optional() {
 fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
     let root = repository_root();
     let source = std::fs::read_to_string(root.join(CLI_SOURCE)).unwrap();
-    let plugin = std::fs::read_to_string(root.join("crates/cli/src/plugin.rs")).unwrap();
-    let tunables = std::fs::read_to_string(root.join("crates/cli/src/tunables.rs")).unwrap();
-    let mcp = std::fs::read_to_string(root.join("crates/cli/src/mcp/commands.rs")).unwrap();
+    let plugin = std::fs::read_to_string(root.join("crates/host/src/plugin.rs")).unwrap();
+    let tunables = std::fs::read_to_string(root.join("crates/host/src/tunables.rs")).unwrap();
+    let mcp = std::fs::read_to_string(root.join("crates/host/src/mcp/commands.rs")).unwrap();
     let modules = [
         ("mcp::commands", mcp.as_str()),
         ("plugin", plugin.as_str()),

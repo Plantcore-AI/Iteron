@@ -1,7 +1,7 @@
 //! Terminal adapter for live workflow runs.
 
-use super::projection::ui_safe_progress;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use iteron_host::workflow::projection::ui_safe_progress;
 use iteron_workflow::events::{ProgressEvent, ProgressSink};
 use iteron_workflow::{AgentSpawner, RunHandle, RunReport, RunSpec, WorkflowEngine};
 use std::sync::Arc;
@@ -370,4 +370,180 @@ pub async fn watch_live(
     theme: &crate::theme::Theme,
 ) -> anyhow::Result<RunReport> {
     launch_live(spec, spawner, name, phases, theme).await
+}
+
+#[cfg(all(test, feature = "script-workflows"))]
+mod tests {
+    use super::*;
+    use iteron_workflow::RunId;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    fn ctrl_c() -> KeyEvent {
+        key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    fn settled_report() -> RunReport {
+        RunReport {
+            run_id: RunId::new("wf_interrupt"),
+            value: serde_json::Value::Null,
+            stopped: true,
+            cache_hits: 0,
+            cache_misses: 0,
+            errors: 0,
+            tokens: 0,
+            tool_calls: 0,
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn ctrl_c_is_the_key_that_cancels_and_nothing_else_is() {
+        assert_eq!(live_key_action(ctrl_c(), false), LiveAction::Cancel);
+        assert_eq!(
+            live_key_action(key(KeyCode::Char('C'), KeyModifiers::CONTROL), false),
+            LiveAction::Cancel,
+            "a shifted Ctrl-C is still Ctrl-C"
+        );
+        for benign in [
+            key(KeyCode::Char('c'), KeyModifiers::NONE),
+            key(KeyCode::Char('c'), KeyModifiers::ALT),
+            key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                live_key_action(benign, false),
+                LiveAction::Ignore,
+                "{benign:?} must not stop a running workflow"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_release_never_cancels() {
+        // Windows reports a Release for every press; acting on both would cancel twice from one
+        // physical Ctrl-C, i.e. force-exit before the run ever got a chance to settle.
+        let mut release = ctrl_c();
+        release.kind = KeyEventKind::Release;
+        assert_eq!(live_key_action(release, false), LiveAction::Ignore);
+        assert_eq!(live_key_action(release, true), LiveAction::Ignore);
+    }
+
+    #[test]
+    fn a_second_ctrl_c_while_settling_forces_the_exit() {
+        assert_eq!(live_key_action(ctrl_c(), true), LiveAction::ForceExit);
+    }
+
+    #[test]
+    fn the_cancelled_frame_says_so_instead_of_just_freezing() {
+        let theme = crate::theme::Theme::dark();
+        let mut card = new_run_card("wf_interrupt", "triage", &["plan".to_string()]);
+
+        let live = plain_lines(&live_lines(&card, 80, &theme, 0, true));
+        assert!(live.contains("cancelling"), "{live}");
+        assert!(live.contains("Ctrl-C again"), "{live}");
+
+        card.finished = true;
+        let settled = plain_lines(&live_lines(&card, 80, &theme, 0, true));
+        assert!(settled.contains("run cancelled"), "{settled}");
+
+        let untouched = plain_lines(&live_lines(&card, 80, &theme, 0, false));
+        assert!(
+            !untouched.contains("cancel"),
+            "a run nobody interrupted must not claim it was cancelled: {untouched}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_invokes_cancel_and_the_loop_keeps_rendering_until_the_run_settles() {
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::new(Mutex::new(Vec::<bool>::new()));
+
+        // The stand-in for the engine: it only resolves once cancellation was actually requested,
+        // so a loop that drew a "cancelled" banner without calling `cancel()` would hang here.
+        let settles_on_cancel = {
+            let cancelled = cancelled.clone();
+            async move {
+                loop {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return Ok(settled_report());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            }
+        };
+
+        let mut keys = vec![ctrl_c()].into_iter();
+        let draw_log = observed.clone();
+        let cancel_flag = cancelled.clone();
+
+        let outcome = live_loop(
+            settles_on_cancel,
+            move |cancelled, _spin| {
+                draw_log.lock().unwrap().push(cancelled);
+                Ok(())
+            },
+            move || keys.next(),
+            move || cancel_flag.store(true, Ordering::SeqCst),
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect("the live loop settles");
+
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "Ctrl-C must actually invoke cancel() on the run handle"
+        );
+        match outcome {
+            LiveOutcome::Settled {
+                report, cancelled, ..
+            } => {
+                assert!(cancelled, "the loop must report that it was interrupted");
+                assert!(report.stopped, "an interrupted run settles as stopped");
+            }
+            LiveOutcome::Forced => panic!("one Ctrl-C must wait for the run, not force-exit"),
+        }
+        let frames = observed.lock().unwrap();
+        assert!(
+            frames.iter().any(|drawn| *drawn),
+            "the operator must see at least one frame acknowledging the interrupt: {frames:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_ctrl_c_stops_waiting_on_a_run_that_will_not_settle() {
+        let cancels = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = cancels.clone();
+        // A run that ignores cancellation entirely — exactly the case a single Ctrl-C cannot fix.
+        let never_settles = async {
+            std::future::pending::<()>().await;
+            unreachable!()
+        };
+        let mut keys = vec![ctrl_c(), ctrl_c()].into_iter();
+
+        let outcome = live_loop(
+            never_settles,
+            |_cancelled, _spin| Ok(()),
+            move || keys.next(),
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect("the live loop returns instead of hanging");
+
+        assert!(
+            matches!(outcome, LiveOutcome::Forced),
+            "a second Ctrl-C must stop waiting rather than hang forever"
+        );
+        assert_eq!(
+            cancels.load(Ordering::SeqCst),
+            1,
+            "the run is asked to cancel once; the second press is the operator giving up"
+        );
+    }
 }

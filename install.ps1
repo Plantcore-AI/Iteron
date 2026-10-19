@@ -28,6 +28,10 @@
 .PARAMETER SkipPathUpdate
     Install the executable without adding its directory to the user PATH.
 
+.PARAMETER Rollback
+    Restore the previous executable set in BinDir without downloading. A second
+    rollback swaps back to the current set. Session data and settings are retained.
+
 .EXAMPLE
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 
@@ -46,7 +50,9 @@ param(
 
     [string]$BinDir = '',
 
-    [switch]$SkipPathUpdate
+    [switch]$SkipPathUpdate,
+
+    [switch]$Rollback
 )
 
 # Invoke-Expression evaluates text in its caller's scope. Keep strict mode,
@@ -62,10 +68,10 @@ $IteronReleaseRoot = 'https://github.com/Plantcore-AI/Iteron/releases'
 $IteronTarget = 'x86_64-pc-windows-msvc'
 $IteronBinaryName = 'iteron.exe'
 $IteronWorkspaceHookName = 'iteron-workspace-hook.exe'
+$IteronServerName = 'iteron-app-server.exe'
 $IteronMaxManifestBytes = 1048576
 $IteronMaxArchiveBytes = 268435456
-$IteronMaxUnpackedBytes = 134217728
-$IteronArchiveMemberCount = 35
+$IteronMaxUnpackedBytes = 268435456
 $IteronTagPattern = '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
 $IteronArchiveNamePattern =
     '^iteron-(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-x86_64-pc-windows-msvc\.zip$'
@@ -333,7 +339,11 @@ function Expand-IteronArchive {
         [string]$RootName,
 
         [Parameter(Mandatory = $true)]
-        [string]$DestinationPath
+        [string]$DestinationPath,
+
+        [bool]$Manual = $false,
+
+        [bool]$RequireServer = $false
     )
 
     try {
@@ -350,6 +360,11 @@ function Expand-IteronArchive {
         $null = $expectedFiles.Add("$RootName/$member")
     }
 
+    if ($Manual) {
+        $null = $expectedFiles.Add("$RootName/STANDALONE-PERSISTENCE.md")
+        $null = $expectedFiles.Add("$RootName/machine-contract.json")
+    }
+
     $destinationRoot = [System.IO.Path]::GetFullPath($DestinationPath)
     if (-not $destinationRoot.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
         $destinationRoot += [System.IO.Path]::DirectorySeparatorChar
@@ -357,7 +372,16 @@ function Expand-IteronArchive {
 
     $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
-        if ($archive.Entries.Count -ne $IteronArchiveMemberCount) {
+        $rootPresent = @($archive.Entries | Where-Object { $_.FullName -ceq $expectedDirectory }).Count -eq 1
+        $hasServer = @($archive.Entries | Where-Object { $_.FullName -ceq "$RootName/$IteronServerName" }).Count -gt 0
+        if ($RequireServer -and -not $hasServer) {
+            Write-IteronFailure 'release v0.0.30 and later must include iteron-app-server'
+        }
+        if ($hasServer) {
+            $null = $expectedFiles.Add("$RootName/$IteronServerName")
+        }
+        $expectedCount = $expectedFiles.Count + [int]$rootPresent
+        if ($archive.Entries.Count -ne $expectedCount) {
             Write-IteronFailure 'release archive has an unexpected member count'
         }
 
@@ -451,7 +475,7 @@ function Expand-IteronArchive {
             })
         }
 
-        if (-not $directorySeen) {
+        if (-not $directorySeen -and -not $Manual) {
             Write-IteronFailure 'release archive is missing its root directory entry'
         }
         if ($unpackedBytes -le 0) {
@@ -521,131 +545,149 @@ function Assert-IteronReportedVersion {
     return $reported
 }
 
-# Install the verified executable, replacing any previous copy in place.
-function Install-IteronBinary {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourcePath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$BinDirectory,
-
-        [Parameter(Mandatory = $true)]
-        [string]$VersionNumber
-    )
-
-    if (-not (Test-Path -LiteralPath $BinDirectory -PathType Container)) {
-        $null = New-Item -ItemType Directory -Path $BinDirectory -Force
+# Refuse directories and reparse points before any replacement or backup read.
+function Assert-IteronPlainFile {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item -and ($item.PSIsContainer -or
+        (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0))) {
+        Write-IteronFailure "not a regular file: $Path"
     }
-    $BinDirectory = (Get-Item -LiteralPath $BinDirectory).FullName
-    $target = Join-Path -Path $BinDirectory -ChildPath $IteronBinaryName
-    if (Test-Path -LiteralPath $target -PathType Container) {
-        Write-IteronFailure "installation destination is a directory: $target"
-    }
-
-    # Re-running the installer must not accumulate debris from earlier runs.
-    Get-ChildItem -LiteralPath $BinDirectory -Filter '.iteron.exe.*' -File -Force -ErrorAction SilentlyContinue |
-        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
-
-    $staged = Join-Path -Path $BinDirectory -ChildPath ('.iteron.exe.new.' + [System.IO.Path]::GetRandomFileName())
-    $retired = $null
-    try {
-        Copy-Item -LiteralPath $SourcePath -Destination $staged -Force
-        $null = Assert-IteronReportedVersion -Path $staged -VersionNumber $VersionNumber -Stage 'staged'
-
-        if (Test-Path -LiteralPath $target -PathType Leaf) {
-            try {
-                [System.IO.File]::Replace($staged, $target, $null)
-            } catch {
-                # A running executable cannot be overwritten on Windows, but it
-                # can be renamed aside. Keep the upgrade atomic from the
-                # command's point of view either way.
-                $retired = Join-Path -Path $BinDirectory -ChildPath ('.iteron.exe.old.' + [System.IO.Path]::GetRandomFileName())
-                try {
-                    [System.IO.File]::Move($target, $retired)
-                } catch {
-                    Write-IteronFailure "could not replace $target. Close any running iteron.exe and try again."
-                }
-                [System.IO.File]::Move($staged, $target)
-            }
-        } else {
-            [System.IO.File]::Move($staged, $target)
-        }
-    } finally {
-        if (Test-Path -LiteralPath $staged -PathType Leaf) {
-            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    if ($null -ne $retired -and (Test-Path -LiteralPath $retired -PathType Leaf)) {
-        Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $retired -PathType Leaf) {
-            Write-Warning "the previous executable is still in use and was left at $retired"
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-        Write-IteronFailure 'installation did not produce a regular destination file'
-    }
-    return $target
 }
 
-# Install the fixed workspace Hook before replacing the main command. This keeps a newly
-# installed Iteron from ever observing an absent sibling if the main replacement fails.
-function Install-IteronWorkspaceHook {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourcePath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$BinDirectory
-    )
-
-    if (-not (Test-Path -LiteralPath $BinDirectory -PathType Container)) {
-        $null = New-Item -ItemType Directory -Path $BinDirectory -Force
+function Assert-IteronBackup {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        Write-IteronFailure 'previous installation is not a plain directory'
     }
-    $BinDirectory = (Get-Item -LiteralPath $BinDirectory).FullName
-    $target = Join-Path -Path $BinDirectory -ChildPath $IteronWorkspaceHookName
-    if (Test-Path -LiteralPath $target -PathType Container) {
-        Write-IteronFailure "installation destination is a directory: $target"
+    $marker = Join-Path $Path 'format'
+    Assert-IteronPlainFile $marker
+    if ([System.IO.File]::ReadAllText($marker).Trim() -cne 'iteron-installer-v1') {
+        Write-IteronFailure 'previous installation has an invalid format marker'
     }
-    Get-ChildItem -LiteralPath $BinDirectory -Filter '.iteron-workspace-hook.exe.*' -File -Force -ErrorAction SilentlyContinue |
-        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    foreach ($file in Get-ChildItem -LiteralPath $Path -Force) {
+        if ($file.Name -cnotin @('format', $IteronBinaryName, $IteronWorkspaceHookName, $IteronServerName)) {
+            Write-IteronFailure 'previous installation contains an unexpected file'
+        }
+        Assert-IteronPlainFile $file.FullName
+    }
+}
 
-    $staged = Join-Path -Path $BinDirectory -ChildPath ('.iteron-workspace-hook.exe.new.' + [System.IO.Path]::GetRandomFileName())
-    $retired = $null
+# The source copy survives every failure. Renaming a running Windows executable
+# aside can leave a retired file until that process exits; its path is reported.
+function Set-IteronFile {
+    param([string]$Source, [string]$Target)
+    Assert-IteronPlainFile $Target
+    $staged = $Target + '.new.' + [System.IO.Path]::GetRandomFileName() + '.exe'
+    $retired = $Target + '.old.' + [System.IO.Path]::GetRandomFileName()
     try {
-        Copy-Item -LiteralPath $SourcePath -Destination $staged -Force
-        if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) {
-            Write-IteronFailure 'staged workspace Hook is not a regular file'
+        if ($Source -ne '') { [System.IO.File]::Copy($Source, $staged, $false) }
+        if ([System.IO.File]::Exists($Target)) {
+            [System.IO.File]::Move($Target, $retired)
         }
-        if (Test-Path -LiteralPath $target -PathType Leaf) {
-            try {
-                [System.IO.File]::Replace($staged, $target, $null)
-            } catch {
-                $retired = Join-Path -Path $BinDirectory -ChildPath ('.iteron-workspace-hook.exe.old.' + [System.IO.Path]::GetRandomFileName())
-                try {
-                    [System.IO.File]::Move($target, $retired)
-                } catch {
-                    Write-IteronFailure "could not replace $target. Close any running iteron-workspace-hook.exe and try again."
-                }
-                [System.IO.File]::Move($staged, $target)
-            }
-        } else {
-            [System.IO.File]::Move($staged, $target)
+        if ($Source -ne '') { [System.IO.File]::Move($staged, $Target) }
+    } catch {
+        if (-not [System.IO.File]::Exists($Target) -and [System.IO.File]::Exists($retired)) {
+            [System.IO.File]::Move($retired, $Target)
         }
+        throw
     } finally {
-        if (Test-Path -LiteralPath $staged -PathType Leaf) {
-            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        foreach ($temporary in @($staged, $retired)) {
+            if ([System.IO.File]::Exists($temporary)) {
+                try { [System.IO.File]::Delete($temporary) }
+                catch { Write-Warning "Executable is still in use; retained at $temporary" }
+            }
         }
     }
-    if ($null -ne $retired -and (Test-Path -LiteralPath $retired -PathType Leaf)) {
-        Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-IteronFiles {
+    param([string]$Backup, [string]$BinDirectory)
+    foreach ($name in @($IteronWorkspaceHookName, $IteronServerName, $IteronBinaryName)) {
+        $source = Join-Path $Backup $name
+        if (-not [System.IO.File]::Exists($source)) { $source = '' }
+        Set-IteronFile -Source $source -Target (Join-Path $BinDirectory $name)
     }
-    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-        Write-IteronFailure 'installation did not produce a regular workspace Hook file'
+}
+
+function Install-IteronSet {
+    param([string]$SourceDirectory, [string]$BinDirectory, [string]$VersionNumber, [switch]$RestorePrevious)
+    $null = New-Item -ItemType Directory -Path $BinDirectory -Force
+    $lockPath = Join-Path $BinDirectory '.iteron-install.lock'
+    $lock = $null
+    $transaction = $null
+    $changed = $false
+    $previous = Join-Path $BinDirectory '.iteron-previous'
+    try {
+        try {
+            $lock = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        } catch { Write-IteronFailure 'another installation is active, or .iteron-install.lock needs recovery' }
+        if ($null -ne (Get-Item -LiteralPath $previous -Force -ErrorAction SilentlyContinue)) {
+            Assert-IteronBackup $previous
+        }
+        if ($RestorePrevious) {
+            Assert-IteronBackup $previous
+            $SourceDirectory = $previous
+        }
+        $transaction = Join-Path $BinDirectory ('.iteron-transaction.' + [System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $transaction
+        [System.IO.File]::WriteAllText((Join-Path $transaction 'format'), 'iteron-installer-v1')
+        foreach ($name in @($IteronWorkspaceHookName, $IteronServerName, $IteronBinaryName)) {
+            $target = Join-Path $BinDirectory $name
+            Assert-IteronPlainFile $target
+            if ([System.IO.File]::Exists($target)) {
+                [System.IO.File]::Copy($target, (Join-Path $transaction $name), $false)
+            }
+            $source = Join-Path $SourceDirectory $name
+            Assert-IteronPlainFile $source
+        }
+        $binary = Join-Path $SourceDirectory $IteronBinaryName
+        if ($RestorePrevious) {
+            $expected = Get-IteronReportedVersion $binary
+        } else {
+            $expected = Assert-IteronReportedVersion -Path $binary -VersionNumber $VersionNumber -Stage 'downloaded'
+        }
+        $server = Join-Path $SourceDirectory $IteronServerName
+        if ([System.IO.File]::Exists($server)) {
+            $serverVersion = Get-IteronReportedVersion $server
+            if (-not $RestorePrevious -and $serverVersion -cne "iteron-app-server $VersionNumber") {
+                Write-IteronFailure 'AppServer binary reported an unexpected version'
+            }
+        }
+        $changed = $true
+        Restore-IteronFiles -Backup $SourceDirectory -BinDirectory $BinDirectory
+        if ((Get-IteronReportedVersion (Join-Path $BinDirectory $IteronBinaryName)) -cne $expected) {
+            Write-IteronFailure 'installed binary reported an unexpected final version'
+        }
+        if ([System.IO.File]::Exists($server) -and
+            (Get-IteronReportedVersion (Join-Path $BinDirectory $IteronServerName)) -cne $serverVersion) {
+            Write-IteronFailure 'installed AppServer reported an unexpected final version'
+        }
+        if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Recurse -Force }
+        if ([System.IO.File]::Exists((Join-Path $transaction $IteronBinaryName))) {
+            [System.IO.Directory]::Move($transaction, $previous)
+            $transaction = $null
+        }
+        $changed = $false
+    } catch {
+        $failure = $_
+        if ($changed) {
+            try { Restore-IteronFiles -Backup $transaction -BinDirectory $BinDirectory }
+            catch {
+                Write-Warning "Automatic recovery failed; previous files retained at $transaction"
+                $transaction = $null
+            }
+        }
+        throw $failure
+    } finally {
+        if ($null -ne $transaction) { Remove-Item -LiteralPath $transaction -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($null -ne $lock) {
+            $lock.Dispose()
+            Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+        }
     }
-    return $target
 }
 
 # Add the destination to the user PATH once, without corrupting the existing
@@ -756,6 +798,13 @@ function Invoke-IteronInstall {
     Test-IteronPlatform
     Enable-IteronTransportSecurity
 
+    if ($Rollback) {
+        $binDirectory = Resolve-IteronBinDirectory -Requested $BinDir
+        Install-IteronSet -SourceDirectory '' -BinDirectory $binDirectory -VersionNumber '' -RestorePrevious
+        Write-Output "Previous Iteron installation restored at $binDirectory"
+        return
+    }
+
     $requested = $Version
     if ($null -eq $requested) {
         $requested = ''
@@ -805,9 +854,19 @@ function Invoke-IteronInstall {
         -Description $archiveName
     Assert-IteronChecksum -Path $archivePath -ExpectedDigest $entry.Digest
 
+    $manual = @([System.IO.File]::ReadAllLines($manifestPath) | Where-Object {
+        $_ -match '^[0-9a-f]{64}\s+\*?manual-release-manifest\.json\s*$'
+    }).Count -gt 0
+    if ($manual) {
+        $manualEntry = Select-IteronManifestEntry -ManifestPath $manifestPath -NamePattern '^manual-release-manifest\.json$'
+        $manualPath = Join-Path $work 'manual-release-manifest.json'
+        Invoke-IteronDownload -Uri "$IteronReleaseRoot/download/$tag/manual-release-manifest.json" `
+            -OutFile $manualPath -MaximumBytes $IteronMaxManifestBytes -Description 'manual release manifest'
+        Assert-IteronChecksum -Path $manualPath -ExpectedDigest $manualEntry.Digest
+    }
     $extractPath = Join-Path -Path $work -ChildPath 'extract'
     $null = New-Item -ItemType Directory -Path $extractPath
-    $binary = Expand-IteronArchive -ArchivePath $archivePath -RootName $archiveRoot -DestinationPath $extractPath
+    $binary = Expand-IteronArchive -ArchivePath $archivePath -RootName $archiveRoot -DestinationPath $extractPath -Manual $manual -RequireServer ([version]$versionNumber -ge [version]'0.0.30')
     $null = Assert-IteronReportedVersion -Path $binary -VersionNumber $versionNumber -Stage 'downloaded'
     $workspaceHook = Join-Path -Path (Split-Path -Path $binary -Parent) -ChildPath $IteronWorkspaceHookName
     if (-not (Test-Path -LiteralPath $workspaceHook -PathType Leaf)) {
@@ -815,9 +874,9 @@ function Invoke-IteronInstall {
     }
 
     $binDirectory = Resolve-IteronBinDirectory -Requested $BinDir
-    $null = Install-IteronWorkspaceHook -SourcePath $workspaceHook -BinDirectory $binDirectory
-    $installed = Install-IteronBinary -SourcePath $binary -BinDirectory $binDirectory -VersionNumber $versionNumber
-    $reported = Assert-IteronReportedVersion -Path $installed -VersionNumber $versionNumber -Stage 'installed'
+    Install-IteronSet -SourceDirectory (Split-Path -Path $binary -Parent) -BinDirectory $binDirectory -VersionNumber $versionNumber
+    $installed = Join-Path $binDirectory $IteronBinaryName
+    $reported = "iteron $versionNumber"
 
     Write-Output "Iteron $versionNumber installed at $installed"
     Write-Output $reported
@@ -839,7 +898,7 @@ function Invoke-IteronInstall {
 
     # The same honesty install.sh prints for a missing Linux sandbox: state the
     # confinement reality of this platform, and never fail the install over it.
-    Write-Warning 'Windows has no code-execution sandbox backend. Confinement is unavailable, so --confine refuses to run commands and the default operator-authority mode runs them unconfined.'
+    Write-Output 'Windows requires the Microsoft Visual C++ x64 runtime. LPAC confinement has separate native acceptance limits; see the supported-platforms documentation.'
     } finally {
         if (Test-Path -LiteralPath $work) {
             Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

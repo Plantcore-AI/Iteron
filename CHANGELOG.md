@@ -7,6 +7,27 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.30] - 2026-10-19
+
+### Added
+
+- A standalone `iteron-app-server` executable backed by the shared `iteron-host`
+  library, with an independent build entry and no terminal-renderer dependency.
+
+### Fixed
+
+- Preserve complete MCP input schemas through discovery, output budgeting and
+  model projection; omit oversized entries explicitly instead of truncating a schema.
+- Install manual release archives on macOS, Linux and Windows with checksum checks,
+  transactional command replacement and explicit rollback, including the new server.
+
+### Changed
+
+- Reuse content-store access within a bounded journal append batch while retaining
+  source revocation and ciphertext integrity checks.
+- Defer repeated artifact-scope path resolution until an artifact is actually retained,
+  while checking captured scope identity before publication.
+
 ## [0.0.29] - 2026-10-18
 
 ### Changed

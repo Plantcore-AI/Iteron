@@ -1,7 +1,8 @@
-use super::validate_extracted;
+use super::validate_host_extracted;
 
 struct Sources {
     main: String,
+    assembly: String,
     frontend: String,
     options: String,
     preflight: String,
@@ -16,16 +17,18 @@ impl Sources {
         let read = |path| std::fs::read_to_string(root.join(path)).unwrap();
         Self {
             main: read("crates/cli/src/main.rs"),
+            assembly: read("crates/host/src/launch.rs"),
             frontend: read("crates/cli/src/cli_entry/frontend.rs"),
-            options: read("crates/cli/src/cli_entry/options.rs"),
-            preflight: read("crates/cli/src/cli_entry/preflight.rs"),
-            run_options: read("crates/cli/src/cli_entry/run_options.rs"),
+            options: read("crates/host/src/cli_entry/options.rs"),
+            preflight: read("crates/host/src/cli_entry/preflight.rs"),
+            run_options: read("crates/host/src/cli_entry/run_options.rs"),
         }
     }
     fn validate(&self) -> anyhow::Result<()> {
-        validate_extracted(
+        validate_host_extracted(
             &self.main,
             &self.frontend,
+            &self.assembly,
             &self.options,
             &self.preflight,
             &self.run_options,
@@ -58,8 +61,8 @@ fn actual_entry_owner_retains_output_authority() {
 fn actual_entry_owner_rejects_redirection_and_stdout() {
     let mut source = Sources::load();
     source.frontend = source.frontend.replacen(
-        "use crate::output::{Emitter, OutputFormat};",
-        "use crate::evil::{Emitter, OutputFormat};",
+        "use crate::output::Emitter;",
+        "use crate::evil::Emitter;",
         1,
     );
     assert!(source.validate().is_err());
@@ -255,4 +258,89 @@ fn entry_owner_rejects_conditional_module_redirects() {
         mod frontend;
     );
     assert!(super::require_module(&file, "frontend").is_err());
+}
+
+#[test]
+fn shared_host_reexports_and_admitted_envelope_cannot_redirect() {
+    for (before, after) in [
+        ("pub use iteron_host::output;", "pub use evil::output;"),
+        (
+            "iteron_host::launch::assemble(cli, startup, validated)",
+            "iteron_host::launch::assemble(cli, startup, evil(validated))",
+        ),
+    ] {
+        let mut source = Sources::load();
+        source.replace_main(before, after);
+        assert!(
+            source.validate().is_err(),
+            "accepted host redirect: {after}"
+        );
+    }
+    for (before, after) in [
+        ("} = validated;", "} = evil(validated);"),
+        (
+            "cli_entry::run_options::resolve(&cli, &file, &user_file)?",
+            "evil::resolve(&cli, &file, &user_file)?",
+        ),
+        (
+            "use crate::output::OutputFormat;",
+            "use evil::OutputFormat;",
+        ),
+        (
+            "        machine_schema_version,\n",
+            "        machine_schema_version: evil(machine_schema_version),\n",
+        ),
+    ] {
+        let mut source = Sources::load();
+        let changed = source.assembly.replacen(before, after, 1);
+        assert_ne!(
+            changed, source.assembly,
+            "mutation must affect host assembly: {before}"
+        );
+        source.assembly = changed;
+        assert!(
+            source.validate().is_err(),
+            "accepted assembly redirect: {after}"
+        );
+    }
+}
+
+#[test]
+fn independent_server_forwards_to_the_same_admission_and_assembly() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let server = std::fs::read_to_string(root.join("crates/host/src/server.rs")).unwrap();
+    let entry = std::fs::read_to_string(root.join("crates/app-server/src/main.rs")).unwrap();
+    super::validate_server_ports(&server, &entry).unwrap();
+    for (before, after) in [
+        (
+            "crate::cli_entry::preflight::validate(&options)",
+            "evil::validate(&options)",
+        ),
+        (
+            "crate::launch::assemble(options, startup, validated)",
+            "evil::assemble(options, startup, validated)",
+        ),
+        (
+            "use crate::cli_entry::{Cli, LocalCommand};",
+            "use evil::{Cli, LocalCommand};",
+        ),
+        ("serve(launch).await", "serve(evil(launch)).await"),
+    ] {
+        let changed = server.replacen(before, after, 1);
+        assert_ne!(changed, server, "server mutation must take effect");
+        assert!(super::validate_server_ports(&changed, &entry).is_err());
+    }
+    for (before, after) in [
+        (
+            "iteron_host::server::run(args.into_launch())",
+            "evil::run(args.into_launch())",
+        ),
+        ("Box::pin(construct())", "Box::pin(evil(construct()))"),
+    ] {
+        let changed = entry.replacen(before, after, 1);
+        assert_ne!(changed, entry, "entry mutation must take effect");
+        assert!(super::validate_server_ports(&server, &changed).is_err());
+    }
 }

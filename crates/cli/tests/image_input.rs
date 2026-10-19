@@ -1,5 +1,4 @@
-#[path = "../src/image_input.rs"]
-mod image_input;
+use iteron_host::image_input;
 
 use base64::Engine as _;
 use image_input::{

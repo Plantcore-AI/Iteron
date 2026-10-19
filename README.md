@@ -43,8 +43,9 @@ contracts for context, tools, policies, permissions, evidence, and the checkpoin
 lifecycle. A terminal coding agent is the first reference implementation, with
 interactive work, bounded automation, provider routing, durable sessions,
 verification, and machine-readable output. The workspace and latest public
-release are separate: this workspace targets **v0.0.27**, while the latest
-published release is **v0.0.26**.
+release are separate: this workspace targets **v0.0.30**. The
+[GitHub Releases page](https://github.com/Plantcore-AI/Iteron/releases/latest)
+identifies the latest published version and its downloadable assets.
 
 ## Install
 
@@ -60,8 +61,8 @@ Windows PowerShell:
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 ```
 
-The v0.0.26 release publishes macOS arm64, Linux arm64, Linux x86-64, and
-Windows x86-64 binaries. The installer verifies the selected archive and
+Release packages cover macOS arm64, Linux arm64, Linux x86-64, and
+Windows x86-64. The installer verifies the selected archive and
 installs for the current user without elevation. Windows distribution does not
 change the sandbox boundary described above. See the [installation and
 verification guide](docs/getting-started/installation.md) for version pinning,

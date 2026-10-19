@@ -5,8 +5,8 @@ use super::semantics::graph::SourceView;
 use anyhow::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 
-const RUNTIME: &str = "crates/cli/src/runtime.rs";
-const OWNER: &str = "crates/cli/src/runtime/frontend_events.rs";
+const RUNTIME: &str = "crates/host/src/runtime.rs";
+const OWNER: &str = "crates/host/src/runtime/frontend_events.rs";
 
 pub(super) fn runtime_scope(view: SourceView<'_>) -> Result<syn::File> {
     let mut runtime = view.parse_file(RUNTIME)?;
@@ -51,7 +51,7 @@ pub(super) fn runtime_scope(view: SourceView<'_>) -> Result<syn::File> {
             }
         }
     }
-    let expected = [
+    let mut expected = [
         "ApprovalResolution",
         "ControlSubmissionKind",
         "UiEvent",
@@ -65,6 +65,18 @@ pub(super) fn runtime_scope(view: SourceView<'_>) -> Result<syn::File> {
     .into_iter()
     .map(str::to_owned)
     .collect::<BTreeSet<_>>();
+    // Candidate reads always require the physical host owner. Historical reads may fall back
+    // to the former CLI tree, whose two host-internal event ports were crate-local.
+    let public_host = match view {
+        SourceView::Candidate { .. } => true,
+        SourceView::Base { .. } => view.read_optional("crates/host/src/lib.rs")?.is_some(),
+    };
+    if public_host {
+        expected.extend([
+            "PlantcoreUiEvent".to_owned(),
+            "RuntimeFrontendEvent".to_owned(),
+        ]);
+    }
     if public != expected {
         bail!("runtime frontend contract public ownership differs from its canonical surface");
     }
@@ -84,8 +96,12 @@ pub(super) fn runtime_scope(view: SourceView<'_>) -> Result<syn::File> {
             .items
             .iter()
             .filter(|item| match item {
-                syn::Item::Enum(item) => item.ident == name,
-                syn::Item::Struct(item) => item.ident == name,
+                syn::Item::Enum(item) => {
+                    item.ident == name && matches!(item.vis, syn::Visibility::Public(_))
+                }
+                syn::Item::Struct(item) => {
+                    item.ident == name && matches!(item.vis, syn::Visibility::Public(_))
+                }
                 _ => false,
             })
             .count();
@@ -187,12 +203,21 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(temporary.join("crates/cli/src/runtime")).unwrap();
+        std::fs::create_dir_all(temporary.join("crates/host/src/runtime")).unwrap();
         let runtime = std::fs::read_to_string(root.join(RUNTIME)).unwrap();
         let owner = std::fs::read_to_string(root.join(OWNER)).unwrap();
         std::fs::write(temporary.join(RUNTIME), &runtime).unwrap();
         std::fs::write(temporary.join(OWNER), &owner).unwrap();
         runtime_scope(SourceView::Candidate { root: &temporary }).unwrap();
+        let narrowed = runtime.replacen(
+            "pub use frontend_events::{PlantcoreUiEvent, RuntimeFrontendEvent};",
+            "pub(crate) use frontend_events::{PlantcoreUiEvent, RuntimeFrontendEvent};",
+            1,
+        );
+        assert_ne!(narrowed, runtime);
+        std::fs::write(temporary.join(RUNTIME), narrowed).unwrap();
+        assert!(runtime_scope(SourceView::Candidate { root: &temporary }).is_err());
+        std::fs::write(temporary.join(RUNTIME), &runtime).unwrap();
         std::fs::write(
             temporary.join(OWNER),
             owner.replacen(

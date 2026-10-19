@@ -1,5 +1,5 @@
 //! Read-only AST evidence of real runtime parameter helper calls, including macro tokens.
-use super::{UseSiteRow, collect_rust_files, has_cfg_test, is_test_path};
+use super::{UseSiteRow, collect_rust_files, has_cfg_test, is_fixture_source, is_test_path};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,7 +16,7 @@ pub(super) fn applied_evidence(root: &Path) -> Result<BTreeMap<String, Vec<UseSi
             .unwrap_or(&file)
             .to_string_lossy()
             .replace('\\', "/");
-        if is_test_path(&relative) {
+        if is_test_path(&relative) || is_fixture_source(root, &relative)? {
             continue;
         }
         let source = std::fs::read_to_string(&file).unwrap_or_default();

@@ -124,6 +124,24 @@ iteron mcp doctor [--connect] [--format text|json]
 明确返回仅支持已知 2025 版本时，客户端才执行状态式初始化，并在诊断中报告最终版本。
 未知版本、无关协议错误和损坏的 discovery 响应不会触发降级。
 
+## 渐进式工具发现
+
+受管 MCP 的 `tool_search` 在 stdio 和 HTTP 中使用同一结果格式。每个返回项包含
+精确工具名、描述及完整 `inputSchema`；顶层 `server` 和 `generation` 标识所属服务端及
+当前连接代次。模型应根据 schema 构造 `arguments`，再通过该服务端的 `tool_call` 代理
+调用返回的精确名称。服务端仍负责验证业务参数；工具发现不改变原有的权限和工具过滤。
+
+搜索输出按完整 JSON 序列化后的字节数计算预算，包括转义、元数据和既有的每项预留量。
+默认搜索上限为 32 KiB，模型上下文和工具结果的实际可用预算可能更小。预算不足时只省略
+整个工具项，保留项的 schema 不会被截断。`truncated` 状态表示存在省略项；
+`schema_too_large` 表示首个完整 schema 无法容纳。此时应使用精确的原始工具名并设置
+`limit=1` 重新搜索；单个 schema 仍无法容纳时，需要服务端精简 schema 或拆分工具。
+若预算连结果元数据也无法容纳，则返回受预算约束的提示，不输出部分 schema。
+
+凭据脱敏若会改写 schema 的字段名、枚举值或其他约束，客户端会明确拒绝发布该发现结果，
+要求服务端移除敏感元数据，不会将改写后的 schema 标记为完整。完整 schema 的可见性
+不等于真实模型调用成功率或耗时的保证；这两项需要单独进行模型与业务场景实测。
+
 ## OAuth 与凭据
 
 `auth login` 使用 loopback callback、PKCE、随机 state、issuer/resource 绑定和一次性

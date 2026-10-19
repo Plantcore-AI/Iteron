@@ -96,6 +96,16 @@ def binary_filename(target: str) -> str:
     return "iteron.exe" if validate_target(target) == WINDOWS_TARGET else "iteron"
 
 
+def app_server_filename(target: str) -> str:
+    """Return the independently built AppServer executable name."""
+    return "iteron-app-server.exe" if validate_target(target) == WINDOWS_TARGET else "iteron-app-server"
+
+
+def includes_app_server(version: str) -> bool:
+    """The standalone executable first ships in 0.0.30; older archive contracts remain exact."""
+    return tuple(int(part) for part in validate_version(version).split(".")) >= (0, 0, 30)
+
+
 def workspace_hook_filename(target: str) -> str:
     """Return the fixed PlantCore workspace Hook name for a release target."""
     return (

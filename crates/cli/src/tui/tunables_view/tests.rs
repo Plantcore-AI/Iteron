@@ -341,7 +341,7 @@ fn invalid_request_fails_closed_without_a_partial_catalog() {
 fn actual_host_simulation_projection_remains_redacted_in_semantics_and_terminal_picker() {
     use super::super::{App, PickAction, PickItem, Picker};
     let view = crate::client_effects::tunables_simulation::simulate(
-        &crate::client_effects::tunables_simulation::tests::request_bytes(),
+        &crate::client_effects::tunables_simulation::fixtures::request_bytes(),
     )
     .unwrap();
     let (title, entries) = simulation_catalog(&view).unwrap().into_parts();

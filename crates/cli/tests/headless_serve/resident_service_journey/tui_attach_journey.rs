@@ -203,7 +203,8 @@ impl Ui {
             }
             assert!(
                 Instant::now() < deadline,
-                "actual attached-client exit was not observed"
+                "actual attached-client exit was not observed; last terminal frame:\n{}",
+                self.parser.screen().contents()
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -344,6 +345,10 @@ fn actual_tui_exit_retains_backend_turn_and_reopened_tui_observes_same_run_termi
     first.settings();
     first.write(b"keep the actual backend turn running\r");
     first.request_seen(&provider.request_seen);
+    // Provider dispatch can precede this client's application receipt. The composer deliberately
+    // retains an unconfirmed draft; wait for its actual cleared/running frame before typing a
+    // second command, or `/detach` becomes a suffix of the still-owned first submission.
+    first.visible("steer the current run");
     first.detach(&token);
     assert!(core.0.as_mut().unwrap().child.try_wait().unwrap().is_none());
     let current = read_service(&mut socket, &mut reader, 2);

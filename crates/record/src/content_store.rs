@@ -8,6 +8,7 @@ mod fields;
 mod lineage;
 mod metadata;
 mod model;
+mod record_payload;
 mod references;
 mod revocation;
 mod storage;
@@ -18,6 +19,7 @@ pub use model::{
     PrivateContentClass, PrivateContentHandle, PrivateContentNamespace, PrivateContentRetention,
     PrivateContentSource,
 };
+pub(crate) use record_payload::EventPayloadBatch;
 pub use references::{
     guard_private_content_for_run, private_content_sources_for_run,
     retain_private_content_references,
@@ -673,79 +675,7 @@ pub(crate) fn externalize_event_payload(
     seq: Seq,
     payload: &mut serde_json::Value,
 ) -> Result<(), ContentStoreError> {
-    if !fields::has_content_fields(payload) {
-        return mark_externalized_payload(payload);
-    }
-    // A workspace checkpoint is a derivative of every record field admitted before its effect.
-    // Capture the bounded source inventory before taking the store mutex, then revalidate it under
-    // that mutex below. The checkpoint event itself is not yet a source and cannot create a cycle.
-    let checkpoint_sources = payload
-        .get("kind")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|event| event.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|kind| *kind == "checkpoint")
-        .map(|_| private_content_sources_for_run(runs_dir, tenant, run))
-        .transpose()?
-        .unwrap_or_default();
-    let layout = Layout::new(runs_dir, tenant);
-    ensure_layout(&layout)?;
-    // Prompt history and rebuildable session projections share this tenant store with the
-    // authoritative rollout. Their short critical sections may overlap an event append, but a
-    // transient lock collision is not a broken audit trail. Wait only at lock acquisition, before
-    // this append can mutate content or reference state, and keep the wait strictly bounded.
-    let store_lock = lock_store_for_record(&layout, lock_store)?;
-    let state = store_lock.write_state()?;
-    for source in &checkpoint_sources {
-        references::verify_source_owner_locked(&layout, source)?;
-        ensure_available_locked(&layout, state, &source.digest)?;
-    }
-    let mut ordinal = 0u16;
-    fields::visit_content_fields(payload, |field_class, value| {
-        let semantic_namespace = semantic_namespace(field_class, value);
-        let (bytes, encoding) = encoding::encode(value)?;
-        ensure_content_bound(&bytes)?;
-        let digest = digest_bytes(&bytes);
-        store_locked(&layout, state, &digest, &bytes)?;
-        let semantic = semantic_namespace.map(|namespace| namespace.surface());
-        // Publish checkpoint lineage before the atomic root/semantic pair. A crash may leave
-        // conservative lineage, but no readable checkpoint missing a source. Ordinary edge
-        // publication failure rolls that lineage back; the event is not yet appended.
-        let lineage = if semantic == Some(ContentReferenceSurface::Checkpoint) {
-            Some(lineage::publish_locked(
-                &layout,
-                &checkpoint_sources,
-                run,
-                &digest,
-                seq,
-                ContentReferenceSurface::Checkpoint,
-            )?)
-        } else {
-            None
-        };
-        if let Err(error) = storage::write_record_edges_locked(
-            &layout,
-            &digest,
-            run,
-            seq,
-            ordinal,
-            field_class,
-            semantic,
-        ) {
-            if let Some(lineage) = lineage {
-                lineage.rollback()?;
-            }
-            return Err(error);
-        }
-        ordinal = ordinal
-            .checked_add(1)
-            .ok_or(ContentStoreError::ReferenceBound {
-                max: usize::from(u16::MAX),
-            })?;
-        *value = serde_json::Value::String(encoding::marker(&digest, encoding));
-        Ok::<(), ContentStoreError>(())
-    })?;
-    mark_externalized_payload(payload)
+    EventPayloadBatch::new(runs_dir, tenant, run).externalize(seq, payload)
 }
 
 fn mark_externalized_payload(payload: &mut serde_json::Value) -> Result<(), ContentStoreError> {

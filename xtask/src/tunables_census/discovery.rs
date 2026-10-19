@@ -45,7 +45,7 @@ pub(super) fn scan_production_sources(
             .unwrap_or(&file)
             .to_string_lossy()
             .replace('\\', "/");
-        if is_test_path(&relative) {
+        if is_test_path(&relative) || crate::tunables_params::is_fixture_source(root, &relative)? {
             continue;
         }
         let Some(krate) = crate_of(&relative) else {

@@ -5,6 +5,164 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn record_batch_reacquires_revocation_after_releasing_its_lease() {
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("batch-revocation".into());
+    let original = serde_json::json!({"kind": {"kind": "notice", "text": "revocable batch"}});
+    {
+        let mut batch = EventPayloadBatch::new(&dir, &tenant, &run);
+        for sequence in [0, 1] {
+            batch
+                .externalize(Seq(sequence), &mut original.clone())
+                .unwrap();
+        }
+    }
+    let digest = digest_bytes(b"revocable batch");
+    revoke_through_verification(&dir, &tenant, digest.clone()).unwrap();
+    // A new batch cannot retain the previous lease's revocation snapshot or resurrect its keys.
+    {
+        let mut batch = EventPayloadBatch::new(&dir, &tenant, &run);
+        assert!(matches!(
+            batch.externalize(Seq(2), &mut original.clone()),
+            Err(ContentStoreError::Revoked { digest: actual, .. }) if actual == digest
+        ));
+    }
+    let layout = Layout::new(&dir, &tenant);
+    assert!(!layout.object_path(&layout.keys, &digest).exists());
+    assert!(!layout.object_path(&layout.blobs, &digest).exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn record_batch_partial_content_failure_preserves_journal_and_releases_lease() {
+    use iteron_protocol::{Event, EventKind, TurnId};
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("batch-partial-content".into());
+    let notice = |text: &str| Event {
+        seq: Seq::ZERO,
+        turn: TurnId(1),
+        kind: EventKind::Notice { text: text.into() },
+    };
+    let mut rollout = crate::Rollout::open(&dir, &run, tenant.clone()).unwrap();
+    storage::STATE_READS.with(|reads| reads.set(0));
+    rollout
+        .append_batch(&[notice("first"), notice("second")])
+        .unwrap();
+    assert_eq!(storage::STATE_READS.with(std::cell::Cell::get), 1);
+    let before = std::fs::read(rollout.path()).unwrap();
+    let layout = Layout::new(&dir, &tenant);
+    let blob_path = layout.object_path(&layout.blobs, &digest_bytes(b"second"));
+    let blob = std::fs::read(&blob_path).unwrap();
+    let mut corrupt = blob.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    std::fs::write(&blob_path, corrupt).unwrap();
+
+    // The first field in this batch is published before the second encounters actual damage.
+    // Nothing in the batch may be acknowledged or reach the authoritative journal on failure.
+    let next = [notice("new prefix"), notice("second")];
+    assert!(matches!(
+        rollout.append_batch(&next),
+        Err(crate::RecordError::PrivateContent(
+            ContentStoreError::Unresolved {
+                reason: "authentication_failed",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(rollout.next_sequence(), Seq(2));
+    assert_eq!(std::fs::read(rollout.path()).unwrap(), before);
+    drop(lock_store_shared(&layout).expect("failed preparation releases the store lease"));
+
+    std::fs::write(&blob_path, blob).unwrap();
+    assert_eq!(rollout.append_batch(&next).unwrap(), vec![Seq(2), Seq(3)]);
+    let path = rollout.path().to_owned();
+    drop(rollout);
+    let mut reopened = crate::Rollout::open_existing(&dir, &run, tenant).unwrap();
+    assert_eq!(reopened.next_sequence(), Seq(4));
+    assert_eq!(reopened.append(&notice("after restart")).unwrap(), Seq(4));
+    drop(reopened);
+    let texts = crate::replay(&path)
+        .unwrap()
+        .into_iter()
+        .map(|event| match event.kind {
+            EventKind::Notice { text } => text,
+            _ => panic!("unexpected event"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts,
+        ["first", "second", "new prefix", "second", "after restart"]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn record_batch_checkpoint_inventory_includes_only_preceding_fields() {
+    use iteron_protocol::{Event, EventKind, TurnId};
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("batch-checkpoint".into());
+    let mut rollout = crate::Rollout::open(&dir, &run, tenant.clone()).unwrap();
+    let kinds = [
+        EventKind::Notice {
+            text: "preceding field".into(),
+        },
+        EventKind::Checkpoint {
+            at: Seq(1),
+            tree_ref: "checkpoint tree".into(),
+        },
+        EventKind::Notice {
+            text: "following field".into(),
+        },
+    ];
+    let events = kinds
+        .into_iter()
+        .map(|kind| Event {
+            seq: Seq::ZERO,
+            turn: TurnId(1),
+            kind,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rollout.append_batch(&events).unwrap(),
+        vec![Seq(0), Seq(1), Seq(2)]
+    );
+    assert_eq!(crate::replay(rollout.path()).unwrap().len(), 3);
+    let layout = Layout::new(&dir, &tenant);
+    {
+        let _lock = lock_store_shared(&layout).unwrap();
+        let sources = lineage::sources_for_reference(
+            &layout,
+            &run,
+            &digest_bytes(b"checkpoint tree"),
+            Seq(1),
+            ContentReferenceSurface::Checkpoint,
+        )
+        .unwrap();
+        assert_eq!(
+            sources,
+            vec![PrivateContentSource {
+                owner: run.clone(),
+                digest: digest_bytes(b"preceding field")
+            }]
+        );
+    }
+    drop(rollout);
+    let summary =
+        revoke_through_verification(&dir, &tenant, digest_bytes(b"preceding field")).unwrap();
+    assert!(summary.generation > 0);
+    assert!(matches!(
+        crate::replay(&dir.join("batch-checkpoint.jsonl")),
+        Err(crate::RecordError::PrivateContent(
+            ContentStoreError::Revoked { .. } | ContentStoreError::Unresolved { .. }
+        ))
+    ));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn content_publication_reuses_one_revocation_snapshot_under_each_store_lease() {
     let dir = test_dir();
     let tenant = TenantId::default();

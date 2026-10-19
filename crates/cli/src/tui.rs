@@ -135,7 +135,6 @@ mod workflow_rehydrate;
 mod workflows_panel;
 mod workspace_command;
 
-pub(crate) mod headless;
 use crate::app_server;
 use crate::commands::{self, SlashCommand};
 use crate::config::PromptHistoryMode;
@@ -198,6 +197,7 @@ use event_actions::{
 use event_projection::apply_live_event;
 #[cfg(test)]
 use iteron_ctx::ContextEstimate;
+pub(crate) use iteron_host::transport::headless;
 #[cfg(test)]
 use iteron_obs::CostState;
 use iteron_protocol::{

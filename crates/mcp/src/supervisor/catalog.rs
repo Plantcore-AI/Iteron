@@ -4,6 +4,7 @@ use crate::{
     tool_filter::{CombinedToolCatalog, MAX_COMBINED_MCP_TOOLS},
 };
 use iteron_protocol::{Capability, Purity, ToolSpec};
+use serde::Serialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, sync::Arc};
 
@@ -16,8 +17,7 @@ pub const MAX_MCP_SEARCH_DESCRIPTION_BYTES: usize = 512;
 const MAX_SCHEMA_DEPTH: usize = 32;
 const MAX_SCHEMA_NODES: usize = 4096;
 const SUMMARY_MARKER: &str = "\n[truncated]";
-/// Per-result overhead charged against the search output ceiling on top of the strings themselves,
-/// covering the separators and labels the renderer adds around every entry.
+/// Retained per-result reserve, charged in addition to the exact serialized search response.
 const SEARCH_RESULT_FRAMING_BYTES: usize = 64;
 
 /// Stable permission-binding identity within one owned supervisor lineage. Generation is
@@ -59,19 +59,105 @@ impl McpToolIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct McpToolMatch {
+    #[serde(skip)]
     pub identity: McpToolIdentity,
     pub name: String,
     pub description: String,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpToolSearchResult {
+    pub server_name: String,
     pub generation: ServerGeneration,
     pub matches: Vec<McpToolMatch>,
     pub total_matches: usize,
     pub truncated: bool,
+}
+
+/// One projection for both managed transports. Budgeting uses this same wire representation,
+/// including JSON escaping and all surrounding metadata, before identities become callable.
+#[derive(Serialize)]
+struct SearchResponse<'a> {
+    kind: &'static str,
+    server: &'a str,
+    generation: u64,
+    tools: &'a [McpToolMatch],
+    total_matches: usize,
+    truncated: bool,
+    status: &'static str,
+    note: &'static str,
+}
+
+impl McpToolSearchResult {
+    fn response(&self) -> SearchResponse<'_> {
+        let (status, note) = if self.matches.is_empty() && self.total_matches > 0 {
+            (
+                "schema_too_large",
+                "The first matching tool's complete inputSchema exceeds the search output budget. Search an exact bare tool name with limit=1. If it still does not fit, ask the MCP server owner to expose a smaller schema or split the tool. No partial schema or callable identity was returned.",
+            )
+        } else if self.truncated {
+            (
+                "truncated",
+                "Some matching tools were omitted. Every returned inputSchema is complete. Narrow query to an exact bare tool name with limit=1 to retrieve an omitted tool. Call only an exact returned name through this server's tool_call proxy.",
+            )
+        } else {
+            (
+                "complete",
+                "Every returned inputSchema is complete. Call only an exact returned name through this server's tool_call proxy.",
+            )
+        };
+        SearchResponse {
+            kind: "mcp_tool_search",
+            server: &self.server_name,
+            generation: self.generation.get(),
+            tools: &self.matches,
+            total_matches: self.total_matches,
+            truncated: self.truncated,
+            status,
+            note,
+        }
+    }
+
+    fn fits_output_budget(&self, limit: usize) -> Result<bool, McpError> {
+        let reserve = iteron_tunables::param_integer(
+            "mcp.supervisor.catalog.search_result_framing_bytes",
+            SEARCH_RESULT_FRAMING_BYTES,
+        )
+        .checked_mul(self.matches.len());
+        let Some(available) = reserve.and_then(|reserve| limit.checked_sub(reserve)) else {
+            return Ok(false);
+        };
+        let mut counter = BoundedCounter::new(available);
+        match serde_json::to_writer(&mut counter, &self.response()) {
+            Ok(()) => Ok(true),
+            Err(_) if counter.exceeded => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Serialize exactly the complete schemas selected by `ManagedCatalog::search`.
+    /// Recheck the bound so callers cannot mutate a public result into an oversized payload.
+    pub fn to_json(&self) -> Result<String, McpError> {
+        let limit = search_output_limit();
+        if !self.fits_output_budget(limit)? {
+            return Err(McpError::InvalidToolSearch {
+                field: "output",
+                limit,
+            });
+        }
+        serde_json::to_string(&self.response()).map_err(McpError::from)
+    }
+}
+
+fn search_output_limit() -> usize {
+    iteron_tunables::param_integer(
+        "mcp.supervisor.catalog.max_mcp_search_output_bytes",
+        MAX_MCP_SEARCH_OUTPUT_BYTES,
+    )
 }
 
 struct CatalogEntry {
@@ -81,6 +167,7 @@ struct CatalogEntry {
 
 #[derive(Default)]
 pub struct ManagedCatalog {
+    server_name: String,
     entries: BTreeMap<String, CatalogEntry>,
 }
 
@@ -170,7 +257,10 @@ impl ManagedCatalog {
                 return Err(McpError::ToolNameCollision);
             }
         }
-        Ok(Self { entries })
+        Ok(Self {
+            server_name: server_name.to_owned(),
+            entries,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -220,57 +310,34 @@ impl ManagedCatalog {
         });
 
         let total_matches = candidates.len();
-        let mut matches = Vec::with_capacity(limit.min(total_matches));
-        let mut output_bytes = 0usize;
-        for (_, entry) in candidates {
-            if matches.len() >= limit {
-                break;
-            }
-            let description = summary(&entry.spec.description);
-            let bytes = entry
-                .spec
-                .name
-                .len()
-                .checked_add(description.len())
-                .and_then(|bytes| bytes.checked_add(entry.identity.server_name.len()))
-                .and_then(|bytes| bytes.checked_add(entry.identity.bare_name.len()))
-                .and_then(|bytes| {
-                    bytes.checked_add(iteron_tunables::param_integer(
-                        "mcp.supervisor.catalog.search_result_framing_bytes",
-                        SEARCH_RESULT_FRAMING_BYTES,
-                    ))
-                })
-                .ok_or(McpError::InvalidToolSearch {
-                    field: "output",
-                    limit: iteron_tunables::param_integer(
-                        "mcp.supervisor.catalog.max_mcp_search_output_bytes",
-                        MAX_MCP_SEARCH_OUTPUT_BYTES,
-                    ),
-                })?;
-            let next = output_bytes.checked_add(bytes).filter(|total| {
-                *total
-                    <= iteron_tunables::param_integer(
-                        "mcp.supervisor.catalog.max_mcp_search_output_bytes",
-                        MAX_MCP_SEARCH_OUTPUT_BYTES,
-                    )
-            });
-            let Some(next) = next else {
-                break;
-            };
-            output_bytes = next;
-            matches.push(McpToolMatch {
+        let matches: Vec<_> = candidates
+            .into_iter()
+            .take(limit)
+            .map(|(_, entry)| McpToolMatch {
                 identity: entry.identity.clone(),
                 name: entry.spec.name.clone(),
-                description,
-            });
-        }
-        let truncated = matches.len() < total_matches;
-        Ok(McpToolSearchResult {
+                description: summary(&entry.spec.description),
+                input_schema: entry.spec.input_schema.clone(),
+            })
+            .collect();
+        let mut result = McpToolSearchResult {
+            server_name: self.server_name.clone(),
             generation,
+            truncated: matches.len() < total_matches,
             matches,
             total_matches,
-            truncated,
-        })
+        };
+        let output_limit = search_output_limit();
+        while !result.fits_output_budget(output_limit)? {
+            if result.matches.pop().is_none() {
+                return Err(McpError::InvalidToolSearch {
+                    field: "output",
+                    limit: output_limit,
+                });
+            }
+            result.truncated = true;
+        }
+        Ok(result)
     }
 }
 
@@ -490,11 +557,11 @@ impl Write for BoundedCounter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let Some(total) = self.bytes.checked_add(bytes.len()) else {
             self.exceeded = true;
-            return Err(std::io::Error::other("MCP schema byte count overflow"));
+            return Err(std::io::Error::other("MCP JSON byte count overflow"));
         };
         if total > self.limit {
             self.exceeded = true;
-            return Err(std::io::Error::other("MCP schema byte limit exceeded"));
+            return Err(std::io::Error::other("MCP JSON byte limit exceeded"));
         }
         self.bytes = total;
         Ok(bytes.len())
@@ -504,6 +571,9 @@ impl Write for BoundedCounter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod search_tests;
 
 #[cfg(test)]
 mod tests {

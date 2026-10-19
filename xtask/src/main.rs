@@ -9,6 +9,7 @@ mod render;
 mod rust_source;
 mod schema_compat;
 mod seams;
+mod source_owners;
 mod spec_shapes;
 mod tunables;
 mod tunables_census;

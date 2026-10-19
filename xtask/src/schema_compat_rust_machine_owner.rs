@@ -6,8 +6,8 @@ use super::semantics::graph::SourceView;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 
-const COMMON: &str = "crates/cli/src/machine_projection.rs";
-const WRITER: &str = "crates/cli/src/output.rs";
+const COMMON: &str = "crates/host/src/machine_projection.rs";
+const WRITER: &str = "crates/host/src/output.rs";
 const FORWARDED: &[&str] = &[
     "DEFAULT_SCHEMA_VERSION",
     "EXIT_HARNESS",
@@ -90,7 +90,15 @@ fn normalized_legacy(mut file: syn::File) -> Result<syn::File> {
 }
 fn require_common_module(view: SourceView<'_>) -> Result<()> {
     let main = view.parse_file("crates/cli/src/main.rs")?;
-    let modules = main
+    let owner = if view.read_optional("crates/host/src/lib.rs")?.is_some() {
+        for module in ["output", "machine_projection", "runtime"] {
+            super::cli_entry::require_binding(&main, module, &["iteron_host", module])?;
+        }
+        view.parse_file("crates/host/src/lib.rs")?
+    } else {
+        main
+    };
+    let modules = owner
         .items
         .iter()
         .filter_map(|i| match i {
@@ -103,7 +111,11 @@ fn require_common_module(view: SourceView<'_>) -> Result<()> {
     }
     Ok(())
 }
-fn merge(mut common: syn::File, writer: syn::File) -> Result<syn::File> {
+#[cfg(test)]
+fn merge(common: syn::File, writer: syn::File) -> Result<syn::File> {
+    merge_shared(common, writer, false)
+}
+fn merge_shared(mut common: syn::File, writer: syn::File, public_host: bool) -> Result<syn::File> {
     if !doc_only(&writer.attrs) {
         bail!("physical writer has active crate authority")
     }
@@ -157,14 +169,37 @@ fn merge(mut common: syn::File, writer: syn::File) -> Result<syn::File> {
     // visibility, state, signature and body in the comparison view instead of inventing a private
     // method fingerprint for the shared owner.
     for item in &mut common.items {
+        if public_host
+            && let syn::Item::Fn(function) = item
+            && function.sig.ident == "project_schema"
+        {
+            if !matches!(function.vis, syn::Visibility::Public(_)) {
+                bail!("shared schema projection has changed public host authority");
+            }
+            // This exact canonical host port became public across the crate boundary. Preserve
+            // the historical witness visibility after checking the physical export; its entire
+            // signature, attributes and dataflow body remain subject to cli_exact validation.
+            function.vis = syn::parse_quote!(pub(crate));
+        }
         if let syn::Item::Impl(i) = item
             && matches!(i.self_ty.as_ref(),syn::Type::Path(p) if p.qself.is_none() && p.path.is_ident("StreamingScrubber"))
         {
             for m in &mut i.items {
-                if let syn::ImplItem::Fn(f) = m
-                    && !matches!(f.vis,syn::Visibility::Restricted(ref v) if v.path.is_ident("crate"))
-                {
-                    bail!("shared scrubber method has changed visibility authority")
+                if let syn::ImplItem::Fn(f) = m {
+                    let expected = if public_host {
+                        matches!(f.vis, syn::Visibility::Public(_))
+                            && matches!(f.sig.ident.to_string().as_str(), "push" | "finish")
+                    } else {
+                        matches!(f.vis, syn::Visibility::Restricted(ref v) if v.path.is_ident("crate"))
+                    };
+                    if !expected {
+                        bail!("shared scrubber method has changed visibility authority");
+                    }
+                    // The canonical host exposes the existing two TUI streaming ports. Only
+                    // their checked visibility is normalized; signature/body/state stay frozen.
+                    if public_host {
+                        f.vis = syn::parse_quote!(pub(crate));
+                    }
                 }
             }
         }
@@ -179,7 +214,11 @@ pub(super) fn scope(view: SourceView<'_>) -> Result<syn::File> {
     };
     require_common_module(view)?;
     let source = std::str::from_utf8(&bytes).context("common machine source is not UTF-8")?;
-    merge(parse_cli_output_source(source)?, writer)
+    merge_shared(
+        parse_cli_output_source(source)?,
+        writer,
+        view.read_optional("crates/host/src/lib.rs")?.is_some(),
+    )
 }
 pub(super) fn current_scope(root: &std::path::Path, source: &[u8]) -> Result<syn::File> {
     let view = SourceView::Candidate { root };
@@ -188,7 +227,11 @@ pub(super) fn current_scope(root: &std::path::Path, source: &[u8]) -> Result<syn
         return normalized_legacy(parse_cli_output_source(source)?);
     }
     require_common_module(view)?;
-    merge(parse_cli_output_source(source)?, view.parse_file(WRITER)?)
+    merge_shared(
+        parse_cli_output_source(source)?,
+        view.parse_file(WRITER)?,
+        view.read_optional("crates/host/src/lib.rs")?.is_some(),
+    )
 }
 
 #[cfg(test)]
@@ -247,6 +290,66 @@ mod tests {
             function.vis = visibility;
             assert!(merge(changed, writer()).is_err());
         }
+    }
+
+    #[test]
+    fn canonical_host_projection_normalizes_only_its_checked_export_visibility() {
+        use quote::ToTokens;
+        let mut source = common();
+        let original: syn::ItemFn = syn::parse_quote! {
+            pub fn project_schema(value: Value, schema_version: u32) -> io::Result<Value> {
+                exact_dataflow(value, schema_version)
+            }
+        };
+        source.items.push(syn::Item::Fn(original.clone()));
+        let merged = merge_shared(source.clone(), writer(), true).unwrap();
+        let normalized = merged
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == "project_schema" => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        let mut expected = original;
+        expected.vis = syn::parse_quote!(pub(crate));
+        assert_eq!(
+            normalized.to_token_stream().to_string(),
+            expected.to_token_stream().to_string()
+        );
+        for visibility in [syn::parse_quote!(pub(crate)), syn::Visibility::Inherited] {
+            let mut changed = source.clone();
+            let syn::Item::Fn(function) = changed.items.last_mut().unwrap() else {
+                unreachable!()
+            };
+            function.vis = visibility;
+            assert!(merge_shared(changed, writer(), true).is_err());
+        }
+        // Historical, crate-local sources still keep their own physical visibility verbatim.
+        let legacy = merge(source, writer()).unwrap();
+        assert!(legacy.items.iter().any(|item| matches!(item,
+            syn::Item::Fn(function) if function.sig.ident == "project_schema"
+                && matches!(function.vis, syn::Visibility::Public(_)))));
+    }
+
+    #[test]
+    fn canonical_host_accepts_only_the_existing_public_streaming_ports() {
+        let mut source = common();
+        source.items.push(syn::parse_quote! {
+            impl StreamingScrubber {
+                pub fn push(&mut self, delta: &str) -> Option<String> { Some(delta.to_owned()) }
+                pub fn finish(&mut self) -> Option<String> { None }
+            }
+        });
+        merge_shared(source.clone(), writer(), true).unwrap();
+        assert!(merge(source.clone(), writer()).is_err());
+        let syn::Item::Impl(owner) = source.items.last_mut().unwrap() else {
+            unreachable!()
+        };
+        owner
+            .items
+            .push(syn::parse_quote! { pub fn redirect(&mut self) {} });
+        assert!(merge_shared(source, writer(), true).is_err());
     }
 
     #[test]

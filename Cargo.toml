@@ -25,13 +25,15 @@ members = [
     "crates/agents",
     "crates/kernel",
     "crates/cli",
+    "crates/host",
+    "crates/app-server",
     "crates/eval",
     "crates/evolve",
     "crates/tunables",
 ]
 
 [workspace.package]
-version = "0.0.29"
+version = "0.0.30"
 edition = "2024"
 license = "Apache-2.0"
 publish = false

@@ -18,7 +18,9 @@ from common import (
     ReleaseToolError,
     WINDOWS_TARGET,
     archive_filename,
+    app_server_filename,
     binary_filename,
+    includes_app_server,
     require_regular_file,
     run_main,
     sha256_file,
@@ -27,7 +29,7 @@ from common import (
     workspace_hook_filename,
 )
 
-MAX_UNPACKED_TAR_BYTES = 128 * 1024 * 1024
+MAX_UNPACKED_TAR_BYTES = 256 * 1024 * 1024
 
 
 def ustar_size(file_sizes: list[int]) -> int:
@@ -45,6 +47,7 @@ def ustar_size(file_sizes: list[int]) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--binary", required=True, type=Path)
+    result.add_argument("--app-server", type=Path)
     result.add_argument("--workspace-hook", required=True, type=Path)
     result.add_argument("--license", required=True, type=Path)
     result.add_argument("--readme", required=True, type=Path)
@@ -127,6 +130,13 @@ def build_archive(arguments: argparse.Namespace) -> Path:
         (arguments.sbom, "SBOM.spdx.json", 0o644),
         (arguments.build_info, "BUILD-INFO.json", 0o644),
     ]
+    server = getattr(arguments, "app_server", None)
+    if includes_app_server(version):
+        if server is None:
+            raise ReleaseToolError("release 0.0.30 and later requires --app-server")
+        entries.insert(2, (server, app_server_filename(target), 0o755))
+    elif server is not None:
+        raise ReleaseToolError("historical releases do not include the standalone AppServer")
     entries.extend(
         (
             arguments.plantcore_contracts / relative,
@@ -144,7 +154,7 @@ def build_archive(arguments: argparse.Namespace) -> Path:
     )
     if unpacked_size > MAX_UNPACKED_TAR_BYTES:
         raise ReleaseToolError(
-            "release archive exceeds the installer 128 MiB unpacked-size protocol"
+            "release archive exceeds the installer 256 MiB unpacked-size protocol"
         )
 
     descriptor, temporary_name = tempfile.mkstemp(

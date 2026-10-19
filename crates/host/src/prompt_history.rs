@@ -1,0 +1,1236 @@
+//! Bounded, repository-scoped prompt history for the interactive frontend.
+//!
+//! Prompt text is operator data. The operator-owned history namespace persists handles only; each
+//! entry is a source-run derivative whose scrubbed bytes are encrypted in the record content store.
+//! Exact-session deletion therefore refuses while a live history derivative still retains that
+//! run. Content revocation closes and prunes only entries descended from the revoked source, while
+//! independently lineaged entries from other runs remain readable. Attachments are never
+//! serialized, and `Disabled` creates no store.
+
+use crate::config::PromptHistoryMode;
+use iteron_protocol::{RunId, TenantId};
+use iteron_record::{
+    PrivateContentClass, PrivateContentDerivativeStore, PrivateContentHandle,
+    PrivateContentNamespace, PrivateContentRetention, PrivateContentSource,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+pub const MAX_ENTRIES: usize = 200;
+const MAX_ENTRY_BYTES: usize = 64 * 1024;
+const MAX_STATE_BYTES: usize = 1024 * 1024;
+const FINISH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+const LEGACY_STATE_VERSION: u32 = 1;
+const UNLINEAGED_STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// Result of the cancel-safe startup hydration worker. Moving this whole value through one bounded
+/// channel keeps filesystem and content-store locks out of the first-frame/input path.
+pub struct Bootstrap {
+    pub store: Option<Store>,
+    pub state: Option<State>,
+    pub warning: Option<String>,
+}
+
+pub fn bootstrap(
+    mode: PromptHistoryMode,
+    config_home: Option<PathBuf>,
+    workspace: &Path,
+    runs_dir: Option<PathBuf>,
+    active_run: Option<RunId>,
+) -> Bootstrap {
+    let mut warning = None;
+    let store = match (config_home, runs_dir) {
+        (Some(config_home), Some(runs_dir)) => {
+            match Store::resolve_with_runs_dir(mode, config_home, workspace, runs_dir) {
+                Ok(store) => store,
+                Err(error) => {
+                    warning = Some(format!("prompt history disabled for this session: {error}"));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let state = store
+        .as_ref()
+        .zip(active_run.as_ref())
+        .and_then(|(store, active_run)| match store.load(active_run) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                warning = Some(format!("prompt history could not be restored: {error}"));
+                None
+            }
+        });
+    Bootstrap {
+        store,
+        state,
+        warning,
+    }
+}
+
+mod private_storage;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct State {
+    pub schema_version: u32,
+    pub history: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+}
+
+impl State {
+    pub fn new(history: Vec<String>, draft: Option<String>) -> Self {
+        Self {
+            schema_version: STATE_VERSION,
+            history,
+            draft,
+        }
+    }
+    /// Capture the persistence window before cloning frontend data. Older/oversized history and
+    /// oversized drafts retain the existing store omission semantics; live editor data is intact.
+    pub fn capture(history: &[String], draft: impl Iterator<Item = char>) -> Self {
+        let entries = iteron_tunables::param_integer("cli.prompt_history.max_entries", MAX_ENTRIES)
+            .min(MAX_ENTRIES);
+        let entry_bytes =
+            iteron_tunables::param_integer("cli.prompt_history.max_entry_bytes", MAX_ENTRY_BYTES)
+                .min(MAX_ENTRY_BYTES);
+        let history_bytes =
+            iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+                .min(MAX_STATE_BYTES)
+                / 2;
+        let mut retained = Vec::new();
+        let mut bytes = 0usize;
+        for text in history.iter().rev() {
+            if text.len() > entry_bytes {
+                continue;
+            }
+            if retained.len() >= entries || bytes.saturating_add(text.len()) > history_bytes {
+                break;
+            }
+            bytes += text.len();
+            retained.push(text.clone());
+        }
+        retained.reverse();
+        let mut text = String::new();
+        for character in draft {
+            if text.len().saturating_add(character.len_utf8()) > entry_bytes {
+                return Self::new(retained, None);
+            }
+            text.push(character);
+        }
+        Self::new(retained, (!text.is_empty()).then_some(text))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedState {
+    schema_version: u32,
+    history: Vec<PersistedEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft: Option<PersistedEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedEntry {
+    handle: PrivateContentHandle,
+    source: SourceBinding,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceBinding {
+    source: PrivateContentSource,
+    /// Present only for a pre-submit/draft source owned by this history/run namespace. Record
+    /// sources already carry their physical reference in the rollout graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    synthetic_seq: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LineageState {
+    /// Last published entries retained by slot. Unchanged text+lineage reuses the derivative
+    /// handle, so a draft keystroke stages only the changed draft rather than all 200 prompts.
+    history: Vec<(String, PersistedEntry)>,
+    draft: Option<(String, PersistedEntry)>,
+}
+
+#[derive(Deserialize)]
+struct VersionProbe {
+    schema_version: u32,
+}
+
+#[derive(Clone)]
+pub struct Store {
+    path: PathBuf,
+    private: PrivateContentDerivativeStore,
+    runs_dir: PathBuf,
+    tenant: TenantId,
+    source_seq_base: u64,
+    lineage: Arc<Mutex<LineageState>>,
+    #[cfg(test)]
+    stage_writes: Arc<AtomicU64>,
+}
+
+impl Store {
+    #[cfg(test)]
+    pub fn resolve(
+        mode: PromptHistoryMode,
+        config_home: Option<PathBuf>,
+        workspace: &Path,
+    ) -> anyhow::Result<Option<Self>> {
+        if mode == PromptHistoryMode::Disabled {
+            return Ok(None);
+        }
+        let Some(config_home) = config_home else {
+            return Ok(None);
+        };
+        let runs_dir = iteron_protocol::home::path(&config_home, "runs");
+        Self::resolve_with_runs_dir(mode, config_home, workspace, runs_dir)
+    }
+
+    pub fn resolve_with_runs_dir(
+        mode: PromptHistoryMode,
+        config_home: PathBuf,
+        workspace: &Path,
+        runs_dir: PathBuf,
+    ) -> anyhow::Result<Option<Self>> {
+        if mode == PromptHistoryMode::Disabled {
+            return Ok(None);
+        }
+        let directory = iteron_protocol::home::path(&config_home, "history");
+        let filename = match mode {
+            PromptHistoryMode::Project => {
+                let identity = workspace.canonicalize().map_err(|error| {
+                    anyhow::anyhow!("cannot identify workspace for prompt history: {error}")
+                })?;
+                let digest = Sha256::digest(identity.to_string_lossy().as_bytes());
+                let identity: String = digest[..16]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                format!("project-{identity}.json")
+            }
+            PromptHistoryMode::Global => "global.json".to_owned(),
+            PromptHistoryMode::Disabled => unreachable!("returned above"),
+        };
+        let path = directory.join(filename);
+        let owner_digest = Sha256::digest(path.to_string_lossy().as_bytes());
+        let owner = RunId(format!(
+            "prompt-history-{}",
+            hex::encode(&owner_digest[..16])
+        ));
+        let tenant = TenantId::default();
+        let private = PrivateContentDerivativeStore::open_registered(
+            runs_dir.clone(),
+            tenant.clone(),
+            owner,
+            PrivateContentNamespace::PromptHistory,
+            PrivateContentClass::Transcript,
+            PrivateContentRetention::ExplicitRevocation,
+            iteron_tunables::param_integer("cli.prompt_history.max_entry_bytes", MAX_ENTRY_BYTES),
+        )?;
+        // One configured history namespace is active for a run. The high 56 bits bind its
+        // synthetic-source sequence range to the manifest path; the low byte is the entry slot.
+        // Owning these pre-submit roots with the actual run makes exact-session deletion see (and
+        // refuse to orphan) an unsent draft derivative.
+        let source_seq_digest = Sha256::digest(path.to_string_lossy().as_bytes());
+        let mut source_seq_bytes = [0_u8; 8];
+        source_seq_bytes.copy_from_slice(&source_seq_digest[..8]);
+        let source_seq_base = u64::from_be_bytes(source_seq_bytes) & !0xff;
+        Ok(Some(Self {
+            path,
+            private,
+            runs_dir,
+            tenant,
+            source_seq_base,
+            lineage: Arc::new(Mutex::new(LineageState::default())),
+            #[cfg(test)]
+            stage_writes: Arc::new(AtomicU64::new(0)),
+        }))
+    }
+
+    pub fn load(&self, active_run: &RunId) -> anyhow::Result<State> {
+        let metadata = match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(State::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            anyhow::bail!("prompt history must be a regular non-symlink file");
+        }
+        if metadata.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+                as u64
+        {
+            anyhow::bail!("prompt history exceeds its {MAX_STATE_BYTES}-byte bound");
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        fs::File::open(&self.path)?
+            .take(
+                (iteron_tunables::param_integer(
+                    "cli.prompt_history.max_state_bytes",
+                    MAX_STATE_BYTES,
+                ) + 1) as u64,
+            )
+            .read_to_end(&mut bytes)?;
+        if bytes.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+        {
+            anyhow::bail!("prompt history exceeds its {MAX_STATE_BYTES}-byte bound");
+        }
+        let version: VersionProbe = serde_json::from_slice(&bytes)?;
+        match version.schema_version {
+            STATE_VERSION => self.hydrate(serde_json::from_slice(&bytes)?, active_run),
+            LEGACY_STATE_VERSION => {
+                let state = bound_and_scrub(serde_json::from_slice(&bytes)?);
+                // Migrate before exposing legacy plaintext. A failed CAS write leaves this
+                // history unavailable instead of serving an unrevocable derivative.
+                self.save(state.clone(), active_run)?;
+                Ok(state)
+            }
+            UNLINEAGED_STATE_VERSION => anyhow::bail!(
+                "prompt history schema version {UNLINEAGED_STATE_VERSION} has no source lineage; refusing to serve it"
+            ),
+            version => anyhow::bail!("unsupported prompt history schema version {version}"),
+        }
+    }
+
+    fn save(&self, state: State, active_run: &RunId) -> anyhow::Result<()> {
+        let prepared = prepare(state);
+        let (history, draft) = self.stage_entries(&prepared, active_run)?;
+        let persisted = PersistedState {
+            schema_version: STATE_VERSION,
+            history,
+            draft,
+        };
+        self.publish(&persisted)?;
+        self.reconcile(&persisted)?;
+        self.remember(&prepared.state, &persisted)?;
+        Ok(())
+    }
+
+    fn publish(&self, persisted: &PersistedState) -> anyhow::Result<()> {
+        let bytes = serde_json::to_vec(&persisted)?;
+        if bytes.len()
+            > iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+        {
+            anyhow::bail!("prompt history encoding exceeds its fixed bound");
+        }
+        let directory = self
+            .path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("prompt history path has no parent"))?;
+        if let Ok(metadata) = fs::symlink_metadata(directory)
+            && metadata.file_type().is_symlink()
+        {
+            anyhow::bail!("prompt history directory cannot be a symlink");
+        }
+        fs::create_dir_all(directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && metadata.file_type().is_symlink()
+        {
+            anyhow::bail!("prompt history file cannot be a symlink");
+        }
+
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = directory.join(format!(
+            ".prompt-history-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        let result = (|| -> anyhow::Result<()> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &self.path)?;
+            #[cfg(unix)]
+            fs::File::open(directory)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    fn take_stage_writes(&self) -> u64 {
+        self.stage_writes.swap(0, Ordering::Relaxed)
+    }
+}
+
+struct PreparedState {
+    state: State,
+    history_sources: Vec<String>,
+    draft_source: Option<String>,
+}
+
+/// One fixed-depth background writer. Keystrokes never wait for an fsync; when its single pending
+/// slot is full, the newer snapshot is skipped and the normal-exit flush still writes final state.
+pub struct Writer {
+    sender: Option<std::sync::mpsc::SyncSender<WriterCommand>>,
+    task: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinishStatus {
+    Saved,
+    Skipped,
+    Deadline,
+    SaveFailed,
+    Unavailable,
+}
+
+impl FinishStatus {
+    pub fn warning(self) -> Option<&'static str> {
+        match self {
+            Self::Saved | Self::Skipped => None,
+            Self::Deadline => Some(
+                "prompt history save was not confirmed within two seconds; recent input may be unavailable next time",
+            ),
+            Self::SaveFailed => {
+                Some("prompt history could not be saved; recent input may be unavailable next time")
+            }
+            Self::Unavailable => Some(
+                "prompt history writer was unavailable; recent input may be unavailable next time",
+            ),
+        }
+    }
+}
+
+enum WriterCommand {
+    Save(State, RunId),
+    Finish(
+        State,
+        RunId,
+        std::time::Instant,
+        std::sync::mpsc::SyncSender<FinishStatus>,
+    ),
+}
+
+// A background journal append may briefly own the same content-store lock. Retrying only Busy
+// preserves hard failures (revocation, corruption, permissions) and the existing shutdown deadline.
+fn finish_save(
+    store: &Store,
+    state: State,
+    active_run: &RunId,
+    deadline: std::time::Instant,
+) -> FinishStatus {
+    loop {
+        match store.save(state.clone(), active_run) {
+            Ok(()) => return FinishStatus::Saved,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<iteron_record::ContentStoreError>(),
+                    Some(iteron_record::ContentStoreError::Busy)
+                ) =>
+            {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return FinishStatus::Deadline;
+                }
+                std::thread::park_timeout(remaining.min(std::time::Duration::from_millis(5)));
+            }
+            Err(_) => return FinishStatus::SaveFailed,
+        }
+    }
+}
+
+impl Writer {
+    pub fn new(store: Option<Store>) -> std::io::Result<Self> {
+        let Some(store) = store else {
+            return Ok(Self {
+                sender: None,
+                task: None,
+            });
+        };
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<WriterCommand>(1);
+        let task = std::thread::Builder::new().spawn(move || {
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    WriterCommand::Save(mut state, mut active_run) => {
+                        // Keystroke snapshots are deliberately coalesced. Besides avoiding an
+                        // fsync per key, this lets a normal-exit Finish supersede a queued stale
+                        // draft instead of making shutdown wait for two durable publications.
+                        let debounce = std::time::Duration::from_millis(10);
+                        loop {
+                            match receiver.recv_timeout(debounce) {
+                                Ok(WriterCommand::Save(next, next_run)) => {
+                                    state = next;
+                                    active_run = next_run;
+                                }
+                                Ok(WriterCommand::Finish(
+                                    next,
+                                    next_run,
+                                    deadline,
+                                    acknowledged,
+                                )) => {
+                                    let stored = finish_save(&store, next, &next_run, deadline);
+                                    let _ = acknowledged.try_send(stored);
+                                    return;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    let _ = store.save(state, &active_run);
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    let _ = store.save(state, &active_run);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    WriterCommand::Finish(state, active_run, deadline, acknowledged) => {
+                        let stored = finish_save(&store, state, &active_run, deadline);
+                        let _ = acknowledged.try_send(stored);
+                        break;
+                    }
+                }
+            }
+        })?;
+        Ok(Self {
+            sender: Some(sender),
+            task: Some(task),
+        })
+    }
+
+    pub fn schedule(&self, state: State, active_run: RunId) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.try_send(WriterCommand::Save(state, active_run));
+        }
+    }
+
+    /// Request one final coalesced snapshot without allowing slow storage to hold terminal restore
+    /// indefinitely. Failures and missing acknowledgment remain distinct. An unsettled worker is
+    /// detached, never force-killed; process exit does not promise it will finish in the background.
+    pub fn finish_status(mut self, state: State, active_run: RunId) -> FinishStatus {
+        let Some(sender) = self.sender.take() else {
+            return FinishStatus::Skipped;
+        };
+        let (acknowledged, ack) = std::sync::mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now()
+            + iteron_tunables::param_duration(
+                "cli.prompt_history.finish_deadline",
+                // One final content-addressed publication includes file and directory fsync. A
+                // two-second hard budget remains responsive while surviving ordinary workspace
+                // test/build I/O contention; the TUI already labels this finalizing phase.
+                FINISH_DEADLINE,
+            )
+            .min(FINISH_DEADLINE);
+        let mut command = WriterCommand::Finish(state, active_run, deadline, acknowledged);
+        loop {
+            match sender.try_send(command) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                    if std::time::Instant::now() >= deadline {
+                        drop(sender);
+                        return FinishStatus::Deadline;
+                    }
+                    command = returned;
+                    std::thread::park_timeout(std::time::Duration::from_millis(5));
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    return FinishStatus::Unavailable;
+                }
+            }
+        }
+        drop(sender);
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let observed = ack.recv_timeout(remaining);
+        if observed.is_ok()
+            && let Some(task) = self.task.take()
+        {
+            let _ = task.join();
+        }
+        match observed {
+            Ok(status) => status,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => FinishStatus::Deadline,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => FinishStatus::Unavailable,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn finish_bounded(self, state: State, active_run: RunId) -> bool {
+        matches!(
+            self.finish_status(state, active_run),
+            FinishStatus::Saved | FinishStatus::Skipped
+        )
+    }
+}
+
+fn prepare(state: State) -> PreparedState {
+    let mut retained = Vec::new();
+    let mut total = 0_usize;
+    for entry in state.history.into_iter().rev() {
+        let source = iteron_record::redact::scrub(&entry);
+        let scrubbed = sanitize(&source);
+        if scrubbed.trim().is_empty()
+            || scrubbed.len()
+                > iteron_tunables::param_integer(
+                    "cli.prompt_history.max_entry_bytes",
+                    MAX_ENTRY_BYTES,
+                )
+        {
+            continue;
+        }
+        let Some(next) = total.checked_add(scrubbed.len()) else {
+            break;
+        };
+        if retained.len()
+            == iteron_tunables::param_integer("cli.prompt_history.max_entries", MAX_ENTRIES)
+            || next
+                > iteron_tunables::param_integer(
+                    "cli.prompt_history.max_state_bytes",
+                    MAX_STATE_BYTES,
+                ) / 2
+        {
+            break;
+        }
+        total = next;
+        retained.push((scrubbed, source));
+    }
+    retained.reverse();
+    let (history, history_sources): (Vec<_>, Vec<_>) = retained.into_iter().unzip();
+    let draft = state
+        .draft
+        .map(|draft| {
+            let source = iteron_record::redact::scrub(&draft);
+            (sanitize(&source), source)
+        })
+        .filter(|(draft, _)| {
+            !draft.is_empty()
+                && draft.len()
+                    <= iteron_tunables::param_integer(
+                        "cli.prompt_history.max_entry_bytes",
+                        MAX_ENTRY_BYTES,
+                    )
+        });
+    let (draft, draft_source) = draft
+        .map(|(draft, source)| (Some(draft), Some(source)))
+        .unwrap_or((None, None));
+    PreparedState {
+        state: State::new(history, draft),
+        history_sources,
+        draft_source,
+    }
+}
+
+fn bound_and_scrub(state: State) -> State {
+    prepare(state).state
+}
+
+fn sanitize(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| {
+            let scalar = *character as u32;
+            *character == '\n'
+                || *character == '\t'
+                || !matches!(
+                    scalar,
+                    0x00..=0x1f
+                        | 0x7f
+                        | 0x80..=0x9f
+                        | 0x200b..=0x200f
+                        | 0x202a..=0x202e
+                        | 0x2060..=0x2064
+                        | 0xfeff
+                )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iteron_protocol::{
+        Effort, ErasureAuthorityId, ErasureFailureCode, ErasureOperationId, ErasureRequest,
+        ErasureScopeId, ErasureState, ErasureTarget, ErasureTargetId, Event, EventKind, Message,
+        Seq, TurnId,
+    };
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "core-prompt-history-{name}-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn source_run(name: &str) -> RunId {
+        RunId(format!("history-test-{name}"))
+    }
+
+    fn append_prompt(runs: &Path, repo: &Path, run: &RunId, text: &str) {
+        let mut rollout = iteron_record::Rollout::open(runs, run, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: repo.to_string_lossy().into_owned(),
+                    model: "model-a".into(),
+                    effort: Effort::Medium,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "cfg".into(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text(text),
+                },
+            })
+            .unwrap();
+    }
+
+    fn revoke_content(runs: &Path, operation: &str, digest: iteron_protocol::ErasureContentDigest) {
+        let authority = iteron_record::erasure::authorize_local_erasure(runs).unwrap();
+        let receipt = iteron_record::erasure::execute_erasure(
+            runs,
+            ErasureRequest {
+                operation_id: ErasureOperationId::new(operation).unwrap(),
+                authority_id: ErasureAuthorityId::new(authority.id().as_str()).unwrap(),
+                requested_at_unix_ms: 1,
+                target: ErasureTarget::ContentRevocation {
+                    scope_id: ErasureScopeId::new("default").unwrap(),
+                    content_digest: digest,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(receipt.state(), ErasureState::Verified);
+    }
+
+    #[test]
+    fn project_global_and_private_modes_have_distinct_path_semantics() {
+        let home = scratch("modes-home");
+        let first = scratch("modes-first");
+        let second = scratch("modes-second");
+        let a = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &first)
+            .unwrap()
+            .unwrap();
+        let b = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &second)
+            .unwrap()
+            .unwrap();
+        assert_ne!(a.path(), b.path());
+        assert!(
+            Store::resolve(PromptHistoryMode::Disabled, Some(home.clone()), &first)
+                .unwrap()
+                .is_none()
+        );
+        let global_a = Store::resolve(PromptHistoryMode::Global, Some(home.clone()), &first)
+            .unwrap()
+            .unwrap();
+        let global_b = Store::resolve(PromptHistoryMode::Global, Some(home), &second)
+            .unwrap()
+            .unwrap();
+        assert_eq!(global_a.path(), global_b.path());
+    }
+
+    #[test]
+    fn round_trip_is_bounded_scrubbed_and_private() {
+        let home = scratch("roundtrip-home");
+        let repo = scratch("roundtrip-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        let credential_shape = format!("use {}", concat!("sk-", "abcdefghijklmnopqrstuvwxyz"));
+        store
+            .save(
+                State::new(
+                    vec!["hello\u{200b} world".into(), credential_shape.clone()],
+                    Some("draft\x1b text".into()),
+                ),
+                &source_run("roundtrip"),
+            )
+            .unwrap();
+        let loaded = store.load(&source_run("roundtrip")).unwrap();
+        assert_eq!(loaded.history[0], "hello world");
+        assert!(loaded.history[1].contains("[REDACTED:"));
+        assert!(!loaded.history[1].contains(&credential_shape["use ".len()..]));
+        assert_eq!(loaded.draft.as_deref(), Some("draft text"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(store.path()).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_history_slots_reuse_derivatives_and_only_stage_the_delta() {
+        let home = scratch("delta-home");
+        let repo = scratch("delta-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        let run = source_run("delta");
+        let initial = State::new(vec!["one".into(), "two".into()], Some("draft-a".into()));
+        store.save(initial.clone(), &run).unwrap();
+        assert_eq!(store.take_stage_writes(), 3);
+
+        store.save(initial, &run).unwrap();
+        assert_eq!(
+            store.take_stage_writes(),
+            0,
+            "an unchanged snapshot must not restage all retained entries"
+        );
+
+        store
+            .save(
+                State::new(vec!["one".into(), "two".into()], Some("draft-b".into())),
+                &run,
+            )
+            .unwrap();
+        assert_eq!(
+            store.take_stage_writes(),
+            1,
+            "a keystroke snapshot stages only the changed draft"
+        );
+    }
+
+    #[test]
+    fn background_writer_preserves_order_and_normal_exit_flushes_the_final_draft() {
+        let home = scratch("writer-home");
+        let repo = scratch("writer-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        let writer = Writer::new(Some(store.clone())).unwrap();
+        writer.schedule(
+            State::new(vec!["first".into()], Some("stale".into())),
+            source_run("writer"),
+        );
+        assert!(writer.finish_bounded(
+            State::new(
+                vec!["first".into(), "second".into()],
+                Some("final 多行\ndraft".into()),
+            ),
+            source_run("writer"),
+        ));
+
+        let loaded = store.load(&source_run("writer")).unwrap();
+        assert_eq!(loaded.history, vec!["first", "second"]);
+        assert_eq!(loaded.draft.as_deref(), Some("final 多行\ndraft"));
+    }
+
+    #[test]
+    fn normal_exit_distinguishes_storage_failure_and_unavailable_writer() {
+        let home = scratch("writer-refusal-home");
+        let repo = scratch("writer-refusal-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        // A directory in the manifest's place is a hard failure, not a slow background save.
+        fs::create_dir_all(store.path()).unwrap();
+        let status = Writer::new(Some(store)).unwrap().finish_status(
+            State::new(vec!["hello".into()], None),
+            source_run("refusal"),
+        );
+        assert_eq!(status, FinishStatus::SaveFailed);
+        assert!(!status.warning().unwrap().contains("background"));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let writer = Writer {
+            sender: Some(sender),
+            task: None,
+        };
+        assert_eq!(
+            writer.finish_status(State::default(), source_run("closed")),
+            FinishStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn consecutive_identical_prompts_flush_and_restore_with_live_record_owner() {
+        let home = scratch("writer-identical-home");
+        let repo = scratch("writer-identical-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run = source_run("identical");
+        append_prompt(&runs, &repo, &run, "hi");
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(vec!["hi".into()], Some("hi".into())), &run)
+            .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::Message {
+                    message: Message::user_text("hi"),
+                },
+            })
+            .unwrap();
+        let status = Writer::new(Some(store.clone())).unwrap().finish_status(
+            State::new(vec!["hi".into(), "hi".into()], None),
+            run.clone(),
+        );
+        assert_eq!(status, FinishStatus::Saved);
+        assert_eq!(store.load(&run).unwrap().history, ["hi", "hi"]);
+        drop(rollout);
+    }
+
+    #[test]
+    fn sanitized_history_is_lineaged_to_the_record_and_source_revocation_refuses_old_manifest() {
+        let home = scratch("lineage-home");
+        let repo = scratch("lineage-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run = source_run("lineage");
+        let raw = "hello\u{200b} source";
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: repo.to_string_lossy().into_owned(),
+                    model: "model-a".into(),
+                    effort: Effort::Medium,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "cfg".into(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(vec![raw.to_owned()], None), &run)
+            .unwrap();
+        let synthetic: PersistedState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(synthetic.history[0].source.source.owner, run);
+        assert!(synthetic.history[0].source.synthetic_seq.is_some());
+
+        // Simulate the crash boundary: the pre-append background snapshot is durable, then the
+        // journal Message lands, but no normal-exit history flush runs.
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text(raw),
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        drop(store);
+
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.load(&run).unwrap().history, ["hello source"]);
+        let manifest: PersistedState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(manifest.history.len(), 1);
+        assert_eq!(manifest.history[0].source.source.owner, run);
+        assert!(manifest.history[0].source.synthetic_seq.is_none());
+        assert_ne!(
+            manifest.history[0].handle.digest, manifest.history[0].source.source.digest,
+            "the sanitize transform must be represented by durable source→derivative lineage"
+        );
+        let history_path = store.path().to_path_buf();
+        let source_digest = manifest.history[0].source.source.digest.clone();
+        drop(store);
+
+        let authority = iteron_record::erasure::authorize_local_erasure(&runs).unwrap();
+        let receipt = iteron_record::erasure::execute_erasure(
+            &runs,
+            ErasureRequest {
+                operation_id: ErasureOperationId::new("history-source-revoke").unwrap(),
+                authority_id: ErasureAuthorityId::new(authority.id().as_str()).unwrap(),
+                requested_at_unix_ms: 1,
+                target: ErasureTarget::ContentRevocation {
+                    scope_id: ErasureScopeId::new("default").unwrap(),
+                    content_digest: source_digest,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(receipt.state(), ErasureState::Verified);
+        assert!(
+            history_path.exists(),
+            "the stale manifest remains a useful read-gate oracle"
+        );
+
+        let reopened = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        assert!(
+            reopened.load(&run).unwrap().history.is_empty(),
+            "a copied old history manifest must not serve its entry after source revocation"
+        );
+    }
+
+    #[test]
+    fn source_revoked_after_append_before_reload_is_never_served() {
+        let home = scratch("crash-revoke-home");
+        let repo = scratch("crash-revoke-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run = source_run("crash-revoke");
+        let raw = "crash\u{200b} boundary";
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: repo.to_string_lossy().into_owned(),
+                    model: "model-a".into(),
+                    effort: Effort::Medium,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "cfg".into(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(vec![raw.into()], None), &run)
+            .unwrap();
+        let synthetic: PersistedState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        let source_digest = synthetic.history[0].source.source.digest.clone();
+        assert!(synthetic.history[0].source.synthetic_seq.is_some());
+
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: Message::user_text(raw),
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        drop(store);
+
+        // This is the exact crash window: the RecordField is durable but the v3 manifest still
+        // says synthetic. Revocation wins before the next process gets any chance to hydrate.
+        revoke_content(&runs, "crash-boundary-revoke", source_digest);
+        let reopened = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        assert!(
+            reopened.load(&run).unwrap().history.is_empty(),
+            "reload must reconcile or refuse before reading plaintext through stale authority"
+        );
+    }
+
+    #[test]
+    fn unsent_draft_blocks_exact_delete_until_its_source_is_revoked() {
+        let home = scratch("draft-delete-home");
+        let repo = scratch("draft-delete-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run = source_run("draft-delete");
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::RunStart {
+                    cwd: repo.to_string_lossy().into_owned(),
+                    model: "model-a".into(),
+                    effort: Effort::Medium,
+                    created_at: 1,
+                    environment: None,
+                    parent_run: None,
+                    forked_at: None,
+                    parent_hash_at_seq: None,
+                    config_digest: "cfg".into(),
+                    agent_definition_tag: None,
+                    max_usd: None,
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(Vec::new(), Some("unsent draft".into())), &run)
+            .unwrap();
+        let persisted: PersistedState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        let source_digest = persisted.draft.unwrap().source.source.digest;
+        drop(store);
+
+        let authority = iteron_record::erasure::authorize_local_erasure(&runs).unwrap();
+        let exact = |operation: &str| ErasureRequest {
+            operation_id: ErasureOperationId::new(operation).unwrap(),
+            authority_id: ErasureAuthorityId::new(authority.id().as_str()).unwrap(),
+            requested_at_unix_ms: 1,
+            target: ErasureTarget::ExactSession {
+                scope_id: ErasureScopeId::new("default").unwrap(),
+                run_id: ErasureTargetId::new(run.0.clone()).unwrap(),
+            },
+        };
+        let refused =
+            iteron_record::erasure::execute_erasure(&runs, exact("draft-delete-refused")).unwrap();
+        assert_eq!(refused.state(), ErasureState::Failed);
+        assert_eq!(
+            refused.failure(),
+            Some(ErasureFailureCode::RetainedByDerivatives),
+            "exact deletion must fail closed while an unsent draft derivative remains live"
+        );
+        assert!(runs.join(format!("{}.jsonl", run.0)).exists());
+
+        let revoked = iteron_record::erasure::execute_erasure(
+            &runs,
+            ErasureRequest {
+                operation_id: ErasureOperationId::new("draft-source-revoke").unwrap(),
+                authority_id: ErasureAuthorityId::new(authority.id().as_str()).unwrap(),
+                requested_at_unix_ms: 2,
+                target: ErasureTarget::ContentRevocation {
+                    scope_id: ErasureScopeId::new("default").unwrap(),
+                    content_digest: source_digest,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(revoked.state(), ErasureState::Verified);
+        let stale = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        assert!(stale.load(&run).unwrap().draft.is_none());
+        drop(stale);
+
+        let deleted =
+            iteron_record::erasure::execute_erasure(&runs, exact("draft-delete-after-revoke"))
+                .unwrap();
+        assert_eq!(deleted.state(), ErasureState::Verified);
+        assert!(!runs.join(format!("{}.jsonl", run.0)).exists());
+    }
+
+    #[test]
+    fn adopted_run_binds_only_new_entries_and_revocation_is_entry_scoped() {
+        let home = scratch("adopt-lineage-home");
+        let repo = scratch("adopt-lineage-repo");
+        let runs = iteron_protocol::home::path(&home, "runs");
+        let run_a = source_run("adopt-a");
+        let run_b = source_run("adopt-b");
+        append_prompt(&runs, &repo, &run_a, "prompt from A");
+        append_prompt(&runs, &repo, &run_b, "prompt from B");
+
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        store
+            .save(State::new(vec!["prompt from A".into()], None), &run_a)
+            .unwrap();
+        // Model session adoption: a full-state rewrite carries A forward and appends B while the
+        // active rollout identity changes. Only the new entry may acquire B's source authority.
+        store
+            .save(
+                State::new(vec!["prompt from A".into(), "prompt from B".into()], None),
+                &run_b,
+            )
+            .unwrap();
+        let manifest: PersistedState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(manifest.history[0].source.source.owner, run_a);
+        assert_eq!(manifest.history[1].source.source.owner, run_b);
+        let digest_a = manifest.history[0].source.source.digest.clone();
+        let digest_b = manifest.history[1].source.source.digest.clone();
+        drop(store);
+
+        revoke_content(&runs, "adopt-revoke-b", digest_b);
+        let after_b = Store::resolve(PromptHistoryMode::Project, Some(home.clone()), &repo)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_b.load(&run_b).unwrap().history,
+            ["prompt from A"],
+            "revoking B must not close A's independently lineaged entry"
+        );
+        drop(after_b);
+
+        revoke_content(&runs, "adopt-revoke-a", digest_a);
+        let after_a = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        assert!(after_a.load(&run_b).unwrap().history.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_history_file_is_refused() {
+        use std::os::unix::fs::symlink;
+        let home = scratch("symlink-home");
+        let repo = scratch("symlink-repo");
+        let store = Store::resolve(PromptHistoryMode::Project, Some(home), &repo)
+            .unwrap()
+            .unwrap();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        let target = scratch("symlink-target").join("target.json");
+        fs::write(&target, b"{}\n").unwrap();
+        symlink(target, store.path()).unwrap();
+        assert!(
+            store
+                .load(&source_run("symlink"))
+                .unwrap_err()
+                .to_string()
+                .contains("non-symlink")
+        );
+    }
+}
