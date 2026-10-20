@@ -150,6 +150,26 @@ impl PlantcoreAdmission {
             self.fail_closed();
             return Err(error);
         }
+        // An explicit operator bypass keeps its existing policy path. Scoped delegation is
+        // an alternative for non-bypass launches, not a mandatory Worker migration.
+        if !agent.bypass_permissions
+            && payload.engine.external_mcp_posture == ExternalMcpPosture::RunGateway
+        {
+            let delegated =
+                mcp.zip(self.dispatch_gate.as_ref())
+                    .ok_or(())
+                    .and_then(|(runtime, gate)| {
+                        runtime
+                            .delegate_plantcore_gateway(gate.clone())
+                            .map_err(|_| ())
+                    });
+            if delegated.is_err() {
+                self.fail_closed();
+                return Err(PlantcoreProtocolError::invalid(
+                    "could not bind managed gateway delegation",
+                ));
+            }
+        }
         self.state = State::Admitted {
             provider_api_origin,
             payload: Box::new(payload),
@@ -1207,10 +1227,14 @@ fn varint(output: &mut Vec<u8>, mut value: u64) {
 }
 
 #[cfg(test)]
+#[path = "plantcore_managed_tests.rs"]
+mod managed_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    struct IdentifiedTestProvider;
+    pub(super) struct IdentifiedTestProvider;
 
     #[async_trait::async_trait]
     impl iteron_provider::Provider for IdentifiedTestProvider {
@@ -1238,7 +1262,7 @@ mod tests {
             .unwrap()
     }
 
-    fn payload() -> PlantcoreRunBootstrapV1 {
+    pub(super) fn payload() -> PlantcoreRunBootstrapV1 {
         let content = "hello";
         let mut limits = iteron_protocol::EffectiveRunLimits {
             max_turns: 8,
@@ -1446,6 +1470,8 @@ mod tests {
             },
         );
         agent.workspace = "/workspace/work".into();
+        agent.bypass_permissions = true;
+        assert!(validate_runtime(&payload(), &agent, None).is_ok());
         agent.fail_next_plantcore_bootstrap_append_for_test();
 
         let mut admission = PlantcoreAdmission::required("https://provider.example/v1".into());

@@ -65,6 +65,7 @@ impl Agent {
                 hook_journal: self.hook_effect_journal.clone(),
                 trust,
                 authority,
+                mcp: self.mcp_runtime.as_ref(),
                 ceiling: self.authority_ceiling,
                 policy_capabilities: self.policy_capabilities,
                 bypass: self.bypass_permissions,

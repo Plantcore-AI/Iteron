@@ -32,6 +32,8 @@ use std::{
 };
 use tokio::time::Instant;
 
+mod context_authority;
+
 /// Result cap applied when a search call omits `limit`. Enough hits to answer a lookup, few enough
 /// that an unbounded server response cannot flood the transcript on the model's behalf.
 const RESOURCE_SEARCH_DEFAULT_LIMIT: usize = 8;
@@ -43,6 +45,8 @@ pub struct McpRuntimeControl {
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
     mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     configuration_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "legacy-plantcore")]
+    managed_gateway: Arc<OnceLock<context_authority::ManagedGatewayDelegation>>,
 }
 
 impl McpRuntimeControl {
@@ -86,7 +90,12 @@ impl McpRuntimeControl {
         let policy = Arc::new(OnceLock::new());
         let exposure = Arc::new(OnceLock::new());
         let mrtr_handler = Arc::new(OnceLock::new());
+        #[cfg(feature = "legacy-plantcore")]
+        let managed_gateway = Arc::new(OnceLock::new());
         for config in servers {
+            config
+                .validate_context_egress()
+                .map_err(anyhow::Error::msg)?;
             config
                 .origin
                 .validate_for_server(&config.name)
@@ -117,6 +126,8 @@ impl McpRuntimeControl {
             exposure,
             mrtr_handler,
             configuration_lock: Arc::new(Mutex::new(())),
+            #[cfg(feature = "legacy-plantcore")]
+            managed_gateway,
         })
     }
 
@@ -264,7 +275,11 @@ impl McpRuntimeControl {
             // not reconstructible from aggregate counts, so those histories fail closed.
             let legacy_exact = self.servers.len() <= 1
                 && policy.oauth.is_disabled()
-                && expected_plugin_bindings.is_empty();
+                && expected_plugin_bindings.is_empty()
+                && self
+                    .servers
+                    .values()
+                    .all(|server| server.config().context_egress_tools.is_empty());
             if !legacy_exact {
                 anyhow::bail!(
                     "legacy MCP checkpoint lacks exact server bindings for this live topology"

@@ -8,6 +8,7 @@
 //! JSON, not TOML, to avoid a dependency (serde_json is already in the tree — zero-dependency
 //! first). Every field is optional; a missing file is not an error (defaults apply).
 
+mod mcp_context_authority;
 pub mod preferences;
 mod provider_governor;
 mod retry;
@@ -503,6 +504,11 @@ pub struct McpServerConfig {
     /// Absent means inherit: it never widens what the host already allows.
     #[serde(default, skip_serializing_if = "iteron_mcp::McpServerPolicy::is_empty")]
     pub policy: iteron_mcp::McpServerPolicy,
+    /// Operator-owned, exact bare tool names allowed to consume untrusted context.
+    /// This is an egress authorization, not a read-only assertion or an approval bypass.
+    /// Empty by default; bounded, filtered and checkpoint-bound. See the validation module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_egress_tools: Vec<String>,
 }
 
 impl McpServerConfig {
@@ -1143,6 +1149,7 @@ impl FileConfig {
                     .policy
                     .validate()
                     .map_err(|error| format!("mcp_servers[{index}].policy: {error}"))?;
+                server.validate_context_egress()?;
             }
         }
         Ok(())

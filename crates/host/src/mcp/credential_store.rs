@@ -566,6 +566,7 @@ mod tests {
             oauth: None,
             tools: iteron_mcp::McpToolFilter::default(),
             policy: iteron_mcp::McpServerPolicy::default(),
+            context_egress_tools: Vec::new(),
         }
     }
 

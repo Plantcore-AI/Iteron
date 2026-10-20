@@ -32,6 +32,39 @@ pub(super) struct OperationAdmission {
     pub taint_blocks: bool,
 }
 
+/// A verified resident bootstrap delegates dispatch to its one authenticated Gateway. This
+/// consumes that prior approval only for an otherwise-default external-effect Ask. It does not
+/// approve host code, mutate permission rules, override an explicit Ask/Deny or grant ERP writes.
+pub(super) fn preapprove_managed_gateway(
+    tool: &str,
+    effects: &OperationEffects,
+    policy: OperationPolicy<'_>,
+    admission: &mut OperationAdmission,
+) -> bool {
+    if tool != "plantcore-run-gateway__tool_call"
+        || policy.bypass
+        || policy.mode == PermissionMode::Plan
+        || policy.authority != OperatorAuthority::Operator
+        || admission.verdict != Verdict::Ask
+        || admission.ceiling_blocks
+        || admission.taint_blocks
+        || effects.required != CapabilitySet::only(Capability::IrreversibleExternal)
+        || policy.rules.tool_rule(tool).is_some()
+        || effects
+            .canonical_tool
+            .as_deref()
+            .is_some_and(|name| policy.rules.tool_rule(name).is_some())
+        || policy
+            .rules
+            .cap_rule(Capability::IrreversibleExternal)
+            .is_some()
+    {
+        return false;
+    }
+    admission.verdict = Verdict::Auto;
+    true
+}
+
 /// Every required class must pass. Code permission alone cannot authorize unknown external or
 /// trust effects, and an external permission cannot implicitly authorize code execution.
 pub(super) fn evaluate_operation(
@@ -227,6 +260,158 @@ mod tests {
             Capability::TrustMutating,
             Capability::IrreversibleExternal,
         ])
+    }
+
+    #[test]
+    fn scoped_operator_context_authority_is_not_approval_or_a_capability_grant() {
+        let tool = "sample__tool_call";
+        let effects = OperationEffects::classify(
+            &ToolUse {
+                id: "read".into(),
+                name: tool.into(),
+                input: json!({"name":"read","arguments":{}}),
+            },
+            Capability::IrreversibleExternal,
+        );
+        let mut rules = PermissionRules::new();
+        let evaluate = |rules: &PermissionRules, mode, ceiling, authority| {
+            evaluate_operation(
+                tool,
+                &effects,
+                OperationPolicy {
+                    mode,
+                    rules,
+                    bypass: false,
+                    task_ceiling: ceiling,
+                    policy_capabilities: all(),
+                    governing_trust: Trust::Untrusted,
+                    authority,
+                },
+            )
+        };
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Constrained
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Ask
+        );
+        rules.set_tool(tool, Verdict::Auto);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Auto
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Plan,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                CapabilitySet::only(Capability::ReadOnly),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        rules.set_tool(tool, Verdict::Deny);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        rules.set_tool(tool, Verdict::Auto);
+        rules.set_cap(Capability::IrreversibleExternal, Verdict::Deny);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+    }
+
+    #[test]
+    fn managed_gateway_preapproval_preserves_explicit_rules_ceiling_and_plan() {
+        let tool = "plantcore-run-gateway__tool_call";
+        let effects = OperationEffects::classify(
+            &ToolUse {
+                id: "read".into(),
+                name: tool.into(),
+                input: json!({"handle":"opaque","arguments":{}}),
+            },
+            Capability::IrreversibleExternal,
+        );
+        let evaluate = |rules: &PermissionRules, mode, ceiling| {
+            let policy = OperationPolicy {
+                mode,
+                rules,
+                bypass: false,
+                task_ceiling: ceiling,
+                policy_capabilities: all(),
+                governing_trust: Trust::Untrusted,
+                authority: OperatorAuthority::Operator,
+            };
+            let mut admission = evaluate_operation(tool, &effects, policy);
+            preapprove_managed_gateway(tool, &effects, policy, &mut admission);
+            admission.verdict
+        };
+        let plain = PermissionRules::new();
+        assert_eq!(
+            evaluate(&plain, PermissionMode::AcceptEdits, all()),
+            Verdict::Auto
+        );
+        assert_eq!(evaluate(&plain, PermissionMode::Plan, all()), Verdict::Deny);
+        assert_eq!(
+            evaluate(
+                &plain,
+                PermissionMode::Default,
+                CapabilitySet::only(Capability::ReadOnly)
+            ),
+            Verdict::Deny
+        );
+        for explicit in [Verdict::Ask, Verdict::Deny] {
+            let mut exact = PermissionRules::new();
+            exact.set_tool(tool, explicit);
+            assert_eq!(evaluate(&exact, PermissionMode::Default, all()), explicit);
+            let mut class = PermissionRules::new();
+            class.set_cap(Capability::IrreversibleExternal, explicit);
+            assert_eq!(evaluate(&class, PermissionMode::Default, all()), explicit);
+        }
     }
 
     fn operation(

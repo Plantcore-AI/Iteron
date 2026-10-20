@@ -8,7 +8,9 @@ use super::force_cancel::ForceCancelSeam;
 use super::hook_execution::{HookExecution, HookExecutionScope};
 use super::hooks::{HookDecision, HookEvent, Hooks, journal::HookEffectJournal};
 use super::inbound_control::inbound_poll_limit;
-use super::permission_policy::{OperationAdmission, OperationPolicy, evaluate_operation};
+use super::permission_policy::{
+    OperationAdmission, OperationPolicy, evaluate_operation, preapprove_managed_gateway,
+};
 use super::permission_transaction::PermissionTransaction;
 use super::refusal_provenance::{publish_tool_refusal, publish_unrecorded_tool_refusal};
 use super::session_control::{InboundControl, SessionControlState};
@@ -40,6 +42,7 @@ pub(super) struct ToolAdmissionScope<'a> {
     pub(super) hook_journal: Option<HookEffectJournal>,
     pub(super) trust: Trust,
     pub(super) authority: OperatorAuthority,
+    pub(super) mcp: Option<&'a crate::mcp::McpRuntimeControl>,
     pub(super) ceiling: CapabilitySet,
     pub(super) policy_capabilities: CapabilitySet,
     pub(super) bypass: bool,
@@ -154,19 +157,40 @@ impl ToolDeclarationAdmission<'_> {
                 "registered tool proposal lost its operation evidence".into(),
             )
         })?;
-        let admission = evaluate_operation(
-            &call.name,
-            &effects,
-            OperationPolicy {
-                mode: *self.permission.mode,
-                rules: self.permission.rules,
-                bypass: self.scope.bypass,
-                task_ceiling: self.scope.ceiling,
-                policy_capabilities: self.scope.policy_capabilities,
-                governing_trust: self.scope.trust,
-                authority: self.scope.authority,
-            },
-        );
+        let scoped_binding = self
+            .scope
+            .mcp
+            .and_then(|mcp| mcp.context_egress_binding(call));
+        let scoped_authority = if self.scope.authority == OperatorAuthority::Constrained
+            && scoped_binding.is_some()
+        {
+            // Record the source of authority before any admission or external effect. Do not
+            // relabel the governing context, the registered capability or any tool result.
+            self.notice(format!(
+                "scoped MCP context-egress authorization: {} binding={}; explicit permission rules and capability gates remain",
+                call.name, scoped_binding.as_ref().map(|grant| grant.binding.as_str()).unwrap_or_default(),
+            ))?;
+            OperatorAuthority::Operator
+        } else {
+            self.scope.authority
+        };
+        let policy = OperationPolicy {
+            mode: *self.permission.mode,
+            rules: self.permission.rules,
+            bypass: self.scope.bypass,
+            task_ceiling: self.scope.ceiling,
+            policy_capabilities: self.scope.policy_capabilities,
+            governing_trust: self.scope.trust,
+            authority: scoped_authority,
+        };
+        let mut admission = evaluate_operation(&call.name, &effects, policy);
+        if scoped_binding
+            .as_ref()
+            .is_some_and(|grant| grant.preapproved_gateway)
+            && preapprove_managed_gateway(&call.name, &effects, policy, &mut admission)
+        {
+            self.notice("managed gateway dispatch authorized by verified resident bootstrap; downstream Run scope and action approval still apply".into())?;
+        }
         self.scope
             .activity
             .span(ActivityStage::ToolProposed, Some(self.scope.turn))

@@ -226,6 +226,7 @@ fn add(
             oauth: oauth.into_config(),
             tools: iteron_mcp::McpToolFilter::default(),
             policy: iteron_mcp::McpServerPolicy::default(),
+            context_egress_tools: Vec::new(),
         },
         (None, Some(command)) => McpServerConfig {
             name: name.to_owned(),
@@ -239,6 +240,7 @@ fn add(
             oauth: None,
             tools: iteron_mcp::McpToolFilter::default(),
             policy: iteron_mcp::McpServerPolicy::default(),
+            context_egress_tools: Vec::new(),
         },
         (Some(_), None) => anyhow::bail!("HTTP MCP servers do not accept trailing argv"),
         _ => anyhow::bail!("pass exactly one of --url or --stdio"),
@@ -834,6 +836,7 @@ mod tests {
             oauth: None,
             tools: iteron_mcp::McpToolFilter::default(),
             policy: iteron_mcp::McpServerPolicy::default(),
+            context_egress_tools: Vec::new(),
         };
         let rendered = serde_json::to_string(&view(&server)).unwrap();
         assert!(!rendered.contains(secret));
