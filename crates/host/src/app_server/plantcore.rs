@@ -150,6 +150,22 @@ impl PlantcoreAdmission {
             self.fail_closed();
             return Err(error);
         }
+        if payload.engine.external_mcp_posture == ExternalMcpPosture::RunGateway {
+            let delegated =
+                mcp.zip(self.dispatch_gate.as_ref())
+                    .ok_or(())
+                    .and_then(|(runtime, gate)| {
+                        runtime
+                            .delegate_plantcore_gateway(gate.clone())
+                            .map_err(|_| ())
+                    });
+            if delegated.is_err() {
+                self.fail_closed();
+                return Err(PlantcoreProtocolError::invalid(
+                    "could not bind managed gateway delegation",
+                ));
+            }
+        }
         self.state = State::Admitted {
             provider_api_origin,
             payload: Box::new(payload),
@@ -721,6 +737,11 @@ fn validate_runtime(
     agent: &Agent,
     mcp: Option<&crate::mcp::McpRuntimeControl>,
 ) -> Result<(), PlantcoreProtocolError> {
+    if agent.bypass_permissions {
+        return Err(PlantcoreProtocolError::invalid(
+            "managed resident requires explicit gated launch; global permission bypass is forbidden",
+        ));
+    }
     if agent.provider.provider_instance_id() != Some(payload.engine.provider.as_str())
         || agent.model != payload.engine.model
     {
@@ -1207,10 +1228,14 @@ fn varint(output: &mut Vec<u8>, mut value: u64) {
 }
 
 #[cfg(test)]
+#[path = "plantcore_managed_tests.rs"]
+mod managed_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    struct IdentifiedTestProvider;
+    pub(super) struct IdentifiedTestProvider;
 
     #[async_trait::async_trait]
     impl iteron_provider::Provider for IdentifiedTestProvider {
@@ -1238,7 +1263,7 @@ mod tests {
             .unwrap()
     }
 
-    fn payload() -> PlantcoreRunBootstrapV1 {
+    pub(super) fn payload() -> PlantcoreRunBootstrapV1 {
         let content = "hello";
         let mut limits = iteron_protocol::EffectiveRunLimits {
             max_turns: 8,
@@ -1446,6 +1471,14 @@ mod tests {
             },
         );
         agent.workspace = "/workspace/work".into();
+        agent.bypass_permissions = true;
+        assert_eq!(
+            validate_runtime(&payload(), &agent, None)
+                .unwrap_err()
+                .message,
+            "managed resident requires explicit gated launch; global permission bypass is forbidden",
+        );
+        agent.bypass_permissions = false;
         agent.fail_next_plantcore_bootstrap_append_for_test();
 
         let mut admission = PlantcoreAdmission::required("https://provider.example/v1".into());

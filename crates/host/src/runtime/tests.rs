@@ -459,6 +459,7 @@ mod gate_integration_tests {
     use super::provider_response_recovery::INTERRUPTED_STREAM_MARKER;
     use super::provider_usage_journal::UNPRICEABLE_CACHE_CREATION_NOTICE;
     use super::*;
+    use sha2::Digest as _;
 
     /// Pin the registry-driven resolved tunable set onto a test agent.
     ///

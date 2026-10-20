@@ -378,6 +378,69 @@ fn bound_exposure(config: &McpServerConfig) -> McpCapabilityExposure {
     exposure
 }
 
+#[cfg(feature = "legacy-plantcore")]
+#[tokio::test]
+async fn managed_gateway_delegation_needs_bootstrap_binding_and_exact_discovery() {
+    let config = plantcore_gateway_fixture();
+    let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let control = McpRuntimeControl::register(&mut registry, &[config.clone()], &[]).unwrap();
+    let gate = crate::runtime::DispatchGate::new();
+    assert!(control.delegate_plantcore_gateway(gate.clone()).is_err());
+    let mut effective = settings(iteron_mcp::McpSpillCleanup::SessionEnd);
+    effective.transport =
+        crate::runtime_tunables::effective_mcp::McpTransportSelection::from_servers(&[
+            config.clone()
+        ]);
+    control
+        .configure(effective, bound_exposure(&config))
+        .unwrap();
+    let mut call = ToolUse {
+        id: "read".into(),
+        name: "plantcore-run-gateway__tool_call".into(),
+        input: json!({"handle":"opaque_read","arguments":{}}),
+    };
+    assert!(control.context_egress_binding(&call).is_none());
+    control.delegate_plantcore_gateway(gate.clone()).unwrap();
+    assert!(control.delegate_plantcore_gateway(gate.clone()).is_err());
+    assert!(control.context_egress_binding(&call).is_none());
+    gate.admit().unwrap();
+    assert!(control.context_egress_binding(&call).is_none());
+    let ManagedServer::Http(server) = control.servers.get(&config.name).unwrap().as_ref() else {
+        panic!("fixed gateway must be HTTP")
+    };
+    let name = format!("{}__opaque_read", config.name);
+    let catalog = ManagedCatalog::admit(
+        &config.name,
+        server.binding.clone(),
+        "2025-06-18",
+        vec![ToolSpec {
+            name: name.clone(),
+            description: "test read".into(),
+            input_schema: json!({"type":"object"}),
+            purity: Purity::Effecting,
+            capability: Capability::IrreversibleExternal,
+        }],
+    )
+    .unwrap();
+    server
+        .state
+        .lock()
+        .await
+        .identities
+        .insert(name.clone(), catalog.exact_identity(&name).unwrap());
+    let granted = control.context_egress_binding(&call).unwrap();
+    assert!(granted.preapproved_gateway);
+    assert_eq!(
+        granted.binding,
+        config.runtime_binding_id().unwrap().as_str()
+    );
+    call.input["handle"] = "unknown_write".into();
+    assert!(control.context_egress_binding(&call).is_none());
+    call.input["handle"] = "opaque_read".into();
+    gate.terminal();
+    assert!(control.context_egress_binding(&call).is_none());
+}
+
 #[tokio::test]
 async fn scoped_context_egress_requires_exact_operator_binding_and_searched_tool() {
     let root = marker().with_extension("scoped-context");
@@ -422,7 +485,10 @@ async fn scoped_context_egress_requires_exact_operator_binding_and_searched_tool
     assert!(!search.is_error, "{}", search.content);
     assert_eq!(search.trust, Trust::Untrusted);
     assert_eq!(
-        control.context_egress_binding(&call),
+        control.context_egress_binding(&call).map(|grant| {
+            assert!(!grant.preapproved_gateway);
+            grant.binding
+        }),
         Some(config.runtime_binding_id().unwrap().as_str().to_owned())
     );
     assert_eq!(

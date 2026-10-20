@@ -45,6 +45,8 @@ pub struct McpRuntimeControl {
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
     mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     configuration_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "legacy-plantcore")]
+    managed_gateway: Arc<OnceLock<context_authority::ManagedGatewayDelegation>>,
 }
 
 impl McpRuntimeControl {
@@ -88,6 +90,8 @@ impl McpRuntimeControl {
         let policy = Arc::new(OnceLock::new());
         let exposure = Arc::new(OnceLock::new());
         let mrtr_handler = Arc::new(OnceLock::new());
+        #[cfg(feature = "legacy-plantcore")]
+        let managed_gateway = Arc::new(OnceLock::new());
         for config in servers {
             config
                 .validate_context_egress()
@@ -122,6 +126,8 @@ impl McpRuntimeControl {
             exposure,
             mrtr_handler,
             configuration_lock: Arc::new(Mutex::new(())),
+            #[cfg(feature = "legacy-plantcore")]
+            managed_gateway,
         })
     }
 
