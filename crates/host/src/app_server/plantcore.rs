@@ -150,7 +150,11 @@ impl PlantcoreAdmission {
             self.fail_closed();
             return Err(error);
         }
-        if payload.engine.external_mcp_posture == ExternalMcpPosture::RunGateway {
+        // An explicit operator bypass keeps its existing policy path. Scoped delegation is
+        // an alternative for non-bypass launches, not a mandatory Worker migration.
+        if !agent.bypass_permissions
+            && payload.engine.external_mcp_posture == ExternalMcpPosture::RunGateway
+        {
             let delegated =
                 mcp.zip(self.dispatch_gate.as_ref())
                     .ok_or(())
@@ -737,11 +741,6 @@ fn validate_runtime(
     agent: &Agent,
     mcp: Option<&crate::mcp::McpRuntimeControl>,
 ) -> Result<(), PlantcoreProtocolError> {
-    if agent.bypass_permissions {
-        return Err(PlantcoreProtocolError::invalid(
-            "managed resident requires explicit gated launch; global permission bypass is forbidden",
-        ));
-    }
     if agent.provider.provider_instance_id() != Some(payload.engine.provider.as_str())
         || agent.model != payload.engine.model
     {
@@ -1472,13 +1471,7 @@ mod tests {
         );
         agent.workspace = "/workspace/work".into();
         agent.bypass_permissions = true;
-        assert_eq!(
-            validate_runtime(&payload(), &agent, None)
-                .unwrap_err()
-                .message,
-            "managed resident requires explicit gated launch; global permission bypass is forbidden",
-        );
-        agent.bypass_permissions = false;
+        assert!(validate_runtime(&payload(), &agent, None).is_ok());
         agent.fail_next_plantcore_bootstrap_append_for_test();
 
         let mut admission = PlantcoreAdmission::required("https://provider.example/v1".into());

@@ -7,6 +7,12 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+### Compatibility
+
+- Scoped MCP context authorization is opt-in. Managed resident bootstrap continues
+  to accept an explicit operator permission bypass without installing scoped Gateway
+  delegation; launch identity validation, explicit denies and execution limits still apply.
+
 ## [0.0.30] - 2026-10-19
 
 ### Added

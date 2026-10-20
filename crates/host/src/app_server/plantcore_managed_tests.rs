@@ -1,4 +1,4 @@
-//! Resident bootstrap integration: no user-configurable path can grant managed delegation.
+//! Resident bootstrap integration: scoped delegation is optional; bypass does not skip identity.
 use super::*;
 use crate::config::McpServerConfig;
 use crate::mcp::McpRuntimeControl;
@@ -61,6 +61,15 @@ fn configured_gateway(registry: &mut iteron_tools::Registry, url: &str) -> McpRu
 
 #[test]
 fn managed_gateway_bootstrap_installs_delegation_only_after_runtime_validation() {
+    assert_managed_gateway_bootstrap(false);
+}
+
+#[test]
+fn managed_gateway_bootstrap_preserves_explicit_bypass_without_scoped_delegation() {
+    assert_managed_gateway_bootstrap(true);
+}
+
+fn assert_managed_gateway_bootstrap(bypass: bool) {
     let workspace = std::env::temp_dir().join(format!(
         "iteron-managed-bootstrap-{}-{:x}",
         std::process::id(),
@@ -97,29 +106,34 @@ fn managed_gateway_bootstrap_installs_delegation_only_after_runtime_validation()
     let mut admission = PlantcoreAdmission::required("https://provider.example/v1".into());
     let gate = admission.dispatch_gate().unwrap();
     agent.install_plantcore_dispatch_gate(gate.clone());
-    agent.bypass_permissions = true;
-    assert!(
+    agent.bypass_permissions = bypass;
+    agent.workspace = "/workspace/not-the-admitted-workspace".into();
+    assert_eq!(
         admission
             .admit(payload.clone(), &mut agent, Some(&mcp))
-            .is_err()
+            .unwrap_err()
+            .message,
+        "runtime workspace does not match the fixed bootstrap workspace",
     );
     assert_eq!(
         gate.submit_if_admitted(|| Ok::<_, ()>(())),
         Err("run_not_admitted")
     );
-    agent.bypass_permissions = false;
+    agent.workspace = "/workspace/work".into();
     let accepted = admission
         .admit(payload.clone(), &mut agent, Some(&mcp))
         .unwrap();
     assert_eq!(accepted.run_id, payload.run_id);
     assert_eq!(gate.submit_if_admitted(|| Ok::<_, ()>(())), Ok(Ok(())));
-    // Replay is idempotent, and neither replays nor ordinary MCP config can re-delegate.
+    // Replay is idempotent and preserves the launch posture.
     assert_eq!(
         admission.admit(payload, &mut agent, Some(&mcp)).unwrap(),
         accepted
     );
-    assert!(mcp.delegate_plantcore_gateway(gate.clone()).is_err());
-    assert!(!agent.bypass_permissions);
+    assert_eq!(agent.bypass_permissions, bypass);
+    // The one-shot delegation slot is already occupied only on the non-bypass path.
+    // The direct call here is a test probe, not an additional production bootstrap path.
+    assert_eq!(mcp.delegate_plantcore_gateway(gate.clone()).is_ok(), bypass);
     assert_eq!(
         agent.permission_rules().cap_rule(Capability::CodeExecuting),
         Some(Verdict::Deny)
