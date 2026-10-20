@@ -229,6 +229,109 @@ mod tests {
         ])
     }
 
+    #[test]
+    fn scoped_operator_context_authority_is_not_approval_or_a_capability_grant() {
+        let tool = "sample__tool_call";
+        let effects = OperationEffects::classify(
+            &ToolUse {
+                id: "read".into(),
+                name: tool.into(),
+                input: json!({"name":"read","arguments":{}}),
+            },
+            Capability::IrreversibleExternal,
+        );
+        let mut rules = PermissionRules::new();
+        let evaluate = |rules: &PermissionRules, mode, ceiling, authority| {
+            evaluate_operation(
+                tool,
+                &effects,
+                OperationPolicy {
+                    mode,
+                    rules,
+                    bypass: false,
+                    task_ceiling: ceiling,
+                    policy_capabilities: all(),
+                    governing_trust: Trust::Untrusted,
+                    authority,
+                },
+            )
+        };
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Constrained
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Ask
+        );
+        rules.set_tool(tool, Verdict::Auto);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Auto
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Plan,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                CapabilitySet::only(Capability::ReadOnly),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        rules.set_tool(tool, Verdict::Deny);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+        rules.set_tool(tool, Verdict::Auto);
+        rules.set_cap(Capability::IrreversibleExternal, Verdict::Deny);
+        assert_eq!(
+            evaluate(
+                &rules,
+                PermissionMode::Default,
+                all(),
+                OperatorAuthority::Operator
+            )
+            .verdict,
+            Verdict::Deny
+        );
+    }
+
     fn operation(
         command: &str,
         rules: &PermissionRules,

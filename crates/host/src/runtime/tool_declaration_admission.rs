@@ -40,6 +40,7 @@ pub(super) struct ToolAdmissionScope<'a> {
     pub(super) hook_journal: Option<HookEffectJournal>,
     pub(super) trust: Trust,
     pub(super) authority: OperatorAuthority,
+    pub(super) mcp: Option<&'a crate::mcp::McpRuntimeControl>,
     pub(super) ceiling: CapabilitySet,
     pub(super) policy_capabilities: CapabilitySet,
     pub(super) bypass: bool,
@@ -154,6 +155,23 @@ impl ToolDeclarationAdmission<'_> {
                 "registered tool proposal lost its operation evidence".into(),
             )
         })?;
+        let scoped_binding = self
+            .scope
+            .mcp
+            .and_then(|mcp| mcp.context_egress_binding(call));
+        let scoped_authority = if self.scope.authority == OperatorAuthority::Constrained
+            && scoped_binding.is_some()
+        {
+            // Record the source of authority before any admission or external effect. Do not
+            // relabel the governing context, the registered capability or any tool result.
+            self.notice(format!(
+                "scoped MCP context-egress authorization: {} binding={}; normal approval and capability gates remain",
+                call.name, scoped_binding.as_deref().unwrap_or_default(),
+            ))?;
+            OperatorAuthority::Operator
+        } else {
+            self.scope.authority
+        };
         let admission = evaluate_operation(
             &call.name,
             &effects,
@@ -164,7 +182,7 @@ impl ToolDeclarationAdmission<'_> {
                 task_ceiling: self.scope.ceiling,
                 policy_capabilities: self.scope.policy_capabilities,
                 governing_trust: self.scope.trust,
-                authority: self.scope.authority,
+                authority: scoped_authority,
             },
         );
         self.scope

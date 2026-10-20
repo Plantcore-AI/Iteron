@@ -184,6 +184,7 @@ impl<'scope> ToolExecutionSession<'scope> {
                 trust: self.scope.trust,
                 authority: self.scope.authority,
                 ceiling: self.scope.ceiling,
+                mcp: self.scope.mcp,
                 policy_capabilities: self.scope.policy_capabilities,
                 bypass: self.scope.bypass,
                 ordinary_extensions: self.scope.ordinary_extensions,

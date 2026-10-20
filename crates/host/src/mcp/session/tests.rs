@@ -37,6 +37,7 @@ fn fixture(marker: &Path) -> McpServerConfig {
         oauth: None,
         tools: iteron_mcp::McpToolFilter::default(),
         policy: iteron_mcp::McpServerPolicy::default(),
+        context_egress_tools: Vec::new(),
     }
 }
 
@@ -53,6 +54,7 @@ fn http_fixture(oauth: Option<crate::config::McpOAuthConfig>) -> McpServerConfig
         oauth,
         tools: iteron_mcp::McpToolFilter::default(),
         policy: iteron_mcp::McpServerPolicy::default(),
+        context_egress_tools: Vec::new(),
     }
 }
 
@@ -374,6 +376,89 @@ fn bound_exposure(config: &McpServerConfig) -> McpCapabilityExposure {
         .server_binding_ids
         .insert(config.runtime_binding_id().unwrap());
     exposure
+}
+
+#[tokio::test]
+async fn scoped_context_egress_requires_exact_operator_binding_and_searched_tool() {
+    let root = marker().with_extension("scoped-context");
+    std::fs::create_dir(&root).unwrap();
+    let mut config = fixture(&root.join("spawned"));
+    config.tools.allow = vec!["echo".into()];
+    config.context_egress_tools = vec!["echo".into()];
+    let mut registry = Registry::read_only(&root).unwrap();
+    let control = McpRuntimeControl::register(&mut registry, &[config.clone()], &[]).unwrap();
+    let call = ToolUse {
+        id: "read".into(),
+        name: "alpha__tool_call".into(),
+        input: json!({"name":"echo","arguments":{}}),
+    };
+    assert!(control.context_egress_binding(&call).is_none());
+    // Older checkpoints cannot prove that this new consent existed.
+    assert!(
+        control
+            .configure(
+                settings(iteron_mcp::McpSpillCleanup::SessionEnd),
+                exposure("alpha")
+            )
+            .is_err()
+    );
+    control
+        .configure(
+            settings(iteron_mcp::McpSpillCleanup::SessionEnd),
+            bound_exposure(&config),
+        )
+        .unwrap();
+    assert!(control.context_egress_binding(&call).is_none());
+    let search = registry
+        .run_effect(ToolUse {
+            id: "search".into(),
+            name: "alpha__tool_search".into(),
+            input: json!({"query":"echo","limit":1}),
+        })
+        .await;
+    let iteron_tools::ToolExecution::Definite(search) = search else {
+        panic!("search must be definite")
+    };
+    assert!(!search.is_error, "{}", search.content);
+    assert_eq!(search.trust, Trust::Untrusted);
+    assert_eq!(
+        control.context_egress_binding(&call),
+        Some(config.runtime_binding_id().unwrap().as_str().to_owned())
+    );
+    assert_eq!(
+        registry.capability_of(&call.name),
+        Some(Capability::IrreversibleExternal)
+    );
+    for (proxy, name) in [
+        ("alpha__tool_call", "delete"),
+        ("other__tool_call", "echo"),
+        ("alpha__resources_read", "echo"),
+    ] {
+        let mut other = call.clone();
+        other.name = proxy.into();
+        other.input["name"] = name.into();
+        assert!(control.context_egress_binding(&other).is_none());
+    }
+    let mut scoped = call.clone();
+    scoped.input["name"] = "alpha__echo".into();
+    assert!(control.context_egress_binding(&scoped).is_some());
+    control.stop("alpha").await.unwrap();
+    assert!(control.context_egress_binding(&call).is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scoped_context_egress_cannot_be_self_granted_by_plugin() {
+    let root = marker().with_extension("scoped-plugin");
+    std::fs::create_dir(&root).unwrap();
+    let mut config = fixture(&root.join("spawned"));
+    config.origin = crate::config::McpServerOrigin::plugin_fixture("sample-plugin", "1.0.0");
+    config.tools.allow = vec!["echo".into()];
+    config.context_egress_tools = vec!["echo".into()];
+    let mut registry = Registry::read_only(&root).unwrap();
+    assert!(McpRuntimeControl::register(&mut registry, &[config], &[]).is_err());
+    assert!(!root.join("spawned").exists());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn plugin_exposure(
