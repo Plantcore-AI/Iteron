@@ -29,6 +29,25 @@ with its decision, rationale, and affected scope so contributors can understand
 the resulting contract. Recording an override documents it; it does not limit the
 Owner's authority.
 
+### Recorded one-time handoff instruction — 2026-10-26
+
+For this handoff only, Jamal explicitly authorized a direct fast-forward of `main`
+from `c9245e5b` through the `70541eb9` engineering/runtime repairs, the `5cc99c2d`
+ownership transfer, and this documentation follow-up, without another issue or
+pull request as an execution prerequisite. This is not a documentation-only
+transaction or evidence of independent human review. The repository
+[takeover checklist](governance/xingyu-handoff-20261026.md) is the current execution
+record; earlier tracking issues and pull requests are historical references.
+
+Any temporary, narrowly scoped Jamal bypass is authorized only for that one
+fast-forward. It must then be removed and the previous protection configuration
+restored and read back. This instruction does not claim that the push or
+restoration has already happened; their exact results belong in the new handoff
+package. It does not grant a standing bypass or change the general appointment,
+independent-review, canary, or release requirements. Official v0.0.30 tags and
+assets remain unchanged, and v0.0.31 remains Xingyu's responsibility after its
+actual release gates pass.
+
 ## Modular ownership
 
 Maintainers choose coherent module or invariant boundaries they are prepared to

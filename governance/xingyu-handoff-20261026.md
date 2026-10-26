@@ -2,23 +2,29 @@
 
 更新日期：2026-10-26。接管负责人：Xingyu Zhou（[@XZhouuuu](https://github.com/XZhouuuu)）。
 
-总入口是 [交接 #445](https://github.com/Plantcore-AI/Iteron/issues/445)，发布总账是 [#443](https://github.com/Plantcore-AI/Iteron/issues/443)，已完成工程修复、等待人工审查的候选是 [PR #444](https://github.com/Plantcore-AI/Iteron/pull/444)。后续状态以这些入口和实际收据为准。
+**本文是当前执行与交接入口，不要求新 issue 或 PR。** [#443](https://github.com/Plantcore-AI/Iteron/issues/443)、[#445](https://github.com/Plantcore-AI/Iteron/issues/445)、[PR #444](https://github.com/Plantcore-AI/Iteron/pull/444) 和 [PR #446](https://github.com/Plantcore-AI/Iteron/pull/446) 按用户要求退役为历史追踪，由执行主线完成关闭并读回状态；本文不提前宣称关闭已完成。退役不等于其中的问题已解决。后续以本文、精确源码提交及新交接包中的执行收据为准。
 
-Jamal 明确要求移交 Iteron 的代码所有权、未认领边界、审查协调、仓库权限和剩余工作；**0.0.31 由 Xingyu 负责发布**。本文是按该指令整理的交接记录，不是 Xingyu 本人的接受声明、人工批准、merge 或发布证明。历史作者不改写；agent 不代 approve/merge，不创建版本 tag，也不放宽门禁。
+Jamal 明确要求移交 Iteron 的代码所有权、未认领边界、审查协调、仓库权限和剩余工作；**0.0.31 由 Xingyu 负责发布**。本文不是 Xingyu 本人的接受声明、独立人工批准或发布证明。历史作者不改写；agent 不代人签收或 approve，不创建版本 tag，也不放宽发布门禁。
 
-## 1. 已迁权限与仍待生效的源码
+### 本次一次性直接落 main 的授权范围
+
+Jamal 明确授权从 `c9245e5b88073f9d1cd32fdacf1698983264a444` 快进，纳入 `70541eb93ea234a79be88b6afadc0a61db72fe21` 的工程和运行时修复、`5cc99c2dc7c1ab76dd3b471f1ec8edde7b424dd7` 的所有权交接，以及本次文档收尾。前者包含真实 pre-dispatch deadline、host/CLI 与验证修复，**不是纯文档或单纯改负责人**。
+
+临时 scoped Jamal bypass 仅限这一次快进；执行后必须移除该例外、恢复原保护并读回核验。这里只记录授权及要求，不声称推送或恢复已经完成；远端前后 HEAD、精确提交范围和保护恢复结果记录在新交接包。授权不等于独立 human review、测试全绿或 Xingyu 签收，也不是未来直接推送或绕过发布门的长期授权。官方 v0.0.30 tag 和发布资产保持原样；不把本次源码落 main 当成 v0.0.31 发布。
+
+## 1. 已迁权限与源码生效条件
 
 | 项目 | 本次已核实状态 | 不代表什么 |
 | --- | --- | --- |
 | 仓库权限 | `XZhouuuu`，user ID `81467490`，已有 Iteron ADMIN；无待接受邀请 | 不等于全部组织、云账号或个人身份转让 |
-| main 规则 | 个人 PR-only Owner bypass 已转 Xingyu 并读回；required checks、CODEOWNER、最新 push 人类批准、禁止强推/删除保留 | 不允许把 bypass 当正常审查通过 |
+| main 规则 | 一次性例外前，个人 PR-only Owner bypass 已转 Xingyu 并读回；required checks、CODEOWNER、最新 push 人类批准、禁止强推/删除保留；本次例外及恢复须另有读回收据 | 不允许把 bypass 当正常审查通过或默认长期权限 |
 | 版本创建 | `v* owner-created releases` 的个人创建权已转 Xingyu并读回 | 不允许提前消耗新版本号 |
 | 发布审批 | `release` environment reviewer 已转 Xingyu并读回；其他开关、tag 部署限制保留 | 不等于候选 preflight 已通过 |
 | 不可变保护 | immutable release 与版本 tag 禁更新/删除规则保持 | 不移动或删除既有 tag，不替换旧发布资产 |
 | Mac runner | 既有进程恢复，GitHub 已显示 online | 不是新版本 native 构建或验收 PASS |
 | Linux runner | 同一既有 ARM64 runner 已添加并读回两个 release 标签，原标签保留 | ARM64 与 x86 cross/QEMU 串行，不是两台 runner 或原生 x86 |
-| 源码 Owner | registry 候选为 `xingyu-owner`；763 条生成 CODEOWNERS 均指向 Xingyu | 未 merge 前，main 的旧所有权文件仍生效 |
-| open issue/PR | 已读回 25 个 open issue、12 个原有 open PR 均含 Xingyu，既有执行人保留；本次移交 PR 另行指派 | 追加 assignee 不等于实施、验收或自动关闭 |
+| 源码 Owner | 本交接提交的 registry 为 `xingyu-owner`；763 条生成 CODEOWNERS 均指向 Xingyu；以快进后的远端 HEAD 读回确认 main 生效 | 提交中的配置不是已完成推送或真人签收的证明 |
+| 历史 issue/PR 移交 | 退役操作前已读回 25 个 open issue、12 个原有 open PR 均含 Xingyu，既有执行人保留；该数量是当时快照 | 本次只退役指定追踪，不把关闭计为实施或验收，不自动关闭其他未完成事项 |
 
 权限移交仅限 Iteron。旧账号既有组织/仓库 Admin 不在尚未签收时盲目删除；接管后由新 Owner 复核访问清单。凭据只通过授权管理入口交接或轮换，不进入源码、issue、日志或本文。
 
@@ -29,15 +35,15 @@ Jamal 明确要求移交 Iteron 的代码所有权、未认领边界、审查协
 | 主边界 | 42 | 23 个非 critical `active`；19 个 critical `open` | 新 Owner 接受任命；critical 需真人独立 reviewer 与激活证据 |
 | 跨边界 invariant overlays | 13 | 全部 `open`，要求独立审查 | Xingyu 安排真实审查人和任务证据 |
 | 优化不变量审查 packet | 1,359 项 / 33 批 | source-current packet，人工批准 0 | 每批由责任真人审查，验证证据后记入 ledger |
-| 生成 CODEOWNERS | 763 条 | 仅所有权源码候选 | review、必要检查、merge 后才是 main 生效配置 |
+| 生成 CODEOWNERS | 763 条 | 本交接提交中的所有权配置 | 快进后读回 main 精确提交；远端权限和 canary 另验 |
 
 旧 packet 的 830 项 / 32 批已过时，不可重用其 token。新 token、生成 freeze、或修改 Owner 都不代表批准。`bootstrap` 保留，不能把上述 23 个登记为 active 的边界解读成整个治理系统或产品已经验收。
 
 ### 2.1 42 个主边界逐项交接
 
-以下每一项的接手协调负责人均为 **@XZhouuuu**。表中 `active` 只描述当前 registry 候选；`open` 的 primary 尚未正式激活，由新 Owner fallback 承担协调责任。所有路径和依赖以 [boundaries.json](boundaries.json) 为准。
+以下每一项的接手协调负责人均为 **@XZhouuuu**。表中 `active` 只描述本交接提交中的 registry 配置；`open` 的 primary 尚未正式激活，由新 Owner fallback 承担协调责任。所有路径和依赖以 [boundaries.json](boundaries.json) 为准，远端是否已采用该提交以执行收据为准。
 
-| # | 精确 boundary ID | 职责 | 候选状态与下一任务 |
+| # | 精确 boundary ID | 职责 | 登记状态与下一任务 |
 | ---: | --- | --- | --- |
 | 1 | `project-governance` | 人类所有权、规则与治理 | critical/open；安排独立 reviewer、完成激活 |
 | 2 | `community-entry` | 社区入口与贡献流程 | active；确认接管、维护入口与响应 |
@@ -106,18 +112,18 @@ Jamal 明确要求移交 Iteron 的代码所有权、未认领边界、审查协
 
 ### P0：真人接管、审查与治理
 
-- [ ] Xingyu 在 #445 亲自确认权限、边界、发布和 on-call 范围；补公共任命/交接记录。
-- [ ] 人工审查并合并所有权源码候选；核对 main 的 registry 与生成 CODEOWNERS 一致。不要直接手改生成文件。
-- [ ] 审查 PR #444 的跨边界影响、最新提交与 CI；交接任命不是这次代码批准。
+- [ ] Xingyu 亲自确认权限、边界、发布和 on-call 范围，补充可核对的接受记录；本文和交接收据是入口，不要求新建 issue 或 PR。
+- [ ] 核对本次快进执行收据、main 精确 HEAD、registry 与生成 CODEOWNERS 一致性，以及临时 bypass 已移除、原保护已恢复的读回证据。不要直接手改生成文件。
+- [ ] 复核 `70541eb9` 修复与本次交接的跨边界影响、实际 CI 和下述未解释测试失败；直接落 main 的授权不代替独立审查或失败归因。
 - [ ] 为 19 个 critical 边界和 13 个 overlays 安排独立真人；逐项记录审查和激活条件。
 - [ ] 审查最新 1,359 项 / 33 批不变量 packet；approval ledger 目前为 0，不重用旧 packet/token。
 - [ ] 用非 bypass canary 证明错误声明、缺批准、过期批准、失败检查都会阻止 merge；保留失败证据。
-- [x] 读回所有现有 open issue/PR 的协调人移交结果。保留 #416 的 @gomnitrix 等已有执行人，不自动关闭未完成事项；新移交 PR 同样指派 Xingyu。
+- [x] 已读回历史 open issue/PR 的协调人移交快照。保留 #416 的 @gomnitrix 等已有执行人；指定追踪退役后的状态另以读回收据记录，不自动关闭其他未完成事项。
 
 ### P1：0.0.31 正式发布，先全部预检再打 tag
 
-- [ ] 以 #443 为唯一发布总账，先修当前依赖安全门。核对 [rustls 更新 PR #432](https://github.com/Plantcore-AI/Iteron/pull/432) 和当前漏洞库；`0.23.43` 至至少 `0.23.45` 的修复不能用旧漏洞库 PASS 代替。
-- [ ] MCP 测试依赖告警按已有更新 PR 独立审查；不把测试供应链告警误计为 Rust runtime 漏洞，也不盲合并批更。
+- [ ] 以本文的发布清单和精确收据为总账，先修当前依赖安全门。核对 rustls 公告、当前漏洞库及可复用更新候选（[PR #432](https://github.com/Plantcore-AI/Iteron/pull/432) 仅作参考）；`0.23.43` 至至少 `0.23.45` 的修复不能用旧漏洞库 PASS 代替。
+- [ ] 按精确锁文件独立审查 MCP 测试依赖告警和可复用修复；不把测试供应链告警误计为 Rust runtime 漏洞，也不盲用批量更新。
 - [ ] 使用真正旧 v0.0.30 validator 验最终候选。旧检查要求 `drive(launch)/serve(launch)`，Box 转发使用 `drive(*launch)/serve(*launch)`；如需兼容桥，限定精确范围、人工 review、保留负例。新 validator 自检不是 predecessor 验证。
 - [ ] 审查 [v0.0.31-preparation.patch](v0.0.31-preparation.patch)：仅 `Cargo.toml`、`Cargo.lock`、`CHANGELOG.md`、`governance/schema-compatibility.json` 四文件的独立准备补丁，以 `70541eb9` 为应用基线。补丁采用零上下文；确认四文件仍与该基线一致后运行 `git apply --check --unidiff-zero governance/v0.0.31-preparation.patch`，再由负责人决定应用；基线有变先重新审查生成，不盲套。本交接未应用补丁，也不存在由此自动获得的 `.31` binary/测试收据。
 - [ ] 冻结 workspace/version/lock/CHANGELOG/schema ordinal 和精确源码提交，重新运行受影响验证；保留历史契约字段，不把 `.30` 短版本二进制改标签。
@@ -135,6 +141,8 @@ Jamal 明确要求移交 Iteron 的代码所有权、未认领边界、审查协
 
 ## 4. 可以复用的证据及明确限制
 
-修复候选提交为 `70541eb93ea234a79be88b6afadc0a61db72fe21`，基线是官方 v0.0.30 的 `c9245e5b88073f9d1cd32fdacf1698983264a444`。PR #444 保存公开摘要：14 个本地源码门通过；all-target 累计 5,220 passed、0 failed、8 ignored（非去重，ignored 不算 PASS）；Mac ARM64 optimized 5 项黑盒和 2 项签名/真实 PTY、Linux ARM64 dev 5 项通过；两个真实 provider 场景通过；MCP 1,534 checks 和 4 unsupported；发布工具 122 tests、19 条合成安装旅程通过。
+历史修复候选提交为 `70541eb93ea234a79be88b6afadc0a61db72fe21`，基线是官方 v0.0.30 的 `c9245e5b88073f9d1cd32fdacf1698983264a444`。该提交已有收据：14 个本地源码门通过；all-target 累计 5,220 passed、0 failed、8 ignored（非去重，ignored 不算 PASS）；Mac ARM64 optimized 5 项黑盒和 2 项签名/真实 PTY、Linux ARM64 dev 5 项通过；两个真实 provider 场景通过；MCP 1,534 checks 和 4 unsupported；发布工具 122 tests、19 条合成安装旅程通过。已退役追踪中的摘要只是历史索引，不是当前执行入口。
 
-这些证据可帮助审查已做修复，**不能改称 0.0.31 新二进制、GitHub CI 全绿、全平台验收、任意模型兼容、P95、Apple notarization、真实备份恢复或真人批准**。旧失败收据和旧发布资产继续保留。每一项未完成工作都应在 #445/#443 或其后续 issue 留下负责人、精确源码/资产身份、验证结果与下一门；转交不等于完成。
+**本轮 `5cc99c2d` 全量测试没有全绿：host 套件为 1,427 PASS / 1 FAILED；失败项使用同一 binary 精确复跑为 1 PASS，但根因未证实，不能据此抹掉首次失败或宣称已修。后续 target 未运行。** 新交接包应同时保留失败与精确复跑收据，后续仍需定位原因并完成剩余门。`70541eb9` 的历史 5,220 条通过记录不覆盖这轮提交与执行。
+
+这些证据可帮助审查已做修复，**不能改称 0.0.31 新二进制、GitHub CI 全绿、全平台验收、任意模型兼容、P95、Apple notarization、真实备份恢复或真人批准**。旧失败收据和旧发布资产继续保留。每一项未完成工作都应在本文及交接收据中留下负责人、精确源码/资产身份、验证结果与下一门；不要求继续使用已退役 issue/PR，转交与追踪关闭均不等于完成。
