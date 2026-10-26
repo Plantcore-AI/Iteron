@@ -78,7 +78,7 @@ impl ProviderRouteAdmission<'_> {
                         LifecyclePayload {
                             duration_us: Some(u64::try_from(wait.as_micros()).unwrap_or(u64::MAX)),
                             reason_code: Some(format!(
-                                "admission_deferred:{}",
+                                "admission_deferred.{}",
                                 admission_reason(reason)
                             )),
                             ..LifecyclePayload::default()

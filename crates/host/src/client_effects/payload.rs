@@ -200,24 +200,35 @@ mod tests {
         use sha2::{Digest as _, Sha256};
         let (root, record, source) = fixture("unobserved");
         let payload = ManagedExportPayload::stage(&source, b"actual export").unwrap();
-        // Corrupt one real reverse edge. The release must refuse before claiming the graph clean.
-        let refs = root
+        let retained_store = payload.store.clone();
+        let seq = payload.seq;
+        let handle = payload.handle.clone();
+        let original_source = std::fs::read(record.path()).unwrap();
+        // Reverse edges now live in the compact metadata log, not physical run-refs files.
+        // Corrupt a complete frame: this must not be treated as a recoverable torn tail.
+        let log = root
             .join(".content")
             .join("v1")
             .join(hex::encode(Sha256::digest(source.tenant.0.as_bytes())))
-            .join("run-refs")
-            .join(hex::encode(Sha256::digest(source.run.0.as_bytes())));
-        let edge = std::fs::read_dir(&refs)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let original = std::fs::read(&edge).unwrap();
-        std::fs::write(&edge, b"not a graph edge").unwrap();
+            .join("metadata-v2.log");
+        let original = std::fs::read(&log).unwrap();
+        assert!(original.starts_with(b"ITMETA02"));
+        let mut corrupt = original.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        // Replacing the inode makes the fixture deterministic even on coarse timestamp filesystems.
+        let replacement = log.with_extension("corrupt-test");
+        std::fs::write(&replacement, &corrupt).unwrap();
+        std::fs::rename(&replacement, &log).unwrap();
         assert_eq!(payload.finish(), super::super::ContentCleanup::Unobserved);
-        assert!(record.path().exists());
-        std::fs::write(edge, original).unwrap();
+        assert_eq!(std::fs::read(record.path()).unwrap(), original_source);
+        assert_eq!(std::fs::read(&log).unwrap(), corrupt);
+        std::fs::write(&replacement, original).unwrap();
+        std::fs::rename(&replacement, &log).unwrap();
+        assert_eq!(
+            retained_store.read_at(seq, &handle).unwrap(),
+            b"actual export"
+        );
+        drop(retained_store);
         drop(record);
         std::fs::remove_dir_all(root).unwrap();
     }

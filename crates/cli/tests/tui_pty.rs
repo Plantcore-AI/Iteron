@@ -1590,28 +1590,44 @@ fn transcript_viewer_search_raw_resize_export_and_both_entry_paths_are_terminal_
         pty.screen_text().contains("ask about this codebase")
             && !pty.screen_text().contains("y copy block")
     });
+    // Keep the narrow-resize proof above, then give each export receipt enough columns for its
+    // distinct basename. A wrapped path cannot identify which completion the screen represents.
+    pty.resize(100, 28);
     let slash_export = scratch.repo().join("core-transcript.md");
     let slash_export_2 = scratch.repo().join("core-transcript-2.md");
     pty.send(b"/export\r");
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // The file appearing is not the export finishing: the writer creates it before the app
-        // clears its pending flag, and a second `/export` inside that window is refused with
-        // "export already pending" -- so the versioned file below never appears and this test times
-        // out. On an M-series Mac the window is submillisecond; on Linux/aarch64 it is wide enough
-        // to lose the race every time. Wait for the app to *say* it finished, which is the signal
-        // that actually orders the two commands.
+        // The file appears before its completion event. Supervisor::recv joins and clears the
+        // effect before publishing that event, so its exact receipt is the semantic idle barrier.
+        // Neither an old receipt redrawn by a new pending block nor the last-command footer proves
+        // completion: the latter can retain "running /export…" after the effect ends.
         pty.wait_until("slash export completes off the input path", |pty| {
-            slash_export.is_file() && pty.screen_text().contains("exported ->")
+            let screen = pty.screen_text();
+            slash_export.is_file()
+                && screen.contains("exported ->")
+                && screen.contains("core-transcript.md")
         });
-        let second_export_capture_start = pty.capture.len();
+        let first_export = std::fs::read_to_string(&slash_export)
+            .expect("first slash export is durable in the workspace");
+        assert!(first_export.starts_with("# Iteron transcript\n\n"));
+        assert!(first_export.contains("needle 你好 😀"));
         pty.send(b"/export\r");
         pty.wait_until("default export versions instead of overwriting", |pty| {
+            let screen = pty.screen_text();
             slash_export_2.is_file()
-                && pty.capture[second_export_capture_start..]
-                    .windows(b"exported ->".len())
-                    .any(|window| window == b"exported ->")
+                && screen.contains("exported ->")
+                && screen.contains("core-transcript-2.md")
         });
+        assert_eq!(
+            std::fs::read_to_string(&slash_export).expect("first slash export remains readable"),
+            first_export,
+            "the second export must not overwrite the first"
+        );
+        let second_export = std::fs::read_to_string(&slash_export_2)
+            .expect("second slash export is durable before the exit key");
+        assert!(second_export.starts_with("# Iteron transcript\n\n"));
+        assert!(second_export.contains("needle 你好 😀"));
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pty.wait_until(

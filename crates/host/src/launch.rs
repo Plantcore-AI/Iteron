@@ -73,7 +73,7 @@ pub struct FrontendLaunch {
 
 pub enum AssemblyOutcome {
     Exit(u8),
-    Ready(FrontendLaunch),
+    Ready(Box<FrontendLaunch>),
 }
 
 pub async fn assemble(
@@ -1032,7 +1032,7 @@ pub async fn assemble(
         )
         .map_err(anyhow::Error::msg)?;
 
-    Ok(AssemblyOutcome::Ready(FrontendLaunch {
+    Ok(AssemblyOutcome::Ready(Box::new(FrontendLaunch {
         agent,
         cli,
         one_shot,
@@ -1056,12 +1056,17 @@ pub async fn assemble(
         output_format,
         machine_schema_version,
         one_shot_images,
-    }))
+    })))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launch_outcome_keeps_the_large_runtime_off_the_return_stack() {
+        assert!(std::mem::size_of::<AssemblyOutcome>() <= 2 * std::mem::size_of::<usize>());
+    }
+
     #[cfg(feature = "legacy-plantcore")]
     use crate::cli_entry::validate_plantcore_provider_credentials;
     use crate::cli_entry::{

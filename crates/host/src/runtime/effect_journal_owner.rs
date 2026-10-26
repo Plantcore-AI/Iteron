@@ -421,17 +421,15 @@ impl EffectJournalOwner {
         if !self.replay_required {
             return self.require_known();
         }
-        let events = replay_logical_rollout(rollout.path()).map_err(|error| {
+        let events = replay_logical_rollout(rollout.path()).inspect_err(|_| {
             if let Some(scope) = &mut self.terminal_scope {
                 scope.unavailable = true;
             }
-            error
         })?;
-        let journal = effects::EffectJournal::replay(&events).map_err(|error| {
+        let journal = effects::EffectJournal::replay(&events).inspect_err(|_| {
             if let Some(scope) = &mut self.terminal_scope {
                 scope.unavailable = true;
             }
-            error
         })?;
         self.admissions = EffectAdmissions::from_journal(&journal);
         let pending = journal.pending();

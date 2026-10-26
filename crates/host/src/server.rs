@@ -33,11 +33,11 @@ pub async fn run(options: Cli) -> anyhow::Result<u8> {
         AssemblyOutcome::Ready(launch) => {
             #[cfg(windows)]
             {
-                boxed_startup_future(|| serve(launch)).await
+                boxed_startup_future(|| serve(*launch)).await
             }
             #[cfg(not(windows))]
             {
-                serve(launch).await
+                serve(*launch).await
             }
         }
     }

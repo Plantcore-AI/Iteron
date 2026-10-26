@@ -43,7 +43,7 @@ pub const PROMPT_ARTIFACTS: &[PromptArtifact] = &[
         id: "prompt/system@v1",
         overridable: true,
         module: ModuleId::PromptSystem,
-        decl: "crates/cli/src/main.rs:SYSTEM_PROMPT",
+        decl: "crates/host/src/cli_entry/prompts.rs:SYSTEM_PROMPT",
         effect: "the operator-facing agent's base system prompt",
     },
     PromptArtifact {

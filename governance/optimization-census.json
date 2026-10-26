@@ -38,7 +38,7 @@
       "clap_default": 31,
       "policy_default_constructor": 665,
       "policy_fallback_call": 13,
-      "builder_quality_default": 3996,
+      "builder_quality_default": 3997,
       "include_str_asset": 3,
       "include_bytes_asset": 5,
       "dynamic_implementation_manifest": 2,
@@ -11759,7 +11759,7 @@
       "use_sites": [
         {
           "path": "crates/host/src/image_input/types.rs",
-          "line": 136,
+          "line": 132,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52088,7 +52088,7 @@
       "id": "evolve.conformance.evolution_matrix",
       "candidate_kind": "const",
       "rust_type": "&[EvolutionRow]",
-      "value": "&[\n    EvolutionRow {\n        class: \"PolicyManifest schema v3 + frozen base-model identity\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/schema.rs\",\n            \"crates/evolve/src/base_model.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/tests/policy_manifest_freeze.rs\",\n                test: \"every_frozen_shape_decodes_its_own_snapshot_without_moving_it\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"a_manifest_migrated_from_schema_2_loads_and_is_permanently_unpromotable\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"a_candidate_naming_no_admissible_base_model_is_refused_before_any_promotion_decision\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"capability-monotone intersection-only admission\",\n        authority_boundaries: &[\"evolution-control\", \"kernel-runtime\"],\n        strategy_slots: &[\"core/tool_policy\", \"core/context\"],\n        world_modules: &[\"crates/evolve/src/admission.rs\"],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"restrict_is_monotone_cannot_widen\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"producer_rejects_capabilities_above_trusted_slot_ceiling\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"independent held-out evaluator + separation of duties\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion_evaluation.rs\",\n            \"crates/evolve/src/held_out.rs\",\n        ],\n        proven_module: Some(\"independent-held-out-evaluator\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/held_out_tests.rs\",\n                test: \"signed_evidence_matches_the_independent_key_not_the_promotion_key\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/held_out_tests.rs\",\n                test: \"producer_anchor_cannot_sign_held_out\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"authority_authenticates_independent_held_out_and_rejects_a_promotion_key_signature\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"authority_rejects_cross_role_key_aliases_even_under_different_ids\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"deny-by-default PromotionAuthority + hash-chained journal\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion_authority.rs\",\n            \"crates/evolve/src/promotion_journal.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"promotion_authority_rejects_unbounded_contracts_and_a_second_writer\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"promotion_audit_hash_chain_detects_authorizing_party_tampering\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g4_candidate_cannot_self_authorize_change_policy_or_relax_safety_budgets\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"DeploymentStage shadow / canary / active / rollback\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion.rs\",\n            \"crates/evolve/src/promotion_state.rs\",\n        ],\n        proven_module: Some(\"shadow-canary\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g2_bounded_shadow_canary_and_failed_invariant_are_enforced_and_audited\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g3_rollback_and_reopen_restore_exact_prior_bundle_bytes_and_identity\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"checkpoint algebra: diff / merge / restrict / retire / transfer\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/context\", \"core/tool_policy\"],\n        world_modules: &[\n            \"crates/evolve/src/checkpoint_algebra.rs\",\n            \"crates/evolve/src/checkpoint_transfer.rs\",\n        ],\n        proven_module: Some(\"checkpoint-algebra\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"diff_is_slot_level_and_attributes_delta\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"merge_rejects_duplicate_slot_and_reruns_admission\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"restrict_is_monotone_cannot_widen\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"retire_drops_slot_to_baseline_as_event\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_reports_portable_fraction_without_offsetting_gate\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"every_operator_output_validates_as_policy_bundle\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"cross-model transfer + reported portable fraction\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\"crates/evolve/src/checkpoint_transfer.rs\"],\n        proven_module: Some(\"cross-model-transfer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"portable_fraction_is_reported_not_offsetting\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_requires_matching_from_and_to_base_models\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_rebinds_every_slot_with_independent_evidence\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"second producer of a different method and ArtifactKind\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/context\"],\n        world_modules: &[\n            \"crates/evolve/src/prompt_producer.rs\",\n            \"crates/evolve/src/producer.rs\",\n        ],\n        proven_module: Some(\"second-producer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/prompt_producer_tests.rs\",\n                test: \"second_producer_emits_frozen_prompt_and_preference_variants\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"second_producer_roundtrips_full_pipeline\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"promotion_decision_is_independent_of_method_field\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"offline candidate producer bound to governed inputs\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\"crates/evolve/src/producer.rs\"],\n        proven_module: Some(\"producer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"producer_requires_governed_training_proofs\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"same_governed_input_reproduces_artifact_and_candidate_digest\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"consent-gated dataset registry\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/dataset_registry.rs\",\n            \"crates/evolve/src/training.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"d14_12_g1_builder_refuses_every_unverified_or_ineligible_governance_class\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"d14_12_g3_revocation_excludes_future_membership_and_is_auditable\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/trajectory_projection_tests.rs\",\n                test: \"revoked_or_denied_consent_run_is_not_projected\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"read-only boot-time PolicyBundle resolution\",\n        authority_boundaries: &[\"cli-host\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\n            \"crates/agents/src/policy.rs\",\n            \"crates/cli/src/bundle_adapter.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/agents/src/policy_tests.rs\",\n                test: \"resolution_is_boot_time_and_immutable\",\n            },\n            Evidence {\n                path: \"crates/agents/src/policy_tests.rs\",\n                test: \"a_promoted_policy_cannot_widen_a_narrowed_filter\",\n            },\n            Evidence {\n                path: \"crates/cli/src/bundle_adapter_tests.rs\",\n                test: \"the_projection_carries_identity_and_never_a_policy_body\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"live self-evolution activation is NO-GO\",\n        authority_boundaries: &[\"evolution-control\", \"kernel-runtime\"],\n        strategy_slots: &[],\n        world_modules: &[\"crates/evolve/src/conformance.rs\"],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/conformance_tests.rs\",\n                test: \"no_runtime_activation_surface_exists_in_kernel_or_agents\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/conformance_tests.rs\",\n                test: \"kernel_and_agents_do_not_depend_on_iteron_evolve\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"honest disclosure matches spec 6.10\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\"docs/spec/evolution.md\"],\n        proven_module: None,\n        evidence: &[Evidence {\n            path: \"crates/evolve/src/conformance_tests.rs\",\n            test: \"the_disclosure_block_states_every_limit_the_code_actually_has\",\n        }],\n    },\n]",
+      "value": "&[\n    EvolutionRow {\n        class: \"PolicyManifest schema v3 + frozen base-model identity\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/schema.rs\",\n            \"crates/evolve/src/base_model.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/tests/policy_manifest_freeze.rs\",\n                test: \"every_frozen_shape_decodes_its_own_snapshot_without_moving_it\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"a_manifest_migrated_from_schema_2_loads_and_is_permanently_unpromotable\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"a_candidate_naming_no_admissible_base_model_is_refused_before_any_promotion_decision\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"capability-monotone intersection-only admission\",\n        authority_boundaries: &[\"evolution-control\", \"kernel-runtime\"],\n        strategy_slots: &[\"core/tool_policy\", \"core/context\"],\n        world_modules: &[\"crates/evolve/src/admission.rs\"],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"restrict_is_monotone_cannot_widen\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"producer_rejects_capabilities_above_trusted_slot_ceiling\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"independent held-out evaluator + separation of duties\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion_evaluation.rs\",\n            \"crates/evolve/src/held_out.rs\",\n        ],\n        proven_module: Some(\"independent-held-out-evaluator\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/held_out_tests.rs\",\n                test: \"signed_evidence_matches_the_independent_key_not_the_promotion_key\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/held_out_tests.rs\",\n                test: \"producer_anchor_cannot_sign_held_out\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"authority_authenticates_independent_held_out_and_rejects_a_promotion_key_signature\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"authority_rejects_cross_role_key_aliases_even_under_different_ids\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"deny-by-default PromotionAuthority + hash-chained journal\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion_authority.rs\",\n            \"crates/evolve/src/promotion_journal.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"promotion_authority_rejects_unbounded_contracts_and_a_second_writer\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"promotion_audit_hash_chain_detects_authorizing_party_tampering\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g4_candidate_cannot_self_authorize_change_policy_or_relax_safety_budgets\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"DeploymentStage shadow / canary / active / rollback\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/promotion.rs\",\n            \"crates/evolve/src/promotion_state.rs\",\n        ],\n        proven_module: Some(\"shadow-canary\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g2_bounded_shadow_canary_and_failed_invariant_are_enforced_and_audited\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/promotion_tests.rs\",\n                test: \"d14_13_g3_rollback_and_reopen_restore_exact_prior_bundle_bytes_and_identity\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"checkpoint algebra: diff / merge / restrict / retire / transfer\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/context\", \"core/tool_policy\"],\n        world_modules: &[\n            \"crates/evolve/src/checkpoint_algebra.rs\",\n            \"crates/evolve/src/checkpoint_transfer.rs\",\n        ],\n        proven_module: Some(\"checkpoint-algebra\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"diff_is_slot_level_and_attributes_delta\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"merge_rejects_duplicate_slot_and_reruns_admission\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"restrict_is_monotone_cannot_widen\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"retire_drops_slot_to_baseline_as_event\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_reports_portable_fraction_without_offsetting_gate\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"every_operator_output_validates_as_policy_bundle\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"cross-model transfer + reported portable fraction\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\"crates/evolve/src/checkpoint_transfer.rs\"],\n        proven_module: Some(\"cross-model-transfer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"portable_fraction_is_reported_not_offsetting\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_requires_matching_from_and_to_base_models\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/checkpoint_algebra_tests.rs\",\n                test: \"transfer_rebinds_every_slot_with_independent_evidence\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"second producer of a different method and ArtifactKind\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/context\"],\n        world_modules: &[\n            \"crates/evolve/src/prompt_producer.rs\",\n            \"crates/evolve/src/producer.rs\",\n        ],\n        proven_module: Some(\"second-producer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/prompt_producer_tests.rs\",\n                test: \"second_producer_emits_frozen_prompt_and_preference_variants\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"second_producer_roundtrips_full_pipeline\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/transcript_tests.rs\",\n                test: \"promotion_decision_is_independent_of_method_field\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"offline candidate producer bound to governed inputs\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\"crates/evolve/src/producer.rs\"],\n        proven_module: Some(\"producer\"),\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"producer_requires_governed_training_proofs\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/producer_tests.rs\",\n                test: \"same_governed_input_reproduces_artifact_and_candidate_digest\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"consent-gated dataset registry\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\n            \"crates/evolve/src/dataset_registry.rs\",\n            \"crates/evolve/src/training.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"d14_12_g1_builder_refuses_every_unverified_or_ineligible_governance_class\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/verifier_tests.rs\",\n                test: \"d14_12_g3_revocation_excludes_future_membership_and_is_auditable\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/trajectory_projection_tests.rs\",\n                test: \"revoked_or_denied_consent_run_is_not_projected\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"read-only boot-time PolicyBundle resolution\",\n        authority_boundaries: &[\"cli-host\"],\n        strategy_slots: &[\"core/tool_policy\"],\n        world_modules: &[\n            \"crates/agents/src/policy.rs\",\n            \"crates/host/src/bundle_adapter.rs\",\n        ],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/agents/src/policy_tests.rs\",\n                test: \"resolution_is_boot_time_and_immutable\",\n            },\n            Evidence {\n                path: \"crates/agents/src/policy_tests.rs\",\n                test: \"a_promoted_policy_cannot_widen_a_narrowed_filter\",\n            },\n            Evidence {\n                path: \"crates/host/src/bundle_adapter_tests.rs\",\n                test: \"the_projection_carries_identity_and_never_a_policy_body\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"live self-evolution activation is NO-GO\",\n        authority_boundaries: &[\"evolution-control\", \"kernel-runtime\"],\n        strategy_slots: &[],\n        world_modules: &[\"crates/evolve/src/conformance.rs\"],\n        proven_module: None,\n        evidence: &[\n            Evidence {\n                path: \"crates/evolve/src/conformance_tests.rs\",\n                test: \"no_runtime_activation_surface_exists_in_kernel_or_agents\",\n            },\n            Evidence {\n                path: \"crates/evolve/src/conformance_tests.rs\",\n                test: \"kernel_and_agents_do_not_depend_on_iteron_evolve\",\n            },\n        ],\n    },\n    EvolutionRow {\n        class: \"honest disclosure matches spec 6.10\",\n        authority_boundaries: &[\"evolution-control\"],\n        strategy_slots: &[],\n        world_modules: &[\"docs/spec/evolution.md\"],\n        proven_module: None,\n        evidence: &[Evidence {\n            path: \"crates/evolve/src/conformance_tests.rs\",\n            test: \"the_disclosure_block_states_every_limit_the_code_actually_has\",\n        }],\n    },\n]",
       "owner": {
         "krate": "evolve",
         "path": "crates/evolve/src/conformance.rs",
@@ -105767,7 +105767,7 @@
       "id": "tunables.export.prompt_artifacts",
       "candidate_kind": "const",
       "rust_type": "&[PromptArtifact]",
-      "value": "&[\n    PromptArtifact {\n        id: \"prompt/system@v1\",\n        overridable: true,\n        module: ModuleId::PromptSystem,\n        decl: \"crates/cli/src/main.rs:SYSTEM_PROMPT\",\n        effect: \"the operator-facing agent's base system prompt\",\n    },\n    PromptArtifact {\n        id: \"prompt/tool_description@v1\",\n        overridable: true,\n        module: ModuleId::PromptToolDescription,\n        decl: \"crates/tools/src/*.rs:ToolSpec::description\",\n        effect: \"the model-visible description of each registered tool; never its capability\",\n    },\n    PromptArtifact {\n        id: \"prompt/subagent@v1\",\n        overridable: true,\n        module: ModuleId::PromptSubagent,\n        decl: \"crates/agents/src/def.rs\",\n        effect: \"the system prompt each spawned subagent runs under\",\n    },\n    PromptArtifact {\n        id: \"prompt/skill@v1\",\n        overridable: true,\n        module: ModuleId::PromptSkill,\n        decl: \"crates/ctx/src/skills.rs\",\n        effect: \"skill and instruction text injected into context\",\n    },\n    PromptArtifact {\n        id: \"prompt/compaction@v1\",\n        overridable: true,\n        module: ModuleId::PromptCompaction,\n        decl: \"crates/ctx/src/compact.rs\",\n        effect: \"the instruction that produces a conversation summary\",\n    },\n    PromptArtifact {\n        id: \"prompt/verification@v1\",\n        overridable: true,\n        module: ModuleId::PromptVerification,\n        decl: \"crates/verify/src\",\n        effect: \"operator-supplied model guidance appended for verification handling\",\n    },\n    PromptArtifact {\n        id: \"prompt/planner@v1\",\n        overridable: true,\n        module: ModuleId::PromptPlanner,\n        decl: \"crates/agents/src/decompose.rs\",\n        effect: \"the instruction that decomposes a task into subtasks\",\n    },\n    PromptArtifact {\n        id: \"prompt/reduce@v1\",\n        overridable: true,\n        module: ModuleId::PromptReduce,\n        decl: \"crates/agents/src/reduce.rs\",\n        effect: \"the instruction that merges child results\",\n    },\n    PromptArtifact {\n        id: \"prompt/memory_write@v1\",\n        overridable: true,\n        module: ModuleId::PromptMemoryWrite,\n        decl: \"crates/ctx/src/memory.rs\",\n        effect: \"operator-supplied model guidance appended for memory-write decisions\",\n    },\n    PromptArtifact {\n        id: \"prompt/recovery@v1\",\n        overridable: true,\n        module: ModuleId::PromptRecovery,\n        decl: \"crates/workflow/src\",\n        effect: \"the escalation text used when an assignment ends without usable evidence\",\n    },\n]",
+      "value": "&[\n    PromptArtifact {\n        id: \"prompt/system@v1\",\n        overridable: true,\n        module: ModuleId::PromptSystem,\n        decl: \"crates/host/src/cli_entry/prompts.rs:SYSTEM_PROMPT\",\n        effect: \"the operator-facing agent's base system prompt\",\n    },\n    PromptArtifact {\n        id: \"prompt/tool_description@v1\",\n        overridable: true,\n        module: ModuleId::PromptToolDescription,\n        decl: \"crates/tools/src/*.rs:ToolSpec::description\",\n        effect: \"the model-visible description of each registered tool; never its capability\",\n    },\n    PromptArtifact {\n        id: \"prompt/subagent@v1\",\n        overridable: true,\n        module: ModuleId::PromptSubagent,\n        decl: \"crates/agents/src/def.rs\",\n        effect: \"the system prompt each spawned subagent runs under\",\n    },\n    PromptArtifact {\n        id: \"prompt/skill@v1\",\n        overridable: true,\n        module: ModuleId::PromptSkill,\n        decl: \"crates/ctx/src/skills.rs\",\n        effect: \"skill and instruction text injected into context\",\n    },\n    PromptArtifact {\n        id: \"prompt/compaction@v1\",\n        overridable: true,\n        module: ModuleId::PromptCompaction,\n        decl: \"crates/ctx/src/compact.rs\",\n        effect: \"the instruction that produces a conversation summary\",\n    },\n    PromptArtifact {\n        id: \"prompt/verification@v1\",\n        overridable: true,\n        module: ModuleId::PromptVerification,\n        decl: \"crates/verify/src\",\n        effect: \"operator-supplied model guidance appended for verification handling\",\n    },\n    PromptArtifact {\n        id: \"prompt/planner@v1\",\n        overridable: true,\n        module: ModuleId::PromptPlanner,\n        decl: \"crates/agents/src/decompose.rs\",\n        effect: \"the instruction that decomposes a task into subtasks\",\n    },\n    PromptArtifact {\n        id: \"prompt/reduce@v1\",\n        overridable: true,\n        module: ModuleId::PromptReduce,\n        decl: \"crates/agents/src/reduce.rs\",\n        effect: \"the instruction that merges child results\",\n    },\n    PromptArtifact {\n        id: \"prompt/memory_write@v1\",\n        overridable: true,\n        module: ModuleId::PromptMemoryWrite,\n        decl: \"crates/ctx/src/memory.rs\",\n        effect: \"operator-supplied model guidance appended for memory-write decisions\",\n    },\n    PromptArtifact {\n        id: \"prompt/recovery@v1\",\n        overridable: true,\n        module: ModuleId::PromptRecovery,\n        decl: \"crates/workflow/src\",\n        effect: \"the escalation text used when an assignment ends without usable evidence\",\n    },\n]",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/export.rs",
@@ -106396,37 +106396,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 271,
+          "line": 273,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 287,
+          "line": 289,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 805,
+          "line": 832,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 806,
+          "line": 833,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 816,
+          "line": 843,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 818,
+          "line": 845,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 886,
+          "line": 913,
           "evidence": "Rust path reference"
         }
       ],
@@ -109823,37 +109823,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 271,
+          "line": 273,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 287,
+          "line": 289,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 805,
+          "line": 832,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 806,
+          "line": 833,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 816,
+          "line": 843,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 818,
+          "line": 845,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 886,
+          "line": 913,
           "evidence": "Rust path reference"
         }
       ],
@@ -109978,7 +109978,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 186,
+          "line": 188,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -110007,7 +110007,7 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 182,
+          "line": 184,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -110061,37 +110061,37 @@
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 271,
+          "line": 273,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 287,
+          "line": 289,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 805,
+          "line": 832,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 806,
+          "line": 833,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 816,
+          "line": 843,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 818,
+          "line": 845,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 886,
+          "line": 913,
           "evidence": "Rust path reference"
         }
       ],
@@ -110116,18 +110116,23 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 658,
+          "line": 368,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 829,
+          "line": 685,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tunables/src/service_graph.rs",
+          "line": 856,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `CLOSED_HOST_INVARIANTS` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:658 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `CLOSED_HOST_INVARIANTS` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:368 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -110146,13 +110151,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 843,
+          "line": 870,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `EXTERNAL_PROTOCOL_SERVICE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:843 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EXTERNAL_PROTOCOL_SERVICE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:870 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -110171,13 +110176,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 691,
+          "line": 718,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "hard_budget",
-      "review_evidence": "explicit census disposition override: `MAX_RUNTIME_SERVICE_GRAPH_BYTES` at crates/tunables/src/service_graph.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/tunables/src/service_graph.rs:691 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_RUNTIME_SERVICE_GRAPH_BYTES` at crates/tunables/src/service_graph.rs — the value is classified as a hard ceiling rather than a quality preference; observed at crates/tunables/src/service_graph.rs:718 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -110186,8 +110191,8 @@
     {
       "id": "tunables.service_graph.runtime_crate_ids",
       "candidate_kind": "const",
-      "rust_type": "[&str; 23]",
-      "value": "[\n    \"agents\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"extension-sdk\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
+      "rust_type": "[&str; 25]",
+      "value": "[\n    \"agents\",\n    \"app-server\",\n    \"changeset\",\n    \"cli\",\n    \"ctx\",\n    \"eval\",\n    \"evolve\",\n    \"extension-sdk\",\n    \"host\",\n    \"kernel\",\n    \"lsp\",\n    \"marketplace\",\n    \"mcp\",\n    \"obs\",\n    \"protocol\",\n    \"provider\",\n    \"record\",\n    \"sandbox\",\n    \"sched\",\n    \"statusline\",\n    \"support\",\n    \"tools\",\n    \"tunables\",\n    \"verify\",\n    \"workflow\",\n]",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/service_graph.rs",
@@ -110196,13 +110201,13 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 795,
+          "line": 822,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_CRATE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:795 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_CRATE_IDS` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:822 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -110221,18 +110226,18 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 675,
+          "line": 702,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 683,
+          "line": 710,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:675 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION` at crates/tunables/src/service_graph.rs — the value participates in stable identity/canonical naming; observed at crates/tunables/src/service_graph.rs:702 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -110242,7 +110247,7 @@
       "id": "tunables.service_graph.runtime_service_node_count",
       "candidate_kind": "const",
       "rust_type": "usize",
-      "value": "67",
+      "value": "69",
       "owner": {
         "krate": "tunables",
         "path": "crates/tunables/src/service_graph.rs",
@@ -110251,18 +110256,18 @@
       "use_sites": [
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 270,
+          "line": 272,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tunables/src/service_graph.rs",
-          "line": 684,
+          "line": 711,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_NODE_COUNT` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:270 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_SERVICE_NODE_COUNT` at crates/tunables/src/service_graph.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tunables/src/service_graph.rs:272 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,

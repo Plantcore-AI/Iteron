@@ -315,7 +315,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
         strategy_slots: &["core/tool_policy"],
         world_modules: &[
             "crates/agents/src/policy.rs",
-            "crates/cli/src/bundle_adapter.rs",
+            "crates/host/src/bundle_adapter.rs",
         ],
         proven_module: None,
         evidence: &[
@@ -328,7 +328,7 @@ pub const EVOLUTION_MATRIX: &[EvolutionRow] = &[
                 test: "a_promoted_policy_cannot_widen_a_narrowed_filter",
             },
             Evidence {
-                path: "crates/cli/src/bundle_adapter_tests.rs",
+                path: "crates/host/src/bundle_adapter_tests.rs",
                 test: "the_projection_carries_identity_and_never_a_policy_body",
             },
         ],

@@ -37,13 +37,21 @@ pub fn generate(root: &Path) -> Result<()> {
 fn validate_source_locators(root: &Path) -> Result<()> {
     for family in families() {
         for binding in family.source.bindings {
-            let locator = binding.locator;
-            if locator.starts_with("crates/") && !root.join(locator).exists() {
-                bail!(
-                    "family `{}` points at missing source locator `{locator}`",
-                    family.id
-                );
-            }
+            validate_source_locator(root, family.id, binding.locator)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_locator(root: &Path, family: &str, locator: &str) -> Result<()> {
+    if locator.starts_with("crates/") {
+        // Frozen provenance is part of the registry digest. Resolve only registered moves,
+        // and require the actual owner even if a stale source file remains at the old path.
+        let owner = crate::source_owners::canonical(locator).unwrap_or(locator);
+        if !root.join(owner).is_file() {
+            bail!(
+                "family `{family}` points at missing source locator `{locator}` (owner `{owner}`)"
+            );
         }
     }
     Ok(())
@@ -522,5 +530,38 @@ mod tests {
     #[test]
     fn repository_source_locators_are_live() {
         validate_source_locators(&root()).unwrap();
+    }
+
+    #[test]
+    fn source_locator_relocations_are_exact_and_refuse_stale_owner_bait() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = std::env::temp_dir().join(format!(
+            "iteron-tunable-source-locators-{}-{nonce}",
+            std::process::id()
+        ));
+        let old = fixture.join("crates/cli/src/config.rs");
+        let actual = fixture.join("crates/host/src/config.rs");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+        std::fs::write(&old, "// stale owner bait").unwrap();
+        assert!(validate_source_locator(&fixture, "provider", "crates/cli/src/config.rs").is_err());
+        std::fs::write(&actual, "// exact registered owner").unwrap();
+        validate_source_locator(&fixture, "provider", "crates/cli/src/config.rs").unwrap();
+        std::fs::write(
+            fixture.join("crates/host/src/unregistered.rs"),
+            "// unrelated",
+        )
+        .unwrap();
+        assert!(
+            validate_source_locator(&fixture, "provider", "crates/cli/src/unregistered.rs")
+                .is_err()
+        );
+        std::fs::remove_file(&actual).unwrap();
+        std::fs::create_dir(&actual).unwrap();
+        assert!(validate_source_locator(&fixture, "provider", "crates/cli/src/config.rs").is_err());
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 }

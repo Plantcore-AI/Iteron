@@ -174,7 +174,7 @@ fn validate_host_extracted(
         match startup_future!(iteron_host::launch::assemble(cli, startup, validated)).await? {
             iteron_host::launch::AssemblyOutcome::Exit(code) => Ok(code),
             iteron_host::launch::AssemblyOutcome::Ready(launch) => {
-                startup_future!(cli_entry::frontend::drive(launch)).await
+                startup_future!(cli_entry::frontend::drive(*launch)).await
             }
         }
     };
@@ -342,11 +342,11 @@ fn validate_server_ports(server: &str, entry: &str) -> Result<()> {
             AssemblyOutcome::Ready(launch) => {
                 #[cfg(windows)]
                 {
-                    boxed_startup_future(|| serve(launch)).await
+                    boxed_startup_future(|| serve(*launch)).await
                 }
                 #[cfg(not(windows))]
                 {
-                    serve(launch).await
+                    serve(*launch).await
                 }
             }
         }

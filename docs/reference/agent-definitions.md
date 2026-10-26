@@ -85,7 +85,7 @@ The allowlist is enforced during execution as well as in the advertised tools.
 Omitting `agent_type` keeps the generic read-only child. Invalid profiles are
 refused before child admission. A restricted toolset does not establish that a
 model completed the requested investigation; inspect its returned outcome and the child record's
-actual tool result. See the runnable [restricted reader example](../../examples/restricted-reader/README.md).
+actual tool result. See the runnable [restricted reader example](https://github.com/Plantcore-AI/Iteron/blob/main/examples/restricted-reader/README.md).
 The native regression selects this example's advertised profile, reads a real synthetic file,
 checks matching durable intent/result records, and runs restricted and generic siblings concurrently.
 

@@ -59,11 +59,7 @@ impl ImageInputError {
         }
     }
 
-    #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "integration tests compile this module separately from the binary test target"
-    )]
+    /// Returns the typed failure category without exposing attachment contents or paths.
     pub const fn kind(&self) -> ImageInputErrorKind {
         self.kind
     }

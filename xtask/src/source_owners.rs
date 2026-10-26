@@ -664,7 +664,6 @@ pub(crate) fn historical(current: &str) -> Option<&'static str> {
         .find_map(|(old, new)| (new == current).then_some(old))
 }
 
-#[cfg(test)]
 pub(crate) fn canonical(previous: &str) -> Option<&'static str> {
     MOVES
         .iter()

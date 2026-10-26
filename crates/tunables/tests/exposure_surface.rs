@@ -49,6 +49,7 @@ fn the_module_axis_is_total_and_has_no_empty_module() {
 fn the_runtime_service_graph_export_is_fail_closed_and_truthful() {
     let exported = surface();
     validate_runtime_service_graph(&exported.runtime_services).unwrap();
+    assert_eq!(exported.counts.runtime_service_nodes, 69);
     assert_eq!(
         exported.counts.runtime_service_nodes,
         exported.runtime_services.nodes.len()
@@ -77,6 +78,16 @@ fn the_runtime_service_graph_export_is_fail_closed_and_truthful() {
         .iter()
         .filter(|node| node.layer == RuntimeServiceLayer::PlatformService)
         .collect::<Vec<_>>();
+    assert_eq!(platform.len(), 25);
+    for krate in ["host", "app-server"] {
+        assert_eq!(
+            platform
+                .iter()
+                .filter(|node| node.source_crate.as_deref() == Some(krate))
+                .count(),
+            1
+        );
+    }
     let replaceable = platform
         .iter()
         .filter(|node| node.disposition == RuntimeServiceDisposition::ReplaceableOnly)
@@ -89,7 +100,7 @@ fn the_runtime_service_graph_export_is_fail_closed_and_truthful() {
         .iter()
         .filter(|node| node.disposition == RuntimeServiceDisposition::HostFixedNonOptimization)
         .collect::<Vec<_>>();
-    assert_eq!(host_fixed.len(), 17);
+    assert_eq!(host_fixed.len(), 19);
     assert!(host_fixed.iter().all(|node| {
         node.implementation_status == RuntimeServiceImplementationStatus::HostFixed
             && node

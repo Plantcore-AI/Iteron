@@ -712,11 +712,13 @@ struct EffectPrimitive {
 // `run_legacy_hook` uses that same journal and publishes its terminal lifecycle independently.
 // The AppServer source is therefore scanned alongside the runtime rather than becoming an
 // unaudited composition-root escape hatch.
+// Both owners now live in iteron-host. Scan their real modules and keep the exact path/function
+// pairs; a similarly named CLI facade does not inherit authority after the move.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_cancellable_journaled(",
         owners: &[(
-            "crates/cli/src/app_server/lifecycle_control.rs",
+            "crates/host/src/app_server/lifecycle_control.rs",
             "run_legacy_hook",
         )],
         guidance: "compatibility hook dispatch requires the actual HookEffectJournal",
@@ -724,29 +726,29 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_cancellable_journaled_report(",
         owners: &[
-            ("crates/cli/src/runtime/hook_execution.rs", "compatibility"),
-            ("crates/cli/src/runtime/hook_execution.rs", "gate_batch"),
-            ("crates/cli/src/runtime/hook_execution.rs", "post_tools"),
+            ("crates/host/src/runtime/hook_execution.rs", "compatibility"),
+            ("crates/host/src/runtime/hook_execution.rs", "gate_batch"),
+            ("crates/host/src/runtime/hook_execution.rs", "post_tools"),
             (
-                "crates/cli/src/runtime/early_tool_gate.rs",
+                "crates/host/src/runtime/early_tool_gate.rs",
                 "run_lifecycle_gate",
             ),
-            ("crates/cli/src/runtime/hooks.rs", "run_stop_hook_observer"),
+            ("crates/host/src/runtime/hooks.rs", "run_stop_hook_observer"),
         ],
         guidance: "canonical Hook execution keeps admitted tickets or its retained command journal before polling commands",
     },
     EffectPrimitive {
         needle: ".run_lifecycle_cancellable_journaled(",
         owners: &[
-            ("crates/cli/src/runtime/hook_execution.rs", "lifecycle"),
-            ("crates/cli/src/runtime/hook_execution.rs", "gate_batch"),
+            ("crates/host/src/runtime/hook_execution.rs", "lifecycle"),
+            ("crates/host/src/runtime/hook_execution.rs", "gate_batch"),
             (
-                "crates/cli/src/runtime/early_tool_gate.rs",
+                "crates/host/src/runtime/early_tool_gate.rs",
                 "run_lifecycle_gate",
             ),
-            ("crates/cli/src/runtime/lifecycle_hooks.rs", "dispatch_one"),
+            ("crates/host/src/runtime/lifecycle_hooks.rs", "dispatch_one"),
             (
-                "crates/cli/src/app_server/lifecycle_control.rs",
+                "crates/host/src/app_server/lifecycle_control.rs",
                 "run_lifecycle_gate",
             ),
         ],
@@ -755,9 +757,9 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_admitted_intent_captured(",
         owners: &[
-            ("crates/cli/src/runtime/ordered_tool_call.rs", "execute"),
+            ("crates/host/src/runtime/ordered_tool_call.rs", "execute"),
             (
-                "crates/cli/src/runtime/deferred_batch_executor.rs",
+                "crates/host/src/runtime/deferred_batch_executor.rs",
                 "execute",
             ),
         ],
@@ -765,13 +767,13 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     },
     EffectPrimitive {
         needle: ".dispatch_stream_intent_captured(",
-        owners: &[("crates/cli/src/runtime/stream_tool_admission.rs", "admit")],
+        owners: &[("crates/host/src/runtime/stream_tool_admission.rs", "admit")],
         guidance: "stream declarations open the actual ticket or pure ToolReady receipt before their captured future is admitted",
     },
     EffectPrimitive {
         needle: "iteron_provider::turn_cancellable_any(",
         owners: &[(
-            "crates/cli/src/runtime/provider_transport_attempt.rs",
+            "crates/host/src/runtime/provider_transport_attempt.rs",
             "execute_admitted_provider_turn_observed",
         )],
         guidance: "physical provider IO follows the exact admitted request and paid attempt; legacy observation absence cannot authorize IO",
@@ -779,7 +781,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: "iteron_provider::turn_cancellable_any_observed(",
         owners: &[(
-            "crates/cli/src/runtime/provider_transport_attempt.rs",
+            "crates/host/src/runtime/provider_transport_attempt.rs",
             "execute_admitted_provider_turn_observed",
         )],
         guidance: "the same physical request observer crosses its prepared/dispatching barrier before network dispatch",
@@ -788,24 +790,24 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
         needle: "execute_admitted_provider_turn_observed(",
         owners: &[
             (
-                "crates/cli/src/runtime/provider_transport_attempt.rs",
+                "crates/host/src/runtime/provider_transport_attempt.rs",
                 "execute_admitted_provider_turn_observed",
             ),
-            ("crates/cli/src/runtime/provider_stream_attempt.rs", "run"),
+            ("crates/host/src/runtime/provider_stream_attempt.rs", "run"),
             (
-                "crates/cli/src/runtime/provider_route.rs",
+                "crates/host/src/runtime/provider_route.rs",
                 "brokered_provider_turn",
             ),
-            ("crates/cli/src/runtime/provider_hedge.rs", "run_attempt"),
+            ("crates/host/src/runtime/provider_hedge.rs", "run_attempt"),
         ],
         guidance: "Main, auxiliary and hedge attempts retain their own actual ticket/financial obligation before physical transport and settle that identity afterward",
     },
     EffectPrimitive {
         needle: "checkpoint_excluding_runtime_state(",
         owners: &[
-            ("crates/cli/src/runtime/workspace_checkpoint.rs", "create"),
+            ("crates/host/src/runtime/workspace_checkpoint.rs", "create"),
             (
-                "crates/cli/src/app_server/session_factory/workspace_rewind.rs",
+                "crates/host/src/app_server/session_factory/workspace_rewind.rs",
                 "create_safety",
             ),
         ],
@@ -814,7 +816,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_bounded_verify_observed(",
         owners: &[(
-            "crates/cli/src/runtime/verification_execution.rs",
+            "crates/host/src/runtime/verification_execution.rs",
             "dispatch_verify_task",
         )],
         guidance: "StrongVerificationGate owns its exact Verify ticket/task/dispatch/terminal sequence",
@@ -822,35 +824,35 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".dispatch_verify_task(",
         owners: &[(
-            "crates/cli/src/runtime/verification_execution.rs",
+            "crates/host/src/runtime/verification_execution.rs",
             "run_verify",
         )],
         guidance: "the optional verifier caller first fsyncs its ticket and binds the same physical task",
     },
     EffectPrimitive {
         needle: "crate::workflow::launch_prepared(",
-        owners: &[("crates/cli/src/runtime/workflow_execution.rs", "execute")],
+        owners: &[("crates/host/src/runtime/workflow_execution.rs", "execute")],
         guidance: "prepared workflow execution follows its real parent admission and retains the run handle until settlement",
     },
     EffectPrimitive {
         needle: "child.run_leaf(&prompt)",
         owners: &[(
-            "crates/cli/src/runtime/direct_child_execution.rs",
+            "crates/host/src/runtime/direct_child_execution.rs",
             "native_child_future",
         )],
         guidance: "the private native child future is spawned only after run opens the actual direct ticket; run retains stop, join, cleanup and accounting custody",
     },
     EffectPrimitive {
         needle: "children.direct(prompt, node, agent_type)",
-        owners: &[("crates/cli/src/runtime/direct_child_execution.rs", "run")],
+        owners: &[("crates/host/src/runtime/direct_child_execution.rs", "run")],
         guidance: "controller direct execution follows the admitted actual child epoch rather than a local counter",
     },
     EffectPrimitive {
         needle: "tokio::process::Command::new(",
         owners: &[
-            ("crates/cli/src/runtime/hooks.rs", "run_one_with_shell"),
+            ("crates/host/src/runtime/hooks.rs", "run_one_with_shell"),
             (
-                "crates/cli/src/runtime/hooks.rs",
+                "crates/host/src/runtime/hooks.rs",
                 "run_plantcore_workspace_hook",
             ),
         ],
@@ -1007,8 +1009,8 @@ fn test_only_source_paths(sources: &[PathBuf]) -> BTreeSet<PathBuf> {
     let mut production: BTreeSet<_> = sources
         .iter()
         .filter(|path| {
-            path.ends_with("crates/cli/src/runtime.rs")
-                || path.ends_with("crates/cli/src/app_server.rs")
+            path.ends_with("crates/host/src/runtime.rs")
+                || path.ends_with("crates/host/src/app_server.rs")
                 || KERNEL_SOURCES
                     .iter()
                     .any(|relative| path.ends_with(relative))
@@ -1043,7 +1045,7 @@ fn exact_effect_owner_table_cannot_authorize_a_same_named_foreign_facade() {
             assert!(
                 !primitive
                     .owners
-                    .contains(&("crates/cli/src/runtime/unused_facade.rs", *function))
+                    .contains(&("crates/host/src/runtime/unused_facade.rs", *function))
             );
         }
     }
@@ -1085,40 +1087,40 @@ fn source_exclusion_requires_actual_test_declarations_and_production_reference_w
     )));
     let files = [
         (
-            "crates/cli/src/runtime.rs",
+            "crates/host/src/runtime.rs",
             "#[cfg(test)]\ninclude!(\"runtime/tests.rs\");\n\
              #[cfg(all(unix, test))]\n#[path = \"runtime/declared_fixture.rs\"]\nmod fixture;\n\
              mod production_owner;\n\
              #[cfg(test)]\n#[path = \"runtime/shared.rs\"]\nmod fixture_shared;\n\
              #[path = \"runtime/shared.rs\"]\nmod production_shared;",
         ),
-        ("crates/cli/src/runtime/tests.rs", "fn fixture() {}"),
+        ("crates/host/src/runtime/tests.rs", "fn fixture() {}"),
         (
-            "crates/cli/src/runtime/declared_fixture.rs",
+            "crates/host/src/runtime/declared_fixture.rs",
             "mod inherited_test;",
         ),
         (
-            "crates/cli/src/runtime/declared_fixture/inherited_test.rs",
+            "crates/host/src/runtime/declared_fixture/inherited_test.rs",
             "fn fixture() {}",
         ),
         (
-            "crates/cli/src/runtime/production_owner.rs",
+            "crates/host/src/runtime/production_owner.rs",
             "#[path = \"looks_like_tests.rs\"]\nmod actual;\n\
              #[cfg(test)]\nmod nested_fixture;\n\
              // #[cfg(test)]\n// include!(\"comment_bait.rs\");\n\
              const BAIT: &str = r#\"#[cfg(test)]\ninclude!(\"literal_bait.rs\");\"#;",
         ),
-        ("crates/cli/src/runtime/shared.rs", "fn actual() {}"),
+        ("crates/host/src/runtime/shared.rs", "fn actual() {}"),
         (
-            "crates/cli/src/runtime/looks_like_tests.rs",
+            "crates/host/src/runtime/looks_like_tests.rs",
             "fn actual() {}",
         ),
         (
-            "crates/cli/src/runtime/production_owner/nested_fixture.rs",
+            "crates/host/src/runtime/production_owner/nested_fixture.rs",
             "fn fixture() {}",
         ),
-        ("crates/cli/src/runtime/comment_bait.rs", "fn actual() {}"),
-        ("crates/cli/src/runtime/literal_bait.rs", "fn actual() {}"),
+        ("crates/host/src/runtime/comment_bait.rs", "fn actual() {}"),
+        ("crates/host/src/runtime/literal_bait.rs", "fn actual() {}"),
     ];
     for (relative, source) in files {
         let path = root.0.join(relative);
@@ -1128,26 +1130,26 @@ fn source_exclusion_requires_actual_test_declarations_and_production_reference_w
     let sources = runtime_source_paths(&root.0);
     let excluded = test_only_source_paths(&sources);
     for relative in [
-        "crates/cli/src/runtime/tests.rs",
-        "crates/cli/src/runtime/declared_fixture.rs",
-        "crates/cli/src/runtime/declared_fixture/inherited_test.rs",
-        "crates/cli/src/runtime/production_owner/nested_fixture.rs",
+        "crates/host/src/runtime/tests.rs",
+        "crates/host/src/runtime/declared_fixture.rs",
+        "crates/host/src/runtime/declared_fixture/inherited_test.rs",
+        "crates/host/src/runtime/production_owner/nested_fixture.rs",
     ] {
         assert!(excluded.contains(&root.0.join(relative)), "{relative}");
     }
     for relative in [
-        "crates/cli/src/runtime/shared.rs",
-        "crates/cli/src/runtime/looks_like_tests.rs",
-        "crates/cli/src/runtime/comment_bait.rs",
-        "crates/cli/src/runtime/literal_bait.rs",
+        "crates/host/src/runtime/shared.rs",
+        "crates/host/src/runtime/looks_like_tests.rs",
+        "crates/host/src/runtime/comment_bait.rs",
+        "crates/host/src/runtime/literal_bait.rs",
     ] {
         assert!(!excluded.contains(&root.0.join(relative)), "{relative}");
     }
 }
 
 fn runtime_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
-    let mut sources = vec![root.join("crates/cli/src/runtime.rs")];
-    collect_runtime_sources(&root.join("crates/cli/src/runtime"), &mut sources);
+    let mut sources = vec![root.join("crates/host/src/runtime.rs")];
+    collect_runtime_sources(&root.join("crates/host/src/runtime"), &mut sources);
     sources.sort();
     sources
 }
@@ -1158,8 +1160,8 @@ fn effect_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
         .map(|relative| root.join(relative))
         .collect();
     sources.extend(runtime_source_paths(root));
-    sources.push(root.join("crates/cli/src/app_server.rs"));
-    collect_runtime_sources(&root.join("crates/cli/src/app_server"), &mut sources);
+    sources.push(root.join("crates/host/src/app_server.rs"));
+    collect_runtime_sources(&root.join("crates/host/src/app_server"), &mut sources);
     sources.sort();
     sources.dedup();
     let tests = test_only_source_paths(&sources);
@@ -1484,7 +1486,7 @@ fn verifier_primitive_owner(needle: &str, relative: &std::path::Path, enclosing:
         ".dispatch_verify_task(" => "run_verify",
         _ => return true,
     };
-    relative == std::path::Path::new("crates/cli/src/runtime/verification_execution.rs")
+    relative == std::path::Path::new("crates/host/src/runtime/verification_execution.rs")
         && enclosing == required
 }
 
@@ -1597,7 +1599,7 @@ fn stream_source_guard_pins_real_admission_and_rejects_early_dispatch_or_facade_
         .and_then(std::path::Path::parent)
         .expect("workspace root");
     let source =
-        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+        std::fs::read_to_string(root.join("crates/host/src/runtime/stream_tool_admission.rs"))
             .expect("actual streamed-tool admission owner");
     validate_stream_source_owner(&source).expect("real receipt-before-IO admission");
     let dispatch = "let future = self.scope.registry.dispatch_stream_intent_captured(intent);";
@@ -1634,7 +1636,7 @@ fn verifier_source_guard_tracks_the_actual_ticket_owner_and_rejects_facade_or_li
         .and_then(std::path::Path::parent)
         .expect("workspace root");
     let source =
-        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+        std::fs::read_to_string(root.join("crates/host/src/runtime/verification_execution.rs"))
             .expect("real production verifier owner");
     validate_verifier_source_owner(&source).expect("actual optional verifier owner");
     let call = "let dispatch = self.dispatch_verify_task(command, Some(&task)).await;";
@@ -1666,12 +1668,12 @@ fn verifier_source_guard_tracks_the_actual_ticket_owner_and_rejects_facade_or_li
     );
     assert!(!verifier_primitive_owner(
         ".run_bounded_verify_observed(",
-        std::path::Path::new("crates/cli/src/runtime/verification.rs"),
+        std::path::Path::new("crates/host/src/runtime/verification.rs"),
         "dispatch_verify_task"
     ));
     assert!(!verifier_primitive_owner(
         ".dispatch_verify_task(",
-        std::path::Path::new("crates/cli/src/runtime/verification_execution.rs"),
+        std::path::Path::new("crates/host/src/runtime/verification_execution.rs"),
         "dispatch_verify"
     ));
 }
@@ -1683,12 +1685,12 @@ fn no_effect_producing_call_site_bypasses_the_boundary() {
         .and_then(std::path::Path::parent)
         .expect("kernel is two directories below the repository root");
     let verifier_source =
-        std::fs::read_to_string(root.join("crates/cli/src/runtime/verification_execution.rs"))
+        std::fs::read_to_string(root.join("crates/host/src/runtime/verification_execution.rs"))
             .expect("actual verifier execution owner must be readable");
     validate_verifier_source_owner(&verifier_source)
         .expect("actual verifier owner must retain ticket/task/dispatch/terminal order");
     let stream_source =
-        std::fs::read_to_string(root.join("crates/cli/src/runtime/stream_tool_admission.rs"))
+        std::fs::read_to_string(root.join("crates/host/src/runtime/stream_tool_admission.rs"))
             .expect("actual streamed-tool admission owner must be readable");
     validate_stream_source_owner(&stream_source)
         .expect("actual streamed tool must retain its decision and durable receipt before IO");

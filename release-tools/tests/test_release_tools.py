@@ -1767,7 +1767,7 @@ class MachineContractSmokeTest(unittest.TestCase):
     def emitted_schema_version(self) -> re.Match[str] | None:
         return re.search(
             r"^const MACHINE_CONTRACT_SCHEMA_VERSION: u32 = (\d+);$",
-            (self.ROOT / "crates/cli/src/machine_contract.rs").read_text(
+            (self.ROOT / "crates/host/src/machine_contract.rs").read_text(
                 encoding="utf-8"
             ),
             re.M,
@@ -1845,30 +1845,94 @@ class VersionIndependenceProofTest(unittest.TestCase):
     """
 
     ROOT = Path(__file__).resolve().parents[2]
-    NAMED_TESTS = (
-        "version_skew_is_refused_up_front",
-        "one_shot_refuses_app_server_version_skew_before_provider_dispatch",
-        "no_tty_skew_reconnect_and_current_result_share_one_headless_server",
-        "native_conpty_rejects_version_skew_before_terminal_takeover",
+    # A same-named function in another crate does not prove that Cargo will run it.
+    # Keep the owning package, Cargo target, complete selector and source together.
+    EXACT_PROOFS = (
+        (
+            "tui",
+            "iteron-host",
+            "--lib",
+            "app_server::tests::version_skew_is_refused_up_front",
+            "crates/host/src/app_server/tests.rs",
+        ),
+        (
+            "one-shot",
+            "iteron-cli",
+            "--test one_shot_output",
+            "one_shot_refuses_app_server_version_skew_before_provider_dispatch",
+            "crates/cli/tests/one_shot_output.rs",
+        ),
+        (
+            "headless",
+            "iteron-cli",
+            "--test headless_serve",
+            "no_tty_skew_reconnect_and_current_result_share_one_headless_server",
+            "crates/cli/tests/headless_serve.rs",
+        ),
+        (
+            "conpty",
+            "iteron-cli",
+            "--test windows_conpty",
+            "native_conpty_rejects_version_skew_before_terminal_takeover",
+            "crates/cli/tests/windows_conpty.rs",
+        ),
     )
 
     def test_the_workflow_names_only_tests_that_exist(self) -> None:
         workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        sources = list((self.ROOT / "crates/cli/tests").rglob("*.rs"))
-        sources += list((self.ROOT / "crates/cli/src").rglob("*.rs"))
-        bodies = [path.read_text(encoding="utf-8", errors="replace") for path in sources]
-        for name in self.NAMED_TESTS:
-            with self.subTest(test=name):
+        for _, package_name, _, selector, source in self.EXACT_PROOFS:
+            name = selector.rsplit("::", 1)[-1]
+            with self.subTest(test=selector):
                 self.assertIn(
-                    name,
+                    selector,
                     workflow,
                     "release.yml no longer runs this version-independence proof",
                 )
-                self.assertTrue(
-                    any(f"fn {name}(" in body for body in bodies),
-                    f"release.yml runs `{name}` by exact name, but no test declares it; "
+                body = (self.ROOT / source).read_text(encoding="utf-8")
+                self.assertRegex(
+                    body,
+                    rf"(?m)^fn {re.escape(name)}\(",
+                    f"release.yml runs `{selector}` by exact name, but its owning "
+                    f"source `{source}` does not declare it; "
                     "the proof would match nothing and fail on its summary count",
                 )
+                crate = self.ROOT.joinpath(*Path(source).parts[:2])
+                cargo = (crate / "Cargo.toml").read_text(encoding="utf-8")
+                self.assertRegex(cargo, rf'(?m)^name = "{re.escape(package_name)}"$')
+
+    def assert_exact_dispatch(self, workflow: str) -> None:
+        commands = re.findall(
+            r'run_exact\s+([a-z-]+)\s+cargo\s+\+"\$RUST_VERSION"\s+'
+            r'test\s+--locked\s+-p\s+([a-z-]+)\s+'
+            r'(--lib|--test\s+[a-z_]+)\s+--target\s+"\$target"\s+'
+            r'([a-z_:]+)\s+--\s+--exact\b',
+            workflow.replace("\\\n", " "),
+        )
+        actual = [
+            (label, package, " ".join(target.split()), selector)
+            for label, package, target, selector in commands
+        ]
+        self.assertEqual(
+            actual,
+            [proof[:4] for proof in self.EXACT_PROOFS],
+            "each native version proof must select its owning Cargo package and "
+            "test target, with the complete --exact selector exactly once",
+        )
+
+    def test_the_workflow_dispatches_each_proof_to_its_owning_target(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assert_exact_dispatch(workflow)
+
+    def test_a_stale_cli_package_cannot_pass_by_finding_the_host_test(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        stale = workflow.replace(
+            'run_exact tui \\\n            cargo +"$RUST_VERSION" test --locked -p iteron-host --lib',
+            'run_exact tui \\\n            cargo +"$RUST_VERSION" test --locked -p iteron-cli --lib',
+            1,
+        )
+        self.assertNotEqual(stale, workflow, "synthetic stale package was not injected")
+        with self.assertRaises(self.failureException):
+            self.assert_exact_dispatch(stale)
 
     def test_the_proof_still_requires_exactly_one_passing_summary(self) -> None:
         workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

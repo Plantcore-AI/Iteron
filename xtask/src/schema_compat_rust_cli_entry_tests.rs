@@ -268,6 +268,10 @@ fn shared_host_reexports_and_admitted_envelope_cannot_redirect() {
             "iteron_host::launch::assemble(cli, startup, validated)",
             "iteron_host::launch::assemble(cli, startup, evil(validated))",
         ),
+        (
+            "cli_entry::frontend::drive(*launch)",
+            "cli_entry::frontend::drive(evil(*launch))",
+        ),
     ] {
         let mut source = Sources::load();
         source.replace_main(before, after);
@@ -326,7 +330,11 @@ fn independent_server_forwards_to_the_same_admission_and_assembly() {
             "use crate::cli_entry::{Cli, LocalCommand};",
             "use evil::{Cli, LocalCommand};",
         ),
-        ("serve(launch).await", "serve(evil(launch)).await"),
+        ("serve(*launch).await", "serve(evil(*launch)).await"),
+        (
+            "boxed_startup_future(|| serve(*launch))",
+            "boxed_startup_future(|| serve(evil(*launch)))",
+        ),
     ] {
         let changed = server.replacen(before, after, 1);
         assert_ne!(changed, server, "server mutation must take effect");

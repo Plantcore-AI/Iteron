@@ -173,9 +173,23 @@ impl Agent {
                         Some(turn),
                     );
                     self.ensure_policy_evidence()?;
-                    let admission = self
-                        .admit_provider_dispatch(turn, &admitted.request)
-                        .await?;
+                    let admission =
+                        match self.admit_provider_dispatch(turn, &admitted.request).await {
+                            Ok(admission) => admission,
+                            Err(error) => {
+                                // The inherited deadline can expire while governor admission waits,
+                                // before a physical turn exists to normalize its terminal outcome.
+                                // Preserve the same run-budget result without dispatching or masking
+                                // unrelated admission/ledger failures.
+                                if let Some(outcome) = pre_dispatch_deadline_outcome(
+                                    &error,
+                                    self.run_deadline.current(),
+                                ) {
+                                    return self.finish(turn, outcome).await;
+                                }
+                                return Err(error);
+                            }
+                        };
                     wait.complete();
                     let trust = self.governing_turn_trust(run.messages());
                     let (start, usd) = self.provider_turn_start(
@@ -463,5 +477,47 @@ impl Agent {
                 },
             }
         }
+    }
+}
+
+fn pre_dispatch_deadline_outcome(
+    error: &KernelError,
+    deadline: Option<Instant>,
+) -> Option<Outcome> {
+    (matches!(
+        error,
+        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded)
+    ) && deadline.is_some_and(|deadline| deadline <= Instant::now()))
+    .then_some(Outcome::BudgetExhausted("max_wall_secs"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn only_the_expired_run_deadline_normalizes_a_pre_dispatch_refusal() {
+        let deadline_error =
+            KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded);
+        assert_eq!(
+            pre_dispatch_deadline_outcome(&deadline_error, Some(Instant::now())),
+            Some(Outcome::BudgetExhausted("max_wall_secs"))
+        );
+        assert_eq!(pre_dispatch_deadline_outcome(&deadline_error, None), None);
+        assert_eq!(
+            pre_dispatch_deadline_outcome(
+                &deadline_error,
+                Some(Instant::now() + Duration::from_secs(30))
+            ),
+            None
+        );
+        assert_eq!(
+            pre_dispatch_deadline_outcome(
+                &KernelError::Provider(iteron_provider::ProviderError::Interrupted),
+                Some(Instant::now())
+            ),
+            None
+        );
     }
 }

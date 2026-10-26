@@ -4,7 +4,7 @@ use super::conformance::{
 use std::path::{Path, PathBuf};
 
 /// The repository root, reached from this crate's manifest directory. The rows cite paths in other
-/// crates on purpose -- read-only bundle resolution is proven in `crates/agents` and `crates/cli`,
+/// crates on purpose -- read-only bundle resolution is proven in `crates/agents` and `crates/host`,
 /// not here -- so the validator has to run against the checkout, not against `crates/evolve`.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

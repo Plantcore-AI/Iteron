@@ -91,6 +91,7 @@ struct ProviderFixture {
     tool_release: tokio::sync::Notify,
     texts: Mutex<Vec<String>>,
     systems: Mutex<Vec<String>>,
+    native_preparation_attempts: AtomicUsize,
     prepared: AtomicUsize,
     serialized_caps: Mutex<Vec<u64>>,
     omit_native_user: bool,
@@ -169,6 +170,8 @@ impl Provider for ProviderFixture {
                 "system":request.system,"messages":messages,"max_tokens":request.max_tokens
             }))
             .unwrap();
+            self.native_preparation_attempts
+                .fetch_add(1, Ordering::SeqCst);
             observer
                 .prepared(iteron_provider::request_capture::ProviderWireRequest {
                     adapter: iteron_provider::AdapterKind::AnthropicMessages,

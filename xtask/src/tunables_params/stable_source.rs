@@ -767,9 +767,10 @@ mod runtime_control_migration_tests {
                 "cli.runtime.workflow_collect.deadline_free_parent_remaining_wall_secs",
             ),
         ] {
-            let relative = format!("crates/cli/src/runtime/{path}");
+            let relative = format!("crates/host/src/runtime/{path}");
+            let historical = format!("crates/cli/src/runtime/{path}");
             assert_eq!(
-                super::super::base_param_id("cli", &relative, name),
+                super::super::base_param_id("host", &relative, name),
                 expected
             );
             assert!(
@@ -778,10 +779,32 @@ mod runtime_control_migration_tests {
                     .is_some_and(|sites| sites.iter().any(|site| site.path == relative)),
                 "actual runtime resolution disappeared: {expected}"
             );
-            assert_eq!(super::original_source(&relative, "UNRELATED_BOUND"), None);
+            assert!(
+                evidence
+                    .get(expected)
+                    .is_some_and(|sites| sites.iter().all(|site| site.path != historical)),
+                "historical identity must not turn a removed CLI owner into live evidence"
+            );
+            // The crate move preserves a file's historical namespace, not an unrelated
+            // declaration's special address. Only these named declarations get that alias.
+            assert_eq!(super::original_source(&historical, "UNRELATED_BOUND"), None);
+            assert_eq!(
+                super::original_source(&relative, "UNRELATED_BOUND"),
+                Some(historical.as_str())
+            );
+            assert_ne!(
+                super::super::base_param_id("host", &relative, "UNRELATED_BOUND"),
+                expected
+            );
+            let foreign = format!("crates/host/src/foreign/{path}");
+            assert_eq!(super::original_source(&foreign, name), None);
+            assert_ne!(
+                super::super::base_param_id("host", &foreign, name),
+                expected
+            );
         }
         assert_eq!(
-            super::original_source("crates/cli/src/foreign.rs", "CHILD_CONTROL_POLL"),
+            super::original_source("crates/host/src/foreign.rs", "CHILD_CONTROL_POLL"),
             None
         );
     }

@@ -92,7 +92,7 @@ fn whole_subset(raw: &str, projected: &str) -> usize {
 fn real_context_allowance_preserves_whole_schemas_through_both_model_outlets() {
     let raw = discovery(450);
     let policy = iteron_ctx::ContextBudgetPolicy::default();
-    let inspection = ContextBudgetInspection::from_policy(Default::default(), policy.clone());
+    let inspection = ContextBudgetInspection::from_policy(Default::default(), policy);
     let budget =
         TurnResultProjectionBudget::from_component_allowances(&policy, inspection, 1, 0, 64 * 1024)
             .visible_bytes_for("files__search");

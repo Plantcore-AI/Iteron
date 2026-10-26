@@ -130,7 +130,7 @@ impl Drop for Reservation {
 pub(super) enum Publication {
     Prepared {
         scope: Arc<RequestManifestScope>,
-        capture: CapturedRequest,
+        capture: Box<CapturedRequest>,
         dispatched: bool,
     },
     Unavailable {

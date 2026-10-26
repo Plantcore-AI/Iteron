@@ -122,7 +122,7 @@ struct DiagnosticScope {
     scope: Arc<RequestManifestScope>,
 }
 struct PreparedDiagnostic {
-    capture: CapturedRequest,
+    capture: Box<CapturedRequest>,
     reservation: Reservation,
 }
 enum PublicationState {
@@ -229,7 +229,7 @@ impl ProviderRequestObserver for RequestManifestObserver {
             let reservation = diagnostic.archive.reserve(bytes)?;
             match CapturedRequest::capture(wire) {
                 Ok(capture) => Some(PreparedDiagnostic {
-                    capture,
+                    capture: Box::new(capture),
                     reservation,
                 }),
                 Err(error) => {

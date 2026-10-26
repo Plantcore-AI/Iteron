@@ -113,6 +113,14 @@ nav:
       - Evolution & PolicyManifest: spec/evolution.md
       - Capability mapping: spec/capability-mapping.md
       - Conformance & security: spec/conformance-and-security.md
+      - Runtime owners and ports: spec/runtime-owners.md
+      - Ordinary coding invocation: spec/coding-run-driver.md
+      - Frontend owners: spec/frontend-owners.md
+      - Standalone persistence: spec/standalone-persistence.md
+      - Live workflows: spec/live-workflow.md
+      - Activity and plugin controls: spec/public-client-controls.md
+      - Controlled browser: spec/controlled-browser.md
+      - Native desktop: spec/native-desktop.md
   - Reference:
       - Evidence-bound claim sheet: reference/claim-sheet.md
       - Harness Checkpoints paper draft: reference/harness-checkpoints-paper.md
@@ -128,6 +136,7 @@ nav:
       - File editing: reference/file-editing.md
       - Output formats: reference/output-formats.md
       - Agent definitions: reference/agent-definitions.md
+      - Resident public client controls: reference/public-client-controls.md
       - External harness: reference/external-harness.md
       - Research harness protocol: reference/research-harness-protocol.md
       - Research harness protocol (中文): reference/research-harness-protocol.zh-CN.md
@@ -161,6 +170,8 @@ nav:
       - Development:
           - Setup: development/setup.md
           - Testing: development/testing.md
+          - Production readiness: development/production-readiness.md
+          - State owner refactoring: development/state-owner-refactor.md
           - Review process: development/review-process.md
           - Provider adapters: development/provider-adapters.md
           - TUI testing: development/tui-testing.md

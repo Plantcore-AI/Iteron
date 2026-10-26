@@ -391,7 +391,7 @@ fn quality_affecting_invariant_requires_an_explicit_override() {
 
 fn exact_client_invariant_row() -> CensusRow {
     let mut row = discover_source(
-        "cli",
+        "host",
         "crates/host/src/app_server/thread_inspection.rs",
         "struct Inspection { #[serde(default)] max_events: usize }",
     )
@@ -420,6 +420,7 @@ fn exact_client_invariant_row() -> CensusRow {
 #[test]
 fn closed_declaration_disposition_is_validated_from_source_owner_and_reason() {
     let row = exact_client_invariant_row();
+    assert_eq!(row.owner.krate, "host");
     validate(std::slice::from_ref(&row)).unwrap();
     assert_eq!(
         source_dispositions::kind(&row),
@@ -452,6 +453,10 @@ fn closed_declaration_disposition_is_validated_from_source_owner_and_reason() {
 #[test]
 fn changed_owner_or_new_source_form_cannot_borrow_a_fixed_const_disposition() {
     let row = exact_client_invariant_row();
+    let mut historical_crate = row.clone();
+    historical_crate.owner.krate = "cli".into();
+    assert!(source_dispositions::kind(&historical_crate).is_none());
+    assert!(validate(&[historical_crate]).is_err());
     let mut changed_owner = row.clone();
     changed_owner.owner.symbol = "Other::MAX_INSPECTION_EVENTS".into();
     assert!(source_dispositions::kind(&changed_owner).is_none());

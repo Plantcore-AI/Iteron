@@ -130,14 +130,16 @@ async fn cancellation_of_observer_retains_actual_queue_exclusion_until_physical_
     let exclusion = SubmissionExclusion::capture(data.clone(), priority.clone()).unwrap();
     let admission = exclusion.try_exclude().unwrap();
     let (started, started_rx) = tokio::sync::oneshot::channel();
+    let (finished, finished_rx) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
     let observer = tokio::spawn(async move {
         tokio::task::spawn_blocking(move || {
-            let _admission = admission;
             let _ = started.send(());
             release_rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
+            drop(admission);
+            finished.send(()).unwrap();
         })
         .await
         .unwrap();
@@ -148,13 +150,13 @@ async fn cancellation_of_observer_retains_actual_queue_exclusion_until_physical_
     assert!(data.clone().try_acquire_owned().is_err());
     assert!(priority.clone().try_acquire_owned().is_err());
     release.send(()).unwrap();
-    let all = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        data.clone().acquire_many_owned(2),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    // The lease drops its data permit before its priority permit. A data-only wakeup
+    // does not prove the worker has finished releasing both queue exclusions.
+    tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let all = data.try_acquire_many_owned(2).unwrap();
     assert!(priority.try_acquire_owned().is_ok());
     drop(all);
 }

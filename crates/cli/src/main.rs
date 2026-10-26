@@ -174,7 +174,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     match startup_future!(iteron_host::launch::assemble(cli, startup, validated)).await? {
         iteron_host::launch::AssemblyOutcome::Exit(code) => Ok(code),
         iteron_host::launch::AssemblyOutcome::Ready(launch) => {
-            startup_future!(cli_entry::frontend::drive(launch)).await
+            startup_future!(cli_entry::frontend::drive(*launch)).await
         }
     }
 }

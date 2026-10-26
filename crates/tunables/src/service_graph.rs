@@ -9,19 +9,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const RUNTIME_SERVICE_GRAPH_SCHEMA_VERSION: u16 = 2;
-pub const RUNTIME_SERVICE_NODE_COUNT: usize = 67;
+pub const RUNTIME_SERVICE_NODE_COUNT: usize = 69;
 pub const MAX_RUNTIME_SERVICE_GRAPH_BYTES: usize = 256 * 1024;
 
 /// Production workspace crates covered by the platform-service layer. The test below compares this
 /// list with the root workspace manifest so a new runtime crate cannot silently escape the graph.
-pub const RUNTIME_CRATE_IDS: [&str; 23] = [
+pub const RUNTIME_CRATE_IDS: [&str; 25] = [
     "agents",
+    "app-server",
     "changeset",
     "cli",
     "ctx",
     "eval",
     "evolve",
     "extension-sdk",
+    "host",
     "kernel",
     "lsp",
     "marketplace",
@@ -345,14 +347,39 @@ pub fn runtime_service_graph() -> RuntimeServiceGraph {
             "cli",
             RuntimeServiceImplementationStatus::HostFixed,
             Some(
-                "Command admission and terminal I/O stay deterministic while prompt composition quality is delegated to named modules.",
+                "CLI command forwarding and terminal I/O stay deterministic; the shared host owns admitted session assembly and runtime authority.",
+            ),
+            vec![],
+            vec![HostInvariant::CapabilityAndPermission],
+        ),
+        (
+            "host.runtime",
+            "cli-host",
+            "host",
+            RuntimeServiceImplementationStatus::HostFixed,
+            Some(
+                "Shared session admission, runtime ownership, and authenticated transports remain fixed while prompt composition quality is delegated to named modules.",
             ),
             vec![
                 ModuleId::PromptSystem,
                 ModuleId::PromptSkill,
                 ModuleId::PromptCompaction,
             ],
-            vec![HostInvariant::CapabilityAndPermission],
+            CLOSED_HOST_INVARIANTS.to_vec(),
+        ),
+        (
+            "app_server.entry",
+            "cli-host",
+            "app-server",
+            RuntimeServiceImplementationStatus::HostFixed,
+            Some(
+                "The independent executable forwards validated launch options to the shared host and owns no separate agent, permission, or replay authority.",
+            ),
+            vec![],
+            vec![
+                HostInvariant::CapabilityAndPermission,
+                HostInvariant::ReplayAndIdentity,
+            ],
         ),
         (
             "context.engine",
@@ -956,7 +983,7 @@ mod tests {
             .iter()
             .filter(|node| node.layer == RuntimeServiceLayer::PlatformService)
             .collect::<Vec<_>>();
-        assert_eq!(platform.len(), 23);
+        assert_eq!(platform.len(), 25);
         let sdk = platform
             .iter()
             .find(|node| node.source_crate.as_deref() == Some("extension-sdk"))
@@ -997,7 +1024,7 @@ mod tests {
             .iter()
             .filter(|node| node.disposition == RuntimeServiceDisposition::HostFixedNonOptimization)
             .collect::<Vec<_>>();
-        assert_eq!(host_fixed.len(), 17);
+        assert_eq!(host_fixed.len(), 19);
         assert!(host_fixed.iter().all(|node| {
             node.implementation_status == RuntimeServiceImplementationStatus::HostFixed
                 && node
@@ -1067,5 +1094,45 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(declared, RUNTIME_CRATE_IDS.into_iter().collect());
+    }
+
+    #[test]
+    fn split_host_and_app_server_remain_distinct_fixed_authority_owners() {
+        let graph = runtime_service_graph();
+        for (krate, service) in [
+            ("host", "service/host.runtime"),
+            ("app-server", "service/app_server.entry"),
+        ] {
+            let node = graph
+                .nodes
+                .iter()
+                .find(|node| node.source_crate.as_deref() == Some(krate))
+                .unwrap();
+            assert_eq!(node.id, service);
+            assert_eq!(node.owner, "cli-host");
+            assert_eq!(
+                node.disposition,
+                RuntimeServiceDisposition::HostFixedNonOptimization
+            );
+            assert_eq!(
+                node.implementation_status,
+                RuntimeServiceImplementationStatus::HostFixed
+            );
+            assert!(
+                node.closed_host_invariants
+                    .contains(&HostInvariant::CapabilityAndPermission)
+            );
+            let mut alias = graph.clone();
+            alias
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == service)
+                .unwrap()
+                .source_crate = Some("cli".to_owned());
+            assert_eq!(
+                validate_runtime_service_graph(&alias),
+                Err(RuntimeServiceGraphError::Classification)
+            );
+        }
     }
 }
