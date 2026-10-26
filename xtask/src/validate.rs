@@ -1929,6 +1929,7 @@ Rollback: revert the commit\n\
     fn overlay_reviews_are_independent_per_boundary() {
         let mut registry: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
+        let owner_id = registry.enforcement.project_owner.clone();
         registry.people[0].github = Some("@owner-a".into());
         add_test_person(&mut registry, "maintainer-b", "@maintainer-b");
         add_test_person(&mut registry, "reviewer-c", "@reviewer-c");
@@ -1937,7 +1938,7 @@ Rollback: revert the commit\n\
             .iter_mut()
             .find(|boundary| boundary.id == "community-entry")
             .unwrap();
-        community.primary = Some("core-owner".into());
+        community.primary = Some(owner_id.clone());
         let security = registry
             .boundaries
             .iter_mut()
@@ -1949,11 +1950,7 @@ Rollback: revert the commit\n\
             .iter_mut()
             .find(|overlay| overlay.id == "public-truth")
             .unwrap();
-        public_truth.reviewers = vec![
-            "core-owner".into(),
-            "maintainer-b".into(),
-            "reviewer-c".into(),
-        ];
+        public_truth.reviewers = vec![owner_id, "maintainer-b".into(), "reviewer-c".into()];
 
         let impact =
             impact_from_name_status(&registry, &registry, b"M\0README.md\0M\0SECURITY.md\0")
@@ -1991,6 +1988,7 @@ Rollback: revert the commit\n\
         let mut head: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
         for registry in [&mut base, &mut head] {
+            let owner_id = registry.enforcement.project_owner.clone();
             registry.people[0].github = Some("@owner-a".into());
             add_test_person(registry, "reviewer-b", "@reviewer-b");
             add_test_person(registry, "reviewer-c", "@reviewer-c");
@@ -1999,7 +1997,7 @@ Rollback: revert the commit\n\
                 .iter_mut()
                 .find(|boundary| boundary.id == "community-entry")
                 .unwrap()
-                .primary = Some("core-owner".into());
+                .primary = Some(owner_id);
         }
         base.overlays
             .iter_mut()
@@ -2133,6 +2131,7 @@ Rollback: revert the commit\n\
     fn active_enforcement_requires_critical_owners_and_independent_overlays() {
         let mut registry: Registry =
             serde_json::from_str(include_str!("../../governance/boundaries.json")).unwrap();
+        let owner_id = registry.enforcement.project_owner.clone();
         registry.enforcement.mode = "active".into();
         registry.people[0].github = Some("@core-owner".into());
         assert!(validate_registry(&registry).is_err());
@@ -2148,7 +2147,7 @@ Rollback: revert the commit\n\
         for boundary in &mut registry.boundaries {
             if boundary.risk == "critical" {
                 boundary.status = "active".into();
-                boundary.primary = Some("core-owner".into());
+                boundary.primary = Some(owner_id.clone());
                 boundary.reviewers = vec!["independent-reviewer".into()];
             }
         }

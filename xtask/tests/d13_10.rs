@@ -15,8 +15,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const OWNER_LOGIN: &str = "fr0m-scratch";
-
 fn xtask_bin() -> &'static str {
     env!("CARGO_BIN_EXE_iteron-xtask")
 }
@@ -32,6 +30,7 @@ struct Fixture {
     root: PathBuf,
     reviews: PathBuf,
     base: String,
+    owner_login: String,
 }
 
 impl Fixture {
@@ -132,6 +131,21 @@ impl Fixture {
         // registry validity still hold — only the review floor decides the outcome.
         let registry_path = root.join("governance/boundaries.json");
         let mut contents = std::fs::read_to_string(&registry_path).unwrap();
+        let registry: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let owner_id = registry["enforcement"]["project_owner"]
+            .as_str()
+            .expect("fixture registry declares its project Owner");
+        let owner_login = registry["people"]
+            .as_array()
+            .expect("fixture registry contains human identities")
+            .iter()
+            .find(|person| person["id"].as_str() == Some(owner_id))
+            .expect("fixture project Owner is registered")["github"]
+            .as_str()
+            .expect("fixture project Owner has an explicit GitHub handle")
+            .strip_prefix('@')
+            .expect("fixture Owner handle starts with @")
+            .to_owned();
         contents.push('\n');
         std::fs::write(&registry_path, contents).unwrap();
         git(&root, &["add", "--", "governance/boundaries.json"]);
@@ -153,6 +167,7 @@ impl Fixture {
             root,
             reviews,
             base,
+            owner_login,
         }
     }
 
@@ -222,7 +237,7 @@ fn bootstrap_registry_change_enforces_the_owner_floor() {
         String::from_utf8_lossy(&contributor.stderr),
     );
 
-    let owner = fixture.check_reviews(OWNER_LOGIN);
+    let owner = fixture.check_reviews(&fixture.owner_login);
     assert!(
         owner.status.success(),
         "the Owner's accountable authorship must satisfy the bootstrap registry floor \
@@ -231,4 +246,13 @@ fn bootstrap_registry_change_enforces_the_owner_floor() {
         String::from_utf8_lossy(&owner.stdout),
         String::from_utf8_lossy(&owner.stderr),
     );
+
+    // A former Owner does not retain approval authority after the registry transfers it.
+    if !fixture.owner_login.eq_ignore_ascii_case("fr0m-scratch") {
+        let former_owner = fixture.check_reviews("fr0m-scratch");
+        assert!(
+            !former_owner.status.success(),
+            "the former Owner must not satisfy the current registry's ownership floor"
+        );
+    }
 }

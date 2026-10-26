@@ -1,0 +1,122 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 74e3e175..a9bbcb7f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,0 +10,21 @@ interfaces may change between releases.
++## [0.0.31] - 2026-10-26
++
++### Fixed
++
++- Finish an expired Run deadline while awaiting provider admission as the existing
++  wall-time budget outcome, without dispatching a request or swallowing other errors.
++- Preserve deferred provider-admission lifecycle events with protocol-valid reason
++  codes; retain strict validation and bounded permit cleanup.
++- Follow the shared host implementation in release, ownership, effect-boundary,
++  schema consumer, and evolution checks after the CLI/host split.
++- Remove strict Clippy failures without lint exemptions, and repair outdated
++  persistence fixtures, optional-diagnostic assumptions, and terminal-export races.
++- Refresh generated tuning inventories and strict documentation links while retaining
++  stable registry identities and fail-closed ownership checks.
++
++### Release verification
++
++- This changelog entry prepares a release; it does not establish publication or
++  acceptance. Exact-commit CI, complete release preflight, human review, artifact
++  verification, and installer canaries remain required before release acceptance.
++
+diff --git a/Cargo.lock b/Cargo.lock
+index db6e870e..a2544d97 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1338 +1338 @@ name = "iteron-agents"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1352 +1352 @@ name = "iteron-app-server"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1366 +1366 @@ name = "iteron-changeset"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1374 +1374 @@ name = "iteron-cli"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1434 +1434 @@ name = "iteron-ctx"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1450 +1450 @@ name = "iteron-eval"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1473 +1473 @@ name = "iteron-evolve"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1487 +1487 @@ name = "iteron-extension-sdk"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1500 +1500 @@ name = "iteron-host"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1553 +1553 @@ name = "iteron-kernel"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1567 +1567 @@ name = "iteron-lsp"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1579 +1579 @@ name = "iteron-marketplace"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1597 +1597 @@ name = "iteron-mcp"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1615 +1615 @@ name = "iteron-obs"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1628 +1628 @@ name = "iteron-protocol"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1638 +1638 @@ name = "iteron-provider"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1662 +1662 @@ name = "iteron-record"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1680 +1680 @@ name = "iteron-sandbox"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1692 +1692 @@ name = "iteron-sched"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1705 +1705 @@ name = "iteron-statusline"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1713 +1713 @@ name = "iteron-support"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1724 +1724 @@ name = "iteron-tools"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1750 +1750 @@ name = "iteron-tunables"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1761 +1761 @@ name = "iteron-verify"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1776 +1776 @@ name = "iteron-workflow"
+-version = "0.0.30"
++version = "0.0.31"
+@@ -1798 +1798 @@ name = "iteron-xtask"
+-version = "0.0.30"
++version = "0.0.31"
+diff --git a/Cargo.toml b/Cargo.toml
+index d6a0342f..97a1de49 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -36 +36 @@ members = [
+-version = "0.0.30"
++version = "0.0.31"
+diff --git a/governance/schema-compatibility.json b/governance/schema-compatibility.json
+index 82484a1c..6a970d1b 100644
+--- a/governance/schema-compatibility.json
++++ b/governance/schema-compatibility.json
+@@ -3 +3 @@
+-  "release_ordinal": 13,
++  "release_ordinal": 14,

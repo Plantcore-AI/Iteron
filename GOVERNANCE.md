@@ -7,9 +7,17 @@ belongs to humans, not to automation or coding agents.
 
 ## Owner / Project Lead
 
-Iteron was created and is led by
-[Jamal Cao (`@fr0m-scratch`)](https://github.com/fr0m-scratch), the project's
-human Owner and Project Lead.
+Iteron was created by [Jamal Cao (`@fr0m-scratch`)](https://github.com/fr0m-scratch).
+Following his explicit 2026-10-26 handoff instruction,
+[Xingyu Zhou (`@XZhouuuu`)](https://github.com/XZhouuuu) is the appointed human
+Owner and Project Lead, including repository administration, unclaimed-boundary
+coordination, invariant-review staffing, and the next release.
+
+This appointment transfers responsibility, not evidence of completed reviews or
+successor acceptance. The registry remains in `bootstrap` until independent human
+reviewers and the protected-branch canary meet the existing activation contract.
+The outgoing Owner's historical authorship, frozen review evidence and release
+records are not rewritten. See the [takeover checklist](governance/xingyu-handoff-20261026.md).
 
 The Owner holds final authority over every project decision, including roadmap,
 architecture, maintainer appointment or removal, merge, release, security policy,
