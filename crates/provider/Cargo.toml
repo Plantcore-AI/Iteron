@@ -32,6 +32,6 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-rcgen = "0.13.2"
+rcgen = "0.14.10"
 tokio = { workspace = true, features = ["rt", "macros"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
